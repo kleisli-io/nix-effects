@@ -13,7 +13,9 @@ let
     doc = ''
       Read the current environment.
 
+      ```
       ask : Computation env
+      ```
     '';
     value = send "ask" null;
     tests = {
@@ -32,7 +34,9 @@ let
     doc = ''
       Read a projection of the environment.
 
+      ```
       asks : (env -> a) -> Computation a
+      ```
     '';
     value = f: bind (send "ask" null) (env: pure (f env));
     tests = {
@@ -53,7 +57,9 @@ let
       wrapping the inner computation's ask effects with the modifier.
       In practice, use separate handler installation with the modified env.
 
+      ```
       local : (env -> env) -> Computation a -> Computation a
+      ```
     '';
     value = f: comp: bind (send "local" f) (_: comp);
     tests = {
@@ -69,7 +75,9 @@ let
       Standard reader handler. Interprets ask effects.
       The state IS the environment (immutable through the computation).
 
-        handle { handlers = reader.handler; state = myEnv; } comp
+      ```nix
+      handle { handlers = reader.handler; state = myEnv; } comp
+      ```
     '';
     value = {
       ask = { state, ... }: { resume = state; inherit state; };

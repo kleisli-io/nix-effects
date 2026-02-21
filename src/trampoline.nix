@@ -32,18 +32,24 @@ let
     doc = ''
       Run a computation through the genericClosure trampoline.
 
-      comp: Computation a — the freer monad computation to interpret
-      handlers: { effectName = { param, state } -> { resume | abort, state }; ... }
-      initialState: starting state passed to handlers
+      ```
+      run : Computation a -> Handlers -> State -> { value : a, state : State }
+      ```
 
-      Returns: { value: a, state: finalState }
+      **Arguments:**
+      - `comp` — the freer monad computation to interpret
+      - `handlers` — `{ effectName = { param, state }: { resume | abort, state }; ... }`
+      - `initialState` — starting state passed to handlers
 
       Handlers must return one of:
-        { resume = value; state = newState; }  — invoke continuation with value
-        { abort  = value; state = newState; }  — discard continuation, halt
+
+      ```
+      { resume = value; state = newState; }  -- invoke continuation with value
+      { abort  = value; state = newState; }  -- discard continuation, halt
+      ```
 
       This is the defunctionalized encoding of Plotkin & Pretnar (2009):
-      resume ≡ invoke continuation k(v), abort ≡ discard k.
+      `resume` ≡ invoke continuation k(v), `abort` ≡ discard k.
 
       Stack depth: O(1) — constant regardless of computation length.
       Time: O(n) where n = number of effects in the computation.
@@ -106,17 +112,17 @@ let
     doc = ''
       Trampolined handler combinator with return clause.
 
-      Follows Kiselyov & Ishii's handle_relay pattern but trampolined
+      ```
+      handle : { return?, handlers, state? } -> Computation a -> { value, state }
+      ```
+
+      Follows Kiselyov & Ishii's `handle_relay` pattern but trampolined
       via genericClosure for O(1) stack depth.
 
-      Arguments (attrset):
-        return: value -> state -> { value, state }
-          How to transform the final Pure value. Default: identity.
-        handlers: { effectName = { param, state } -> { resume | abort, state }; }
-          Effect handlers. Each must return { resume; state; } or { abort; state; }.
-        state: initial handler state. Default: null.
-
-      Returns: comp -> { value, state }
+      **Arguments** (attrset):
+      - `return` — `value -> state -> { value, state }`. How to transform the final Pure value. Default: identity.
+      - `handlers` — `{ effectName = { param, state }: { resume | abort, state }; }`. Each must return `{ resume; state; }` or `{ abort; state; }`.
+      - `state` — initial handler state. Default: null.
     '';
     value = {
       return ? (value: state: { inherit value state; }),

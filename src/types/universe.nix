@@ -21,9 +21,12 @@ let
 
   typeAt = mk {
     doc = ''
-      Create universe type at level n (cumulative). Type_n contains all types
-      with universe <= n. Type_n itself has universe n + 1.
-      Type_n : Type_(n+1) for all n.
+      Create universe type at level n (cumulative). `Type_n` contains all types
+      with universe ≤ n. `Type_n` itself has universe n + 1.
+
+      ```
+      Type_n : Type_(n+1) for all n
+      ```
     '';
     value = n: mkType {
       name = "Type_${toString n}";

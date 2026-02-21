@@ -18,7 +18,9 @@ let
       Raise an error. Returns a Computation that sends an "error" effect.
       The handler determines what happens: throw, collect, or recover.
 
+      ```
       raise : string -> Computation a
+      ```
     '';
     value = message: send "error" { inherit message; context = ""; };
     tests = {
@@ -43,7 +45,9 @@ let
       in the computation the error occurred, enabling stack-trace-like
       error reports when used with the collecting handler.
 
+      ```
       raiseWith : string -> string -> Computation a
+      ```
     '';
     value = context: message: send "error" { inherit message context; };
     tests = {
@@ -111,7 +115,7 @@ let
       Result error handler: aborts computation with tagged Error value.
       Uses the non-resumption protocol to discard the continuation.
 
-      Returns { _tag = "Error"; message; context; } on error.
+      Returns `{ _tag = "Error"; message; context; }` on error.
     '';
     value = {
       error = { param, state }: {

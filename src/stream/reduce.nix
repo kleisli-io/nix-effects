@@ -11,7 +11,9 @@ let
     doc = ''
       Left fold over a stream.
 
+      ```
       fold : (b -> a -> b) -> b -> Computation (Step r a) -> Computation b
+      ```
     '';
     value = f: z: stream:
       bind stream (step:
@@ -23,7 +25,9 @@ let
     doc = ''
       Collect all stream elements into a list.
 
+      ```
       toList : Computation (Step r a) -> Computation [a]
+      ```
     '';
     value = stream: fold.value (acc: x: acc ++ [ x ]) [] stream;
   };
@@ -32,7 +36,9 @@ let
     doc = ''
       Count the number of elements in a stream.
 
+      ```
       length : Computation (Step r a) -> Computation int
+      ```
     '';
     value = stream: fold.value (n: _: n + 1) 0 stream;
   };
@@ -41,7 +47,9 @@ let
     doc = ''
       Sum all numeric elements in a stream.
 
+      ```
       sum : Computation (Step r number) -> Computation number
+      ```
     '';
     value = stream: fold.value (acc: x: acc + x) 0 stream;
   };
@@ -51,7 +59,9 @@ let
       Check if any element satisfies a predicate.
       Short-circuits on first match (via lazy evaluation).
 
+      ```
       any : (a -> bool) -> Computation (Step r a) -> Computation bool
+      ```
     '';
     value = pred: stream:
       bind stream (step:
@@ -64,7 +74,9 @@ let
     doc = ''
       Check if all elements satisfy a predicate.
 
+      ```
       all : (a -> bool) -> Computation (Step r a) -> Computation bool
+      ```
     '';
     value = pred: stream:
       bind stream (step:

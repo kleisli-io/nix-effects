@@ -26,15 +26,17 @@ let
     doc = ''
       Signal a condition. The handler chooses a restart strategy.
 
-      signal : string -> any -> list string -> Computation any
+      ```
+      signal : string -> any -> [string] -> Computation any
+      ```
 
-      Arguments:
-        name     — condition name (e.g. "division-by-zero", "file-not-found")
-        data     — condition data (error details, context)
-        restarts — list of available restart names
+      **Arguments:**
+      - `name` — condition name (e.g. `"division-by-zero"`, `"file-not-found"`)
+      - `data` — condition data (error details, context)
+      - `restarts` — list of available restart names
 
-      The handler receives { name, data, restarts } and returns a
-      { restart, value } attrset. The continuation receives this choice.
+      The handler receives `{ name, data, restarts }` and returns a
+      `{ restart, value }` attrset. The continuation receives this choice.
     '';
     value = name: data: restarts:
       send "condition" { inherit name data restarts; };
@@ -57,10 +59,12 @@ let
   warn = mk {
     doc = ''
       Signal a warning condition. Like signal but with a conventional
-      "muffle-warning" restart. If the handler doesn't muffle, the
+      `"muffle-warning"` restart. If the handler doesn't muffle, the
       computation continues normally.
 
+      ```
       warn : string -> any -> Computation null
+      ```
     '';
     value = name: data:
       bind (send "condition" { inherit name data; restarts = ["muffle-warning"]; }) (response:
@@ -131,12 +135,14 @@ let
       Create a handler that invokes a specific restart for a named condition.
       For all other conditions, falls through (throws).
 
+      ```
       withRestart : string -> string -> any -> handler
+      ```
 
-      Arguments:
-        condName    — condition name to match
-        restartName — restart to invoke
-        restartVal  — value to pass via the restart
+      **Arguments:**
+      - `condName` — condition name to match
+      - `restartName` — restart to invoke
+      - `restartVal` — value to pass via the restart
     '';
     value = condName: restartName: restartVal: {
       condition = { param, state }:

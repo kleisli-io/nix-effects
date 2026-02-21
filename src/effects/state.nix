@@ -20,7 +20,9 @@ let
       Read the current state. Returns a Computation that, when handled,
       yields the current state value.
 
+      ```
       get : Computation s
+      ```
     '';
     value = send "get" null;
     tests = {
@@ -40,7 +42,9 @@ let
       Replace the current state. Returns a Computation that, when handled,
       sets the state to the given value and returns null.
 
+      ```
       put : s -> Computation null
+      ```
     '';
     value = s: send "put" s;
     tests = {
@@ -60,7 +64,9 @@ let
       Apply a function to the current state. Returns a Computation that,
       when handled, transforms the state via f and returns null.
 
+      ```
       modify : (s -> s) -> Computation null
+      ```
     '';
     value = f: send "modify" f;
     tests = {
@@ -75,7 +81,9 @@ let
     doc = ''
       Read a projection of the current state.
 
+      ```
       gets : (s -> a) -> Computation a
+      ```
     '';
     value = f: bind (send "get" null) (s: pure (f s));
     tests = {
@@ -89,13 +97,15 @@ let
   handler = mk {
     doc = ''
       Standard state handler. Interprets get/put/modify effects.
-      Use with trampoline.handle:
+      Use with `trampoline.handle`:
 
-        handle { handlers = state.handler; state = initialState; } comp
+      ```nix
+      handle { handlers = state.handler; state = initialState; } comp
+      ```
 
-      get: returns current state as value
-      put: replaces state with param, returns null
-      modify: applies param (a function) to state, returns null
+      - `get`: returns current state as value
+      - `put`: replaces state with param, returns null
+      - `modify`: applies param (a function) to state, returns null
     '';
     value = {
       get = { state, ... }: { resume = state; inherit state; };

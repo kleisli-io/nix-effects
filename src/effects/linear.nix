@@ -36,21 +36,22 @@ let
     doc = ''
       Acquire a graded linear resource. Returns a capability token.
 
+      ```
       acquire : { resource : a, maxUses : Int | null } -> Computation Token
+      ```
 
       The token wraps the resource with an ID for tracking. The handler
       maintains a resource map in its state, counting each consume call
       against the maxUses bound.
 
-        maxUses = 1    : Linear — exactly one consume required
-        maxUses = n    : Exact — exactly n consumes required
-        maxUses = null : Unlimited — any number of consumes allowed
+      - `maxUses = 1` — Linear: exactly one consume required
+      - `maxUses = n` — Exact: exactly n consumes required
+      - `maxUses = null` — Unlimited: any number of consumes allowed
 
       Tokens should be consumed exactly maxUses times, or explicitly
       released. At handler exit, the return clause (finalizer) checks:
-        released    → always OK (explicitly dropped)
-        maxUses=null → always OK (unlimited)
-        otherwise   → currentUses must equal maxUses
+      released → always OK, `maxUses = null` → always OK,
+      otherwise → `currentUses` must equal `maxUses`.
     '';
     value = { resource, maxUses }: send "linearAcquire" { inherit resource maxUses; };
     tests = {
@@ -77,11 +78,13 @@ let
     doc = ''
       Consume a capability token, returning the wrapped resource value.
 
+      ```
       consume : Token -> Computation a
+      ```
 
-      Increments the token's usage counter. Aborts with LinearityError if:
-        - Token was already released ("consume-after-release")
-        - Usage would exceed maxUses bound ("exceeded-bound")
+      Increments the token's usage counter. Aborts with `LinearityError` if:
+      - Token was already released (`"consume-after-release"`)
+      - Usage would exceed maxUses bound (`"exceeded-bound"`)
 
       The returned value is the original resource passed to acquire.
     '';
@@ -106,11 +109,13 @@ let
     doc = ''
       Explicitly release a capability token without consuming it.
 
+      ```
       release : Token -> Computation null
+      ```
 
       Marks the resource as released. The finalizer skips released resources,
       so this allows affine usage (acquire then drop). Aborts with
-      LinearityError on double-release.
+      `LinearityError` on double-release.
     '';
     value = token: send "linearRelease" { inherit token; };
     tests = {
@@ -133,7 +138,9 @@ let
     doc = ''
       Acquire a linear resource (exactly one consume required).
 
+      ```
       acquireLinear : a -> Computation Token
+      ```
     '';
     value = resource: send "linearAcquire" { inherit resource; maxUses = 1; };
     tests = {
@@ -148,7 +155,9 @@ let
     doc = ''
       Acquire a resource that must be consumed exactly n times.
 
+      ```
       acquireExact : a -> Int -> Computation Token
+      ```
     '';
     value = resource: n: send "linearAcquire" { inherit resource; maxUses = n; };
     tests = {
@@ -163,7 +172,9 @@ let
     doc = ''
       Acquire an unlimited resource (any number of consumes allowed).
 
+      ```
       acquireUnlimited : a -> Computation Token
+      ```
     '';
     value = resource: send "linearAcquire" { inherit resource; maxUses = null; };
     tests = {
@@ -191,19 +202,21 @@ let
       Graded linear resource handler. Interprets linearAcquire, linearConsume,
       and linearRelease effects. Tracks resource usage in handler state.
 
-      Use with trampoline.handle:
+      Use with `trampoline.handle`:
 
-        handle {
-          handlers = linear.handler;
-          return = linear.return;
-          state = linear.initialState;
-        } comp
+      ```nix
+      handle {
+        handlers = linear.handler;
+        return = linear.return;
+        state = linear.initialState;
+      } comp
+      ```
 
-      Or use the convenience: linear.run comp
+      Or use the convenience: `linear.run comp`
 
-      linearAcquire: creates token, adds resource entry to state
-      linearConsume: increments usage counter, returns resource value
-      linearRelease: marks resource as released (finalizer skips it)
+      - `linearAcquire`: creates token, adds resource entry to state
+      - `linearConsume`: increments usage counter, returns resource value
+      - `linearRelease`: marks resource as released (finalizer skips it)
     '';
     value = {
       linearAcquire = { param, state }:
@@ -386,16 +399,13 @@ let
       Finalizer return clause for the linear handler.
 
       Checks each resource in handler state:
-        released    → OK (explicitly dropped)
-        maxUses=null → OK (unlimited)
-        otherwise   → currentUses must equal maxUses
+      - `released` → OK (explicitly dropped)
+      - `maxUses = null` → OK (unlimited)
+      - otherwise → `currentUses` must equal `maxUses`
 
-      On violation, wraps the original value in a LinearityError with
+      On violation, wraps the original value in a `LinearityError` with
       details of each mismatched resource. On success, passes through
-      unchanged.
-
-      This runs on both normal return and abort paths because
-      trampoline.nix:161 calls return unconditionally.
+      unchanged. Runs on both normal return and abort paths.
     '';
     value = value: state:
       let
@@ -487,10 +497,12 @@ let
     doc = ''
       Initial handler state for the linear resource handler.
 
+      ```nix
       { nextId = 0; resources = {}; }
+      ```
 
-      nextId: monotonic counter for generating unique resource IDs.
-      resources: map from ID (string) to resource tracking entry.
+      - `nextId`: monotonic counter for generating unique resource IDs.
+      - `resources`: map from ID (string) to resource tracking entry.
     '';
     value = { nextId = 0; resources = {}; };
     tests = {
@@ -509,19 +521,22 @@ let
     doc = ''
       Run a computation with the graded linear handler.
 
-      run : Computation a -> { value : a | LinearityError; state : State }
+      ```
+      run : Computation a -> { value : a | LinearityError, state : State }
+      ```
 
       Bundles handler, return clause, and initial state into one call.
       To compose with other handlers, use handler/return/initialState
-      separately with adaptHandlers.
+      separately with `adaptHandlers`.
 
-      Example:
-        let
-          comp = bind (acquireLinear "secret") (token:
-            bind (consume token) (val:
-              pure "got:''${val}"));
-        in linear.run comp
-        # => { value = "got:secret"; state = { nextId = 1; resources = { ... }; }; }
+      ```nix
+      let
+        comp = bind (acquireLinear "secret") (token:
+          bind (consume token) (val:
+            pure "got:''${val}"));
+      in linear.run comp
+      # => { value = "got:secret"; state = { nextId = 1; resources = { ... }; }; }
+      ```
     '';
     value = comp: handle {
       return = return.value;
@@ -640,13 +655,16 @@ in mk {
     and unlimited usage through a single maxUses parameter.
 
     Quick start:
-      let comp = bind (linear.acquireLinear "secret") (token:
-        bind (linear.consume token) (val:
-          pure val));
-      in linear.run comp
+
+    ```nix
+    let comp = bind (linear.acquireLinear "secret") (token:
+      bind (linear.consume token) (val:
+        pure val));
+    in linear.run comp
+    ```
 
     For composition with other handlers, use handler/return/initialState with
-    adaptHandlers.
+    `adaptHandlers`.
   '';
   value = {
     inherit acquire consume release;

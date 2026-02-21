@@ -54,38 +54,50 @@ let
     doc = ''
       Create a type as a (Specification, Guard, Verifier) triple.
 
-      A nix-effects type is a tuple (S, G, V) where:
-        S = Specification — the type-theoretic content (name, universe)
-        G = Guard — a decidable pure predicate: check : Value → Bool
-        V = Verifier — an effectful procedure: validate : Value → Computation Value
+      A nix-effects type is a tuple `(S, G, V)` where:
+
+      ```
+      S = Specification — the type-theoretic content (name, universe)
+      G = Guard — a decidable pure predicate: check : Value → Bool
+      V = Verifier — an effectful procedure: validate : Value → Computation Value
+      ```
 
       Arguments:
-        name:        Human-readable type name
-        check:       Guard predicate (pure, compositional, used inside composite types)
-        verify:      Optional custom verifier (self → value → Computation).
-                     Receives the type object (self) for structural failure
-                     reporting. When null (default), validate is auto-derived
-                     by wrapping check in a typeCheck effect. Supply a custom
-                     verify for types that decompose checking (e.g. Sigma sends
-                     separate effects for fst and snd for blame tracking).
-        universe:    Universe level (default 0)
-        description: Documentation string (default = name)
 
-      The auto-derived validate satisfies the adequacy invariant:
-        T.check v ⟺ all typeCheck effects in T.validate v pass
-      Tested via the all-pass handler: state = state ∧ (param.type.check param.value)
+      - `name` — Human-readable type name
+      - `check` — Guard predicate (pure, compositional, used inside composite types)
+      - `verify` — Optional custom verifier (`self → value → Computation`).
+        Receives the type object (`self`) for structural failure
+        reporting. When null (default), `validate` is auto-derived
+        by wrapping `check` in a `typeCheck` effect. Supply a custom
+        `verify` for types that decompose checking (e.g. Sigma sends
+        separate effects for `fst` and `snd` for blame tracking).
+      - `universe` — Universe level (default 0)
+      - `description` — Documentation string (default = `name`)
 
-      The guard (check) is the foundation — pure, compositional, defines type
+      The auto-derived `validate` satisfies the adequacy invariant:
+
+      ```
+      T.check v ⟺ all typeCheck effects in T.validate v pass
+      ```
+
+      Tested via the all-pass handler:
+      `state = state ∧ (param.type.check param.value)`
+
+      The guard (`check`) is the foundation — pure, compositional, defines type
       membership. Composite types like Sigma compose by calling sub-type guards
-      (fst.check, snd.check) which MUST be pure Bool returns. The verifier
-      (validate) is built on top for observability — it sends typeCheck effects
+      (`fst.check`, `snd.check`) which MUST be pure Bool returns. The verifier
+      (`validate`) is built on top for observability — it sends `typeCheck` effects
       through the freer monad so handlers can implement blame tracking, error
       collection, or logging.
 
       Per Pedrot & Tabareau "Fire Triangle" (POPL 2020):
-        Level 1: types as pure values (this attrset)
-        Level 2: type checking as effectful computation (validate)
-        Level 3: error policy as handler (strict/collecting/logging)
+
+      ```
+      Level 1: types as pure values (this attrset)
+      Level 2: type checking as effectful computation (validate)
+      Level 3: error policy as handler (strict/collecting/logging)
+      ```
     '';
     value = { name, check, verify ? null, universe ? 0, description ? name }:
       let self = {
@@ -211,15 +223,17 @@ let
     doc = ''
       Standalone effectful validation with explicit context string.
 
-      Sends a typeCheck effect with the given type, value, and context.
-      The handler receives { type, context, value } and determines the
+      Sends a `typeCheck` effect with the given type, value, and context.
+      The handler receives `{ type, context, value }` and determines the
       response: throw, collect error, log, or offer restarts.
 
-      For typical use, prefer type.validate (auto-derived by mkType,
+      For typical use, prefer `type.validate` (auto-derived by `mkType`,
       uses the type's name as context). This 3-arg form is for cases
       where a custom context string is needed.
 
+      ```
       validate : Type → Value → String → Computation Bool
+      ```
     '';
     value = type: v: context:
       send "typeCheck" { inherit type context; value = v; };

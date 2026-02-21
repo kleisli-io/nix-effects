@@ -13,7 +13,9 @@ let
     doc = ''
       Append a single item to the accumulator.
 
+      ```
       emit : a -> Computation null
+      ```
     '';
     value = item: send "emit" item;
     tests = {
@@ -32,7 +34,9 @@ let
     doc = ''
       Append a list of items to the accumulator.
 
+      ```
       emitAll : [a] -> Computation null
+      ```
     '';
     value = items: send "emitAll" items;
     tests = {
@@ -47,7 +51,9 @@ let
     doc = ''
       Read the current accumulated items.
 
+      ```
       collect : Computation [a]
+      ```
     '';
     value = send "collect" null;
     tests = {
@@ -61,9 +67,11 @@ let
   handler = mk {
     doc = ''
       Standard accumulator handler. State is a list of accumulated items.
-      Initial state: []
+      Initial state: `[]`
 
-        handle { handlers = acc.handler; state = []; } comp
+      ```nix
+      handle { handlers = acc.handler; state = []; } comp
+      ```
     '';
     value = {
       emit = { param, state }: { resume = null; state = state ++ [ param ]; };

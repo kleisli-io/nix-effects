@@ -12,7 +12,9 @@ let
     doc = ''
       Concatenate two streams: all elements of the first, then all of the second.
 
+      ```
       concat : Computation (Step r a) -> Computation (Step s a) -> Computation (Step s a)
+      ```
     '';
     value = s1: s2:
       bind s1 (step:
@@ -24,7 +26,9 @@ let
     doc = ''
       Interleave two streams: alternate elements from each.
 
+      ```
       interleave : Computation (Step r a) -> Computation (Step s a) -> Computation (Step null a)
+      ```
     '';
     value = s1: s2:
       bind s1 (step1:
@@ -41,7 +45,9 @@ let
       Zip two streams into a stream of pairs.
       Stops when either stream ends.
 
-      zip : Computation (Step r a) -> Computation (Step s b) -> Computation (Step null {fst: a, snd: b})
+      ```
+      zip : Computation (Step r a) -> Computation (Step s b) -> Computation (Step null { fst : a, snd : b })
+      ```
     '';
     value = s1: s2:
       bind s1 (step1:
@@ -59,7 +65,9 @@ let
     doc = ''
       Zip two streams with a combining function.
 
+      ```
       zipWith : (a -> b -> c) -> Computation (Step r a) -> Computation (Step s b) -> Computation (Step null c)
+      ```
     '';
     value = f: s1: s2:
       bind s1 (step1:

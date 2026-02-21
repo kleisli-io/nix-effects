@@ -64,8 +64,12 @@ let
   viewl = mk {
     doc = ''
       Extract the leftmost continuation from the queue. Amortized O(1).
+
+      ```
       Returns { head = fn; tail = queue | null; }
-      where tail is null if the queue had only one element.
+      ```
+
+      `tail` is null if the queue had only one element.
     '';
     value = q:
       if q._variant == "Leaf"

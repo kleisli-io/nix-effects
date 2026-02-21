@@ -13,7 +13,9 @@ let
     doc = ''
       Append a value to the output log.
 
+      ```
       tell : w -> Computation null
+      ```
     '';
     value = w: send "tell" w;
     tests = {
@@ -32,7 +34,9 @@ let
     doc = ''
       Append a list of values to the output log.
 
+      ```
       tellAll : [w] -> Computation null
+      ```
     '';
     value = ws: send "tellAll" ws;
     tests = {
@@ -46,9 +50,11 @@ let
   handler = mk {
     doc = ''
       Standard writer handler. Collects tell output in state as a list.
-      Initial state: []
+      Initial state: `[]`
 
-        handle { handlers = writer.handler; state = []; } comp
+      ```nix
+      handle { handlers = writer.handler; state = []; } comp
+      ```
     '';
     value = {
       tell = { param, state }: { resume = null; state = state ++ [ param ]; };

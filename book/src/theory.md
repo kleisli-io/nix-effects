@@ -202,3 +202,14 @@ system.
 9. Orchard, D., Liepelt, V., & Eades, H. (2019). *Quantitative Program
    Reasoning with Graded Modal Types*. ICFP 2019.
    [[doi](https://doi.org/10.1145/3341714)]
+
+## Prior art
+
+- Borja, V. (2026). *nfx: Nix Algebraic Effects System with Handlers*.
+  [[github](https://github.com/vic/nfx)] — Implements algebraic effects
+  in pure Nix using a context-passing model with `immediate`/`pending`
+  constructors. nix-effects adopted nfx's `adapt` handler combinator,
+  `mk { doc, value, tests }` API pattern, and effect module vocabulary
+  (`state`, `acc`, `conditions`, `choice`, streams), while building a
+  new core on the freer monad encoding from Kiselyov & Ishii (2015)
+  and adding value-dependent contracts that nfx does not attempt.

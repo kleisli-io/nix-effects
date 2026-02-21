@@ -16,7 +16,10 @@ let
   refined = mk {
     doc = ''
       Create a named refinement type.
+
+      ```
       refined : string -> Type -> (value -> bool) -> Type
+      ```
     '';
     value = name: base: predicate: mkType {
       inherit name;

@@ -38,10 +38,10 @@ let
   collecting = mk {
     doc = ''
       Collecting typeCheck handler: accumulates errors in state.
-      Resumes with true on success, false on failure (computation continues).
+      Resumes with `true` on success, `false` on failure (computation continues).
 
-      State shape: list of { context, typeName, actual, message }
-      Initial state: []
+      State shape: list of `{ context, typeName, actual, message }`
+      Initial state: `[]`
     '';
     value = {
       typeCheck = { param, state }:
@@ -82,8 +82,8 @@ let
       Logging typeCheck handler: records every check (pass or fail) in state.
       Always resumes with the actual check result (boolean).
 
-      State shape: list of { context, typeName, passed }
-      Initial state: []
+      State shape: list of `{ context, typeName, passed }`
+      Initial state: `[]`
     '';
     value = {
       typeCheck = { param, state }:

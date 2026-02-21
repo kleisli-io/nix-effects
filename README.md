@@ -420,6 +420,16 @@ Key papers that shaped the design:
   (Level 1), type checking as effects (Level 2), error policy as handlers
   (Level 3).
 
+## Acknowledgments
+
+[nfx](https://github.com/vic/nfx) by Victor Borja (Apache-2.0) shaped the
+API design of this project. The `adapt` handler combinator, the
+`mk { doc, value, tests }` structured module pattern, and the effect module
+vocabulary (`state`, `acc`, `conditions`, `choice`, streams) all come from
+nfx. nix-effects builds a different core on freer monads with FTCQueue
+(Kiselyov & Ishii 2015) and adds a value-dependent contract system that
+nfx does not attempt, but the overall API owes a clear debt to that project.
+
 ## License
 
 [MIT](LICENSE)

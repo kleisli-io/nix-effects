@@ -21,7 +21,9 @@ let
       Non-deterministic choice from a list of alternatives.
       The handler determines how alternatives are explored.
 
+      ```
       choose : [a] -> Computation a
+      ```
     '';
     value = alternatives: send "choose" alternatives;
     tests = {
@@ -39,9 +41,11 @@ let
   fail = mk {
     doc = ''
       Fail the current branch of non-deterministic computation.
-      Equivalent to choose [].
+      Equivalent to `choose []`.
 
+      ```
       fail : Computation a
+      ```
     '';
     value = send "choose" [];
     tests = {
@@ -60,7 +64,9 @@ let
     doc = ''
       Guard a condition: continue if true, fail if false.
 
+      ```
       guard : bool -> Computation null
+      ```
     '';
     value = cond: if cond then pure null else fail.value;
     tests = {
@@ -83,11 +89,13 @@ let
       Handler that explores all non-deterministic branches and returns
       a list of all results. Empty choices abort that branch.
 
-      State is { results : [a], pending : [Computation a] }.
-      After handling, results are in state.results.
+      State is `{ results : [a], pending : [Computation a] }`.
+      After handling, results are in `state.results`.
 
-        let r = handle { handlers = choice.listAll; state = choice.initialState; } comp;
-        in r.state.results
+      ```nix
+      let r = handle { handlers = choice.listAll; state = choice.initialState; } comp;
+      in r.state.results
+      ```
     '';
     value = {
       choose = { param, state }:

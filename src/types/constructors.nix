@@ -67,10 +67,10 @@ let
 
   ListOf = mk {
     doc = ''
-      Homogeneous list type. ListOf Type checks that all elements have the given type.
+      Homogeneous list type. `ListOf Type` checks that all elements have the given type.
 
-      Custom verifier sends per-element typeCheck effects with indexed context
-      strings (e.g. "List[Int][2]") for blame tracking. Unlike Sigma, elements
+      Custom verifier sends per-element `typeCheck` effects with indexed context
+      strings (e.g. `List[Int][2]`) for blame tracking. Unlike Sigma, elements
       are independent — no short-circuit. All elements are checked; the handler
       decides error policy (strict aborts on first, collecting gathers all).
     '';
@@ -151,8 +151,8 @@ let
 
   Either = mk {
     doc = ''
-      Tagged union of two types. Accepts { _tag = "Left"; value = a; }
-      or { _tag = "Right"; value = b; }.
+      Tagged union of two types. Accepts `{ _tag = "Left"; value = a; }`
+      or `{ _tag = "Right"; value = b; }`.
     '';
     value = leftType: rightType: mkType {
       name = "Either[${leftType.name}, ${rightType.name}]";
@@ -195,8 +195,8 @@ let
 
   Variant = mk {
     doc = ''
-      Discriminated union. Takes { tag = Type; ... } schema.
-      Accepts { _tag = "tag"; value = ...; } where value has the corresponding type.
+      Discriminated union. Takes `{ tag = Type; ... }` schema.
+      Accepts `{ _tag = "tag"; value = ...; }` where value has the corresponding type.
     '';
     value = schema: mkType {
       name = "Variant{${builtins.concatStringsSep " | " (builtins.attrNames schema)}}";

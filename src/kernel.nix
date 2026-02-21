@@ -75,9 +75,12 @@ let
   bind = mk {
     doc = ''
       Monadic bind: sequence two computations.
+
+      ```
       bind comp f = case comp of
         Pure a       -> f a
         Impure e q   -> Impure e (snoc q f)
+      ```
 
       O(1) per bind via FTCQueue snoc (Kiselyov & Ishii 2015, Section 3.1).
     '';

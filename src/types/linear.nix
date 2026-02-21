@@ -70,22 +70,32 @@ let
     doc = ''
       Linear type: capability token that must be consumed exactly once.
 
+      ```
       Linear : Type -> Type
+      ```
 
-      Creates a type whose check verifies the capability token structure:
-        { _linear = true, id = Int, resource = innerType }
+      Creates a type whose `check` verifies the capability token structure:
+
+      ```nix
+      { _linear = true, id = Int, resource = innerType }
+      ```
 
       Pure structural guard — checking does not consume the token.
-      effects/linear.nix tracks consumption separately.
+      `effects/linear.nix` tracks consumption separately.
 
       Adequacy invariant:
-        Linear(T).check v ⟺ all typeCheck effects in Linear(T).validate v pass
-      Holds by construction via mkType's auto-derived validate.
+
+      ```
+      Linear(T).check v ⟺ all typeCheck effects in Linear(T).validate v pass
+      ```
+
+      Holds by construction via `mkType`'s auto-derived `validate`.
 
       Operations:
-        .check v    — pure guard: is v a valid linear token wrapping T?
-        .validate v — effectful: sends typeCheck for blame tracking
-        .innerType  — the wrapped type T
+
+      - `.check v` — pure guard: is v a valid linear token wrapping T?
+      - `.validate v` — effectful: sends `typeCheck` for blame tracking
+      - `.innerType` — the wrapped type T
     '';
     value = innerType: mkType {
       name = "Linear(${innerType.name})";
@@ -202,10 +212,12 @@ let
     doc = ''
       Affine type: capability token that may be consumed at most once.
 
+      ```
       Affine : Type -> Type
+      ```
 
-      Structurally identical to Linear(T). The name communicates that the
-      resource may be explicitly released (dropped) via effects/linear.release
+      Structurally identical to `Linear(T)`. The name communicates that the
+      resource may be explicitly released (dropped) via `effects/linear.release`
       without consuming it — "at most once" vs Linear's "exactly once."
 
       The structural guard is the same: both check for a valid capability
@@ -213,9 +225,10 @@ let
       at-most-once) is enforced by the effect handler, not the type system.
 
       Operations:
-        .check v    — pure guard: is v a valid affine token wrapping T?
-        .validate v — effectful: sends typeCheck for blame tracking
-        .innerType  — the wrapped type T
+
+      - `.check v` — pure guard: is v a valid affine token wrapping T?
+      - `.validate v` — effectful: sends `typeCheck` for blame tracking
+      - `.innerType` — the wrapped type T
     '';
     value = innerType: mkType {
       name = "Affine(${innerType.name})";
@@ -263,30 +276,36 @@ let
     doc = ''
       Graded type: capability token with usage multiplicity annotation.
 
+      ```
       Graded : { maxUses : Int | null, innerType : Type } -> Type
+      ```
 
-      Generalizes Linear and Affine via a maxUses parameter:
-        Graded { maxUses = 1; innerType = T; }    ≡ Linear(T)
-        Graded { maxUses = null; innerType = T; }  ≡ Unlimited(T)
-        Graded { maxUses = n; innerType = T; }     ≡ Exact(n, T)
+      Generalizes Linear and Affine via a `maxUses` parameter:
+
+      ```nix
+      Graded { maxUses = 1; innerType = T; }    # ≡ Linear(T)
+      Graded { maxUses = null; innerType = T; }  # ≡ Unlimited(T)
+      Graded { maxUses = n; innerType = T; }     # ≡ Exact(n, T)
+      ```
 
       The structural guard is the same as Linear and Affine — token
-      structure with inner type check. The maxUses appears in the type
+      structure with inner type check. The `maxUses` appears in the type
       name for documentation but is NOT checked by the guard (the grade
       lives in handler state, not the token).
 
       The name uses ω for null (unlimited):
-        Graded(1, Int), Graded(5, String), Graded(ω, Bool)
+      `Graded(1, Int)`, `Graded(5, String)`, `Graded(ω, Bool)`
 
       From Orchard et al. (2019) "Quantitative Program Reasoning with
       Graded Modal Types" — semiring-indexed usage annotations where
       + models branching, × models sequencing, 1 = linear, ω = unlimited.
 
       Operations:
-        .check v    — pure guard: is v a valid graded token wrapping T?
-        .validate v — effectful: sends typeCheck for blame tracking
-        .innerType  — the wrapped type T
-        .maxUses    — the declared usage multiplicity
+
+      - `.check v` — pure guard: is v a valid graded token wrapping T?
+      - `.validate v` — effectful: sends `typeCheck` for blame tracking
+      - `.innerType` — the wrapped type T
+      - `.maxUses` — the declared usage multiplicity
     '';
     value = { maxUses, innerType }:
       let

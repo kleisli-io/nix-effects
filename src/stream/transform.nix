@@ -13,7 +13,9 @@ let
     doc = ''
       Map a function over each element of a stream.
 
+      ```
       smap : (a -> b) -> Computation (Step r a) -> Computation (Step r b)
+      ```
     '';
     value = f: stream:
       bind stream (step:
@@ -32,7 +34,9 @@ let
     doc = ''
       Keep only elements satisfying a predicate.
 
+      ```
       sfilter : (a -> bool) -> Computation (Step r a) -> Computation (Step r a)
+      ```
     '';
     value = pred: stream:
       bind stream (step:
@@ -53,7 +57,9 @@ let
     doc = ''
       Accumulate a running fold over the stream, yielding each intermediate value.
 
+      ```
       scanl : (b -> a -> b) -> b -> Computation (Step r a) -> Computation (Step r b)
+      ```
     '';
     value = f: z: stream:
       bind stream (step:

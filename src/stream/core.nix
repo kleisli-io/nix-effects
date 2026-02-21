@@ -18,7 +18,9 @@ let
     doc = ''
       Terminate a stream with a final value.
 
+      ```
       done : a -> Computation (Step a b)
+      ```
     '';
     value = v: pure { _tag = "Done"; value = v; };
     tests = {
@@ -37,7 +39,9 @@ let
     doc = ''
       Yield an element and a continuation stream.
 
+      ```
       more : a -> Computation (Step r a) -> Computation (Step r a)
+      ```
     '';
     value = head: tail: pure { _tag = "More"; inherit head tail; };
     tests = {
@@ -56,7 +60,9 @@ let
     doc = ''
       Create a stream from a list.
 
+      ```
       fromList : [a] -> Computation (Step null a)
+      ```
     '';
     value = xs:
       if xs == [] then done.value null
@@ -76,11 +82,16 @@ let
   iterate = mk {
     doc = ''
       Create an infinite stream by repeated application.
+
+      ```
       iterate f x = [x, f(x), f(f(x)), ...]
+      ```
 
       Must be consumed with a limiting combinator (take, takeWhile).
 
+      ```
       iterate : (a -> a) -> a -> Computation (Step r a)
+      ```
     '';
     value = f: x: more.value x (iterate.value f (f x));
     tests = {
@@ -95,7 +106,9 @@ let
     doc = ''
       Create a stream of integers from start (inclusive) to end (exclusive).
 
+      ```
       range : int -> int -> Computation (Step null int)
+      ```
     '';
     value = start: end:
       if start >= end then done.value null
@@ -116,7 +129,9 @@ let
     doc = ''
       Create a stream of n copies of a value.
 
+      ```
       replicate : int -> a -> Computation (Step null a)
+      ```
     '';
     value = n: x:
       if n <= 0 then done.value null

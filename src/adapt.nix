@@ -1,7 +1,8 @@
 # nix-effects adapt: Handler context transformation
 #
-# From nfx (Victor Borja, 2026): a combinator for composing
-# handlers with different state shapes.
+# Adapted from nfx by Victor Borja (https://github.com/vic/nfx),
+# licensed under Apache-2.0. The adapt combinator for composing
+# handlers with different state shapes originates from that project.
 #
 #   adapt : { get : P -> S, set : P -> S -> P } -> Handler<S> -> Handler<P>
 #
@@ -19,17 +20,18 @@ let
     doc = ''
       Transform a handler's state context.
 
+      ```
+      adapt : { get : P -> S, set : P -> S -> P } -> Handler<S> -> Handler<P>
+      ```
+
       Wraps a handler that works with child state S so it works with
-      parent state P, using:
-        get : P -> S     (extract child state — contravariant)
-        set : P -> S -> P (update parent with new child state — covariant)
+      parent state P, using a get/set lens. Propagates both resume and abort.
 
-      Propagates both resume and abort through the lens.
-
-      Usage:
-        counterHandler = { param, state }: { resume = null; state = state + param; };
-        adapted = adapt { get = s: s.counter; set = s: c: s // { counter = c; }; } counterHandler;
-        # adapted now works with { counter = 0; logs = []; } state
+      ```nix
+      counterHandler = { param, state }: { resume = null; state = state + param; };
+      adapted = adapt { get = s: s.counter; set = s: c: s // { counter = c; }; } counterHandler;
+      # adapted now works with { counter = 0; logs = []; } state
+      ```
     '';
     value = { get, set }: handler: { param, state }:
       let
@@ -101,12 +103,13 @@ let
       Adapt an entire handler set (attrset of handlers) to a different state context.
       Applies the same get/set lens to every handler in the set.
 
-      Usage:
-        stateHandlers = {
-          get = { param, state }: { value = state; inherit state; };
-          put = { param, state }: { value = null; state = param; };
-        };
-        adapted = adaptHandlers { get = s: s.data; set = s: d: s // { data = d; }; } stateHandlers;
+      ```nix
+      stateHandlers = {
+        get = { param, state }: { value = state; inherit state; };
+        put = { param, state }: { value = null; state = param; };
+      };
+      adapted = adaptHandlers { get = s: s.data; set = s: d: s // { data = d; }; } stateHandlers;
+      ```
     '';
     value = lens: handlers:
       builtins.mapAttrs (_: handler: adapt.value lens handler) handlers;

@@ -12,7 +12,9 @@ let
     doc = ''
       Take the first n elements of a stream.
 
+      ```
       take : int -> Computation (Step r a) -> Computation (Step null a)
+      ```
     '';
     value = n: stream:
       if n <= 0 then core.done null
@@ -31,7 +33,9 @@ let
     doc = ''
       Take elements while a predicate holds.
 
+      ```
       takeWhile : (a -> bool) -> Computation (Step r a) -> Computation (Step null a)
+      ```
     '';
     value = pred: stream:
       bind stream (step:
@@ -52,7 +56,9 @@ let
     doc = ''
       Skip the first n elements of a stream.
 
+      ```
       drop : int -> Computation (Step r a) -> Computation (Step r a)
+      ```
     '';
     value = n: stream:
       if n <= 0 then stream

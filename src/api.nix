@@ -1,7 +1,8 @@
 # nix-effects API layer
 #
 # Provides mk/extractValue/extractTests for structured module definitions.
-# Following the nfx pattern: each function wrapped in mk { doc, value, tests }.
+# The mk { doc, value, tests } pattern is adapted from nfx by Victor Borja
+# (https://github.com/vic/nfx), licensed under Apache-2.0.
 { lib }:
 
 rec {

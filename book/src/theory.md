@@ -1,22 +1,21 @@
 # Theory
 
-nix-effects is grounded in several bodies of literature. This page explains
-how the main ones map to the implementation.
+Six papers shaped the design of nix-effects. Here's how each maps to code.
 
 ## Algebraic effects and the freer monad
 
-**Plotkin & Pretnar (2009)** *Handlers of Algebraic Effects* introduced the
-handler model: a computation is a tree of effects with continuations; a
-handler interprets each effect by either resuming the continuation with a
-value or aborting it.
+The basic idea: a computation is a tree of effects with continuations. A
+handler walks the tree, interpreting each effect by either resuming the
+continuation with a value or aborting it. This is the handler model from
+Plotkin & Pretnar (2009).
 
-nix-effects implements this directly. A computation is either:
+nix-effects implements it directly. A computation is either:
 
-- `Pure value` — a finished computation returning a value
-- `Impure effect continuation` — a suspended computation waiting for a
-  handler to service `effect` and feed a result to `continuation`
+- `Pure value` — finished, returning a value
+- `Impure effect continuation` — suspended, waiting for a handler to
+  service `effect` and feed the result to `continuation`
 
-The `send` function creates an `Impure` node:
+`send` creates an `Impure` node:
 
 ```nix
 send "get" null
@@ -39,31 +38,31 @@ handlers = {
 };
 ```
 
-`resume` invokes the continuation; `abort` discards it and halts.
+`resume` feeds a value to the continuation; `abort` discards it and halts.
 
 ## FTCQueue: O(1) bind
 
-**Kiselyov & Ishii (2015)** *Freer Monads, More Extensible Effects* solved
-the left-nested bind problem. Naïve free monads have O(n²) bind chains:
+Naïve free monads have O(n²) bind chains. The problem is reassociation:
 
 ```
 (m >>= f) >>= g  ≡  m >>= (f >=> g)
 ```
 
-Each reassociation traverses the whole tree. Their insight: store
-continuations in a catenable queue (FTCQueue).
-`snoc` (append to queue) is O(1). Queue application (`qApp`) amortizes the
-reassociation across traversal.
+Each reassociation traverses the whole tree. Kiselyov & Ishii (2015)
+solved this by storing continuations in a catenable queue (FTCQueue)
+instead of a list. `snoc` is O(1); queue application (`qApp`) amortizes
+the reassociation across traversal.
 
-The result: O(n) total time for n bind operations, regardless of nesting
-depth. This is essential for making effectful validation practical —
-a `DepRecord` with 100 fields sends 100 effects, each of which binds.
+The result: O(n) total for n bind operations, regardless of nesting depth.
+This matters because a `DepRecord` with 100 fields sends 100 effects, each
+of which binds. Without the queue, validation time would be quadratic in
+the number of fields.
 
-## Martin-Löf Type Theory: value-dependent contracts
+## Value-dependent contracts
 
-**Martin-Löf (1984)** *Intuitionistic Type Theory* introduced dependent types:
-types that depend on values. nix-effects implements the structure of two
-key forms as runtime contracts:
+Types that depend on values come from Martin-Löf (1984). We implement the
+structure of two key forms as runtime contracts — not as a static type
+system, which is an important distinction.
 
 **Sigma (Σ)** — dependent pair. The second type is a function of the
 first value:
@@ -78,24 +77,22 @@ In nix-effects:
 Sigma { fst = Bool; snd = b: if b then ListOf FIPSCipher else ListOf String; }
 ```
 
-`Sigma.validate` decomposes the check: first validate `fst`, then — only
-if `fst` passes — evaluate `snd fst-value` and validate it. Dependent
+`Sigma.validate` decomposes the check: validate `fst` first, then — only
+if it passes — evaluate `snd fst-value` and validate that. Dependent
 expressions are never evaluated on wrong-typed inputs.
 
-**Pi (Π)** — dependent function type. The return type is a function of the
+**Pi (Π)** — dependent function type. The return type depends on the
 argument:
 
 ```nix
 Pi { domain = String; codomain = _: Int; }
 ```
 
-The guard checks `isFunction`; full contract is verified at elimination
-via `.checkAt arg result`.
+The guard checks `isFunction`. Full contract verification happens at
+elimination via `.checkAt arg result`.
 
-**Universe hierarchy** guards against Russell's paradox. Universe levels
-are advisory -- the `universe` field is a trusted declaration, not a
-computed invariant. Types themselves have
-types (universes), stratified to `Type_0` through `Type_4`:
+**Universe hierarchy.** Types themselves have types, stratified from
+`Type_0` through `Type_4` to guard against Russell's paradox:
 
 ```nix
 (typeAt 0).check Int  # true — Int lives at universe 0
@@ -103,12 +100,17 @@ level String           # 0
 (typeAt 1).check (typeAt 0)  # true — Type_0 lives at universe 1
 ```
 
+The `universe` field is a trusted declaration, not a computed invariant.
+We can't actually compute `sup_{a:A} level(B(a))` without evaluating the
+type family on all domain values, which is undecidable. So the hierarchy
+prevents accidental paradoxes, not adversarial ones.
+
 ## Refinement types
 
-Refinement types — a base type narrowed by a predicate — trace to
-Freeman & Pfenning (1991). Rondon et al. (2008) extended the concept with
-SMT-based inference (*Liquid Types*). nix-effects implements runtime
-predicate checking via `refined`:
+A refinement type narrows a base type with a predicate. The idea goes back
+to Freeman & Pfenning (1991); Rondon et al. (2008) later extended it with
+SMT-based inference under the name *Liquid Types*. We use runtime predicate
+checking — no solver, just `refined`:
 
 ```nix
 Port     = refined "Port"     Int (x: x >= 1 && x <= 65535);
@@ -116,8 +118,8 @@ NonEmpty = refined "NonEmpty" String (s: builtins.stringLength s > 0);
 Nat      = refined "Nat"      Int (x: x >= 0);
 ```
 
-The guard composes: `Port.check` first checks `Int`, then checks the
-predicate. Combined predicates:
+The guard composes: `Port.check` first checks `Int`, then the predicate.
+Combinators for building compound predicates:
 
 ```nix
 allOf [ pred1 pred2 ]  # conjunction
@@ -125,45 +127,51 @@ anyOf [ pred1 pred2 ]  # disjunction
 negate pred            # negation
 ```
 
-## The Fire Triangle (Pédrot & Tabareau 2020)
+## Why types, effects, and dependent elimination don't mix freely
 
-**Pédrot & Tabareau (2020)** *The Fire Triangle: How to Mix Substitution,
-Dependent Elimination, and Effects* proves that substitution, dependent
-elimination, and effects cannot all be unrestricted simultaneously. This
-no-go result inspired nix-effects' three-level separation:
+Pédrot & Tabareau (2020) proved a no-go theorem: you can't have
+substitution, dependent elimination, and effects all unrestricted at once.
+Something has to give.
+
+This is why nix-effects separates concerns into three levels:
 
 - **Level 1**: Types as pure values (the `mkType` attrset)
 - **Level 2**: Type checking as effectful computation (`validate` sends
   `typeCheck` effects through the freer monad)
-- **Level 3**: Error policy as handler (strict, collecting, logging)
+- **Level 3**: Error policy lives in the handler (strict, collecting, logging)
 
-This separation allows the same `ServiceConfig.validate config` computation
-to be run with different handlers for different error semantics, without
-modifying the type definition.
+The payoff: the same `ServiceConfig.validate config` computation runs
+unchanged under different handlers for different error semantics. We don't
+have to modify the type definition to switch from fail-fast to
+collect-all-errors. The separation isn't just aesthetic — the math says
+you need it.
 
-## Graded linear types (Orchard et al. 2019)
+## Graded linear types
 
-**Orchard, Liepelt & Eades (2019)** *Quantitative Program Reasoning with
-Graded Modal Types* introduces a type system where each variable carries a
-usage grade from a resource semiring. nix-effects implements this as `Linear`
-(exactly one use), `Affine` (at most one), and `Graded` (exactly n uses).
+Resource tracking follows Orchard, Liepelt & Eades (2019), who introduced
+a type system where each variable carries a usage grade from a resource
+semiring. We implement three points on that spectrum: `Linear` (exactly one
+use), `Affine` (at most one), and `Graded` (exactly n uses).
 
-The handler maintains a resource map counting each `consume` call against
-a `maxUses` bound. At handler exit, a finalizer checks that each resource
-was consumed the expected number of times — the grade discipline is enforced
-at runtime via the effect system rather than statically.
+In practice, the handler maintains a resource map counting each `consume`
+call against a `maxUses` bound. At handler exit, a finalizer checks that
+every resource was consumed the expected number of times. The grade
+discipline is enforced at runtime through the effect system, not statically.
+You get the usage-tracking semantics without a custom type checker — at the
+cost of finding violations at eval time rather than before it.
 
 ## Adequacy
 
-The adequacy invariant ties the pure guard to the effectful verifier:
+The adequacy invariant connects the pure guard to the effectful verifier:
 
 ```
 T.check v  ⟺  all typeCheck effects in T.validate v pass
 ```
 
-Tested via the all-pass handler: the final state is `true` iff all
-`typeCheck` effects resumed with `true`. This invariant is checked for
-every type constructor in the test suite.
+We test this via the all-pass handler: the final state is `true` iff every
+`typeCheck` effect resumed with `true`. The test suite checks this invariant
+for every type constructor. It's the main correctness property of the whole
+system.
 
 ## References
 

@@ -1,8 +1,8 @@
 # Trampoline
 
-The trampoline is the core innovation of nix-effects: a way to interpret
-freer monad computations with O(1) stack depth in a language with no
-iteration primitives and no tail-call optimization.
+The trampoline is how nix-effects interprets freer monad computations
+with O(1) stack depth in a language with no iteration primitives and no
+tail-call optimization.
 
 ## The problem
 
@@ -94,16 +94,6 @@ Accumulations, and Associativity* shows the hidden precondition: this transforma
 when the accumulated operation is associative. For nix-effects, the
 handler state transformations compose associatively because function
 composition is associative.
-
-## Summary
-
-| Concern | Solution |
-|---------|---------|
-| No tail calls | `builtins.genericClosure` as trampoline |
-| Stack depth | O(1) — `genericClosure` iterates, `operator` is shallow |
-| Thunk chains | `builtins.deepSeq` in `key` forces state eagerly |
-| O(1) bind | FTCQueue snoc instead of list append |
-| Scale | 100,000 ops in test suite; 1,000,000 ops confirmed manually |
 
 ## References
 

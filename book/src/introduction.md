@@ -3,8 +3,8 @@
 Algebraic effects, value-dependent contracts, and refinement types in pure Nix.
 
 nix-effects catches configuration errors at `nix eval` time — before
-builds start, before deployments ship. Define types for your configs,
-and the library tells you exactly what broke and where.
+anything builds or ships. You write typed contracts for your configs
+and get precise blame when something violates them.
 
 ```
 $ nix build .#buggyService
@@ -12,9 +12,9 @@ error: Type errors in ServiceConfig:
   - List[FIPSCipher][3]: "3DES" is not a valid FIPSCipher
 ```
 
-The 3DES cipher violates FIPS compliance. The type system caught it at index 3
-of the cipher list, named the expected type, and showed the rejected value.
-No evaluator patches, no external tools — pure Nix.
+That error is specific: element 3 of the cipher list is `"3DES"`, which
+isn't a valid `FIPSCipher`. Index, type name, rejected value — no chasing
+through a stack trace. No evaluator patches, no external tools. Pure Nix.
 
 ## The demo
 

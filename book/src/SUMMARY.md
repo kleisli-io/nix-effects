@@ -4,6 +4,8 @@
 - [Getting Started](getting-started.md)
 - [Theory](theory.md)
 - [Trampoline](trampoline.md)
+- [Vision: Kernel-First Types](vision.md)
+- [Kernel Formal Specification](kernel-spec.md)
 
 ---
 

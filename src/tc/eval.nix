@@ -1,0 +1,415 @@
+# Type-checking kernel: Evaluator (eval)
+#
+# eval : Env -> Tm -> Val
+# Interprets a term in an environment of values, producing a value.
+# Pure function — zero effect system imports.
+#
+# Trampolines vNatElim and vListElim via builtins.genericClosure
+# to guarantee O(1) stack depth on large inductive values.
+#
+# Fuel mechanism (§9): each eval call decrements fuel. Throws
+# "normalization budget exceeded" on exhaustion. Default 10M.
+#
+# Spec reference: kernel-spec.md §4, §9
+{ fx, api, ... }:
+
+let
+  inherit (api) mk;
+  val = fx.tc.value;
+  inherit (val) mkClosure freshVar
+    vLam vPi vSigma vPair vNat vZero vSucc
+    vBool vTrue vFalse vList vNil vCons
+    vUnit vTt vVoid vSum vInl vInr vEq vRefl vU vNe
+    eApp eFst eSnd eNatElim eBoolElim eListElim eAbsurd eSumElim eJ;
+
+  defaultFuel = 10000000;
+
+  # -- Fuel-threaded internals --
+
+  instantiateF = fuel: cl: arg: evalF fuel ([ arg ] ++ cl.env) cl.body;
+
+  vAppF = fuel: fn: arg:
+    if fn.tag == "VLam" then instantiateF fuel fn.closure arg
+    else if fn.tag == "VNe" then vNe fn.level (fn.spine ++ [ (eApp arg) ])
+    else throw "tc: vApp on non-function (tag=${fn.tag})";
+
+  vFst = p:
+    if p.tag == "VPair" then p.fst
+    else if p.tag == "VNe" then vNe p.level (p.spine ++ [ eFst ])
+    else throw "tc: vFst on non-pair (tag=${p.tag})";
+
+  vSnd = p:
+    if p.tag == "VPair" then p.snd
+    else if p.tag == "VNe" then vNe p.level (p.spine ++ [ eSnd ])
+    else throw "tc: vSnd on non-pair (tag=${p.tag})";
+
+  # vNatElim — trampolined via genericClosure for large naturals.
+  vNatElimF = fuel: motive: base: step: scrut:
+    if scrut.tag == "VZero" then base
+    else if scrut.tag == "VNe" then
+      vNe scrut.level (scrut.spine ++ [ (eNatElim motive base step) ])
+    else if scrut.tag == "VSucc" then
+      let
+        chain = builtins.genericClosure {
+          startSet = [{ key = 0; val = scrut; }];
+          operator = item:
+            if item.val.tag == "VSucc"
+            then [{ key = item.key + 1; val = item.val.pred; }]
+            else [];
+        };
+        last = builtins.elemAt chain (builtins.length chain - 1);
+        baseResult = vNatElimF fuel motive base step last.val;
+        n = builtins.length chain - 1;
+        result = builtins.foldl' (acc: i:
+          let
+            item = builtins.elemAt chain (n - i);
+            predVal = item.val.pred;
+          in vAppF fuel (vAppF fuel step predVal) acc
+        ) baseResult (builtins.genList (i: i + 1) n);
+      in result
+    else throw "tc: vNatElim on non-nat (tag=${scrut.tag})";
+
+  vBoolElim = motive: onTrue: onFalse: scrut:
+    if scrut.tag == "VTrue" then onTrue
+    else if scrut.tag == "VFalse" then onFalse
+    else if scrut.tag == "VNe" then
+      vNe scrut.level (scrut.spine ++ [ (eBoolElim motive onTrue onFalse) ])
+    else throw "tc: vBoolElim on non-bool (tag=${scrut.tag})";
+
+  # vListElim — trampolined like vNatElim for large lists.
+  vListElimF = fuel: elemTy: motive: onNil: onCons: scrut:
+    if scrut.tag == "VNil" then onNil
+    else if scrut.tag == "VNe" then
+      vNe scrut.level (scrut.spine ++ [ (eListElim elemTy motive onNil onCons) ])
+    else if scrut.tag == "VCons" then
+      let
+        chain = builtins.genericClosure {
+          startSet = [{ key = 0; val = scrut; }];
+          operator = item:
+            if item.val.tag == "VCons"
+            then [{ key = item.key + 1; val = item.val.tail; }]
+            else [];
+        };
+        last = builtins.elemAt chain (builtins.length chain - 1);
+        baseResult = vListElimF fuel elemTy motive onNil onCons last.val;
+        n = builtins.length chain - 1;
+        result = builtins.foldl' (acc: i:
+          let
+            item = builtins.elemAt chain (n - i);
+            h = item.val.head;
+            t = item.val.tail;
+          in vAppF fuel (vAppF fuel (vAppF fuel onCons h) t) acc
+        ) baseResult (builtins.genList (i: i + 1) n);
+      in result
+    else throw "tc: vListElim on non-list (tag=${scrut.tag})";
+
+  vAbsurd = type: scrut:
+    if scrut.tag == "VNe" then
+      vNe scrut.level (scrut.spine ++ [ (eAbsurd type) ])
+    else throw "tc: vAbsurd on non-neutral (tag=${scrut.tag})";
+
+  vSumElimF = fuel: left: right: motive: onLeft: onRight: scrut:
+    if scrut.tag == "VInl" then vAppF fuel onLeft scrut.val
+    else if scrut.tag == "VInr" then vAppF fuel onRight scrut.val
+    else if scrut.tag == "VNe" then
+      vNe scrut.level (scrut.spine ++ [ (eSumElim left right motive onLeft onRight) ])
+    else throw "tc: vSumElim on non-sum (tag=${scrut.tag})";
+
+  vJ = type: lhs: motive: base: rhs: eq:
+    if eq.tag == "VRefl" then base
+    else if eq.tag == "VNe" then
+      vNe eq.level (eq.spine ++ [ (eJ type lhs motive base rhs) ])
+    else throw "tc: vJ on non-eq (tag=${eq.tag})";
+
+  # -- Main evaluator with fuel (§9) --
+  evalF = fuel: env: tm:
+    if fuel <= 0 then throw "normalization budget exceeded"
+    else let t = tm.tag; f = fuel - 1; ev = evalF f env; in
+    # Variables and binding
+    if t == "var" then builtins.elemAt env tm.idx
+    else if t == "let" then evalF f ([ (ev tm.val) ] ++ env) tm.body
+    else if t == "ann" then ev tm.term
+
+    # Functions
+    else if t == "pi" then vPi tm.name (ev tm.domain) (mkClosure env tm.codomain)
+    else if t == "lam" then vLam tm.name (ev tm.domain) (mkClosure env tm.body)
+    else if t == "app" then vAppF f (ev tm.fn) (ev tm.arg)
+
+    # Pairs
+    else if t == "sigma" then vSigma tm.name (ev tm.fst) (mkClosure env tm.snd)
+    else if t == "pair" then vPair (ev tm.fst) (ev tm.snd)
+    else if t == "fst" then vFst (ev tm.pair)
+    else if t == "snd" then vSnd (ev tm.pair)
+
+    # Natural numbers
+    else if t == "nat" then vNat
+    else if t == "zero" then vZero
+    else if t == "succ" then vSucc (ev tm.pred)
+    else if t == "nat-elim" then
+      vNatElimF f (ev tm.motive) (ev tm.base) (ev tm.step) (ev tm.scrut)
+
+    # Booleans
+    else if t == "bool" then vBool
+    else if t == "true" then vTrue
+    else if t == "false" then vFalse
+    else if t == "bool-elim" then
+      vBoolElim (ev tm.motive) (ev tm.onTrue) (ev tm.onFalse) (ev tm.scrut)
+
+    # Lists
+    else if t == "list" then vList (ev tm.elem)
+    else if t == "nil" then vNil (ev tm.elem)
+    else if t == "cons" then vCons (ev tm.elem) (ev tm.head) (ev tm.tail)
+    else if t == "list-elim" then
+      vListElimF f (ev tm.elem) (ev tm.motive) (ev tm.nil) (ev tm.cons) (ev tm.scrut)
+
+    # Unit
+    else if t == "unit" then vUnit
+    else if t == "tt" then vTt
+
+    # Void
+    else if t == "void" then vVoid
+    else if t == "absurd" then vAbsurd (ev tm.type) (ev tm.term)
+
+    # Sum
+    else if t == "sum" then vSum (ev tm.left) (ev tm.right)
+    else if t == "inl" then vInl (ev tm.left) (ev tm.right) (ev tm.term)
+    else if t == "inr" then vInr (ev tm.left) (ev tm.right) (ev tm.term)
+    else if t == "sum-elim" then
+      vSumElimF f (ev tm.left) (ev tm.right) (ev tm.motive)
+        (ev tm.onLeft) (ev tm.onRight) (ev tm.scrut)
+
+    # Identity
+    else if t == "eq" then vEq (ev tm.type) (ev tm.lhs) (ev tm.rhs)
+    else if t == "refl" then vRefl
+    else if t == "j" then
+      vJ (ev tm.type) (ev tm.lhs) (ev tm.motive)
+        (ev tm.base) (ev tm.rhs) (ev tm.eq)
+
+    # Universes
+    else if t == "U" then vU tm.level
+
+    else throw "tc: eval unknown tag '${t}'";
+
+  # -- Public API (default fuel) --
+  eval = evalF defaultFuel;
+  instantiate = instantiateF defaultFuel;
+  vApp = vAppF defaultFuel;
+  vNatElim = vNatElimF defaultFuel;
+  vListElim = vListElimF defaultFuel;
+  vSumElim = vSumElimF defaultFuel;
+
+in mk {
+  doc = ''
+    Evaluator for the type-checking kernel. eval : Env -> Tm -> Val.
+    Pure function with trampolined NatElim/ListElim and fuel mechanism (§9).
+    evalF : Fuel -> Env -> Tm -> Val for custom fuel budgets.
+  '';
+  value = {
+    inherit eval evalF instantiate;
+    inherit vApp vFst vSnd vNatElim vBoolElim vListElim vAbsurd vSumElim vJ;
+  };
+  tests = let
+    T = fx.tc.term;
+
+    # Helper: build S^n(0) as a term
+    succN = n: if n == 0 then T.mkZero else T.mkSucc (succN (n - 1));
+
+    # Identity function: λ(x:Nat). x
+    idTm = T.mkLam "x" T.mkNat (T.mkVar 0);
+
+    # Application: (λx.x) 0
+    appIdZero = T.mkApp idTm T.mkZero;
+  in {
+    # -- Variable lookup --
+    "eval-var-0" = { expr = (eval [ vZero vTrue ] (T.mkVar 0)).tag; expected = "VZero"; };
+    "eval-var-1" = { expr = (eval [ vZero vTrue ] (T.mkVar 1)).tag; expected = "VTrue"; };
+
+    # -- Let binding --
+    "eval-let" = {
+      expr = (eval [] (T.mkLet "x" T.mkNat T.mkZero (T.mkVar 0))).tag;
+      expected = "VZero";
+    };
+
+    # -- Annotation erasure --
+    "eval-ann" = {
+      expr = (eval [] (T.mkAnn T.mkZero T.mkNat)).tag;
+      expected = "VZero";
+    };
+
+    # -- Functions --
+    "eval-lam" = { expr = (eval [] idTm).tag; expected = "VLam"; };
+    "eval-pi" = { expr = (eval [] (T.mkPi "x" T.mkNat T.mkNat)).tag; expected = "VPi"; };
+    "eval-app-beta" = {
+      # (λx.x) 0 = 0
+      expr = (eval [] appIdZero).tag;
+      expected = "VZero";
+    };
+    "eval-app-stuck" = {
+      # x 0 where x is a neutral at level 0
+      expr = (eval [ (freshVar 0) ] (T.mkApp (T.mkVar 0) T.mkZero)).tag;
+      expected = "VNe";
+    };
+
+    # -- Pairs --
+    "eval-sigma" = { expr = (eval [] (T.mkSigma "x" T.mkNat T.mkBool)).tag; expected = "VSigma"; };
+    "eval-pair" = { expr = (eval [] (T.mkPair T.mkZero T.mkTrue T.mkNat)).tag; expected = "VPair"; };
+    "eval-fst" = {
+      expr = (eval [] (T.mkFst (T.mkPair T.mkZero T.mkTrue T.mkNat))).tag;
+      expected = "VZero";
+    };
+    "eval-snd" = {
+      expr = (eval [] (T.mkSnd (T.mkPair T.mkZero T.mkTrue T.mkNat))).tag;
+      expected = "VTrue";
+    };
+    "eval-fst-stuck" = {
+      expr = (eval [ (freshVar 0) ] (T.mkFst (T.mkVar 0))).tag;
+      expected = "VNe";
+    };
+
+    # -- Natural numbers --
+    "eval-nat" = { expr = (eval [] T.mkNat).tag; expected = "VNat"; };
+    "eval-zero" = { expr = (eval [] T.mkZero).tag; expected = "VZero"; };
+    "eval-succ" = { expr = (eval [] (T.mkSucc T.mkZero)).tag; expected = "VSucc"; };
+    "eval-succ-3" = {
+      expr = (eval [] (succN 3)).pred.pred.pred.tag;
+      expected = "VZero";
+    };
+
+    # NatElim: base case
+    "eval-nat-elim-zero" = {
+      expr = (eval [ vNat vZero (freshVar 2) ]
+        (T.mkNatElim (T.mkVar 0) (T.mkVar 1) (T.mkVar 2) T.mkZero)).tag;
+      expected = "VZero";
+    };
+
+    # NatElim: step case S(0)
+    "eval-nat-elim-succ1" = {
+      expr =
+        let
+          stepTm = T.mkLam "k" T.mkNat (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0)));
+          r = eval [] (T.mkNatElim (T.mkLam "n" T.mkNat (T.mkU 0)) T.mkZero stepTm (T.mkSucc T.mkZero));
+        in r.tag;
+      expected = "VSucc";
+    };
+
+    # NatElim: stuck on neutral
+    "eval-nat-elim-stuck" = {
+      expr = (eval [ (freshVar 0) vNat vZero (freshVar 3) ]
+        (T.mkNatElim (T.mkVar 1) (T.mkVar 2) (T.mkVar 3) (T.mkVar 0))).tag;
+      expected = "VNe";
+    };
+
+    # -- Booleans --
+    "eval-bool" = { expr = (eval [] T.mkBool).tag; expected = "VBool"; };
+    "eval-true" = { expr = (eval [] T.mkTrue).tag; expected = "VTrue"; };
+    "eval-false" = { expr = (eval [] T.mkFalse).tag; expected = "VFalse"; };
+    "eval-bool-elim-true" = {
+      expr = (eval [] (T.mkBoolElim (T.mkLam "b" T.mkBool T.mkNat)
+        T.mkZero (T.mkSucc T.mkZero) T.mkTrue)).tag;
+      expected = "VZero";
+    };
+    "eval-bool-elim-false" = {
+      expr = (eval [] (T.mkBoolElim (T.mkLam "b" T.mkBool T.mkNat)
+        T.mkZero (T.mkSucc T.mkZero) T.mkFalse)).tag;
+      expected = "VSucc";
+    };
+
+    # -- Lists --
+    "eval-list" = { expr = (eval [] (T.mkList T.mkNat)).tag; expected = "VList"; };
+    "eval-nil" = { expr = (eval [] (T.mkNil T.mkNat)).tag; expected = "VNil"; };
+    "eval-cons" = { expr = (eval [] (T.mkCons T.mkNat T.mkZero (T.mkNil T.mkNat))).tag; expected = "VCons"; };
+    "eval-list-elim-nil" = {
+      expr = (eval [] (T.mkListElim T.mkNat
+        (T.mkLam "l" (T.mkList T.mkNat) T.mkNat)
+        T.mkZero
+        (T.mkLam "h" T.mkNat (T.mkLam "t" (T.mkList T.mkNat) (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0)))))
+        (T.mkNil T.mkNat))).tag;
+      expected = "VZero";
+    };
+
+    # -- Unit --
+    "eval-unit" = { expr = (eval [] T.mkUnit).tag; expected = "VUnit"; };
+    "eval-tt" = { expr = (eval [] T.mkTt).tag; expected = "VTt"; };
+
+    # -- Void --
+    "eval-void" = { expr = (eval [] T.mkVoid).tag; expected = "VVoid"; };
+    "eval-absurd-stuck" = {
+      expr = (eval [ (freshVar 0) ] (T.mkAbsurd T.mkNat (T.mkVar 0))).tag;
+      expected = "VNe";
+    };
+
+    # -- Sum --
+    "eval-sum" = { expr = (eval [] (T.mkSum T.mkNat T.mkBool)).tag; expected = "VSum"; };
+    "eval-inl" = { expr = (eval [] (T.mkInl T.mkNat T.mkBool T.mkZero)).tag; expected = "VInl"; };
+    "eval-inr" = { expr = (eval [] (T.mkInr T.mkNat T.mkBool T.mkTrue)).tag; expected = "VInr"; };
+    "eval-sum-elim-inl" = {
+      expr = (eval [] (T.mkSumElim T.mkNat T.mkBool
+        (T.mkLam "s" (T.mkSum T.mkNat T.mkBool) T.mkNat)
+        (T.mkLam "x" T.mkNat (T.mkVar 0))
+        (T.mkLam "y" T.mkBool T.mkZero)
+        (T.mkInl T.mkNat T.mkBool (T.mkSucc T.mkZero)))).tag;
+      expected = "VSucc";
+    };
+    "eval-sum-elim-inr" = {
+      expr = (eval [] (T.mkSumElim T.mkNat T.mkBool
+        (T.mkLam "s" (T.mkSum T.mkNat T.mkBool) T.mkNat)
+        (T.mkLam "x" T.mkNat (T.mkVar 0))
+        (T.mkLam "y" T.mkBool T.mkZero)
+        (T.mkInr T.mkNat T.mkBool T.mkTrue))).tag;
+      expected = "VZero";
+    };
+
+    # -- Identity --
+    "eval-eq" = { expr = (eval [] (T.mkEq T.mkNat T.mkZero T.mkZero)).tag; expected = "VEq"; };
+    "eval-refl" = { expr = (eval [] T.mkRefl).tag; expected = "VRefl"; };
+    "eval-j-refl" = {
+      # J(Nat, 0, P, base, 0, refl) = base
+      expr = (eval [ vNat vZero (freshVar 2) vZero vZero ]
+        (T.mkJ T.mkNat T.mkZero (T.mkVar 2) (T.mkVar 3) T.mkZero T.mkRefl)).tag;
+      expected = "VZero";
+    };
+    "eval-j-stuck" = {
+      expr = (eval [ (freshVar 0) ] (T.mkJ T.mkNat T.mkZero
+        (T.mkLam "y" T.mkNat (T.mkLam "e" (T.mkEq T.mkNat T.mkZero (T.mkVar 0)) (T.mkU 0)))
+        (T.mkU 0) T.mkZero (T.mkVar 0))).tag;
+      expected = "VNe";
+    };
+
+    # -- Universes --
+    "eval-U0" = { expr = (eval [] (T.mkU 0)).tag; expected = "VU"; };
+    "eval-U0-level" = { expr = (eval [] (T.mkU 0)).level; expected = 0; };
+    "eval-U1-level" = { expr = (eval [] (T.mkU 1)).level; expected = 1; };
+
+    # -- Closure instantiation --
+    "instantiate-identity" = {
+      expr = (instantiate (mkClosure [] (T.mkVar 0)) vZero).tag;
+      expected = "VZero";
+    };
+    "instantiate-const" = {
+      expr = (instantiate (mkClosure [ vTrue ] (T.mkVar 1)) vZero).tag;
+      expected = "VTrue";
+    };
+
+    # -- Fuel mechanism (§9) --
+    "fuel-exhaustion" = {
+      # Low fuel on a term requiring many eval steps → throws
+      expr = (builtins.tryEval (builtins.deepSeq
+        (evalF 10 [] (T.mkNatElim
+          (T.mkLam "n" T.mkNat T.mkNat)
+          T.mkZero
+          (T.mkLam "k" T.mkNat (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0))))
+          (succN 100)))
+        true)).success;
+      expected = false;
+    };
+    "fuel-sufficient" = {
+      # Default fuel handles moderate terms fine
+      expr = (eval [] (T.mkNatElim
+        (T.mkLam "n" T.mkNat T.mkNat)
+        T.mkZero
+        (T.mkLam "k" T.mkNat (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0))))
+        (succN 100))).tag;
+      expected = "VSucc";
+    };
+  };
+}

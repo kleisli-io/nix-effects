@@ -68,6 +68,8 @@ let
     getting-started = "Getting Started";
     theory = "Theory";
     trampoline = "Trampoline";
+    kernel-spec = "Kernel Specification";
+    vision = "Vision";
   };
 
   # Capitalise a module name for display: "state" -> "State", "acc" -> "Acc".
@@ -99,7 +101,7 @@ let
       # Core API modules — derived dynamically from extractDocs.
       # Everything at the top level that isn't a sub-namespace container
       # (effects, types, stream) and has documentation.
-      subNamespaces = [ "effects" "types" "stream" ];
+      subNamespaces = [ "effects" "types" "stream" "tc" ];
       coreModules = builtins.filter
         (name: !(builtins.elem name subNamespaces)
                && builtins.isAttrs docs.${name}
@@ -133,7 +135,14 @@ let
           path = pkgs.writeText "${name}.md" (renderApiPage (capitalise name) node);
         }) (lib.filterAttrs (k: v: builtins.isAttrs v && v ? doc) docs.stream));
 
-    in coreEntries ++ effectsEntries ++ typesEntries ++ streamEntries;
+      # Type checker modules
+      tcEntries = lib.optionals (docs ? tc)
+        (lib.mapAttrsToList (name: node: {
+          name = "nix-effects/type-checker/${name}.md";
+          path = pkgs.writeText "${name}.md" (renderApiPage (capitalise name) node);
+        }) (lib.filterAttrs (k: v: builtins.isAttrs v && v ? doc) docs.tc));
+
+    in coreEntries ++ effectsEntries ++ typesEntries ++ streamEntries ++ tcEntries;
 
   # project.json — standard contract for the doc service to auto-discover
   # this project. Section ordering, reference flags, and banner templates
@@ -157,6 +166,9 @@ let
       { slug = "streams"; title = "Streams"; order = 5;
         reference = true;
         banner = "Auto-generated API reference from nix-effects source."; }
+      { slug = "type-checker"; title = "Type Checker"; order = 6;
+        reference = true;
+        banner = "Auto-generated API reference from the MLTT type-checking kernel."; }
     ];
   };
 

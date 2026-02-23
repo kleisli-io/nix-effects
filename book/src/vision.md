@@ -1,14 +1,21 @@
 # Vision: A Kernel-First Type System in Pure Nix
 
-This document describes a concrete path to replacing nix-effects' current
-contract-based type system with one grounded in a small, trusted
-type-checking kernel — a Lean-light core running entirely at `nix eval`
-time, built on the effects infrastructure that already exists.
+This document describes the long-term vision for nix-effects' type
+system: grounding all types in a small, trusted type-checking kernel
+— a Lean-light core running entirely at `nix eval` time, built on
+the effects infrastructure that already exists.
 
-The goal: one notion of type, one checking mechanism, formally verified
-NixOS configurations. No adequacy gap between "contracts" and "proofs"
-because there is no separate contract system — types are kernel types,
-and decidable checking is a derived operation.
+**Current status.** The MLTT kernel is implemented (`src/tc/`) and
+integrated: types with `kernelType` get `.prove` and `.kernelCheck`.
+Contracts and kernel coexist — most types remain pure runtime
+contracts, while kernel-backed types (Bool, Nat, Unit, List, Sum,
+Sigma, Pi, typeAt) additionally support formal verification. See
+the "Implementation status" section at the end for details.
+
+The end-state goal: one notion of type, one checking mechanism,
+formally verified NixOS configurations. No adequacy gap between
+"contracts" and "proofs" because all types would be kernel types,
+with decidable checking as a derived operation.
 
 ## Where we are
 
@@ -104,45 +111,66 @@ type_a ≡ type_b         (definitional equality, via normalization)
 Terms are Nix attrsets. Each has a `tag` field for the constructor:
 
 ```nix
-# Core constructors
+# Core constructors (see kernel-spec.md §2 for the full grammar)
 { tag = "var"; idx = 0; }                     # de Bruijn index
-{ tag = "pi"; domain = ...; codomain = ...; } # dependent function type
-{ tag = "lam"; domain = ...; body = ...; }    # lambda abstraction
+{ tag = "pi"; name = "x"; domain = ...; codomain = ...; }  # Π type
+{ tag = "lam"; name = "x"; domain = ...; body = ...; }     # λ abstraction
 { tag = "app"; fn = ...; arg = ...; }         # application
-{ tag = "sigma"; fst = ...; snd = ...; }      # dependent pair type
-{ tag = "pair"; fst = ...; snd = ...; }       # pair introduction
+{ tag = "sigma"; name = "x"; fst = ...; snd = ...; }       # Σ type
+{ tag = "pair"; fst = ...; snd = ...; type = ...; }         # pair
 { tag = "fst"; pair = ...; }                  # first projection
 { tag = "snd"; pair = ...; }                  # second projection
-{ tag = "nat"; }                              # natural number type
-{ tag = "zero"; }                             # zero
-{ tag = "succ"; pred = ...; }                 # successor
-{ tag = "nat-elim"; motive = ...; base = ...; step = ...; scrut = ...; }
-{ tag = "eq"; type = ...; lhs = ...; rhs = ...; }   # identity type
+{ tag = "nat"; }                              # ℕ
+{ tag = "zero"; }                             # 0
+{ tag = "succ"; pred = ...; }                 # S(n)
+{ tag = "bool"; } { tag = "true"; } { tag = "false"; }    # 𝔹
+{ tag = "list"; elem = ...; }                 # List A
+{ tag = "nil"; elem = ...; } { tag = "cons"; elem = ...; head = ...; tail = ...; }
+{ tag = "unit"; } { tag = "tt"; }             # ⊤
+{ tag = "void"; } { tag = "absurd"; type = ...; term = ...; }  # ⊥
+{ tag = "sum"; left = ...; right = ...; }     # A + B
+{ tag = "inl"; left = ...; right = ...; term = ...; }
+{ tag = "inr"; left = ...; right = ...; term = ...; }
+{ tag = "eq"; type = ...; lhs = ...; rhs = ...; }   # Id type
 { tag = "refl"; }                                     # reflexivity
-{ tag = "j"; motive = ...; base = ...; proof = ...; } # J eliminator
-{ tag = "type"; level = 0; }                  # universe
+{ tag = "j"; type = ...; lhs = ...; motive = ...; base = ...; rhs = ...; eq = ...; }
+{ tag = "U"; level = 0; }                    # universe
+{ tag = "ann"; term = ...; type = ...; }     # annotation
+{ tag = "let"; name = "x"; type = ...; val = ...; body = ...; }  # let
+# Eliminators: nat-elim, bool-elim, list-elim, sum-elim
 ```
 
 We use de Bruijn indices internally. The surface language uses names
 (see "Making the syntax livable" below). A small elaborator translates
 named terms to de Bruijn core terms.
 
-### The three core operations
+### The core operations (Normalization by Evaluation)
 
-**Substitution.** Replace de Bruijn index `i` with a term, shifting
-indices to maintain binding structure. Standard, well-understood, roughly
-30 lines of Nix.
+The kernel uses **NbE** (Normalization by Evaluation) rather than
+explicit substitution. Terms (Tm) are interpreted into a semantic
+domain (Val) by `eval`, and read back to normal forms by `quote`.
+This avoids the quadratic cost of explicit substitution.
 
-**Normalization.** Reduce a term to weak head normal form. Beta reduction
-for lambda application. Iota reduction for nat-elim on zero/succ. This
-is where the trampoline earns its keep — normalization is the inner loop
-of type checking, and it can run long on complex proofs.
+**Evaluation** (`eval : Env × Tm → Val`). Interprets a term in an
+environment of values, performing beta and iota reductions eagerly.
+Closures `(env, body)` capture the environment, avoiding substitution.
+Trampolined via `genericClosure` for recursive eliminators (NatElim,
+ListElim) to guarantee O(1) stack depth.
 
-**Bidirectional type checking.** Inference mode synthesizes a type from
-a term; checking mode verifies a term against an expected type. Switching
-between modes happens at annotations and eliminators. The algorithm is
-standard (see Dunfield & Krishnaswami 2021). Definitional equality is
-checked by normalizing both sides and comparing structurally.
+**Quotation** (`quote : ℕ × Val → Tm`). Converts a value back to
+a term, translating de Bruijn levels to indices. Trampolined for
+deep VSucc/VCons chains.
+
+**Conversion** (`conv : ℕ × Val × Val → Bool`). Checks definitional
+equality of two values. Purely structural on normalized values — no
+type information used. No eta expansion. Trampolined for deep
+VSucc and VCons chains.
+
+**Bidirectional type checking** (`check`/`infer`). Inference mode
+synthesizes a type from a term; checking mode verifies a term against
+an expected type. Switching between modes happens at annotations and
+eliminators. The algorithm follows Dunfield & Krishnaswami (2021).
+Type errors are reported via effects; the handler determines policy.
 
 ### Why the trampoline is essential
 
@@ -602,9 +630,10 @@ The effects kernel: `pure`, `impure`, `send`, `bind`, `run`, `handle`,
 writer, acc, choice, conditions, linear), streams. None of this changes.
 It's the substrate the type-checking kernel runs on.
 
-### What gets replaced
+### What gets replaced (end-state)
 
-The type system layer. Currently in `src/types/`:
+In the full vision, the type system layer in `src/types/` would be
+fully grounded in the kernel:
 
 - `foundation.nix` — `mkType` with `(spec, guard, verifier)` triples
 - `primitives.nix` — `String`, `Int`, `Bool`, etc. wrapping `builtins.is*`
@@ -613,22 +642,25 @@ The type system layer. Currently in `src/types/`:
 - `refinement.nix` — `refined`, predicate combinators
 - `universe.nix` — `typeAt`, `Type_0` through `Type_4`, `level`
 
-All of this is replaced by:
+Currently, the kernel coexists with these (types with `kernelType`
+get kernel backing; others remain pure runtime contracts). Full
+replacement would produce:
 
-1. **Kernel module** (~500 lines) — term language, substitution,
-   normalization, bidirectional checking. New files in `src/kernel/`.
+1. **Kernel module** (`src/tc/`, currently ~2200 lines) — term/value
+   representations, NbE evaluator, quotation, conversion, bidirectional
+   checking. Uses environments and closures, not explicit substitution.
 
-2. **Elaboration module** (~300 lines) — translates the surface API
-   (`Record`, `ListOf`, `refined`, etc.) into kernel types and
-   translates Nix values into kernel terms.
+2. **Elaboration module** (`src/tc/elaborate.nix`, `hoas.nix`) —
+   translates the surface API into kernel types and translates Nix
+   values into kernel terms. HOAS combinators for readable proof terms.
 
-3. **Decision procedures** (~200 lines) — the fast paths. For each
-   kernel type with a decidable membership test, a Nix predicate that
-   gives the same answer as kernel checking. These ARE the current
-   `check` functions, now justified by the kernel rather than ad hoc.
+3. **Decision procedures** — the fast paths. For each kernel type
+   with a decidable membership test, a Nix predicate that gives the
+   same answer as kernel checking. These ARE the current `check`
+   functions, now justified by the kernel rather than ad hoc.
 
-4. **Surface API** (~200 lines) — the public-facing `fx.types.*`
-   attrset. Same names, same usage patterns. `Record`, `ListOf`,
+4. **Surface API** — the public-facing `fx.types.*` attrset. Same
+   names, same usage patterns. `Record`, `ListOf`,
    `DepRecord`, `refined`, `Pi`, `Sigma` all still work. Internally
    they elaborate to kernel types. `T.check v` runs the decision
    procedure (fast). `T.kernelCheck v` runs full kernel checking.
@@ -657,40 +689,55 @@ The migration is transparent for users who only call `T.check` and
 `T.validate` — the API is the same, the behavior is the same, the
 backing is different.
 
-## MVP scope
+## Implementation status
 
-The minimum viable kernel-first type system, in build order:
+### Implemented
 
-1. **Type-checking kernel.** Pi, Sigma, Nat, identity types, universes.
-   Bidirectional checking. WHNF normalization on the trampoline.
-   Target: ~500 lines of Nix.
+1. **Type-checking kernel.** (`src/tc/eval.nix`, `check.nix`,
+   `quote.nix`, `conv.nix`, `term.nix`, `value.nix`) Pi, Sigma, Nat,
+   Bool, List, Sum, Unit, Void, identity types, cumulative universes.
+   Bidirectional checking with NbE. Fuel-bounded evaluation with
+   `genericClosure` trampolining for stack safety.
 
-2. **HOAS surface combinators.** `forall`, `lam`, `ind`, `refl`,
-   `cong`, `eq`. Variable binding via Nix lambdas. Elaboration to
-   de Bruijn core. Target: ~200 lines.
+2. **HOAS surface combinators.** (`src/tc/hoas.nix`) `forall`, `lam`,
+   `sigma`, `pair`, `natLit`, `natElim`, `boolElim`, `listElim`,
+   `sumElim`, `j`, `refl`, `eq`, and more. Variable binding via Nix
+   lambdas. Automatic elaboration from HOAS to de Bruijn core terms.
 
-3. **Elaboration from current types.** Map `Record`, `ListOf`,
-   `DepRecord`, `Sigma`, `Pi`, `refined` to kernel types. Derive
-   decision procedures. Prove (on paper first, then in-kernel) that
-   each decision procedure agrees with the kernel type.
-   Target: ~300 lines.
+3. **Elaboration from current types.** (`src/tc/elaborate.nix`) Maps
+   Bool, Nat, Unit, List, Sum, Sigma values to kernel terms. `decide`
+   function provides `kernelCheck` for data types. Sentinel-based
+   constant family detection for non-dependent Sigma.
 
-4. **Rebuild surface API.** Replace `src/types/` with kernel-backed
-   types. Same public names, same usage. `check` uses decision
-   procedure, `validate` uses effectful kernel checking, `prove`
-   uses proof terms. Target: ~200 lines.
+4. **Surface API integration.** Types with `kernelType` get `.prove`
+   (proof term verification) and `.kernelCheck` (value elaboration +
+   kernel checking). `foundation.nix` provides `kernelCheck` on any
+   type with kernel backing. Pi types get `._kernel` and `.prove` but
+   not `.kernelCheck` (functions are opaque).
 
-5. **One verified NixOS property.** "For all services in the config,
-   if `enable = true`, then a corresponding firewall rule exists."
-   A real proof about a real (small) NixOS module.
+5. **Verified NixOS property.** Demonstrated the full pipeline: NixOS
+   config data → HOAS property type → kernel proof verification. The
+   property `∀ svc ∈ config.services, svc.enable → svc.port ∈
+   firewall.allowedPorts` is encoded via Curry-Howard as Sigma-chains
+   of Eq/Unit/Void obligations, with Refl/tt as witnesses.
 
-Not in MVP: string DSL parser, tactic engine, universe polymorphism,
-full NixOS module system integration. Those are follow-on work once
-the kernel is solid.
+### Future work
 
-Total new code: ~1200 lines of Nix for the kernel + elaboration +
-surface API. The effects kernel, effect modules, and streams are
-untouched.
+The following features from the original vision remain unimplemented:
+
+- **String DSL parser.** Lean-like surface syntax parsed at eval time
+  via `builtins.match` + `genericClosure` Pratt parser.
+- **Tactic engine.** Interactive proof construction via tactic scripts.
+- **Universe polymorphism as an effect.** Level allocation via
+  `freshLevel` effect with handler-determined instantiation.
+- **Constraint solving via genericClosure.** Level constraint
+  propagation to a fixed point for universe inference.
+- **Tagless final construction.** Type-checking during combinator
+  construction.
+- **Builder pattern notation.** Method chaining for readable proof terms.
+- **Full NixOS module system integration.** Proof-carrying NixOS
+  modules with `meta.proofs`.
+- **Interactive checker handler.** Yield-on-error for tactic guidance.
 
 ## References
 

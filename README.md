@@ -306,6 +306,20 @@ fx.stream.take      fx.stream.takeWhile fx.stream.drop
 fx.stream.fold      fx.stream.toList    fx.stream.length
 fx.stream.sum       fx.stream.any       fx.stream.all
 fx.stream.concat    fx.stream.interleave  fx.stream.zip  fx.stream.zipWith
+
+fx.tc.term          fx.tc.value         fx.tc.eval      fx.tc.quote
+fx.tc.conv          fx.tc.check         fx.tc.hoas      fx.tc.elaborate
+
+fx.kernel.pure      fx.kernel.send      fx.kernel.bind
+fx.trampoline.handle
+```
+
+Types with `kernelType` additionally expose:
+
+```
+T.kernelCheck v    -- elaborate v to a kernel term and verify
+T.prove term       -- verify a HOAS proof term against the kernel type
+T._kernel          -- the kernel type (HOAS tree)
 ```
 
 ## How it works
@@ -322,18 +336,26 @@ manual runs confirm 1,000,000 operations in ~3 seconds with constant memory.
 
 ## Known limitations
 
-**Value-dependent contracts, not dependent types.** Types are runtime
-contracts checked at Nix eval time, not a static type system. There are
-no proof terms, no subject reduction, no strong normalization. The
-`Certified` type's witness is a boolean, not an inhabitation proof.
-See Findler & Felleisen (2002) and Greenberg, Pierce & Weirich (2010)
-for the contract-theoretic framing.
+**Contracts and kernel coexist.** The contract layer (types as
+guard/verifier pairs) provides fast, decidable checking for data values.
+The MLTT type-checking kernel (`src/tc/`) adds bidirectional type
+checking with normalization by evaluation (NbE), proof terms, and formal
+verification for universally quantified properties. Types with
+`kernelType` get kernel-backed checking via `.prove` and `.kernelCheck`.
+Types without kernel backing remain pure runtime contracts. The
+`Certified` type's witness is a boolean, not an inhabitation proof —
+kernel proofs use HOAS combinators from `fx.tc.hoas`. See Findler &
+Felleisen (2002) for the contract-theoretic framing and Dunfield &
+Krishnaswami (2021) for the bidirectional checking approach.
 
-**Universe levels are advisory.** The `universe` field on types is a
-trusted declaration. Nothing prevents a user from declaring `universe = 0`
-on a type that operates at a higher level. Computing `sup_{a:A} level(B(a))`
-would require evaluating the type family on all domain values, which is
-undecidable. The hierarchy prevents accidental paradoxes, not adversarial ones.
+**Universe levels are partially enforced.** For kernel-backed types,
+`inferLevel` computes the correct universe level from type structure.
+For non-kernel types, the `universe` field remains a trusted declaration
+— nothing prevents a user from declaring `universe = 0` on a type that
+operates at a higher level. Computing `sup_{a:A} level(B(a))` for
+arbitrary type families requires evaluating on all domain values, which
+is undecidable. The hierarchy prevents accidental paradoxes; the kernel
+enforces it for types it knows about.
 
 **Effects are string-keyed, not extensible.** Kiselyov & Ishii (2015)
 contributes both the freer monad encoding with FTCQueue and extensible effects
@@ -415,10 +437,13 @@ Key papers that shaped the design:
   this quantitative framework.
 
 - **Pédrot & Tabareau (2020)** *The Fire Triangle*. Their no-go theorem
-  (substitution, dependent elimination, and effects cannot all be
-  unrestricted) inspired the three-level separation: types as pure values
-  (Level 1), type checking as effects (Level 2), error policy as handlers
-  (Level 3).
+  proves that substitution, dependent elimination, and observable effects
+  can't coexist in a consistent type theory. Nix eval is pure — no
+  observable effects in their sense — so the theorem doesn't directly
+  apply. But it validates the design: keeping types as pure values means
+  dependent contracts like DepRecord avoid the coherence problems the
+  theorem identifies. See the [theory chapter](https://docs.kleisli.io/nix-effects/theory.html)
+  for the full argument.
 
 ## Acknowledgments
 

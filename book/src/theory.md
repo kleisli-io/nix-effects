@@ -1,6 +1,6 @@
 # Theory
 
-Six papers shaped the design of nix-effects. Here's how each maps to code.
+Nine papers shaped the design of nix-effects. Here's how each maps to code.
 
 ## Algebraic effects and the freer monad
 
@@ -127,24 +127,58 @@ anyOf [ pred1 pred2 ]  # disjunction
 negate pred            # negation
 ```
 
-## Why types, effects, and dependent elimination don't mix freely
+## The Fire Triangle and Nix's purity boundary
 
-Pédrot & Tabareau (2020) proved a no-go theorem: you can't have
-substitution, dependent elimination, and effects all unrestricted at once.
-Something has to give.
+Pédrot & Tabareau (2020) proved a no-go theorem they call the Fire
+Triangle: a type theory with substitution, dependent elimination, and
+*observable effects* is inconsistent. You must restrict at least one.
 
-This is why nix-effects separates concerns into three levels:
+"Observable effects" has a specific meaning in the paper: a closed boolean
+term that isn't observationally equivalent to `true` or `false`. The
+canonical example is `callcc`-based backtracking, where a boolean changes
+its value depending on the continuation — it's not stably either value.
+Printing, exceptions, and non-termination *don't* count (the paper is
+explicit about this). The effect has to be detectable through the type
+system's notion of definitional equality.
 
-- **Level 1**: Types as pure values (the `mkType` attrset)
-- **Level 2**: Type checking as effectful computation (`validate` sends
-  `typeCheck` effects through the freer monad)
-- **Level 3**: Error policy lives in the handler (strict, collecting, logging)
+Nix at eval time has no observable effects. It's pure, lazy, deterministic.
+`builtins.trace` is printing (doesn't count). `builtins.throw` is an
+exception (doesn't count). There's no `callcc`, no mutable state, no
+first-class continuations. Every boolean evaluates to `true`, `false`, or
+diverges. The Fire Triangle can't fire.
 
-The payoff: the same `ServiceConfig.validate config` computation runs
-unchanged under different handlers for different error semantics. We don't
-have to modify the type definition to switch from fail-fast to
-collect-all-errors. The separation isn't just aesthetic — the math says
-you need it.
+nix-effects operates entirely in this pure eval-time world. The freer
+monad is a data structure — `Impure` and `Pure` attrsets — not an
+operational effect. The handler walks the tree with pure functions. The
+"effects" are simulated: a design pattern for structuring validation with
+composable handlers, not a language feature.
+
+The real effect boundary in Nix is between `nix eval` (pure evaluation)
+and `nix build` (sandboxed side effects: running build scripts, writing
+to the store). nix-effects catches configuration errors on the pure side
+of that boundary, before any build effects happen. `nix build .#buggyService`
+fails at eval time — no sandbox spins up, no build script runs.
+
+So why mention the Fire Triangle at all? Because it validates the design.
+If types were themselves effectful — if constructing a `DepRecord` could
+trigger effects — dependent contracts would face the coherence problems
+the theorem describes: evaluating a dependent type might trigger effects,
+and you'd need to synchronize those effects between term and type (the
+paper's ∂CBPV `dlet` binder addresses exactly this). By keeping types as
+pure values, nix-effects avoids the problem by construction. The
+three-level separation (pure types / effectful validation / handler
+interpretation) comes from the handler pattern (Plotkin & Pretnar) and the
+guard/verifier decomposition (Findler & Felleisen), but the Fire Triangle
+is why keeping Level 1 pure matters in a system with dependent contracts.
+
+The MLTT type-checking kernel (`src/tc/`) makes the Fire Triangle
+argument concrete. The kernel implements a cumulative universe hierarchy
+(`U(0) : U(1) : U(2) : ...`) where `inferLevel` computes levels by
+structural recursion on types — `level(Pi(A, B)) = max(level(A), level(B))`,
+`level(U(i)) = i + 1`. This prevents Girard's paradox: `U(i) : U(i)` is
+rejected because `level(U(i)) = i + 1 > i`. The kernel verifies this
+stratification for every type it checks, turning what was previously an
+advisory convention into an enforced invariant for kernel-backed types.
 
 ## Graded linear types
 

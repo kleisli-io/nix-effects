@@ -65,7 +65,33 @@ let
           b = inferLevel (E.instantiate v.closure (V.freshVar 0));
       in if a >= b then a else b
     else if t == "VEq" then inferLevel v.type
-    else 0;
+    else if t == "VNe" then 0  # neutral type variable: level unknown, conservatively 0
+    else throw "inferLevel: unknown value tag '${t}'";
+
+  # -- Eliminator motive checking (§7.3) --
+  # Checks that a motive has type (domTy → U(k)) for some k, enabling large
+  # elimination. Lambda motives: extend context, checkType on body. Non-lambda
+  # motives: infer type and validate shape is VPi(_, domTy, _ → VU(_)).
+  checkMotive = ctx: motTm: domTy:
+    if motTm.tag == "lam" then
+      let ctx' = extend ctx motTm.name domTy;
+      in bind (checkType ctx' motTm.body) (bodyTm:
+        pure (T.mkLam motTm.name (Q.quote ctx.depth domTy) bodyTm))
+    else
+      bind (infer ctx motTm) (result:
+        let rTy = result.type; in
+        if rTy.tag != "VPi"
+        then typeError "eliminator motive must be a function"
+          { tag = "pi"; } (Q.quote ctx.depth rTy) motTm
+        else if !(C.conv ctx.depth rTy.domain domTy)
+        then typeError "eliminator motive domain mismatch"
+          (Q.quote ctx.depth domTy) (Q.quote ctx.depth rTy.domain) motTm
+        else
+          let codVal = E.instantiate rTy.closure (V.freshVar ctx.depth); in
+          if codVal.tag != "VU"
+          then typeError "eliminator motive must return a type"
+            { tag = "U"; } (Q.quote ctx.depth codVal) motTm
+          else pure result.term);
 
   # -- Bidirectional type checker --
 
@@ -93,9 +119,21 @@ let
     # Zero checked against Nat
     else if t == "zero" && ty.tag == "VNat" then pure T.mkZero
 
-    # Succ checked against Nat
+    # Succ checked against Nat — trampolined for large naturals (S^10000+).
+    # Iteratively peel Succ layers, check base once, fold mkSucc back.
     else if t == "succ" && ty.tag == "VNat" then
-      bind (check ctx tm.pred V.vNat) (p': pure (T.mkSucc p'))
+      let
+        chain = builtins.genericClosure {
+          startSet = [{ key = 0; val = tm; }];
+          operator = item:
+            if item.val.tag == "succ"
+            then [{ key = item.key + 1; val = item.val.pred; }]
+            else [];
+        };
+        n = builtins.length chain - 1;
+        base = (builtins.elemAt chain n).val;
+      in bind (check ctx base V.vNat) (base':
+        pure (builtins.foldl' (acc: _: T.mkSucc acc) base' (builtins.genList (x: x) n)))
 
     # True/False checked against Bool
     else if t == "true" && ty.tag == "VBool" then pure T.mkTrue
@@ -205,13 +243,17 @@ let
 
     # NatElim (§7.3)
     else if t == "nat-elim" then
-      let
-        motiveChkTy = V.vPi "_" V.vNat (V.mkClosure [] (T.mkU 0));
-      in bind (check ctx tm.motive motiveChkTy) (pTm:
+      bind (checkMotive ctx tm.motive V.vNat) (pTm:
         let pVal = E.eval ctx.env pTm; in
         bind (check ctx tm.base (E.vApp pVal V.vZero)) (zTm:
           let
             # s : Π(k:Nat). P(k) → P(S(k))
+            # De Bruijn arithmetic: closure body is evaluated at depth+1 (binding k).
+            #   depth+1: quote pVal relative to outer ctx extended by k
+            #   Var(0) = k (most recent binding)
+            # Inner Pi "ih" adds another binding at depth+2:
+            #   depth+2: quote pVal relative to ctx extended by k and ih
+            #   Var(0) = ih, Var(1) = k
             stepTy = V.vPi "k" V.vNat (V.mkClosure ctx.env
               (T.mkPi "ih" (T.mkApp (Q.quote (ctx.depth + 1) pVal) (T.mkVar 0))
                 (T.mkApp (Q.quote (ctx.depth + 2) pVal) (T.mkSucc (T.mkVar 1)))));
@@ -222,9 +264,7 @@ let
 
     # BoolElim (§7.3)
     else if t == "bool-elim" then
-      let
-        motiveChkTy = V.vPi "_" V.vBool (V.mkClosure [] (T.mkU 0));
-      in bind (check ctx tm.motive motiveChkTy) (pTm:
+      bind (checkMotive ctx tm.motive V.vBool) (pTm:
         let pVal = E.eval ctx.env pTm; in
         bind (check ctx tm.onTrue (E.vApp pVal V.vTrue)) (tTm:
           bind (check ctx tm.onFalse (E.vApp pVal V.vFalse)) (fTm:
@@ -236,12 +276,18 @@ let
     else if t == "list-elim" then
       bind (checkType ctx tm.elem) (aRaw:
         let aVal = E.eval ctx.env aRaw;
-            motiveChkTy = V.vPi "_" (V.vList aVal) (V.mkClosure [] (T.mkU 0));
-        in bind (check ctx tm.motive motiveChkTy) (pTm:
+        in bind (checkMotive ctx tm.motive (V.vList aVal)) (pTm:
           let pVal = E.eval ctx.env pTm; in
           bind (check ctx tm.nil (E.vApp pVal (V.vNil aVal))) (nTm:
             let
               # c : Π(h:A). Π(t:List A). P(t) → P(cons h t)
+              # De Bruijn arithmetic: closure binds h at depth+1.
+              #   depth+1: h is Var(0)
+              # Inner Pi "t" adds binding at depth+2:
+              #   depth+2: t is Var(0), h is Var(1)
+              # Inner Pi "ih" adds binding at depth+3:
+              #   depth+3: ih is Var(0), t is Var(1), h is Var(2)
+              # P(cons h t) uses Var(2)=h, Var(1)=t at depth+3
               consTy = V.vPi "h" aVal (V.mkClosure ctx.env
                 (T.mkPi "t" (T.mkList (Q.quote (ctx.depth + 1) aVal))
                   (T.mkPi "ih" (T.mkApp (Q.quote (ctx.depth + 2) pVal) (T.mkVar 0))
@@ -265,14 +311,16 @@ let
         let aVal = E.eval ctx.env aRaw; in
         bind (checkType ctx tm.right) (bRaw:
           let bVal = E.eval ctx.env bRaw;
-              motiveChkTy = V.vPi "_" (V.vSum aVal bVal) (V.mkClosure [] (T.mkU 0));
-          in bind (check ctx tm.motive motiveChkTy) (pTm:
+          in bind (checkMotive ctx tm.motive (V.vSum aVal bVal)) (pTm:
             let pVal = E.eval ctx.env pTm;
                 # l : Π(x:A). P(inl x)
+                # De Bruijn: closure binds x at depth+1. Var(0) = x.
+                # All quotes at depth+1 to account for the x binding.
                 lTy = V.vPi "x" aVal (V.mkClosure ctx.env
                   (T.mkApp (Q.quote (ctx.depth + 1) pVal)
                     (T.mkInl (Q.quote (ctx.depth + 1) aVal) (Q.quote (ctx.depth + 1) bVal) (T.mkVar 0))));
                 # r : Π(y:B). P(inr y)
+                # De Bruijn: closure binds y at depth+1. Var(0) = y.
                 rTy = V.vPi "y" bVal (V.mkClosure ctx.env
                   (T.mkApp (Q.quote (ctx.depth + 1) pVal)
                     (T.mkInr (Q.quote (ctx.depth + 1) aVal) (Q.quote (ctx.depth + 1) bVal) (T.mkVar 0))));
@@ -288,12 +336,34 @@ let
         let aVal = E.eval ctx.env aRaw; in
         bind (check ctx tm.lhs aVal) (aTm:
           let aValEvaled = E.eval ctx.env aTm;
-              # P : Π(y:A). Π(e:Eq(A,a,y)). U
-              pTy = V.vPi "y" aVal (V.mkClosure ctx.env
-                (T.mkPi "e" (T.mkEq (Q.quote (ctx.depth + 1) aVal)
-                              (Q.quote (ctx.depth + 1) aValEvaled) (T.mkVar 0))
-                  (T.mkU 0)));
-          in bind (check ctx tm.motive pTy) (pTm:
+              # P : Π(y:A). Π(e:Eq(A,a,y)). U(k) for some k
+              eqDomTy = depth: V.vEq aVal aValEvaled (V.freshVar depth);
+              checkJMotive =
+                if tm.motive.tag == "lam" then
+                  let ctx' = extend ctx tm.motive.name aVal;
+                  in bind (checkMotive ctx' tm.motive.body (eqDomTy ctx.depth)) (innerTm:
+                    pure (T.mkLam tm.motive.name (Q.quote ctx.depth aVal) innerTm))
+                else
+                  bind (infer ctx tm.motive) (result:
+                    let rTy = result.type; in
+                    if rTy.tag != "VPi"
+                    then typeError "J motive must be a function"
+                      { tag = "pi"; } (Q.quote ctx.depth rTy) tm.motive
+                    else if !(C.conv ctx.depth rTy.domain aVal)
+                    then typeError "J motive domain mismatch"
+                      (Q.quote ctx.depth aVal) (Q.quote ctx.depth rTy.domain) tm.motive
+                    else
+                      let innerTy = E.instantiate rTy.closure (V.freshVar ctx.depth); in
+                      if innerTy.tag != "VPi"
+                      then typeError "J motive must take two arguments"
+                        { tag = "pi"; } (Q.quote (ctx.depth + 1) innerTy) tm.motive
+                      else
+                        let codVal = E.instantiate innerTy.closure (V.freshVar (ctx.depth + 1)); in
+                        if codVal.tag != "VU"
+                        then typeError "J motive must return a type"
+                          { tag = "U"; } (Q.quote (ctx.depth + 2) codVal) tm.motive
+                        else pure result.term);
+          in bind checkJMotive (pTm:
             let pVal = E.eval ctx.env pTm; in
             bind (check ctx tm.base (E.vApp (E.vApp pVal aValEvaled) V.vRefl)) (prTm:
               bind (check ctx tm.rhs aVal) (bTm:
@@ -449,6 +519,16 @@ in mk {
     "level-pi-nat-nat" = {
       expr = inferLevel (vPi "x" vNat (mkClosure [] T.mkNat));
       expected = 0;
+    };
+    # Neutral type variable returns conservative level 0
+    "level-neutral" = {
+      expr = inferLevel (V.vNe 5 []);
+      expected = 0;
+    };
+    # Unknown value tag throws (caught by tryEval)
+    "level-unknown-throws" = {
+      expr = (builtins.tryEval (inferLevel { tag = "VBogus"; })).success;
+      expected = false;
     };
 
     # -- §11.1 Required positive tests --
@@ -617,6 +697,38 @@ in mk {
       expected = "VNat";
     };
 
+    # ListElim inference: ListElim(Nat, λl.Nat, 0, λh.λt.λih.S(ih), nil) ⇒ Nat
+    "infer-list-elim" = {
+      expr = (inferTm ctx0 (T.mkListElim T.mkNat
+        (T.mkLam "l" (T.mkList T.mkNat) T.mkNat)
+        T.mkZero
+        (T.mkLam "h" T.mkNat (T.mkLam "t" (T.mkList T.mkNat)
+          (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0)))))
+        (T.mkNil T.mkNat))).type.tag;
+      expected = "VNat";
+    };
+
+    # SumElim inference: SumElim(Nat, Bool, λs.Nat, λx.x, λb.0, inl(0)) ⇒ Nat
+    "infer-sum-elim" = {
+      expr = (inferTm ctx0 (T.mkSumElim T.mkNat T.mkBool
+        (T.mkLam "s" (T.mkSum T.mkNat T.mkBool) T.mkNat)
+        (T.mkLam "x" T.mkNat (T.mkVar 0))
+        (T.mkLam "b" T.mkBool T.mkZero)
+        (T.mkInl T.mkNat T.mkBool T.mkZero))).type.tag;
+      expected = "VNat";
+    };
+
+    # J inference: J(Nat, 0, λy.λe.Nat, 0, 0, refl) ⇒ Nat
+    "infer-j" = {
+      expr = (inferTm ctx0 (T.mkJ T.mkNat T.mkZero
+        (T.mkLam "y" T.mkNat
+          (T.mkLam "e" (T.mkEq T.mkNat T.mkZero (T.mkVar 1)) T.mkNat))
+        T.mkZero
+        T.mkZero
+        T.mkRefl)).type.tag;
+      expected = "VNat";
+    };
+
     # -- §11.2 Required negative tests --
 
     # Zero : Bool  REJECT
@@ -653,6 +765,28 @@ in mk {
     "reject-unbound-var" = {
       expr = (builtins.tryEval (builtins.deepSeq (inferTm ctx0 (T.mkVar 0)) true)).success;
       expected = false;
+    };
+
+    # Ill-typed NatElim motive — motive returns True (a value), not a type
+    "reject-nat-elim-bad-motive" = {
+      expr = (inferTm ctx0 (T.mkNatElim
+        (T.mkLam "n" T.mkNat T.mkTrue)
+        T.mkZero
+        (T.mkLam "k" T.mkNat (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0))))
+        T.mkZero)) ? error;
+      expected = true;
+    };
+
+    # Pair snd type mismatch — Pair(0, 0) : Σ(x:Nat).Bool rejects (snd is Nat, expected Bool)
+    "reject-pair-snd-mismatch" = {
+      expr = (checkTm ctx0 (T.mkPair T.mkZero T.mkZero T.mkUnit)
+        (vSigma "x" vNat (mkClosure [] T.mkBool))) ? error;
+      expected = true;
+    };
+    "reject-pair-snd-mismatch-msg" = {
+      expr = (checkTm ctx0 (T.mkPair T.mkZero T.mkZero T.mkUnit)
+        (vSigma "x" vNat (mkClosure [] T.mkBool))).msg;
+      expected = "cannot infer type";
     };
 
     # Cumulativity: Nat : U(0) also accepted at U(1)
@@ -834,6 +968,138 @@ in mk {
     "roundtrip-sigma" = {
       expr = let tm = T.mkSigma "x" T.mkNat T.mkBool;
       in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expected = true;
+    };
+    "roundtrip-cons" = {
+      expr = let tm = T.mkCons T.mkNat T.mkZero (T.mkNil T.mkNat);
+      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expected = true;
+    };
+    "roundtrip-sum" = {
+      expr = let tm = T.mkSum T.mkNat T.mkBool;
+      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expected = true;
+    };
+    "roundtrip-inl" = {
+      expr = let tm = T.mkInl T.mkNat T.mkBool T.mkZero;
+      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expected = true;
+    };
+    "roundtrip-inr" = {
+      expr = let tm = T.mkInr T.mkNat T.mkBool T.mkTrue;
+      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expected = true;
+    };
+    "roundtrip-eq" = {
+      expr = let tm = T.mkEq T.mkNat T.mkZero T.mkZero;
+      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expected = true;
+    };
+    "roundtrip-refl" = {
+      expr = Q.nf [] (Q.nf [] T.mkRefl) == Q.nf [] T.mkRefl;
+      expected = true;
+    };
+    "roundtrip-U" = {
+      expr = Q.nf [] (Q.nf [] (T.mkU 0)) == Q.nf [] (T.mkU 0);
+      expected = true;
+    };
+    "roundtrip-bool-elim" = {
+      expr = let tm = T.mkBoolElim (T.mkLam "b" T.mkBool T.mkNat)
+        T.mkZero (T.mkSucc T.mkZero) T.mkFalse;
+      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expected = true;
+    };
+
+    # -- Large elimination tests (motive returns higher universe) --
+
+    # NatElim with motive P:Nat→U(1): λn.U(0) maps nats to types-of-types
+    # base : P(0) = U(0), provide Nat; step : λk.λih.ih (identity on types)
+    "large-elim-nat" = {
+      expr = (inferTm ctx0 (T.mkNatElim
+        (T.mkLam "n" T.mkNat (T.mkU 0))
+        T.mkNat
+        (T.mkLam "k" T.mkNat (T.mkLam "ih" (T.mkU 0) (T.mkVar 0)))
+        T.mkZero)).type.tag;
+      expected = "VU";
+    };
+
+    # BoolElim with motive P:Bool→U(1): λb.U(0)
+    # onTrue = Nat, onFalse = Bool (both : U(0))
+    "large-elim-bool" = {
+      expr = (inferTm ctx0 (T.mkBoolElim
+        (T.mkLam "b" T.mkBool (T.mkU 0))
+        T.mkNat T.mkBool T.mkTrue)).type.tag;
+      expected = "VU";
+    };
+
+    # ListElim with motive P:List(Nat)→U(1): λl.U(0)
+    # nil case = Nat, cons case = λh.λt.λih.ih
+    "large-elim-list" = {
+      expr = (inferTm ctx0 (T.mkListElim T.mkNat
+        (T.mkLam "l" (T.mkList T.mkNat) (T.mkU 0))
+        T.mkNat
+        (T.mkLam "h" T.mkNat (T.mkLam "t" (T.mkList T.mkNat)
+          (T.mkLam "ih" (T.mkU 0) (T.mkVar 0))))
+        (T.mkNil T.mkNat))).type.tag;
+      expected = "VU";
+    };
+
+    # SumElim with motive P:Sum(Nat,Bool)→U(1): λs.U(0)
+    # onLeft = λx.Nat, onRight = λb.Bool
+    "large-elim-sum" = {
+      expr = (inferTm ctx0 (T.mkSumElim T.mkNat T.mkBool
+        (T.mkLam "s" (T.mkSum T.mkNat T.mkBool) (T.mkU 0))
+        (T.mkLam "x" T.mkNat T.mkNat)
+        (T.mkLam "b" T.mkBool T.mkBool)
+        (T.mkInl T.mkNat T.mkBool T.mkZero))).type.tag;
+      expected = "VU";
+    };
+
+    # J with motive P:Π(y:Nat).Eq(Nat,0,y)→U(1): λy.λe.U(0)
+    # base : P(0,refl) = U(0), provide Nat
+    "large-elim-j" = {
+      expr = (inferTm ctx0 (T.mkJ T.mkNat T.mkZero
+        (T.mkLam "y" T.mkNat
+          (T.mkLam "e" (T.mkEq T.mkNat T.mkZero (T.mkVar 1)) (T.mkU 0)))
+        T.mkNat
+        T.mkZero
+        T.mkRefl)).type.tag;
+      expected = "VU";
+    };
+
+    # Large elim at U(2): BoolElim(λb.U(1), U(0), Nat, false)
+    # P:Bool→U(2), onTrue=U(0):U(1), onFalse=Nat:U(0)≤U(1) via cumulativity
+    "large-elim-bool-U2" = {
+      expr = (inferTm ctx0 (T.mkBoolElim
+        (T.mkLam "b" T.mkBool (T.mkU 1))
+        (T.mkU 0) T.mkNat T.mkFalse)).type.tag;
+      expected = "VU";
+    };
+
+    # -- Under-binder roundtrip tests (non-empty environment) --
+
+    # Var(0) with env [freshVar(0)] — level-to-index conversion
+    "roundtrip-under-binder-var" = {
+      expr = let env1 = [ (V.freshVar 0) ];
+      in Q.nf env1 (Q.nf env1 (T.mkVar 0)) == Q.nf env1 (T.mkVar 0);
+      expected = true;
+    };
+
+    # Π(y:Nat).x with free variable x — tests closure instantiation
+    "roundtrip-under-binder-pi" = {
+      expr = let
+        env1 = [ (V.freshVar 0) ];
+        tm = T.mkPi "y" T.mkNat (T.mkVar 1);
+      in Q.nf env1 (Q.nf env1 tm) == Q.nf env1 tm;
+      expected = true;
+    };
+
+    # λ(y:Nat).S(x) with free x — tests succ under binder
+    "roundtrip-under-binder-lam" = {
+      expr = let
+        env1 = [ (V.freshVar 0) ];
+        tm = T.mkLam "y" T.mkNat (T.mkSucc (T.mkVar 1));
+      in Q.nf env1 (Q.nf env1 tm) == Q.nf env1 tm;
       expected = true;
     };
   };

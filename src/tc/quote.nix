@@ -31,7 +31,19 @@ let
     else if t == "VPair" then T.mkPair (quote d v.fst) (quote d v.snd) T.mkUnit
     else if t == "VNat" then T.mkNat
     else if t == "VZero" then T.mkZero
-    else if t == "VSucc" then T.mkSucc (quote d v.pred)
+    # VSucc — trampolined for deep naturals (S^5000+)
+    else if t == "VSucc" then
+      let
+        chain = builtins.genericClosure {
+          startSet = [{ key = 0; val = v; }];
+          operator = item:
+            if item.val.tag == "VSucc"
+            then [{ key = item.key + 1; val = item.val.pred; }]
+            else [];
+        };
+        n = builtins.length chain - 1;
+        base = (builtins.elemAt chain n).val;
+      in builtins.foldl' (acc: _: T.mkSucc acc) (quote d base) (builtins.genList (x: x) n)
     else if t == "VBool" then T.mkBool
     else if t == "VTrue" then T.mkTrue
     else if t == "VFalse" then T.mkFalse
@@ -188,6 +200,41 @@ in mk {
     "nf-fst-pair" = {
       expr = (nf [] (T.mkFst (T.mkPair T.mkZero T.mkTrue T.mkNat))).tag;
       expected = "zero";
+    };
+
+    # Stress test — stack safety (B3)
+    "quote-succ-5000" = {
+      expr = let
+        deep = builtins.foldl' (acc: _: V.vSucc acc) V.vZero (builtins.genList (x: x) 5000);
+      in (quote 0 deep).tag;
+      expected = "succ";
+    };
+
+    # -- C5: Under-binder quotation --
+
+    # Quote a neutral at depth > 0: VNe(0, []) at depth 2 → Var(1)
+    "quote-under-binder-var" = {
+      expr = (quote 2 (V.vNe 0 [])).idx;
+      expected = 1;
+    };
+
+    # Roundtrip with non-empty env: eval([freshVar(0)], Var(0)) → VNe(0,[]) → Var(0)
+    "nf-under-binder" = {
+      expr = let env1 = [ (V.freshVar 0) ];
+      in (nf env1 (T.mkVar 0)).tag;
+      expected = "var";
+    };
+    "nf-under-binder-idx" = {
+      expr = let env1 = [ (V.freshVar 0) ];
+      in (nf env1 (T.mkVar 0)).idx;
+      expected = 0;
+    };
+
+    # Roundtrip idempotency with non-empty env
+    "nf-under-binder-roundtrip" = {
+      expr = let env1 = [ (V.freshVar 0) ];
+      in nf env1 (nf env1 (T.mkSucc (T.mkVar 0))) == nf env1 (T.mkSucc (T.mkVar 0));
+      expected = true;
     };
   };
 }

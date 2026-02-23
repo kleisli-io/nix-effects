@@ -30,7 +30,18 @@ let
     else if t1 == "VTt" && t2 == "VTt" then true
     else if t1 == "VRefl" && t2 == "VRefl" then true
     else if t1 == "VU" && t2 == "VU" then v1.level == v2.level
-    else if t1 == "VSucc" && t2 == "VSucc" then conv d v1.pred v2.pred
+    # VSucc — trampolined for deep naturals (S^5000+)
+    else if t1 == "VSucc" && t2 == "VSucc" then
+      let
+        chain = builtins.genericClosure {
+          startSet = [{ key = 0; a = v1; b = v2; }];
+          operator = item:
+            if item.a.tag == "VSucc" && item.b.tag == "VSucc"
+            then [{ key = item.key + 1; a = item.a.pred; b = item.b.pred; }]
+            else [];
+        };
+        last = builtins.elemAt chain (builtins.length chain - 1);
+      in conv d last.a last.b
 
     # §6.2 Binding forms — compare under binders with fresh var
     else if t1 == "VPi" && t2 == "VPi" then
@@ -50,8 +61,25 @@ let
       conv d v1.fst v2.fst && conv d v1.snd v2.snd
     else if t1 == "VList" && t2 == "VList" then conv d v1.elem v2.elem
     else if t1 == "VNil" && t2 == "VNil" then conv d v1.elem v2.elem
+    # VCons — trampolined: peel tails iteratively, check elem+head per level
     else if t1 == "VCons" && t2 == "VCons" then
-      conv d v1.elem v2.elem && conv d v1.head v2.head && conv d v1.tail v2.tail
+      let
+        chain = builtins.genericClosure {
+          startSet = [{ key = 0; a = v1; b = v2; }];
+          operator = item:
+            if item.a.tag == "VCons" && item.b.tag == "VCons"
+            then [{ key = item.key + 1; a = item.a.tail; b = item.b.tail; }]
+            else [];
+        };
+        last = builtins.elemAt chain (builtins.length chain - 1);
+      in builtins.foldl' (acc: item:
+        acc && (
+          if item.a.tag == "VCons" && item.b.tag == "VCons"
+          then conv d item.a.elem item.b.elem && conv d item.a.head item.b.head
+          else true
+        )
+      ) true chain
+      && conv d last.a last.b
     else if t1 == "VSum" && t2 == "VSum" then
       conv d v1.left v2.left && conv d v1.right v2.right
     else if t1 == "VInl" && t2 == "VInl" then
@@ -169,6 +197,30 @@ in mk {
         (vPi "y" vNat (mkClosure [] (T.mkVar 0)));
       expected = true;
     };
+
+    # Binding forms with different dependent bodies
+    "conv-pi-dep-diff-body" = {
+      # Π(x:Nat).x vs Π(x:Nat).Nat — different dependent codomains
+      expr = conv 0
+        (vPi "x" vNat (mkClosure [] (T.mkVar 0)))
+        (vPi "x" vNat (mkClosure [] T.mkNat));
+      expected = false;
+    };
+    "conv-sigma-dep-diff-body" = {
+      # Σ(x:Nat).x vs Σ(x:Nat).Nat — different dependent second components
+      expr = conv 0
+        (vSigma "x" vNat (mkClosure [] (T.mkVar 0)))
+        (vSigma "x" vNat (mkClosure [] T.mkNat));
+      expected = false;
+    };
+    "conv-ne-multi-spine-diff" = {
+      # x₀(Zero)(True) vs x₀(Zero)(False) — second frame differs
+      expr = conv 2
+        (vNe 0 [ (eApp vZero) (eApp vTrue) ])
+        (vNe 0 [ (eApp vZero) (eApp vFalse) ]);
+      expected = false;
+    };
+
     "conv-lam" = {
       # λ(x:Nat).x ≡ λ(y:Nat).y
       expr = conv 0
@@ -264,6 +316,34 @@ in mk {
       expr = let a = vSucc vZero; b = vSucc (vSucc vZero); in
         (conv 0 a b) == (conv 0 b a);
       expected = true;
+    };
+
+    # Stress tests — stack safety (B1/B2)
+    "conv-succ-5000" = {
+      expr = let
+        deep = builtins.foldl' (acc: _: vSucc acc) vZero (builtins.genList (x: x) 5000);
+      in conv 0 deep deep;
+      expected = true;
+    };
+    "conv-succ-5000-neq" = {
+      expr = let
+        a = builtins.foldl' (acc: _: vSucc acc) vZero (builtins.genList (x: x) 5000);
+        b = builtins.foldl' (acc: _: vSucc acc) vZero (builtins.genList (x: x) 4999);
+      in conv 0 a b;
+      expected = false;
+    };
+    "conv-cons-5000" = {
+      expr = let
+        deep = builtins.foldl' (acc: _: vCons vNat vZero acc) (vNil vNat) (builtins.genList (x: x) 5000);
+      in conv 0 deep deep;
+      expected = true;
+    };
+    "conv-cons-5000-neq" = {
+      expr = let
+        a = builtins.foldl' (acc: _: vCons vNat vZero acc) (vNil vNat) (builtins.genList (x: x) 5000);
+        b = builtins.foldl' (acc: _: vCons vNat vZero acc) (vNil vNat) (builtins.genList (x: x) 4999);
+      in conv 0 a b;
+      expected = false;
     };
   };
 }

@@ -411,5 +411,28 @@ in mk {
         (succN 100))).tag;
       expected = "VSucc";
     };
+
+    # -- §11.3 Stress tests (eval level) --
+
+    # S^10000(0) evaluates to VSucc chain (trampoline not needed for eval,
+    # but confirms eval handles deep Succ terms via lazy wrapping)
+    "stress-eval-10000" = {
+      expr = let
+        bigNat = builtins.foldl' (acc: _: T.mkSucc acc)
+          T.mkZero (builtins.genList (x: x) 10000);
+      in (eval [] bigNat).tag;
+      expected = "VSucc";
+    };
+
+    # NatElim on S^1000(0) — trampoline stress (spec §11.3)
+    "stress-nat-elim-1000" = {
+      expr = let
+        nat1000 = builtins.foldl' (acc: _: T.mkSucc acc)
+          T.mkZero (builtins.genList (x: x) 1000);
+        step = T.mkLam "k" T.mkNat (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0)));
+        r = eval [] (T.mkNatElim (T.mkLam "n" T.mkNat T.mkNat) T.mkZero step nat1000);
+      in r.tag;
+      expected = "VSucc";
+    };
   };
 }

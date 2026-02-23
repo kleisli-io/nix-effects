@@ -43,7 +43,7 @@ compromising safety — the kernel verifies the output.
 |-----------|----------|-----------|
 | Kernel invariant violation | `throw` (crash) | TCB may be buggy; cannot trust own output |
 | User type error | Effect `typeError` | Normal operation; handler decides policy |
-| Normalization budget exceeded | Reject term | Fail closed; never accept unverified |
+| Normalization budget exceeded | `throw` (crash) | Layer 0 has no effect access; `tryEval` catches it |
 | Unknown term tag | `throw` (crash) | Exhaustiveness violation = kernel bug |
 
 ---
@@ -232,7 +232,7 @@ under binders.
 ### 3.3 Closure instantiation
 
 ```
-instantiate((env, body), v) = eval(env ++ [v], body)
+instantiate((env, body), v) = eval([v] ++ env, body)
 ```
 
 ---
@@ -246,7 +246,7 @@ a value. All rules are deterministic.
 
 ```
 eval(ρ, Var(i))           = ρ[i]
-eval(ρ, Let(n, A, t, u))  = eval(ρ ++ [eval(ρ, t)], u)
+eval(ρ, Let(n, A, t, u))  = eval([eval(ρ, t)] ++ ρ, u)
 eval(ρ, Ann(t, A))        = eval(ρ, t)
 ```
 
@@ -357,8 +357,12 @@ eval(ρ, Unit)  = VUnit
 eval(ρ, Tt)    = VTt
 ```
 
-Unit has no eliminator in the core. A term of type Unit is always
-definitionally equal to `tt` (handled in conversion).
+Unit has no eliminator in the core. The kernel does NOT implement
+eta for Unit — `conv` does not equate arbitrary Unit-typed neutrals
+with `VTt`. Two distinct neutrals of type Unit are not definitionally
+equal even though they would be in an extensional theory. If eta for
+Unit is needed, the elaborator must reduce to `Tt` before submitting
+to the kernel.
 
 ### 4.8 Void
 
@@ -437,7 +441,7 @@ quote(d, VSigma(n, A, cl)) = Sigma(n, quote(d, A), quote(d+1, instantiate(cl, fr
 quote(d, VPair(a, b))      = Pair(quote(d, a), quote(d, b), _)
 quote(d, VNat)             = Nat
 quote(d, VZero)            = Zero
-quote(d, VSucc(v))         = Succ(quote(d, v))
+quote(d, VSucc(v))         = Succ(quote(d, v))   -- MUST trampoline for deep naturals
 quote(d, VBool)            = Bool
 quote(d, VTrue)            = True
 quote(d, VFalse)           = False
@@ -586,8 +590,8 @@ Ctx ::= {
 emptyCtx = { env = [], types = [], depth = 0 }
 
 extend(Γ, n, A) = {
-  env   = Γ.env ++ [fresh(Γ.depth)],
-  types = Γ.types ++ [A],
+  env   = [fresh(Γ.depth)] ++ Γ.env,
+  types = [A] ++ Γ.types,
   depth = Γ.depth + 1
 }
 
@@ -657,6 +661,21 @@ representation changes.
                 ──────────────────────
                 Γ ⊢ Snd(t) ⇒ B  ↝  Snd(t')
 ```
+
+**Eliminator motive checking (checkMotive).**
+All eliminators require a motive `P : domTy → U(k)` for some `k`.
+The implementation provides a shared `checkMotive` helper that
+handles two forms:
+
+- Lambda motives (`P = λx. body`): extend the context with `x : domTy`
+  and verify `body` is a type via `checkType`.
+- Non-lambda motives: infer the type and verify it has shape
+  `VPi(_, domTy, _ → VU(k))` for some `k`.
+
+The `k` is not fixed — motives may target any universe level,
+enabling **large elimination** (eliminators whose return type is a
+type, not a value). For example, `NatElim(λn. U(0), ...)` is valid
+and returns types at universe 1.
 
 **NatElim**
 ```
@@ -842,7 +861,7 @@ cannot prove the equation. Report via effect.
                 Â = eval(Γ.env, A')
                 Γ ⊢ t ⇐ Â  ↝  t'
                 t̂ = eval(Γ.env, t')
-                Γ' = { env = Γ.env ++ [t̂], types = Γ.types ++ [Â], depth = Γ.depth + 1 }
+                Γ' = { env = [t̂] ++ Γ.env, types = [Â] ++ Γ.types, depth = Γ.depth + 1 }
                 Γ' ⊢ u ⇐ B  ↝  u'
                 ──────────────────────
                 Γ ⊢ Let(n, A, t, u) ⇐ B  ↝  Let(n, A', t', u')
@@ -938,6 +957,7 @@ level(Pi(A, B))      = max(level(A), level(B))
 level(Sigma(A, B))   = max(level(A), level(B))
 level(Eq(A, a, b))   = level(A)
 level(U(i))          = i + 1
+level(VNe(_, _))     = 0          -- conservative: unknown neutral type
 ```
 
 ### 8.3 Cumulativity
@@ -976,28 +996,37 @@ substitution together yield inconsistency.
 Every call to `eval` decrements a fuel counter. When fuel reaches 0:
 
 ```
-eval(ρ, t, fuel=0) = REJECT "normalization budget exceeded"
+eval(ρ, t, fuel=0) = THROW "normalization budget exceeded"
 ```
 
-The kernel **rejects** the term. It does not accept. It does not
-throw a kernel bug error. It reports that verification was
-inconclusive due to resource limits.
+The kernel aborts via `throw`. Layer 0 (TCB) has no access to the
+effect system by design, so fuel exhaustion and kernel invariant
+violations both manifest as Nix-level throws caught by `tryEval`.
+Callers should treat any throw from the evaluator as "term not
+verified" — the distinction between fuel exhaustion and a kernel bug
+is in the error message text, not the failure mechanism.
 
 ### 9.2 Default budget
 
 The default fuel budget is 10,000,000 reduction steps. This is
-configurable by the caller but the kernel enforces a minimum of
-1,000 (below which meaningful type checking is impossible).
+configurable by the caller via `evalF`. No minimum is enforced —
+callers may pass arbitrarily low fuel, which will cause immediate
+`throw` on the first eval step.
 
 ### 9.3 Fuel accounting
 
-One unit of fuel is consumed per:
-- Each call to `eval` (one term evaluated)
-- Each beta-reduction in `vApp`
-- Each iota-reduction in `vNatElim`, `vBoolElim`, `vListElim`, `vSumElim`, `vJ`
+One unit of fuel is consumed per call to `evalF` (one term
+evaluated). All fuel consumption flows through `evalF`:
 
-Structural operations (building values, pattern matching on tags)
-do not consume fuel.
+- Direct term evaluation (each `evalF` call decrements fuel by 1)
+- Beta-reduction in `vApp` consumes fuel indirectly via
+  `instantiateF`, which calls `evalF`
+- Iota-reduction in recursive eliminators (`vNatElimF`,
+  `vListElimF`, `vSumElimF`) consumes fuel indirectly via `vAppF`
+
+Non-recursive eliminators (`vBoolElim`, `vJ`, `vAbsurd`) complete
+in O(1) and do not call `evalF`. Structural operations (building
+values, pattern matching on tags) do not consume fuel.
 
 ---
 

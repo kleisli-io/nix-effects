@@ -349,7 +349,7 @@ Felleisen (2002) for the contract-theoretic framing and Dunfield &
 Krishnaswami (2021) for the bidirectional checking approach.
 
 **Universe levels are partially enforced.** For kernel-backed types,
-`inferLevel` computes the correct universe level from type structure.
+`checkTypeLevel` computes the correct universe level from the typing derivation.
 For non-kernel types, the `universe` field remains a trusted declaration
 — nothing prevents a user from declaring `universe = 0` on a type that
 operates at a higher level. Computing `sup_{a:A} level(B(a))` for

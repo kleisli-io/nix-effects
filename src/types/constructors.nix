@@ -7,6 +7,7 @@ let
   inherit (api) mk;
   inherit (fx.types.foundation) mkType check;
   inherit (fx.kernel) pure bind send;
+  H = fx.tc.hoas;
 
   Record = mk {
     doc = ''
@@ -76,6 +77,9 @@ let
     '';
     value = elemType: mkType {
       name = "List[${elemType.name}]";
+      kernelType =
+        if elemType ? _kernel then H.listOf elemType._kernel
+        else null;
       check = v:
         builtins.isList v && builtins.all elemType.check v;
       # Per-element effectful verify for blame tracking.
@@ -118,6 +122,30 @@ let
           in check intList [];
         expected = true;
       };
+      "kernel-propagates" = {
+        expr =
+          let boolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+          in (ListOf.value boolT) ? kernelCheck;
+        expected = true;
+      };
+      "kernelCheck-accepts" = {
+        expr =
+          let boolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+          in (ListOf.value boolT).kernelCheck [true false];
+        expected = true;
+      };
+      "kernelCheck-rejects-bad-elem" = {
+        expr =
+          let boolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+          in (ListOf.value boolT).kernelCheck [42];
+        expected = false;
+      };
+      "no-kernel-without-elem-kernel" = {
+        expr =
+          let intT = mkType { name = "Int"; check = builtins.isInt; };
+          in (ListOf.value intT) ? kernelCheck;
+        expected = false;
+      };
     };
   };
 
@@ -156,6 +184,10 @@ let
     '';
     value = leftType: rightType: mkType {
       name = "Either[${leftType.name}, ${rightType.name}]";
+      kernelType =
+        if leftType ? _kernel && rightType ? _kernel
+        then H.sum leftType._kernel rightType._kernel
+        else null;
       check = v:
         builtins.isAttrs v
         && v ? _tag && v ? value
@@ -188,6 +220,30 @@ let
               (mkType { name = "String"; check = builtins.isString; })
               (mkType { name = "Int"; check = builtins.isInt; });
           in check e { _tag = "Other"; value = 42; };
+        expected = false;
+      };
+      "kernel-propagates" = {
+        expr =
+          let
+            natT = mkType { name = "Nat"; check = v: builtins.isInt v && v >= 0; kernelType = H.nat; };
+            boolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+          in (Either.value natT boolT) ? kernelCheck;
+        expected = true;
+      };
+      "kernelCheck-accepts-left" = {
+        expr =
+          let
+            natT = mkType { name = "Nat"; check = v: builtins.isInt v && v >= 0; kernelType = H.nat; };
+            boolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+          in (Either.value natT boolT).kernelCheck { _tag = "Left"; value = 0; };
+        expected = true;
+      };
+      "kernelCheck-rejects-wrong-val" = {
+        expr =
+          let
+            natT = mkType { name = "Nat"; check = v: builtins.isInt v && v >= 0; kernelType = H.nat; };
+            boolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+          in (Either.value natT boolT).kernelCheck { _tag = "Left"; value = true; };
         expected = false;
       };
     };

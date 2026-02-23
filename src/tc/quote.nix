@@ -49,7 +49,26 @@ let
     else if t == "VFalse" then T.mkFalse
     else if t == "VList" then T.mkList (quote d v.elem)
     else if t == "VNil" then T.mkNil (quote d v.elem)
-    else if t == "VCons" then T.mkCons (quote d v.elem) (quote d v.head) (quote d v.tail)
+    # VCons — trampolined for deep lists (5000+ elements)
+    # Note: elemTm is taken from the outermost node and reused for all chain
+    # nodes. This is correct for well-typed values (all elem types are identical)
+    # but would produce wrong type annotations for ill-typed VCons chains.
+    else if t == "VCons" then
+      let
+        chain = builtins.genericClosure {
+          startSet = [{ key = 0; val = v; }];
+          operator = item:
+            if item.val.tag == "VCons"
+            then [{ key = item.key + 1; val = item.val.tail; }]
+            else [];
+        };
+        n = builtins.length chain - 1;
+        base = (builtins.elemAt chain n).val;
+        elemTm = quote d v.elem;
+      in builtins.foldl' (acc: i:
+        let node = (builtins.elemAt chain (n - 1 - i)).val; in
+        T.mkCons elemTm (quote d node.head) acc
+      ) (quote d base) (builtins.genList (x: x) n)
     else if t == "VUnit" then T.mkUnit
     else if t == "VTt" then T.mkTt
     else if t == "VVoid" then T.mkVoid
@@ -202,7 +221,13 @@ in mk {
       expected = "zero";
     };
 
-    # Stress test — stack safety (B3)
+    # Stress tests — stack safety
+    "quote-cons-5000" = {
+      expr = let
+        deep = builtins.foldl' (acc: _: V.vCons V.vNat V.vZero acc) (V.vNil V.vNat) (builtins.genList (x: x) 5000);
+      in (quote 0 deep).tag;
+      expected = "cons";
+    };
     "quote-succ-5000" = {
       expr = let
         deep = builtins.foldl' (acc: _: V.vSucc acc) V.vZero (builtins.genList (x: x) 5000);

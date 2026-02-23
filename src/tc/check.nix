@@ -3,7 +3,7 @@
 # check : Ctx -> Tm -> Val -> Computation Tm     (checking mode)
 # infer : Ctx -> Tm -> Computation { term; type; } (synthesis mode)
 # checkType : Ctx -> Tm -> Computation Tm         (type formation)
-# inferLevel : Val -> Nat                          (universe level)
+# checkTypeLevel : Ctx -> Tm -> Computation { term; level; } (type formation + level)
 #
 # Semi-trusted (Layer 1): uses TCB (eval/quote/conv) and sends typeError
 # effects for error reporting. Bugs here may produce wrong errors but
@@ -47,30 +47,11 @@ let
   typeError = msg: expected: got: term:
     send "typeError" { inherit msg expected got term; };
 
-  # -- Universe level computation (§8.2) --
-  inferLevel = v:
-    let t = v.tag; in
-    if t == "VNat" || t == "VBool" || t == "VUnit" || t == "VVoid" then 0
-    else if t == "VU" then v.level + 1
-    else if t == "VList" then inferLevel v.elem
-    else if t == "VSum" then
-      let a = inferLevel v.left; b = inferLevel v.right;
-      in if a >= b then a else b
-    else if t == "VPi" then
-      let a = inferLevel v.domain;
-          b = inferLevel (E.instantiate v.closure (V.freshVar 0));
-      in if a >= b then a else b
-    else if t == "VSigma" then
-      let a = inferLevel v.fst;
-          b = inferLevel (E.instantiate v.closure (V.freshVar 0));
-      in if a >= b then a else b
-    else if t == "VEq" then inferLevel v.type
-    else if t == "VNe" then 0  # neutral type variable: level unknown, conservatively 0
-    else throw "inferLevel: unknown value tag '${t}'";
-
   # -- Eliminator motive checking (§7.3) --
   # Checks that a motive has type (domTy → U(k)) for some k, enabling large
-  # elimination. Lambda motives: extend context, checkType on body. Non-lambda
+  # elimination. Lambda motives: extend context with domTy, checkType on body.
+  # The lambda's own domain annotation is ignored (standard bidirectional
+  # behavior — the expected domain overrides the annotation). Non-lambda
   # motives: infer type and validate shape is VPi(_, domTy, _ → VU(_)).
   checkMotive = ctx: motTm: domTy:
     if motTm.tag == "lam" then
@@ -143,12 +124,27 @@ let
     else if t == "nil" && ty.tag == "VList" then
       pure (T.mkNil (Q.quote ctx.depth ty.elem))
 
-    # Cons checked against List
+    # Cons checked against List — trampolined for deep lists (5000+ elements)
     else if t == "cons" && ty.tag == "VList" then
-      let elemTy = ty.elem; in
-      bind (check ctx tm.head elemTy) (h':
-        bind (check ctx tm.tail ty) (t':
-          pure (T.mkCons (Q.quote ctx.depth elemTy) h' t')))
+      let
+        elemTy = ty.elem;
+        elemTm = Q.quote ctx.depth elemTy;
+        chain = builtins.genericClosure {
+          startSet = [{ key = 0; val = tm; }];
+          operator = item:
+            if item.val.tag == "cons"
+            then [{ key = item.key + 1; val = item.val.tail; }]
+            else [];
+        };
+        n = builtins.length chain - 1;
+        base = (builtins.elemAt chain n).val;
+      in bind (check ctx base ty) (baseTm:
+        builtins.foldl' (accComp: i:
+          let node = (builtins.elemAt chain (n - 1 - i)).val; in
+          bind accComp (acc:
+            bind (check ctx node.head elemTy) (h':
+              pure (T.mkCons elemTm h' acc)))
+        ) (pure baseTm) (builtins.genList (x: x) n))
 
     # Tt checked against Unit
     else if t == "tt" && ty.tag == "VUnit" then pure T.mkTt
@@ -357,6 +353,10 @@ let
                       if innerTy.tag != "VPi"
                       then typeError "J motive must take two arguments"
                         { tag = "pi"; } (Q.quote (ctx.depth + 1) innerTy) tm.motive
+                      else if !(C.conv (ctx.depth + 1) innerTy.domain (eqDomTy ctx.depth))
+                      then typeError "J motive inner domain must be Eq(A, a, y)"
+                        (Q.quote (ctx.depth + 1) (eqDomTy ctx.depth))
+                        (Q.quote (ctx.depth + 1) innerTy.domain) tm.motive
                       else
                         let codVal = E.instantiate innerTy.closure (V.freshVar (ctx.depth + 1)); in
                         if codVal.tag != "VU"
@@ -376,94 +376,68 @@ let
     else if t == "U" then
       pure { term = tm; type = V.vU (tm.level + 1); }
 
-    # Type formers infer via checkType + inferLevel
+    # Type formers infer via checkTypeLevel
     else if t == "nat" then pure { term = T.mkNat; type = V.vU 0; }
     else if t == "bool" then pure { term = T.mkBool; type = V.vU 0; }
     else if t == "unit" then pure { term = T.mkUnit; type = V.vU 0; }
     else if t == "void" then pure { term = T.mkVoid; type = V.vU 0; }
 
-    else if t == "pi" then
-      bind (checkType ctx tm.domain) (domTm:
-        let domVal = E.eval ctx.env domTm;
-            ctx' = extend ctx tm.name domVal;
-        in bind (checkType ctx' tm.codomain) (codTm:
-          let codVal = E.eval ctx'.env codTm;
-              lvl = let a = inferLevel domVal; b = inferLevel codVal;
-                    in if a >= b then a else b;
-          in pure { term = T.mkPi tm.name domTm codTm; type = V.vU lvl; }))
-
-    else if t == "sigma" then
-      bind (checkType ctx tm.fst) (fstTm:
-        let fstVal = E.eval ctx.env fstTm;
-            ctx' = extend ctx tm.name fstVal;
-        in bind (checkType ctx' tm.snd) (sndTm:
-          let sndVal = E.eval ctx'.env sndTm;
-              lvl = let a = inferLevel fstVal; b = inferLevel sndVal;
-                    in if a >= b then a else b;
-          in pure { term = T.mkSigma tm.name fstTm sndTm; type = V.vU lvl; }))
-
-    else if t == "list" then
-      bind (checkType ctx tm.elem) (eTm:
-        let eVal = E.eval ctx.env eTm; in
-        pure { term = T.mkList eTm; type = V.vU (inferLevel eVal); })
-
-    else if t == "sum" then
-      bind (checkType ctx tm.left) (lTm:
-        let lVal = E.eval ctx.env lTm; in
-        bind (checkType ctx tm.right) (rTm:
-          let rVal = E.eval ctx.env rTm;
-              lvl = let a = inferLevel lVal; b = inferLevel rVal;
-                    in if a >= b then a else b;
-          in pure { term = T.mkSum lTm rTm; type = V.vU lvl; }))
-
-    else if t == "eq" then
-      bind (checkType ctx tm.type) (aTm:
-        let aVal = E.eval ctx.env aTm; in
-        bind (check ctx tm.lhs aVal) (lTm:
-          bind (check ctx tm.rhs aVal) (rTm:
-            pure { term = T.mkEq aTm lTm rTm; type = V.vU (inferLevel aVal); })))
+    else if t == "pi" || t == "sigma" || t == "list" || t == "sum" || t == "eq" then
+      bind (checkTypeLevel ctx tm) (r:
+        pure { term = r.term; type = V.vU r.level; })
 
     else typeError "cannot infer type" { tag = "unknown"; } (Q.quote ctx.depth (V.vU 0)) tm;
 
-  # checkType : Ctx -> Tm -> Computation Tm  (§7.5)
-  # Verify a term is a type (lives in some universe).
-  checkType = ctx: tm:
+  # checkTypeLevel : Ctx -> Tm -> Computation { term; level; }  (§7.5, §8.2)
+  # Like checkType, but also returns the universe level the type inhabits.
+  # Levels come from the typing derivation, not post-hoc value inspection.
+  checkTypeLevel = ctx: tm:
     let t = tm.tag; in
-    if t == "nat" then pure T.mkNat
-    else if t == "bool" then pure T.mkBool
-    else if t == "unit" then pure T.mkUnit
-    else if t == "void" then pure T.mkVoid
-    else if t == "U" then pure tm
+    if t == "nat" then pure { term = T.mkNat; level = 0; }
+    else if t == "bool" then pure { term = T.mkBool; level = 0; }
+    else if t == "unit" then pure { term = T.mkUnit; level = 0; }
+    else if t == "void" then pure { term = T.mkVoid; level = 0; }
+    else if t == "U" then pure { term = tm; level = tm.level + 1; }
     else if t == "list" then
-      bind (checkType ctx tm.elem) (eTm: pure (T.mkList eTm))
+      bind (checkTypeLevel ctx tm.elem) (r:
+        pure { term = T.mkList r.term; level = r.level; })
     else if t == "sum" then
-      bind (checkType ctx tm.left) (lTm:
-        bind (checkType ctx tm.right) (rTm: pure (T.mkSum lTm rTm)))
+      bind (checkTypeLevel ctx tm.left) (lr:
+        bind (checkTypeLevel ctx tm.right) (rr:
+          let lvl = if lr.level >= rr.level then lr.level else rr.level;
+          in pure { term = T.mkSum lr.term rr.term; level = lvl; }))
     else if t == "pi" then
-      bind (checkType ctx tm.domain) (domTm:
-        let domVal = E.eval ctx.env domTm;
+      bind (checkTypeLevel ctx tm.domain) (dr:
+        let domVal = E.eval ctx.env dr.term;
             ctx' = extend ctx tm.name domVal;
-        in bind (checkType ctx' tm.codomain) (codTm:
-          pure (T.mkPi tm.name domTm codTm)))
+        in bind (checkTypeLevel ctx' tm.codomain) (cr:
+          let lvl = if dr.level >= cr.level then dr.level else cr.level;
+          in pure { term = T.mkPi tm.name dr.term cr.term; level = lvl; }))
     else if t == "sigma" then
-      bind (checkType ctx tm.fst) (fstTm:
-        let fstVal = E.eval ctx.env fstTm;
+      bind (checkTypeLevel ctx tm.fst) (fr:
+        let fstVal = E.eval ctx.env fr.term;
             ctx' = extend ctx tm.name fstVal;
-        in bind (checkType ctx' tm.snd) (sndTm:
-          pure (T.mkSigma tm.name fstTm sndTm)))
+        in bind (checkTypeLevel ctx' tm.snd) (sr:
+          let lvl = if fr.level >= sr.level then fr.level else sr.level;
+          in pure { term = T.mkSigma tm.name fr.term sr.term; level = lvl; }))
     else if t == "eq" then
-      bind (checkType ctx tm.type) (aTm:
-        let aVal = E.eval ctx.env aTm; in
+      bind (checkTypeLevel ctx tm.type) (ar:
+        let aVal = E.eval ctx.env ar.term; in
         bind (check ctx tm.lhs aVal) (lTm:
           bind (check ctx tm.rhs aVal) (rTm:
-            pure (T.mkEq aTm lTm rTm))))
-    # Fallback: infer and check it's a universe
+            pure { term = T.mkEq ar.term lTm rTm; level = ar.level; })))
+    # Fallback: infer and check it's a universe, extract level
     else
       bind (infer ctx tm) (result:
         if result.type.tag == "VU"
-        then pure result.term
+        then pure { term = result.term; level = result.type.level; }
         else typeError "expected a type (universe)" { tag = "U"; }
           (Q.quote ctx.depth result.type) tm);
+
+  # checkType : Ctx -> Tm -> Computation Tm  (§7.5)
+  # Verify a term is a type (lives in some universe). Wrapper around checkTypeLevel.
+  checkType = ctx: tm:
+    bind (checkTypeLevel ctx tm) (r: pure r.term);
 
   # -- Test helpers --
   # Run a computation through handle, aborting on typeError
@@ -487,7 +461,7 @@ in mk {
     Type errors reported via fx.send "typeError".
   '';
   value = {
-    inherit check infer checkType inferLevel;
+    inherit check infer checkType checkTypeLevel;
     inherit emptyCtx extend lookupType;
     inherit runCheck checkTm inferTm;
   };
@@ -509,27 +483,6 @@ in mk {
     "ctx-empty-depth" = { expr = ctx0.depth; expected = 0; };
     "ctx-extend-depth" = { expr = ctx1.depth; expected = 1; };
     "ctx-lookup" = { expr = (lookupType ctx1 0).tag; expected = "VNat"; };
-
-    # -- inferLevel --
-    "level-nat" = { expr = inferLevel vNat; expected = 0; };
-    "level-bool" = { expr = inferLevel vBool; expected = 0; };
-    "level-U0" = { expr = inferLevel (vU 0); expected = 1; };
-    "level-U1" = { expr = inferLevel (vU 1); expected = 2; };
-    "level-list-nat" = { expr = inferLevel (vList vNat); expected = 0; };
-    "level-pi-nat-nat" = {
-      expr = inferLevel (vPi "x" vNat (mkClosure [] T.mkNat));
-      expected = 0;
-    };
-    # Neutral type variable returns conservative level 0
-    "level-neutral" = {
-      expr = inferLevel (V.vNe 5 []);
-      expected = 0;
-    };
-    # Unknown value tag throws (caught by tryEval)
-    "level-unknown-throws" = {
-      expr = (builtins.tryEval (inferLevel { tag = "VBogus"; })).success;
-      expected = false;
-    };
 
     # -- §11.1 Required positive tests --
 
@@ -789,6 +742,37 @@ in mk {
       expected = "cannot infer type";
     };
 
+    # J motive with wrong inner domain: P : Π(y:Nat). Π(e:Bool). U(0)
+    # Inner domain should be Eq(Nat,0,y), not Bool.
+    "reject-j-motive-wrong-inner-domain" = {
+      expr = (inferTm ctx0 (T.mkJ T.mkNat T.mkZero
+        (T.mkAnn
+          (T.mkLam "y" T.mkNat
+            (T.mkLam "e" T.mkBool (T.mkU 0)))
+          (T.mkPi "y" T.mkNat (T.mkPi "e" T.mkBool (T.mkU 1))))
+        T.mkZero
+        T.mkZero
+        T.mkRefl)) ? error;
+      expected = true;
+    };
+    "reject-j-motive-wrong-inner-domain-msg" = {
+      expr = (inferTm ctx0 (T.mkJ T.mkNat T.mkZero
+        (T.mkAnn
+          (T.mkLam "y" T.mkNat
+            (T.mkLam "e" T.mkBool (T.mkU 0)))
+          (T.mkPi "y" T.mkNat (T.mkPi "e" T.mkBool (T.mkU 1))))
+        T.mkZero
+        T.mkZero
+        T.mkRefl)).msg;
+      expected = "J motive inner domain must be Eq(A, a, y)";
+    };
+
+    # Lambda checked against non-Pi type: Lam(...) : Nat REJECT
+    "reject-lam-against-non-pi" = {
+      expr = (checkTm ctx0 (T.mkLam "x" T.mkNat (T.mkVar 0)) vNat) ? error;
+      expected = true;
+    };
+
     # Cumulativity: Nat : U(0) also accepted at U(1)
     "check-cumulativity" = {
       expr = (checkTm ctx0 T.mkNat (vU 1)).tag;
@@ -799,6 +783,53 @@ in mk {
     "check-U0-in-U1" = {
       expr = (checkTm ctx0 (T.mkU 0) (vU 1)).tag;
       expected = "U";
+    };
+
+    # Downward cumulativity REJECTED — U(1) : U(0) must fail
+    # U(1) infers as U(2), checked against U(0): level 2 > 0, not convertible
+    "reject-U1-in-U0" = {
+      expr = (checkTm ctx0 (T.mkU 1) (vU 0)) ? error;
+      expected = true;
+    };
+
+    # Wrong scrutinee type — NatElim with Bool scrutinee REJECT (§11.2)
+    "reject-nat-elim-bool-scrut" = {
+      expr = (inferTm ctx0 (T.mkNatElim
+        (T.mkLam "n" T.mkNat T.mkNat)
+        T.mkZero
+        (T.mkLam "k" T.mkNat (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0))))
+        T.mkTrue)) ? error;
+      expected = true;
+    };
+
+    # BoolElim with Nat scrutinee REJECT
+    "reject-bool-elim-nat-scrut" = {
+      expr = (inferTm ctx0 (T.mkBoolElim
+        (T.mkLam "b" T.mkBool T.mkNat)
+        T.mkZero (T.mkSucc T.mkZero)
+        T.mkZero)) ? error;
+      expected = true;
+    };
+
+    # ListElim with Nat scrutinee REJECT
+    "reject-list-elim-nat-scrut" = {
+      expr = (inferTm ctx0 (T.mkListElim T.mkNat
+        (T.mkLam "l" (T.mkList T.mkNat) T.mkNat)
+        T.mkZero
+        (T.mkLam "h" T.mkNat (T.mkLam "t" (T.mkList T.mkNat)
+          (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0)))))
+        T.mkZero)) ? error;
+      expected = true;
+    };
+
+    # SumElim with Nat scrutinee REJECT
+    "reject-sum-elim-nat-scrut" = {
+      expr = (inferTm ctx0 (T.mkSumElim T.mkNat T.mkBool
+        (T.mkLam "s" (T.mkSum T.mkNat T.mkBool) T.mkNat)
+        (T.mkLam "x" T.mkNat (T.mkVar 0))
+        (T.mkLam "b" T.mkBool T.mkZero)
+        T.mkZero)) ? error;
+      expected = true;
     };
 
     # Eq type infers
@@ -841,6 +872,41 @@ in mk {
     "checktype-fallback" = {
       expr = (runCheck (checkType ctx0 (T.mkAnn T.mkNat (T.mkU 0)))).tag;
       expected = "ann";
+    };
+
+    # checkTypeLevel fallback error — Ann(Zero, Nat) is not a universe
+    # Zero:Nat, not a type — checkTypeLevel should reject
+    "reject-checktype-non-universe" = {
+      expr = (runCheck (checkTypeLevel ctx0 (T.mkAnn T.mkZero T.mkNat))) ? error;
+      expected = true;
+    };
+
+    # Deep nested let (100+ levels) — verify no stack overflow
+    "stress-nested-let-100" = {
+      expr = let
+        # let x0=0 in let x1=0 in ... let x99=0 in x0  (always Var(99) to reach bottom)
+        nested = builtins.foldl' (body: _:
+          T.mkLet "x" T.mkNat T.mkZero body
+        ) T.mkZero (builtins.genList (x: x) 100);
+      in (checkTm ctx0 nested vNat).tag;
+      expected = "let";
+    };
+
+    # J with non-function motive REJECT — motive is Zero (not a function at all)
+    "reject-j-non-function-motive" = {
+      expr = (inferTm ctx0 (T.mkJ T.mkNat T.mkZero
+        (T.mkAnn T.mkZero T.mkNat)
+        T.mkZero T.mkZero T.mkRefl)) ? error;
+      expected = true;
+    };
+
+    # J lambda motive with wrong outer domain REJECT — λ(y:Bool).λ(e:...).U(0) but A=Nat
+    "reject-j-motive-wrong-outer-domain" = {
+      expr = (inferTm ctx0 (T.mkJ T.mkNat T.mkZero
+        (T.mkLam "y" T.mkBool
+          (T.mkLam "e" (T.mkEq T.mkNat T.mkZero (T.mkVar 1)) (T.mkU 0)))
+        T.mkZero T.mkZero T.mkRefl)) ? error;
+      expected = true;
     };
 
     # -- §11.1 Theorem tests --
@@ -1101,6 +1167,51 @@ in mk {
         tm = T.mkLam "y" T.mkNat (T.mkSucc (T.mkVar 1));
       in Q.nf env1 (Q.nf env1 tm) == Q.nf env1 tm;
       expected = true;
+    };
+
+    # -- Universe level soundness tests --
+
+    # In context [B : U(1)]: Π(x:Nat).B should infer U(1) not U(0)
+    "level-pi-with-type-var" = {
+      expr = let
+        ctxB = extend ctx0 "B" (vU 1);
+      in (inferTm ctxB (T.mkPi "x" T.mkNat (T.mkVar 1))).type.level;
+      expected = 1;
+    };
+
+    # In context [B : U(1)]: Σ(x:Nat).B should infer U(1) not U(0)
+    "level-sigma-with-type-var" = {
+      expr = let
+        ctxB = extend ctx0 "B" (vU 1);
+      in (inferTm ctxB (T.mkSigma "x" T.mkNat (T.mkVar 1))).type.level;
+      expected = 1;
+    };
+
+    # In context [A : U(2)]: Π(x:Nat).Π(y:Nat).A should infer U(2)
+    "level-nested-pi" = {
+      expr = let
+        ctxA = extend ctx0 "A" (vU 2);
+      in (inferTm ctxA (T.mkPi "x" T.mkNat (T.mkPi "y" T.mkNat (T.mkVar 2)))).type.level;
+      expected = 2;
+    };
+
+    # In context [F : Π(x:Nat).U(1)]: Π(y:F(0)).Nat should infer U(1)
+    # Exercises checkTypeLevel fallback on App returning a universe
+    "level-app-returning-universe" = {
+      expr = let
+        fTy = vPi "x" vNat (mkClosure [] (T.mkU 1));
+        ctxF = extend ctx0 "F" fTy;
+      in (inferTm ctxF (T.mkPi "y" (T.mkApp (T.mkVar 0) T.mkZero) T.mkNat)).type.level;
+      expected = 1;
+    };
+
+    # In context [A : U(2), B : U(1)]: Σ(x:A).B should infer U(2)
+    # Exercises checkTypeLevel with mixed-level type variables
+    "level-sigma-mixed-vars" = {
+      expr = let
+        ctxAB = extend (extend ctx0 "A" (vU 2)) "B" (vU 1);
+      in (inferTm ctxAB (T.mkSigma "x" (T.mkVar 1) (T.mkVar 1))).type.level;
+      expected = 2;
     };
   };
 }

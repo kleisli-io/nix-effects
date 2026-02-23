@@ -60,13 +60,17 @@ let
         last = builtins.elemAt chain (builtins.length chain - 1);
         baseResult = vNatElimF fuel motive base step last.val;
         n = builtins.length chain - 1;
-        result = builtins.foldl' (acc: i:
-          let
+        # Thread fuel through fold: each step application decrements fuel
+        result = builtins.foldl' (state: i:
+          if state.fuel <= 0 then throw "normalization budget exceeded"
+          else let
             item = builtins.elemAt chain (n - i);
             predVal = item.val.pred;
-          in vAppF fuel (vAppF fuel step predVal) acc
-        ) baseResult (builtins.genList (i: i + 1) n);
-      in result
+            f = state.fuel;
+            applied = vAppF f (vAppF f step predVal) state.acc;
+          in { acc = applied; fuel = f - 1; }
+        ) { acc = baseResult; inherit fuel; } (builtins.genList (i: i + 1) n);
+      in result.acc
     else throw "tc: vNatElim on non-nat (tag=${scrut.tag})";
 
   vBoolElim = motive: onTrue: onFalse: scrut:
@@ -93,14 +97,18 @@ let
         last = builtins.elemAt chain (builtins.length chain - 1);
         baseResult = vListElimF fuel elemTy motive onNil onCons last.val;
         n = builtins.length chain - 1;
-        result = builtins.foldl' (acc: i:
-          let
+        # Thread fuel through fold: each step application decrements fuel
+        result = builtins.foldl' (state: i:
+          if state.fuel <= 0 then throw "normalization budget exceeded"
+          else let
             item = builtins.elemAt chain (n - i);
             h = item.val.head;
             t = item.val.tail;
-          in vAppF fuel (vAppF fuel (vAppF fuel onCons h) t) acc
-        ) baseResult (builtins.genList (i: i + 1) n);
-      in result
+            f = state.fuel;
+            applied = vAppF f (vAppF f (vAppF f onCons h) t) state.acc;
+          in { acc = applied; fuel = f - 1; }
+        ) { acc = baseResult; inherit fuel; } (builtins.genList (i: i + 1) n);
+      in result.acc
     else throw "tc: vListElim on non-list (tag=${scrut.tag})";
 
   vAbsurd = type: scrut:
@@ -115,6 +123,9 @@ let
       vNe scrut.level (scrut.spine ++ [ (eSumElim left right motive onLeft onRight) ])
     else throw "tc: vSumElim on non-sum (tag=${scrut.tag})";
 
+  # J computation: J(A, a, P, pr, b, refl) = pr.
+  # When eq=VRefl, the checker has verified b≡a, so `rhs` is unused.
+  # When eq is neutral, `rhs` is preserved in the EJ spine frame for quotation.
   vJ = type: lhs: motive: base: rhs: eq:
     if eq.tag == "VRefl" then base
     else if eq.tag == "VNe" then
@@ -144,7 +155,22 @@ let
     # Natural numbers
     else if t == "nat" then vNat
     else if t == "zero" then vZero
-    else if t == "succ" then vSucc (ev tm.pred)
+    # succ — trampolined for deep naturals (S^5000+)
+    else if t == "succ" then
+      let
+        chain = builtins.genericClosure {
+          startSet = [{ key = 0; val = tm; }];
+          operator = item:
+            if item.val.tag == "succ"
+            then [{ key = item.key + 1; val = item.val.pred; }]
+            else [];
+        };
+        n = builtins.length chain - 1;
+        base = (builtins.elemAt chain n).val;
+      in if n > f then throw "normalization budget exceeded"
+      else builtins.foldl' (acc: _: vSucc acc)
+        (evalF (f - n) env base)
+        (builtins.genList (x: x) n)
     else if t == "nat-elim" then
       vNatElimF f (ev tm.motive) (ev tm.base) (ev tm.step) (ev tm.scrut)
 
@@ -158,7 +184,29 @@ let
     # Lists
     else if t == "list" then vList (ev tm.elem)
     else if t == "nil" then vNil (ev tm.elem)
-    else if t == "cons" then vCons (ev tm.elem) (ev tm.head) (ev tm.tail)
+    # cons — trampolined for deep lists (5000+ elements)
+    # Fuel: deduct n for chain length, thread remaining through fold (§9.5)
+    else if t == "cons" then
+      let
+        chain = builtins.genericClosure {
+          startSet = [{ key = 0; val = tm; }];
+          operator = item:
+            if item.val.tag == "cons"
+            then [{ key = item.key + 1; val = item.val.tail; }]
+            else [];
+        };
+        n = builtins.length chain - 1;
+        base = (builtins.elemAt chain n).val;
+      in if n > f then throw "normalization budget exceeded"
+      else let
+        result = builtins.foldl' (state: i:
+          if state.fuel <= 0 then throw "normalization budget exceeded"
+          else let
+            node = (builtins.elemAt chain (n - 1 - i)).val;
+            ef = evalF state.fuel env;
+          in { acc = vCons (ef node.elem) (ef node.head) state.acc; fuel = state.fuel - 1; }
+        ) { acc = evalF (f - n) env base; fuel = f - n; } (builtins.genList (x: x) n);
+      in result.acc
     else if t == "list-elim" then
       vListElimF f (ev tm.elem) (ev tm.motive) (ev tm.nil) (ev tm.cons) (ev tm.scrut)
 
@@ -410,6 +458,54 @@ in mk {
         (T.mkLam "k" T.mkNat (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0))))
         (succN 100))).tag;
       expected = "VSucc";
+    };
+
+    # Fuel threading: NatElim with fuel=100 on S^200(0) must exhaust.
+    # Before fix, each fold step got full fuel budget; now fuel decrements per step.
+    "fuel-threading-nat-elim" = {
+      expr = (builtins.tryEval (builtins.deepSeq
+        (evalF 100 [] (T.mkNatElim
+          (T.mkLam "n" T.mkNat T.mkNat)
+          T.mkZero
+          (T.mkLam "k" T.mkNat (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0))))
+          (succN 200)))
+        true)).success;
+      expected = false;
+    };
+    # Fuel threading: ListElim with fuel=100 on 200-element list must exhaust.
+    "fuel-threading-list-elim" = {
+      expr = let
+        mkList = n: builtins.foldl' (acc: _: T.mkCons T.mkNat T.mkZero acc)
+          (T.mkNil T.mkNat) (builtins.genList (x: x) n);
+      in (builtins.tryEval (builtins.deepSeq
+        (evalF 100 [] (T.mkListElim T.mkNat
+          (T.mkLam "l" (T.mkList T.mkNat) T.mkNat)
+          T.mkZero
+          (T.mkLam "h" T.mkNat (T.mkLam "t" (T.mkList T.mkNat)
+            (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0)))))
+          (mkList 200)))
+        true)).success;
+      expected = false;
+    };
+
+    # Fuel threading: Cons eval with fuel=100 on 200-element cons chain must exhaust.
+    # Before fix, each fold step got full fuel budget; now fuel deducts chain length.
+    "fuel-threading-cons-eval" = {
+      expr = let
+        mkList = n: builtins.foldl' (acc: _: T.mkCons T.mkNat T.mkZero acc)
+          (T.mkNil T.mkNat) (builtins.genList (x: x) n);
+      in (builtins.tryEval (builtins.deepSeq
+        (evalF 100 [] (mkList 200))
+        true)).success;
+      expected = false;
+    };
+    # Cons eval with sufficient fuel succeeds
+    "fuel-sufficient-cons-eval" = {
+      expr = let
+        mkList = n: builtins.foldl' (acc: _: T.mkCons T.mkNat T.mkZero acc)
+          (T.mkNil T.mkNat) (builtins.genList (x: x) n);
+      in (eval [] (mkList 50)).tag;
+      expected = "VCons";
     };
 
     # -- §11.3 Stress tests (eval level) --

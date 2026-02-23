@@ -173,8 +173,8 @@ is why keeping Level 1 pure matters in a system with dependent contracts.
 
 The MLTT type-checking kernel (`src/tc/`) makes the Fire Triangle
 argument concrete. The kernel implements a cumulative universe hierarchy
-(`U(0) : U(1) : U(2) : ...`) where `inferLevel` computes levels by
-structural recursion on types — `level(Pi(A, B)) = max(level(A), level(B))`,
+(`U(0) : U(1) : U(2) : ...`) where `checkTypeLevel` computes levels from
+the typing derivation — `level(Pi(A, B)) = max(level(A), level(B))`,
 `level(U(i)) = i + 1`. This prevents Girard's paradox: `U(i) : U(i)` is
 rejected because `level(U(i)) = i + 1 > i`. The kernel verifies this
 stratification for every type it checks, turning what was previously an

@@ -19,6 +19,8 @@ let
 
   isType = v: builtins.isAttrs v && v ? _tag && v._tag == "Type";
 
+  H = fx.tc.hoas;
+
   typeAt = mk {
     doc = ''
       Create universe type at level n (cumulative). `Type_n` contains all types
@@ -37,6 +39,14 @@ let
       check = v: isType v && v ? universe && v.universe <= n;
       universe = n + 1;
       description = "Universe level ${toString n}";
+    } // {
+      # Kernel backing: _kernel for elaboration, prove for proof verification.
+      # No kernelCheck — types-as-values can't be elaborated by decide().
+      _kernel = H.u n;
+      prove = term:
+        let result = builtins.tryEval (
+          !((H.checkHoas (H.u n) term) ? error));
+        in result.success && result.value;
     };
     tests = {
       "type0-accepts-level0-type" = {
@@ -62,6 +72,27 @@ let
           let IntType = mkType { name = "Int"; check = builtins.isInt; universe = 0; };
           in check (typeAt.value 1) IntType;
         expected = true;
+      };
+      "has-kernel" = {
+        expr = (typeAt.value 0) ? _kernel;
+        expected = true;
+      };
+      "has-prove" = {
+        expr = (typeAt.value 0) ? prove;
+        expected = true;
+      };
+      "prove-accepts-nat-in-U0" = {
+        expr = (typeAt.value 0).prove H.nat;
+        expected = true;
+      };
+      "prove-accepts-bool-in-U0" = {
+        expr = (typeAt.value 0).prove H.bool;
+        expected = true;
+      };
+      "no-kernelCheck" = {
+        # Types-as-values can't be elaborated
+        expr = (typeAt.value 0) ? kernelCheck;
+        expected = false;
       };
     };
   };

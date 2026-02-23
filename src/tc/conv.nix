@@ -318,6 +318,15 @@ in mk {
       expected = true;
     };
 
+    # No eta — f and λx.f(x) are NOT definitionally equal (§6.5)
+    # freshVar(0) is a neutral, VLam wrapping App(freshVar(0), freshVar(1)) is its eta-expansion
+    "conv-no-eta-lam" = {
+      expr = conv 1
+        (V.freshVar 0)
+        (vLam "x" vNat (mkClosure [ (V.freshVar 0) ] (T.mkApp (T.mkVar 1) (T.mkVar 0))));
+      expected = false;
+    };
+
     # Stress tests — stack safety (B1/B2)
     "conv-succ-5000" = {
       expr = let

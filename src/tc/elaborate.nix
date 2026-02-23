@@ -103,12 +103,11 @@ let
       else
         let
           elemTy = hoasTy.elem;
-          buildList = vs:
-            if vs == [] then H.nil elemTy
-            else H.cons elemTy
-              (elaborateValue elemTy (builtins.head vs))
-              (buildList (builtins.tail vs));
-        in buildList value
+          len = builtins.length value;
+        in builtins.foldl' (acc: i:
+          let v = builtins.elemAt value (len - 1 - i); in
+          H.cons elemTy (elaborateValue elemTy v) acc
+        ) (H.nil elemTy) (builtins.genList (x: x) len)
 
     else if t == "sum" then
       if !(builtins.isAttrs value && value ? _tag && value ? value)
@@ -290,6 +289,23 @@ in mk {
       expected = "sigma";
     };
 
+    # Dependent Pi (codomain uses argument) REJECTED without _kernel
+    # The family returns different types for the two sentinels, detecting dependence
+    "reject-elab-dependent-pi" = {
+      expr = let
+        depPi = FD.Pi { domain = BoolT; codomain = x: if x.name == "__elab_sentinel_1__" then IntT else BoolT; universe = 0; };
+      in (builtins.tryEval (elaborateType depPi)).success;
+      expected = false;
+    };
+
+    # Dependent Sigma (snd uses argument) REJECTED without _kernel
+    "reject-elab-dependent-sigma" = {
+      expr = let
+        depSig = FD.Sigma { fst = BoolT; snd = x: if x.name == "__elab_sentinel_1__" then IntT else BoolT; universe = 0; };
+      in (builtins.tryEval (elaborateType depSig)).success;
+      expected = false;
+    };
+
     # ===== Value elaboration =====
 
     "elab-val-true" = {
@@ -401,6 +417,15 @@ in mk {
     "decide-product-rejects-wrong-fst" = {
       expr = decide (H.sigma "x" H.nat (_: H.bool)) { fst = true; snd = true; };
       expected = false;
+    };
+
+    # Stack safety: decide on large list (buildList + HOAS elab both trampolined)
+    # Note: eval/check still recurse on cons chains, limiting full-pipeline depth.
+    # The HOAS layer itself handles 5000+ (see hoas.nix elab-cons-5000 test).
+    # Stack safety: full pipeline (elaborate → eval → check) trampolined for cons
+    "decide-list-5000" = {
+      expr = decide (H.listOf H.nat) (builtins.genList (x: x) 5000);
+      expected = true;
     };
 
     # Dependent sigma cleanly rejected (tryEval catches the throw)

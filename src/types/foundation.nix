@@ -99,14 +99,24 @@ let
       Level 3: error policy as handler (strict/collecting/logging)
       ```
     '';
-    value = { name, check, verify ? null, universe ? 0, description ? name }:
-      let self = {
-        _tag = "Type";
-        inherit name check universe description;
-        validate =
-          if verify != null then verify self
-          else v: send "typeCheck" { type = self; context = name; value = v; };
-      };
+    value = { name, check, verify ? null, universe ? 0, description ? name, kernelType ? null }:
+      let
+        kernelFields =
+          if kernelType != null then {
+            _kernel = kernelType;
+            kernelCheck = v: fx.tc.elaborate.decide kernelType v;
+            prove = term:
+              let result = builtins.tryEval (
+                !((fx.tc.hoas.checkHoas kernelType term) ? error));
+              in result.success && result.value;
+          } else {};
+        self = {
+          _tag = "Type";
+          inherit name check universe description;
+          validate =
+            if verify != null then verify self
+            else v: send "typeCheck" { type = self; context = name; value = v; };
+        } // kernelFields;
       in self;
     tests = {
       "creates-type" = {
@@ -144,6 +154,45 @@ let
           };
           in (t.validate 42)._tag;
         expected = "Pure";
+      };
+      "kernelType-absent-by-default" = {
+        expr = (mkType.value { name = "T"; check = _: true; }) ? kernelCheck;
+        expected = false;
+      };
+      "kernelType-adds-fields" = {
+        expr = let
+          H = fx.tc.hoas;
+          t = mkType.value { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+        in t ? kernelCheck && t ? prove && t ? _kernel;
+        expected = true;
+      };
+      "kernelCheck-accepts-valid" = {
+        expr = let
+          H = fx.tc.hoas;
+          t = mkType.value { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+        in t.kernelCheck true;
+        expected = true;
+      };
+      "kernelCheck-rejects-invalid" = {
+        expr = let
+          H = fx.tc.hoas;
+          t = mkType.value { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+        in t.kernelCheck 42;
+        expected = false;
+      };
+      "prove-accepts-valid" = {
+        expr = let
+          H = fx.tc.hoas;
+          t = mkType.value { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+        in t.prove H.true_;
+        expected = true;
+      };
+      "prove-rejects-wrong-type" = {
+        expr = let
+          H = fx.tc.hoas;
+          t = mkType.value { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+        in t.prove H.zero;
+        expected = false;
       };
     };
   };

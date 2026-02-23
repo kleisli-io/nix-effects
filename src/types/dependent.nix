@@ -1,97 +1,108 @@
-# nix-effects dependent contracts: Pi (Π) and Sigma (Σ)
+# nix-effects dependent types: Pi (Π), Sigma (Σ), and friends
 #
-# Higher-order contracts with algebraic effects for dependent type
-# constructors, following the MLTT structure of Martin-Löf (1984).
+# Dependent type constructors grounded in Martin-Löf Type Theory (1984).
+# Each type is backed by the MLTT type-checking kernel (src/tc/), which
+# provides formal verification via bidirectional typing with NbE.
 #
-# == Architecture: contracts + effects, not weakened MLTT ==
+# == Architecture ==
 #
-# nix-effects types are RUNTIME PREDICATES operating on values, not a
-# syntactic type checker operating on terms. This is a fundamentally
-# different system from Agda/Lean — not a broken version of their MLTT.
-# The correct theoretical framework is:
+#   Surface API (Pi, Sigma, DepRecord, ...)
+#        |
+#        | kernelType (HOAS → de Bruijn Tm)
+#        v
+#   Type-checking kernel (MLTT — eval/quote/conv/check)
+#        |
+#        | checker runs as effectful computation
+#        v
+#   Effects kernel (freer monad, FTCQueue, trampoline, handlers)
+#        |
+#        v
+#   Pure Nix
 #
-#   - Higher-order contracts (Findler & Felleisen 2002) for the checking
-#     strategy: first-order contracts checked immediately, higher-order
-#     contracts deferred to elimination sites.
-#   - Algebraic effects (Plotkin & Pretnar 2009) for blame tracking and
-#     configurable error policy via the typeCheck effect.
-#   - Fire Triangle (Pedrot & Tabareau 2020) for the three-level
-#     architecture: types as pure values, checking as effects, policy
-#     as handlers.
+# Types with kernel backing ARE kernel types. The decidable checking that
+# .check performs is the decidable fragment of kernel type checking,
+# optimized as a fast path. Types without kernelType (String, Int, Float,
+# Attrs, Path, Function, Record, Maybe, Variant) remain runtime contracts.
+# The kernel adds what decidable checking cannot express: proof terms for
+# universally quantified properties (∀ services, if enabled then firewall
+# rule exists).
 #
-# == Handler semantics ==
+# == Trust model ==
 #
-# The handler (Level 3 of the Fire Triangle) determines error policy:
-#   strict     — throws on first failure (abort semantics)
-#   collecting — accumulates all errors in state (continues with false resume)
-#   logging    — records all checks (pass and fail) for observability
-#   all-pass   — boolean state = state ∧ passed; canonical for adequacy testing
+#   Layer 0 (TCB):          eval, quote, conv — pure, no effects
+#   Layer 1 (semi-trusted): bidirectional checker — uses TCB
+#   Layer 2 (UNTRUSTED):    elaborator — can have arbitrary bugs,
+#                           kernel catches them
 #
-# Known constraint: builtins.tryEval only evaluates to WHNF. When catching
-# handler throws, force .value on the result to trigger trampoline execution.
-# Cross-type comparison (e.g. "str" > 0) is uncatchable by tryEval — predicates
-# must guard input types before comparison operators.
+# == Type interface ==
 #
-# == Types as (Specification, Guard, Verifier) triples ==
+# Every type carries:
 #
-# Every type constructed by mkType is a triple (S, G, V):
-#   S = Specification — the type-theoretic content (name, universe)
-#   G = Guard (check) — pure decidable predicate, used for composition
-#   V = Verifier (validate) — effectful, sends typeCheck for blame tracking
+#   Decidable checking (all types):
+#     check      — pure predicate, the decidable fragment of kernel checking
+#     validate   — effectful, sends typeCheck effects for blame tracking
 #
-# The adequacy invariant connects them:
-#   T.check v ⟺ all typeCheck effects in T.validate v pass
-# Tested via the all-pass handler: state = state ∧ (param.type.check param.value)
+#   Kernel verification (when kernelType provided):
+#     _kernel     — kernel Tm representation
+#     prove       — (term → bool) verify a proof term against _kernel
+#     kernelCheck — (value → bool) elaborate a Nix value and kernel-check
+#                   (data types only — Nix closures are opaque)
 #
-# == First-order vs. higher-order contracts ==
+# Handler semantics for validate (configurable error policy):
+#   strict     — throws on first failure
+#   collecting — accumulates all errors in state
+#   logging    — records all checks for observability
+#   all-pass   — boolean conjunction; canonical for testing
 #
-# First-order (Sigma, base types): Guard IS full membership. G = ⟦T⟧.
-#   Both components of a Sigma pair are concrete data — the full
-#   dependent introduction rule is decidable and checked immediately.
+# == Kernel types via HOAS ==
 #
-# Higher-order (Pi): Guard OVER-APPROXIMATES. G ⊋ ⟦Π(x:A).B(x)⟧.
-#   A function contract cannot be checked at introduction — only at each
-#   elimination site. The guard (isFunction) is the immediate first-order
-#   part; checkAt verifies specific applications (the deferred part).
-#   This is the standard Findler-Felleisen decomposition for function
-#   contracts, not a limitation.
+# HOAS combinators (src/tc/hoas.nix) make kernel types writable as Nix
+# expressions. Nix lambdas capture binding; elaboration converts to
+# de Bruijn-indexed kernel terms:
 #
-# == Two judgment forms ==
+#   H.forall "x" H.bool (x: H.natElim x ...)   — dependent
+#   H.forall "x" H.bool (_: H.nat)             — non-dependent (Arrow)
+#   H.sigma "x" H.nat (x: H.vec x H.bool)      — dependent pair
 #
-# There is ONE type system with TWO presentations:
-#   Analytic (check):   pure, compositional — Sigma.check calls fst.check
-#   Synthetic (validate): effectful, observable — sends typeCheck effects
-#
-# The pure guard MUST exist because types compose by composing guards.
-# Sigma.check calls sub-type checks which must be pure Bool returns, not
-# effectful computations. The effectful verifier is built on top for
-# observability. They cannot be unified.
+# Kernel types flow DOWN from explicit construction:
+#   Pi.value { domain; codomain; universe; kernelType = H.forall ...; }
+# The elaborator (src/tc/elaborate.nix) may compute kernelType as a
+# Layer 2 convenience — if wrong, the kernel catches it.
 #
 # == Operations naming convention ==
 #
-#   check / validate = introduction verification (guard / effectful guard)
-#   apply / proj1 / proj2 / checkAt = elimination
-#   pair / pairE / certify / certifyE = introduction construction
+#   check / validate       = decidable checking (guard / effectful)
+#   prove / kernelCheck    = kernel verification (proof term / value)
+#   apply / proj1 / proj2  = elimination
+#   checkAt                = deferred elimination check (Pi only)
+#   pair / pairE           = introduction construction
 #
 # == MLTT rule mapping ==
 #
 # Π(x:A).B(x) — Dependent function (Curry-Howard: ∀)
-#   Formation:    Pi.value { domain, codomain, universe }
-#   Introduction: .check (isFunction), .validate (effectful guard)
-#   Elimination:  .apply (pure), .checkAt (deferred contract)
+#   Formation:    Pi.value { domain, codomain, universe, kernelType? }
+#   Introduction: .check (isFunction), .validate (effectful)
+#   Elimination:  .apply (pure), .checkAt (deferred)
 #   Computation:  β-reduction (Nix evaluation)
+#   Kernel:       .prove (proof term), ._kernel (Tm)
 #
 # Σ(x:A).B(x) — Dependent pair (Curry-Howard: ∃)
-#   Formation:    Sigma.value { fst, snd, universe }
+#   Formation:    Sigma.value { fst, snd, universe, kernelType? }
 #   Introduction: .check (exact guard), .validate (decomposed for blame)
 #   Elimination:  .proj1, .proj2
 #   Computation:  π₁(a,b) ≡ a, π₂(a,b) ≡ b
+#   Kernel:       .prove, .kernelCheck (data — can elaborate), ._kernel
+#
+# Known Nix constraint: builtins.tryEval only catches `throw` and `assert`.
+# Cross-type comparison (e.g. "str" > 0) is uncatchable — predicates must
+# guard input types before comparison operators.
 { fx, api, ... }:
 
 let
   inherit (api) mk;
   inherit (fx.types.foundation) mkType check;
   inherit (fx.kernel) pure bind send;
+  H = fx.tc.hoas;
 
   # ===========================================================================
   # PI TYPES (DEPENDENT FUNCTIONS)
@@ -167,8 +178,21 @@ let
       - `.domain` — the domain type A
       - `.codomain` — the type family B
     '';
-    value = { domain, codomain, universe, name ? "Π(${domain.name})" }:
-      let piType = mkType {
+    value = { domain, codomain, universe, name ? "Π(${domain.name})", kernelType ? null }:
+      let
+        # Kernel fields for Pi (dependent or non-dependent): _kernel and prove
+        # only, no kernelCheck (function values are opaque — can't elaborate a
+        # Nix closure to a kernel term). Caller provides kernelType via HOAS.
+        piKernelFields =
+          if kernelType != null then {
+            _kernel = kernelType;
+            prove = term:
+              let result = builtins.tryEval (
+                !((H.checkHoas kernelType term) ? error));
+              in result.success && result.value;
+          }
+          else {};
+        piType = mkType {
         inherit name universe;
         # Guard: immediate first-order part of the higher-order contract.
         # Soundly rejects non-functions. The deferred part (domain +
@@ -220,7 +244,7 @@ let
             universe = other.universe;
             name = "compose(${name}, ${other.name})";
           };
-      };
+      } // piKernelFields;
       in piType;
     tests = {
       "pi-accepts-function" = {
@@ -380,6 +404,34 @@ let
           in piT.universe;
         expected = 1;
       };
+      "pi-with-kernelType-has-kernel" = {
+        # Pi with explicit kernelType gets _kernel and prove
+        expr =
+          let
+            BoolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+            NatT = mkType { name = "Nat"; check = v: builtins.isInt v && v >= 0; kernelType = H.nat; };
+            piT = Pi.value { domain = BoolT; codomain = _: NatT; universe = 0; kernelType = H.forall "x" H.bool (_: H.nat); };
+          in piT ? _kernel && piT ? prove;
+        expected = true;
+      };
+      "pi-no-kernelCheck" = {
+        # Pi never gets kernelCheck — functions are opaque values
+        expr =
+          let
+            BoolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+            piT = Pi.value { domain = BoolT; codomain = _: BoolT; universe = 0; kernelType = H.forall "x" H.bool (_: H.bool); };
+          in piT ? kernelCheck;
+        expected = false;
+      };
+      "pi-without-kernelType-no-kernel" = {
+        # Pi without kernelType has no kernel fields
+        expr =
+          let
+            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            piT = Pi.value { domain = IntT; codomain = n: if n > 0 then IntT else IntT; universe = 0; };
+          in piT ? _kernel;
+        expected = false;
+      };
     };
   };
 
@@ -455,9 +507,9 @@ let
       - `.fstType` — the type A
       - `.sndFamily` — the type family B
     '';
-    value = { fst, snd, universe, name ? "Σ(${fst.name})" }:
+    value = { fst, snd, universe, name ? "Σ(${fst.name})", kernelType ? null }:
       mkType {
-        inherit name universe;
+        inherit name universe kernelType;
         # Guard: exact first-order contract. Both components are concrete
         # data, so the full dependent introduction rule is decidable.
         check = v:
@@ -699,6 +751,47 @@ let
             sigT = Sigma.value { fst = IntT; snd = _: IntT; universe = 0; };
           in sigT ? pullback;
         expected = true;
+      };
+      "sigma-with-kernelType-has-kernel" = {
+        # Sigma with explicit kernelType gets kernelCheck and prove
+        expr =
+          let
+            BoolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+            NatT = mkType { name = "Nat"; check = v: builtins.isInt v && v >= 0; kernelType = H.nat; };
+            sigT = Sigma.value { fst = NatT; snd = _: BoolT; universe = 0; kernelType = H.sigma "x" H.nat (_: H.bool); };
+          in sigT ? kernelCheck && sigT ? prove;
+        expected = true;
+      };
+      "sigma-kernelCheck-accepts" = {
+        expr =
+          let
+            NatT = mkType { name = "Nat"; check = v: builtins.isInt v && v >= 0; kernelType = H.nat; };
+            BoolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+            sigT = Sigma.value { fst = NatT; snd = _: BoolT; universe = 0; kernelType = H.sigma "x" H.nat (_: H.bool); };
+          in sigT.kernelCheck { fst = 0; snd = true; };
+        expected = true;
+      };
+      "sigma-kernelCheck-rejects" = {
+        expr =
+          let
+            NatT = mkType { name = "Nat"; check = v: builtins.isInt v && v >= 0; kernelType = H.nat; };
+            BoolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+            sigT = Sigma.value { fst = NatT; snd = _: BoolT; universe = 0; kernelType = H.sigma "x" H.nat (_: H.bool); };
+          in sigT.kernelCheck { fst = true; snd = true; };
+        expected = false;
+      };
+      "sigma-without-kernelType-no-kernel" = {
+        # Sigma without kernelType has no kernel backing
+        expr =
+          let
+            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            sigT = Sigma.value {
+              fst = IntT;
+              snd = n: mkType { name = "L${toString n}"; check = v: builtins.isList v && builtins.length v == n; };
+              universe = 0;
+            };
+          in sigT ? kernelCheck;
+        expected = false;
       };
     };
   };
@@ -1041,11 +1134,22 @@ let
                 if builtins.isFunction field.type
                 then field.type partial
                 else field.type;
+              # Kernel propagation: when all remaining fields are non-dependent,
+              # compute Sigma kernel type from field _kernel annotations.
+              sigmaKernelType =
+                if builtins.all (f: !(builtins.isFunction f.type)) remaining
+                   && fieldType ? _kernel then
+                  let restType = buildSigma rest {};
+                  in if restType ? _kernel then
+                    H.sigma "x" fieldType._kernel (_: restType._kernel)
+                  else null
+                else null;
             in Sigma.value {
               fst = fieldType;
               snd = v: buildSigma rest (partial // { ${field.name} = v; });
               name = "DepRec{${namesStr}}.${field.name}";
               universe = fieldType.universe;
+              kernelType = sigmaKernelType;
             };
 
         sigmaType = buildSigma fields {};
@@ -1182,6 +1286,19 @@ let
               { name = "s"; type = StrT; }
             ];
           in recT.checkFlat { n = 42; s = "hello"; };
+        expected = true;
+      };
+      "deprec-non-dep-has-kernel" = {
+        # Non-dependent DepRecord with kernel-backed fields propagates kernel
+        expr =
+          let
+            NatT = mkType { name = "Nat"; check = v: builtins.isInt v && v >= 0; kernelType = H.nat; };
+            BoolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+            recT = DepRecord.value [
+              { name = "n"; type = NatT; }
+              { name = "b"; type = BoolT; }
+            ];
+          in recT ? _kernel && recT ? kernelCheck;
         expected = true;
       };
     };

@@ -31,6 +31,7 @@ error messages or reject valid terms, but cannot cause unsoundness
 
 - `check : Ctx × Tm × Val → Tm`
 - `infer : Ctx × Tm → Tm × Val`
+- `checkTypeLevel : Ctx × Tm → Tm × ℕ`
 
 **Layer 2 — Untrusted.** The elaborator. Translates surface syntax
 (named variables, implicit arguments, level inference, eta-insertion)
@@ -292,7 +293,7 @@ vSnd(_)             = THROW "kernel bug: vSnd on non-pair"
 ```
 eval(ρ, Nat)             = VNat
 eval(ρ, Zero)            = VZero
-eval(ρ, Succ(t))         = VSucc(eval(ρ, t))
+eval(ρ, Succ(t))         = VSucc(eval(ρ, t))   -- MUST trampoline for deep naturals
 eval(ρ, NatElim(P,z,s,n)) = vNatElim(eval(ρ,P), eval(ρ,z), eval(ρ,s), eval(ρ,n))
 ```
 
@@ -331,7 +332,7 @@ vBoolElim(_, _, _, _)         = THROW "kernel bug: vBoolElim on non-bool"
 ```
 eval(ρ, List(A))            = VList(eval(ρ, A))
 eval(ρ, Nil(A))             = VNil(eval(ρ, A))
-eval(ρ, Cons(A, h, t))      = VCons(eval(ρ, A), eval(ρ, h), eval(ρ, t))
+eval(ρ, Cons(A, h, t))      = VCons(eval(ρ, A), eval(ρ, h), eval(ρ, t))  -- MUST trampoline for deep lists
 eval(ρ, ListElim(A,P,n,c,l)) =
   vListElim(eval(ρ,A), eval(ρ,P), eval(ρ,n), eval(ρ,c), eval(ρ,l))
 ```
@@ -447,7 +448,7 @@ quote(d, VTrue)            = True
 quote(d, VFalse)           = False
 quote(d, VList(A))         = List(quote(d, A))
 quote(d, VNil(A))          = Nil(quote(d, A))
-quote(d, VCons(A, h, t))   = Cons(quote(d, A), quote(d, h), quote(d, t))
+quote(d, VCons(A, h, t))   = Cons(quote(d, A), quote(d, h), quote(d, t))  -- MUST trampoline for deep lists
 quote(d, VUnit)            = Unit
 quote(d, VTt)              = Tt
 quote(d, VVoid)            = Void
@@ -605,6 +606,7 @@ lookupType(Γ, i) = Γ.types[i]
 Γ ⊢ t ⇐ A  ↝  t'     checking mode:  check(Γ, t, A) = t'
 Γ ⊢ t ⇒ A  ↝  t'     synthesis mode: infer(Γ, t) = (t', A)
 Γ ⊢ T type  ↝  T'     type formation: checkType(Γ, T) = T'
+Γ ⊢ T type@i  ↝  T'   type + level:  checkTypeLevel(Γ, T) = (T', i)
 ```
 
 The output `t'` is the elaborated core term (fully annotated).
@@ -759,6 +761,18 @@ This is checked by constructing the appropriate Pi type from `P̂`.
                    ↝  J(A', a', P', pr', b', eq')
 ```
 
+**J motive verification.** For non-lambda motives, the
+implementation structurally verifies all three components:
+
+1. Outer Pi domain matches `A` (conversion check)
+2. Inner Pi domain matches `Eq(A, a, y)` (conversion check)
+3. Innermost codomain is `VU(k)` for some `k`
+
+For lambda motives (`P = λy. body`), the body is checked via
+`checkMotive` against `Eq(A, a, y)`, which performs the same
+verification on the inner structure. This catches motive errors
+at the motive itself rather than deferring to the base case.
+
 ### 7.4 Checking rules (check)
 
 **Lam** (lambda introduction)
@@ -788,7 +802,7 @@ This is checked by constructing the appropriate Pi type from `P̂`.
                 Γ ⊢ Zero ⇐ A  ↝  Zero
 ```
 
-**Succ**
+**Succ** (MUST trampoline for deep naturals)
 ```
                 whnf(A) = VNat
                 Γ ⊢ t ⇐ VNat  ↝  t'
@@ -814,7 +828,7 @@ This is checked by constructing the appropriate Pi type from `P̂`.
                 Γ ⊢ Nil(_) ⇐ A  ↝  Nil(quote(Γ.depth, Â))
 ```
 
-**Cons**
+**Cons** (MUST trampoline for deep lists)
 ```
                 whnf(A) = VList(Â)
                 Γ ⊢ h ⇐ Â  ↝  h'
@@ -881,7 +895,14 @@ body `u`, not for the definition `t`.
 This is the catch-all. If no other checking rule applies, try
 synthesis and verify the inferred type matches the expected type.
 
-### 7.5 Type formation (checkType)
+### 7.5 Type formation (checkType / checkTypeLevel)
+
+The implementation provides two variants: `checkType(Γ, T)` returns
+only the elaborated term, while `checkTypeLevel(Γ, T)` returns both
+the elaborated term and the universe level. `checkType` is a thin
+wrapper: `checkType(Γ, T) = checkTypeLevel(Γ, T).term`. Universe
+levels are computed structurally during the type formation check
+(see §8.2), not by post-hoc inspection of evaluated values.
 
 ```
                 ──────────────────────
@@ -946,19 +967,31 @@ U(i) : U(i + 1)                for all i ≥ 0
 
 ### 8.2 Type former levels
 
+Universe levels are computed by `checkTypeLevel`, which returns
+`{ term; level; }` from the **typing derivation**, not from
+post-hoc value inspection. This avoids the problem of unknown
+levels for neutral type variables.
+
 ```
-level(Nat)           = 0
-level(Bool)          = 0
-level(Unit)          = 0
-level(Void)          = 0
-level(List(A))       = level(A)
-level(Sum(A, B))     = max(level(A), level(B))
-level(Pi(A, B))      = max(level(A), level(B))
-level(Sigma(A, B))   = max(level(A), level(B))
-level(Eq(A, a, b))   = level(A)
-level(U(i))          = i + 1
-level(VNe(_, _))     = 0          -- conservative: unknown neutral type
+checkTypeLevel(Γ, Nat)         = { Nat,     0 }
+checkTypeLevel(Γ, Bool)        = { Bool,    0 }
+checkTypeLevel(Γ, Unit)        = { Unit,    0 }
+checkTypeLevel(Γ, Void)        = { Void,    0 }
+checkTypeLevel(Γ, List(A))     = { List(A'), level(A) }
+checkTypeLevel(Γ, Sum(A, B))   = { Sum(A',B'), max(level(A), level(B)) }
+checkTypeLevel(Γ, Pi(n, A, B)) = { Pi(n,A',B'), max(level(A), level(B)) }
+checkTypeLevel(Γ, Sigma(n,A,B))= { Sigma(n,A',B'), max(level(A), level(B)) }
+checkTypeLevel(Γ, Eq(A, a, b)) = { Eq(A',a',b'), level(A) }
+checkTypeLevel(Γ, U(i))        = { U(i),   i + 1 }
+-- Fallback: infer type, require VU(i), extract i
+checkTypeLevel(Γ, T)           = { T', i }  where Γ ⊢ T ⇒ VU(i)
 ```
+
+The fallback handles neutral type expressions (variables,
+applications) by inferring their type and requiring it to be a
+universe. This correctly propagates levels through type variables:
+if `B : U(1)`, then `checkTypeLevel` on `B` infers `VU(1)` and
+returns level 1.
 
 ### 8.3 Cumulativity
 
@@ -993,10 +1026,11 @@ substitution together yield inconsistency.
 
 ### 9.1 Evaluation fuel
 
-Every call to `eval` decrements a fuel counter. When fuel reaches 0:
+Every call to `evalF` receives a fuel parameter and decrements it
+by one before evaluating the term. When fuel reaches 0:
 
 ```
-eval(ρ, t, fuel=0) = THROW "normalization budget exceeded"
+evalF(fuel=0, ρ, t) = THROW "normalization budget exceeded"
 ```
 
 The kernel aborts via `throw`. Layer 0 (TCB) has no access to the
@@ -1015,8 +1049,20 @@ callers may pass arbitrarily low fuel, which will cause immediate
 
 ### 9.3 Fuel accounting
 
-One unit of fuel is consumed per call to `evalF` (one term
-evaluated). All fuel consumption flows through `evalF`:
+Fuel is **per-path**, not a global counter. Each call to `evalF`
+captures `f = fuel - 1` and passes `f` to all sub-evaluations of
+that term. When evaluating `App(t, u)`, both `evalF(f, ρ, t)` and
+`evalF(f, ρ, u)` receive the same `f`. This means fuel bounds the
+**depth** of any single evaluation path, not the total work across
+all paths.
+
+For a balanced binary tree of N applications, the total work is
+O(2^depth × fuel), not O(fuel). This is inherent to pure Nix —
+there is no mutable global counter. The fuel mechanism guarantees
+termination (every path eventually hits 0) but does not bound total
+computation time.
+
+All fuel consumption flows through `evalF`:
 
 - Direct term evaluation (each `evalF` call decrements fuel by 1)
 - Beta-reduction in `vApp` consumes fuel indirectly via
@@ -1027,6 +1073,46 @@ evaluated). All fuel consumption flows through `evalF`:
 Non-recursive eliminators (`vBoolElim`, `vJ`, `vAbsurd`) complete
 in O(1) and do not call `evalF`. Structural operations (building
 values, pattern matching on tags) do not consume fuel.
+
+### 9.4 Fuel threading in trampolined eliminators
+
+Trampolined eliminators (`vNatElimF`, `vListElimF`) flatten
+recursive chains into `builtins.foldl'` loops. Each fold step
+threads fuel through the accumulator:
+
+```
+foldl'(λ{acc, fuel}. λi.
+  if fuel ≤ 0 then THROW "normalization budget exceeded"
+  else { acc = step(fuel, acc, chain[i]); fuel = fuel - 1; })
+  {acc = base; fuel = fuel}
+  [1..n]
+```
+
+This ensures that an N-element chain consumes N units of fuel from
+the fold, plus whatever fuel each step application consumes
+internally. Without this threading, each step would get the
+original fuel budget, giving an effective budget of N × fuel.
+
+The worst-case complexity of a threaded fold is O(fuel²): at step
+*i*, the inner `vAppF` receives `fuel - i` as its own per-path
+budget. Summing over all steps gives Σ(fuel - i) ≈ fuel²/2. To
+achieve O(fuel), `vAppF` would need to return remaining fuel — an
+invasive signature change. The quadratic residual is inherent to
+per-path fuel semantics and is a strict improvement over the
+pre-threading O(N × fuel) with unbounded N.
+
+### 9.5 Fuel consumption in constructor chains
+
+Trampolined Succ and Cons evaluation (`eval(ρ, Succ(t))` and
+`eval(ρ, Cons(A, h, t))`) flatten chains of n constructors and
+deduct n fuel units from the budget before evaluating the base.
+A chain of n Succ constructors consumes n+1 fuel (1 for the entry
+evaluation, n for the chain deduction). Cons chains additionally
+thread remaining fuel through the fold: each fold step evaluates
+the element type and head with the current fuel budget, then
+decrements by 1 (matching the eliminator fuel threading pattern
+from §9.4). This is a third fuel consumption site alongside
+`evalF` decrements and eliminator fold steps.
 
 ---
 
@@ -1194,10 +1280,16 @@ v : Void ⊢ Absurd(Nat, v) : Nat
 ### 11.3 Required stress tests
 
 ```
--- Large Nat: S^10000(0) : Nat                    ACCEPT (trampoline)
--- NatElim on S^1000(0)                            ACCEPT (trampoline)
+-- Large Nat: S^5000(0) : Nat                     ACCEPT (trampoline)
+-- Large List: cons^5000 : List(Nat)              ACCEPT (trampoline)
+-- NatElim on S^5000(0)                            ACCEPT (trampoline)
+-- ListElim on cons^5000                           ACCEPT (trampoline)
+-- Succ elaboration: elab-succ-5000               ACCEPT (trampoline)
+-- Cons elaboration: elab-cons-5000               ACCEPT (trampoline)
 -- Deeply nested Pi: Pi(x₁, ..., Pi(xₙ, Nat, Nat)...) for n=500  ACCEPT
 -- Fuel exhaustion: artificially low fuel on complex term    REJECT (fuel)
+-- Fuel threading: NatElim fold decrements fuel per step    ACCEPT
+-- Fuel threading: ListElim fold decrements fuel per step   ACCEPT
 ```
 
 ### 11.4 Required roundtrip tests
@@ -1236,6 +1328,65 @@ where `normal_form(t)` is the expected normal form.
 | NbE | Normalization by evaluation |
 | THROW | Kernel invariant violation (crash) |
 | REJECT | Term rejected (via effect or fuel) |
+
+---
+
+## 13. Known Limitations
+
+The following are documented implementation choices or limitations,
+not bugs. They are recorded here so auditors do not rediscover them.
+
+### 13.1 Pair quotation uses dummy type annotation (Q1)
+
+`quote(d, VPair(a, b))` produces `Pair(quote(d,a), quote(d,b), Unit)`
+— the type annotation is always `Unit` regardless of the actual pair
+type. The `VPair` value does not carry its type (values are untyped
+in NbE), so the annotation cannot be reconstructed without additional
+context. Quoted pairs are structurally correct but carry a dummy
+annotation.
+
+### 13.2 Lambda domain annotations discarded in checking mode (C2)
+
+When checking `Lam(n, A, t)` against `VPi(n, dom, cl)`, the lambda's
+domain annotation `A` is discarded and replaced by `dom` from the
+Pi type. This is standard bidirectional type checking (Dunfield &
+Krishnaswami 2021, §4): in checking mode, the expected type provides
+the domain, not the term. The elaborated output uses `quote(d, dom)`,
+making the original annotation unrecoverable.
+
+### 13.3 Term constructors do not validate argument types (V1)
+
+Term constructors (`mkVar`, `mkSucc`, etc.) accept arbitrary Nix
+values without type validation. `mkVar "hello"` produces
+`{ tag = "var"; idx = "hello"; }`, which crashes at eval time.
+The trust boundary is the HOAS layer (`hoas.nix`), which is the
+public API — direct term construction is internal to the kernel.
+
+### 13.4 `tryEval` only catches `throw` and `assert false` (E1)
+
+`builtins.tryEval` in the elaborator's `isConstantFamily` sentinel
+detection only catches explicit `throw` and `assert false`. Nix
+coercion errors (e.g., "cannot convert a function to JSON"),
+missing attribute access, and type comparison errors are uncatchable.
+The elaborator uses `builtins.typeOf` in error paths to avoid
+triggering coercion errors.
+
+### 13.5 HOAS structural equality may produce false negatives (E2)
+
+Sigma value elaboration uses Nix structural equality (`==`) on HOAS
+nodes to detect non-dependent pairs. Semantically equal types with
+different structural representations (different elaboration paths)
+may compare as unequal, causing the elaborator to incorrectly treat
+a non-dependent sigma as dependent. This is a safe failure mode —
+the kernel still type-checks the result correctly, but elaboration
+may produce unnecessarily complex terms.
+
+### 13.6 Spine comparison is O(n) per element, O(n²) total (P1)
+
+`convSp` uses `builtins.elemAt` in a fold to compare neutral spines.
+In Nix, `builtins.elemAt` on lists is O(1) (Nix lists are internally
+vectors/arrays), so the actual complexity is O(n), not O(n²). This
+was incorrectly flagged in an earlier audit.
 
 ---
 

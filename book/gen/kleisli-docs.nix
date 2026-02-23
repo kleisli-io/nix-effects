@@ -96,8 +96,15 @@ let
   # Maps extractDocs tree structure to flat section directories.
   apiEntries =
     let
-      # Core API modules (top-level in extractDocs)
-      coreModules = [ "kernel" "trampoline" "adapt" "queue" ];
+      # Core API modules — derived dynamically from extractDocs.
+      # Everything at the top level that isn't a sub-namespace container
+      # (effects, types, stream) and has documentation.
+      subNamespaces = [ "effects" "types" "stream" ];
+      coreModules = builtins.filter
+        (name: !(builtins.elem name subNamespaces)
+               && builtins.isAttrs docs.${name}
+               && docs.${name} ? doc)
+        (builtins.attrNames docs);
       coreEntries = builtins.filter (e: e != null) (map (name:
         if docs ? ${name} then {
           name = "nix-effects/core-api/${name}.md";
@@ -128,5 +135,35 @@ let
 
     in coreEntries ++ effectsEntries ++ typesEntries ++ streamEntries;
 
+  # project.json — standard contract for the doc service to auto-discover
+  # this project. Section ordering, reference flags, and banner templates
+  # are all declared here so the Lisp server needs zero project-specific code.
+  projectJson = builtins.toJSON {
+    id = "nix-effects";
+    name = "nix-effects";
+    description = "Algebraic effects, dependent contracts, and refinement types in pure Nix.";
+    source-url = "https://github.com/kleisli-io/nix-effects";
+    sections = [
+      { slug = "guide"; title = "Guide"; order = 1; }
+      { slug = "core-api"; title = "Core API"; order = 2;
+        reference = true;
+        banner = "Auto-generated API reference from nix-effects source."; }
+      { slug = "effects"; title = "Effects"; order = 3;
+        reference = true;
+        banner = "Auto-generated API reference from nix-effects source."; }
+      { slug = "types"; title = "Types"; order = 4;
+        reference = true;
+        banner = "Auto-generated API reference from nix-effects source."; }
+      { slug = "streams"; title = "Streams"; order = 5;
+        reference = true;
+        banner = "Auto-generated API reference from nix-effects source."; }
+    ];
+  };
+
+  projectEntry = {
+    name = "nix-effects/project.json";
+    path = pkgs.writeText "project.json" projectJson;
+  };
+
 in
-  pkgs.linkFarm "nix-effects-kleisli-docs" (guideEntries ++ apiEntries)
+  pkgs.linkFarm "nix-effects-kleisli-docs" ([ projectEntry ] ++ guideEntries ++ apiEntries)

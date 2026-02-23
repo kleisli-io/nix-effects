@@ -7,6 +7,7 @@
 let
   inherit (api) mk;
   inherit (fx.types.foundation) mkType check;
+  H = fx.tc.hoas;
 
   String = mk {
     doc = "String type.";
@@ -28,10 +29,13 @@ let
 
   Bool = mk {
     doc = "Boolean type.";
-    value = mkType { name = "Bool"; check = builtins.isBool; };
+    value = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
     tests = {
       "accepts-bool" = { expr = check (Bool.value) true; expected = true; };
       "rejects-int" = { expr = check (Bool.value) 1; expected = false; };
+      "has-kernelCheck" = { expr = (Bool.value) ? kernelCheck; expected = true; };
+      "kernelCheck-accepts" = { expr = (Bool.value).kernelCheck true; expected = true; };
+      "kernelCheck-rejects" = { expr = (Bool.value).kernelCheck 42; expected = false; };
     };
   };
 
@@ -72,7 +76,7 @@ let
 
   Null = mk {
     doc = "Null type. Only null inhabits it.";
-    value = mkType { name = "Null"; check = v: v == null; };
+    value = mkType { name = "Null"; check = v: v == null; kernelType = H.unit; };
     tests = {
       "accepts-null" = { expr = check (Null.value) null; expected = true; };
       "rejects-zero" = { expr = check (Null.value) 0; expected = false; };
@@ -81,9 +85,12 @@ let
 
   Unit = mk {
     doc = "Unit type. Isomorphic to Null — the trivial type with one inhabitant.";
-    value = mkType { name = "Unit"; check = v: v == null; };
+    value = mkType { name = "Unit"; check = v: v == null; kernelType = H.unit; };
     tests = {
       "unit-is-null" = { expr = check (Unit.value) null; expected = true; };
+      "unit-has-kernelCheck" = { expr = (Unit.value) ? kernelCheck; expected = true; };
+      "unit-kernelCheck-null" = { expr = (Unit.value).kernelCheck null; expected = true; };
+      "unit-kernelCheck-rejects" = { expr = (Unit.value).kernelCheck 42; expected = false; };
     };
   };
 

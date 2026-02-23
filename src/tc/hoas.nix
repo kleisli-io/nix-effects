@@ -22,8 +22,9 @@ let
   # A marker is a lightweight attrset that stands for a bound variable
   # at a specific binding depth (level). elaborate converts these to
   # T.mkVar with the correct de Bruijn index.
-  mkMarker = level: { _hoas = true; inherit level; };
-  isMarker = x: builtins.isAttrs x && x ? _hoas && x._hoas;
+  _hoasTag = "__nix-effects-hoas-marker__";
+  mkMarker = level: { _hoas = _hoasTag; inherit level; };
+  isMarker = x: builtins.isAttrs x && x ? _hoas && x._hoas == _hoasTag;
 
   # -- HOAS AST node constructors --
   # These build an intermediate tree that elaborate walks.
@@ -93,7 +94,12 @@ let
       T.mkVar (depth - h.level - 1)
 
     else if !(builtins.isAttrs h) || !(h ? _htag) then
-      throw "hoas.elaborate: not an HOAS node: ${builtins.toJSON h}"
+      let
+        desc =
+          if builtins.isAttrs h
+          then "attrset with keys: ${builtins.concatStringsSep ", " (builtins.attrNames h)}"
+          else builtins.typeOf h;
+      in throw "hoas.elaborate: not an HOAS node (${desc})"
 
     else let t = h._htag; in
 
@@ -108,47 +114,74 @@ let
     else if t == "eq" then
       T.mkEq (elaborate depth h.type) (elaborate depth h.lhs) (elaborate depth h.rhs)
 
-    # -- Binding types --
-    else if t == "pi" then
+    # -- Binding types and terms (trampolined for deep nesting) --
+    else if t == "pi" || t == "sigma" || t == "lam" || t == "let" then
       let
-        dom = elaborate depth h.domain;
-        marker = mkMarker depth;
-        bodyTree = h.body marker;
-      in T.mkPi h.name dom (elaborate (depth + 1) bodyTree)
-
-    else if t == "sigma" then
-      let
-        fstTy = elaborate depth h.fst;
-        marker = mkMarker depth;
-        sndTree = h.body marker;
-      in T.mkSigma h.name fstTy (elaborate (depth + 1) sndTree)
-
-    # -- Binding terms --
-    else if t == "lam" then
-      let
-        dom = elaborate depth h.domain;
-        marker = mkMarker depth;
-        bodyTree = h.body marker;
-      in T.mkLam h.name dom (elaborate (depth + 1) bodyTree)
-
-    else if t == "let" then
-      let
-        ty = elaborate depth h.type;
-        val = elaborate depth h.val;
-        marker = mkMarker depth;
-        bodyTree = h.body marker;
-      in T.mkLet h.name ty val (elaborate (depth + 1) bodyTree)
+        # Peel nested binding forms iteratively via genericClosure
+        chain = builtins.genericClosure {
+          startSet = [{ key = depth; val = h; }];
+          operator = item:
+            let node = item.val; in
+            if builtins.isAttrs node && node ? _htag &&
+               (let nt = node._htag; in nt == "pi" || nt == "sigma" || nt == "lam" || nt == "let")
+            then
+              let marker = mkMarker item.key; in
+              [{ key = item.key + 1; val = node.body marker; }]
+            else [];
+        };
+        n = builtins.length chain - 1;
+        base = (builtins.elemAt chain n).val;
+        baseElab = elaborate (depth + n) base;
+      in
+      builtins.foldl' (acc: i:
+        let
+          item = builtins.elemAt chain (n - 1 - i);
+          node = item.val;
+          d = item.key;
+          nt = node._htag;
+        in
+        if nt == "pi" then T.mkPi node.name (elaborate d node.domain) acc
+        else if nt == "sigma" then T.mkSigma node.name (elaborate d node.fst) acc
+        else if nt == "lam" then T.mkLam node.name (elaborate d node.domain) acc
+        else T.mkLet node.name (elaborate d node.type) (elaborate d node.val) acc
+      ) baseElab (builtins.genList (x: x) n)
 
     # -- Non-binding terms --
     else if t == "zero" then T.mkZero
-    else if t == "succ" then T.mkSucc (elaborate depth h.pred)
+    # succ — trampolined for deep naturals (5000+)
+    else if t == "succ" then
+      let
+        chain = builtins.genericClosure {
+          startSet = [{ key = 0; val = h; }];
+          operator = item:
+            if builtins.isAttrs item.val && item.val ? _htag && item.val._htag == "succ"
+            then [{ key = item.key + 1; val = item.val.pred; }]
+            else [];
+        };
+        n = builtins.length chain - 1;
+        base = (builtins.elemAt chain n).val;
+      in builtins.foldl' (acc: _: T.mkSucc acc) (elaborate depth base) (builtins.genList (x: x) n)
     else if t == "true" then T.mkTrue
     else if t == "false" then T.mkFalse
     else if t == "tt" then T.mkTt
     else if t == "refl" then T.mkRefl
     else if t == "nil" then T.mkNil (elaborate depth h.elem)
+    # cons — trampolined for deep lists (5000+ elements)
     else if t == "cons" then
-      T.mkCons (elaborate depth h.elem) (elaborate depth h.head) (elaborate depth h.tail)
+      let
+        chain = builtins.genericClosure {
+          startSet = [{ key = 0; val = h; }];
+          operator = item:
+            if builtins.isAttrs item.val && item.val ? _htag && item.val._htag == "cons"
+            then [{ key = item.key + 1; val = item.val.tail; }]
+            else [];
+        };
+        n = builtins.length chain - 1;
+        base = (builtins.elemAt chain n).val;
+      in builtins.foldl' (acc: i:
+        let node = (builtins.elemAt chain (n - 1 - i)).val; in
+        T.mkCons (elaborate depth node.elem) (elaborate depth node.head) acc
+      ) (elaborate depth base) (builtins.genList (x: x) n)
     else if t == "pair" then
       T.mkPair (elaborate depth h.fst) (elaborate depth h.snd) (elaborate depth h.ann)
     else if t == "inl" then
@@ -293,6 +326,18 @@ in mk {
     "elab-app" = { expr = (elab (app (lam "x" nat (x: x)) zero)).tag; expected = "app"; };
     "elab-absurd" = { expr = (elab (absurd nat (lam "x" void (x: x)))).tag; expected = "absurd"; };
 
+    # -- Error path: non-serializable value doesn't crash toJSON --
+    "elab-error-non-serializable" = {
+      expr = (builtins.tryEval (elab (x: x))).success;
+      expected = false;
+    };
+
+    # -- Sentinel hardening: {_hoas=true} is NOT a marker --
+    "elab-reject-fake-marker" = {
+      expr = (builtins.tryEval (elab { _hoas = true; level = 0; })).success;
+      expected = false;
+    };
+
     # -- Eliminators --
     "elab-nat-elim" = {
       expr = (elab (ind (lam "n" nat (_: nat)) zero
@@ -325,6 +370,45 @@ in mk {
     # -- natLit helper --
     "natLit-0" = { expr = (elab (natLit 0)).tag; expected = "zero"; };
     "natLit-3" = { expr = (elab (natLit 3)).pred.pred.pred.tag; expected = "zero"; };
+
+    # -- Stack safety: deep succ chain elaboration --
+    "elab-succ-5000" = {
+      expr = let tm = elab (natLit 5000); in tm.tag;
+      expected = "succ";
+    };
+
+    # -- Stack safety: deep nested Pi chain elaboration --
+    "elab-pi-8000" = {
+      expr = let
+        deepPi = builtins.foldl' (acc: _:
+          forall "_" nat (_: acc)
+        ) nat (builtins.genList (x: x) 8000);
+        tm = elab deepPi;
+      in tm.tag;
+      expected = "pi";
+    };
+
+    # -- Stack safety: deep nested Lam chain elaboration --
+    "elab-lam-8000" = {
+      expr = let
+        deepLam = builtins.foldl' (acc: _:
+          lam "_" nat (_: acc)
+        ) zero (builtins.genList (x: x) 8000);
+        tm = elab deepLam;
+      in tm.tag;
+      expected = "lam";
+    };
+
+    # -- Stack safety: deep cons chain elaboration --
+    "elab-cons-5000" = {
+      expr = let
+        bigList = builtins.foldl' (acc: _:
+          cons nat zero acc
+        ) (nil nat) (builtins.genList (x: x) 5000);
+        tm = elab bigList;
+      in tm.tag;
+      expected = "cons";
+    };
 
     # ===== Kernel integration: type-check elaborated terms =====
 

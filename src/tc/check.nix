@@ -407,6 +407,12 @@ let
     else if t == "fn-lit" then pure { term = T.mkFnLit; type = V.vFunction; }
     else if t == "any-lit" then pure { term = T.mkAnyLit; type = V.vAny; }
 
+    # StrEq: both args must be String, result is Bool
+    else if t == "str-eq" then
+      bind (check ctx tm.lhs V.vString) (lhsTm:
+        bind (check ctx tm.rhs V.vString) (rhsTm:
+          pure { term = T.mkStrEq lhsTm rhsTm; type = V.vBool; }))
+
     else if t == "pi" || t == "sigma" || t == "list" || t == "sum" || t == "eq" then
       bind (checkTypeLevel ctx tm) (r:
         pure { term = r.term; type = V.vU r.level; })

@@ -130,6 +130,9 @@ Tm ::=
   | Function                            -- opaque function type
   | Any                                 -- dynamic/any type
 
+  -- String operations
+  | StrEq(lhs : Tm, rhs : Tm)          -- string equality: lhs == rhs → Bool
+
   -- Primitive literals
   | StringLit(s)                        -- string literal
   | IntLit(n)                           -- integer literal
@@ -231,6 +234,7 @@ Elim ::=
   | EAbsurd(A : Val)
   | ESumElim(A : Val, B : Val, P : Val, l : Val, r : Val)
   | EJ(A : Val, a : Val, P : Val, pr : Val, b : Val)
+  | EStrEq(arg : Val)
 
 Closure ::= (env : Env, body : Tm)
 Env     ::= [Val]          -- list indexed by de Bruijn index
@@ -501,9 +505,37 @@ eval(ρ, AnyLit)       = VAnyLit
 
 ```
 
-These primitives have no eliminators. They exist to integrate
+Most primitives have no eliminators. They exist to integrate
 Nix's native types into the kernel's type system as opaque,
-axiomatized constants.
+axiomatized constants. The exception is String, which has
+`StrEq` (§4.13).
+
+### 4.13 String equality (StrEq)
+
+```
+eval(ρ, StrEq(lhs, rhs)) = vStrEq(eval(ρ, lhs), eval(ρ, rhs))
+
+```
+
+where:
+
+```
+vStrEq(VStringLit(s₁), VStringLit(s₂)) = if s₁ == s₂ then VTrue else VFalse
+vStrEq(VNe(l, sp),     rhs)            = VNe(l, sp ++ [EStrEq(rhs)])
+vStrEq(lhs,            VNe(l, sp))     = VNe(l, sp ++ [EStrEq(lhs)])
+vStrEq(_, _)                           = THROW "kernel bug: vStrEq on non-string"
+
+```
+
+`StrEq` is a binary predicate on strings. Both arguments must be of
+type `String`. The result type is `Bool`. Unlike other eliminators,
+StrEq has no motive — it always returns `Bool`, not a dependent type.
+
+When both arguments are concrete string literals, `vStrEq` reduces
+to `VTrue` or `VFalse` by Nix-level string comparison. When either
+argument is neutral, the neutral's spine is extended with `EStrEq`
+carrying the other argument. This is sound because `StrEq` is
+symmetric: `StrEq(a, b) ≡ StrEq(b, a)` for all `a, b : String`.
 
 ---
 
@@ -567,6 +599,8 @@ quoteSp(d, head, [ESumElim(A,B,P,l,r) | rest]) =
   quoteSp(d, SumElim(quote(d,A), quote(d,B), quote(d,P), quote(d,l), quote(d,r), head), rest)
 quoteSp(d, head, [EJ(A,a,P,pr,b) | rest]) =
   quoteSp(d, J(quote(d,A), quote(d,a), quote(d,P), quote(d,pr), quote(d,b), head), rest)
+quoteSp(d, head, [EStrEq(arg) | rest]) =
+  quoteSp(d, StrEq(head, quote(d, arg)), rest)
 
 fresh(d) = VNe(d, [])
 
@@ -671,6 +705,7 @@ convElim(d, ESumElim(A₁,B₁,P₁,l₁,r₁), ESumElim(A₂,B₂,P₂,l₂,r�
   conv(d, A₁, A₂) ∧ conv(d, B₁, B₂) ∧ conv(d, P₁, P₂) ∧ conv(d, l₁, l₂) ∧ conv(d, r₁, r₂)
 convElim(d, EJ(A₁,a₁,P₁,pr₁,b₁), EJ(A₂,a₂,P₂,pr₂,b₂)) =
   conv(d, A₁, A₂) ∧ conv(d, a₁, a₂) ∧ conv(d, P₁, P₂) ∧ conv(d, pr₁, pr₂) ∧ conv(d, b₁, b₂)
+convElim(d, EStrEq(arg₁), EStrEq(arg₂)) = conv(d, arg₁, arg₂)
 convElim(_, _, _) = false
 
 ```
@@ -944,6 +979,20 @@ Literals synthesize their corresponding type:
 
 (Similarly for AttrsLit → VAttrs, PathLit → VPath,
 FnLit → VFunction, AnyLit → VAny.)
+
+**StrEq** (string equality)
+
+```
+                Γ ⊢ lhs ⇐ VString  ↝  lhs'
+                Γ ⊢ rhs ⇐ VString  ↝  rhs'
+                ──────────────────────
+                Γ ⊢ StrEq(lhs, rhs) ⇒ VBool  ↝  StrEq(lhs', rhs')
+
+```
+
+Both arguments are checked against `VString`. The result type is
+always `VBool`. StrEq is not a dependent eliminator — it has no
+motive parameter.
 
 ### 7.4 Checking rules (check)
 
@@ -1500,6 +1549,15 @@ v : Void ⊢ Absurd(Nat, v) : Nat
 
 -- Cumulativity: Nat : U(0) should also be accepted at U(1)
 
+-- StrEq: equal strings reduce to true
+⊢ Refl : Eq(Bool, StrEq(StringLit("foo"), StringLit("foo")), True)
+
+-- StrEq: unequal strings reduce to false
+⊢ Refl : Eq(Bool, StrEq(StringLit("foo"), StringLit("bar")), False)
+
+-- StrEq: type inference
+⊢ StrEq(StringLit("a"), StringLit("b")) : Bool
+
 ```
 
 ### 11.2 Required negative tests (kernel must REJECT)
@@ -1525,6 +1583,9 @@ v : Void ⊢ Absurd(Nat, v) : Nat
 
 -- Unbound variable
 ⊢ Var(0)  (in empty context)           REJECT
+
+-- StrEq on non-string
+⊢ StrEq(Zero, StringLit("foo"))       REJECT  (lhs is Nat, expected String)
 
 -- Ill-typed pair
 ⊢ Pair(Zero, Zero, Sigma(x, Nat, Bool))  REJECT  (snd is Nat, expected Bool)
@@ -1642,7 +1703,33 @@ negatives remain possible. This is a safe failure mode — the kernel
 still type-checks correctly, but elaboration may require explicit
 `_kernel` annotations unnecessarily.
 
-### 13.6 Spine comparison complexity
+### 13.6 StrEq neutral canonicalization
+
+When one argument to `vStrEq` is neutral and the other is a literal,
+the neutral's spine is extended with `EStrEq(literal)`. When both
+arguments are neutral, the **left** neutral's spine is extended with
+`EStrEq(right)`. This means `StrEq(x, y)` and `StrEq(y, x)` (where
+both are neutral) produce different normal forms: `VNe(x, [EStrEq(y)])`
+vs `VNe(y, [EStrEq(x)])`. Therefore `conv` will report them as
+**not** definitionally equal, even though `StrEq` is semantically
+symmetric. This is a safe conservatism: the kernel may reject some
+provable equalities but never accepts a false one.
+
+### 13.7 Extract uses type value threading (not sentinels)
+
+The `extract` function threads kernel type values (`tyVal`) through
+recursive extraction, rather than using sentinel-based non-dependence
+tests. For Pi extraction, the codomain type is computed per-invocation
+via `instantiate(tyVal.closure, kernelArg)`, supporting both dependent
+and non-dependent function extraction. For Sigma extraction (records),
+the second component's type is computed via
+`instantiate(tyVal.closure, val.fst)`. A `reifyType : Val → HoasTree`
+fallback converts kernel type values back to HOAS when the HOAS body
+cannot be applied (e.g., when the body accesses record fields from a
+neutral). `reifyType` loses sugar (VSigma → `H.sigma`, not
+`H.record`) so the HOAS body is preferred when available.
+
+### 13.8 Spine comparison complexity
 
 `convSp` uses `builtins.elemAt` in a fold to compare neutral spines.
 In Nix, `builtins.elemAt` on lists is O(1) (Nix lists are internally

@@ -7,6 +7,8 @@
 #   elaborateType    : FxType → HoasTree              (type level)
 #   elaborateValue   : HoasTree → NixVal → HoasTree   (value level: Nix → HOAS)
 #   extract          : HoasTree → Val → NixValue       (value level: kernel → Nix)
+#   extractInner     : HoasTree → Val → Val → NixValue (3-arg: HOAS + type val + val)
+#   reifyType        : Val → HoasTree                  (kernel type val → HOAS fallback)
 #   decide           : HoasTree → NixVal → Bool        (decision procedure)
 #   decideType       : FxType → NixVal → Bool          (elaborate type then decide)
 #   verifyAndExtract : HoasTree → HoasTree → NixValue  (full pipeline)
@@ -16,8 +18,8 @@
 #   2. Structural fields (Pi: domain/codomain, Sigma: fstType/sndFamily)
 #   3. Name convention (Bool, Nat, Unit, Null, String, Int, Float, ...)
 #
-# Non-dependent Pi/Sigma are auto-detected via sentinel test.
-# Dependent Pi/Sigma require explicit _kernel annotation.
+# elaborateValue uses sentinel tests for non-dependent Pi/Sigma detection.
+# extract uses kernel type value threading (no sentinel tests).
 #
 # Spec reference: kernel-mvp-research.md §3
 { fx, api, ... }:
@@ -241,13 +243,44 @@ let
 
     else throw "elaborateValue: unsupported type tag '${t}'";
 
-  # -- Value extraction --
+  # -- Reification: kernel type value → HOAS type --
   #
-  # extract : HoasTree → Val → NixValue
-  # Reverse of elaborateValue — converts kernel values back to Nix values.
-  # For Pi types: wraps with boundary conversion (elaborate arg, apply, extract result).
-  # Opaque types (Attrs, Path, Function, Any) throw — kernel discards their payloads.
-  extract = hoasTy: val:
+  # reifyType : Val → HoasTree
+  # Converts a kernel type value back to an HOAS type for extract dispatch.
+  # Used as fallback when the HOAS body cannot be applied (dependent types).
+  # Loses sugar (VSigma → H.sigma, not H.record) — HOAS body is preferred
+  # when available since it preserves record/variant/maybe structure.
+  reifyType = tyVal:
+    let t = tyVal.tag; in
+    if t == "VNat" then H.nat
+    else if t == "VBool" then H.bool
+    else if t == "VString" then H.string
+    else if t == "VUnit" then H.unit
+    else if t == "VVoid" then H.void
+    else if t == "VInt" then H.int_
+    else if t == "VFloat" then H.float_
+    else if t == "VAttrs" then H.attrs
+    else if t == "VPath" then H.path
+    else if t == "VFunction" then H.function_
+    else if t == "VAny" then H.any
+    else if t == "VList" then H.listOf (reifyType tyVal.elem)
+    else if t == "VSum" then H.sum (reifyType tyVal.left) (reifyType tyVal.right)
+    else if t == "VSigma" then
+      H.sigma tyVal.name (reifyType tyVal.fst)
+        (x: reifyType (E.instantiate tyVal.closure (E.eval [] (H.elab x))))
+    else if t == "VPi" then
+      H.forall tyVal.name (reifyType tyVal.domain)
+        (x: reifyType (E.instantiate tyVal.closure (E.eval [] (H.elab x))))
+    else if t == "VU" then H.u tyVal.level
+    else throw "reifyType: unsupported value tag '${t}'";
+
+  # -- Value extraction (internal) --
+  #
+  # extractInner : HoasTree → Val → Val → NixValue
+  # Three-argument extraction: HOAS type (for dispatch and sugar), kernel type
+  # value (for dependent codomain/snd computation), and kernel value to extract.
+  # Uses closure instantiation instead of sentinel tests for dependent types.
+  extractInner = hoasTy: tyVal: val:
     let t = hoasTy._htag or (throw "extract: not an HOAS type"); in
 
     # Nat: VZero → 0, VSucc^n(VZero) → n
@@ -317,27 +350,21 @@ let
         if last.val.tag != "VNil"
         then throw "extract: List is not a proper cons/nil chain (stuck at ${last.val.tag})"
         else builtins.genList (i:
-          extract elemTy (builtins.elemAt chain i).val.head
+          extractInner elemTy tyVal.elem (builtins.elemAt chain i).val.head
         ) (n - 1)
 
     else if t == "sum" then
-      if val.tag == "VInl" then { _tag = "Left"; value = extract hoasTy.left val.val; }
-      else if val.tag == "VInr" then { _tag = "Right"; value = extract hoasTy.right val.val; }
+      if val.tag == "VInl" then { _tag = "Left"; value = extractInner hoasTy.left tyVal.left val.val; }
+      else if val.tag == "VInr" then { _tag = "Right"; value = extractInner hoasTy.right tyVal.right val.val; }
       else throw "extract: Sum value is neither inl nor inr (got ${val.tag})"
 
     else if t == "sigma" then
       let
-        fstVal = extract hoasTy.fst val.fst;
-        # Sentinel test: detect non-dependent vs dependent sigma
-        _hs1 = { _htag = "nat"; _sentinel = 1; };
-        _hs2 = { _htag = "nat"; _sentinel = 2; };
-        r1 = builtins.tryEval (hoasTy.body _hs1);
-        r2 = builtins.tryEval (hoasTy.body _hs2);
-        sndTy =
-          if r1.success && r2.success && H.elab r1.value == H.elab r2.value
-          then r1.value
-          else throw "extract: dependent Sigma requires explicit type annotation";
-      in { fst = fstVal; snd = extract sndTy val.snd; }
+        fstNix = extractInner hoasTy.fst tyVal.fst val.fst;
+        sndTyVal = E.instantiate tyVal.closure val.fst;
+        r = builtins.tryEval (hoasTy.body { _htag = "unit"; });
+        sndHoas = if r.success then r.value else reifyType sndTyVal;
+      in { fst = fstNix; snd = extractInner sndHoas sndTyVal val.snd; }
 
     # -- Compound types (record, maybe, variant) --
 
@@ -348,38 +375,43 @@ let
       in
         if n == 0 then {}
         else if n == 1 then
-          { ${(builtins.head fields).name} = extract (builtins.head fields).type val; }
+          { ${(builtins.head fields).name} = extractInner (builtins.head fields).type tyVal val; }
         else
           let
-            extractFields = remaining: v:
+            extractFields = remaining: tyV: v:
               if builtins.length remaining == 1 then
-                { ${(builtins.head remaining).name} = extract (builtins.head remaining).type v; }
+                { ${(builtins.head remaining).name} = extractInner (builtins.head remaining).type tyV v; }
               else
-                let f = builtins.head remaining; rest = builtins.tail remaining; in
-                { ${f.name} = extract f.type v.fst; } // extractFields rest v.snd;
-          in extractFields fields val
+                let
+                  f = builtins.head remaining;
+                  rest = builtins.tail remaining;
+                  sndTyVal = E.instantiate tyV.closure v.fst;
+                in
+                { ${f.name} = extractInner f.type tyV.fst v.fst; }
+                // extractFields rest sndTyVal v.snd;
+          in extractFields fields tyVal val
 
     else if t == "maybe" then
       # Maybe = Sum(inner, Unit). VInl = value present, VInr = null
-      if val.tag == "VInl" then extract hoasTy.inner val.val
+      if val.tag == "VInl" then extractInner hoasTy.inner tyVal.left val.val
       else if val.tag == "VInr" then null
       else throw "extract: Maybe value is neither inl nor inr (got ${val.tag})"
 
     else if t == "variant" then
       let
         branches = hoasTy.branches;
-        extractBranch = bs: v:
+        extractBranch = bs: tyV: v:
           let n = builtins.length bs; in
           if n == 1 then
-            { _tag = (builtins.head bs).tag; value = extract (builtins.head bs).type v; }
+            { _tag = (builtins.head bs).tag; value = extractInner (builtins.head bs).type tyV v; }
           else
             let b1 = builtins.head bs; rest = builtins.tail bs; in
             if v.tag == "VInl" then
-              { _tag = b1.tag; value = extract b1.type v.val; }
+              { _tag = b1.tag; value = extractInner b1.type tyV.left v.val; }
             else if v.tag == "VInr" then
-              extractBranch rest v.val
+              extractBranch rest tyV.right v.val
             else throw "extract: Variant value is neither inl nor inr (got ${v.tag})";
-      in extractBranch branches val
+      in extractBranch branches tyVal val
 
     else if t == "pi" then
       # Extract a verified function.
@@ -387,32 +419,32 @@ let
       #   1. Elaborates its argument to HOAS → kernel value
       #   2. Applies the VLam closure
       #   3. Extracts the result back to a Nix value
-      let
-        domainTy = hoasTy.domain;
-        # Sentinel test for non-dependent codomain
-        # Sentinel test: apply body to two distinct markers and compare
-        # elaborated kernel terms (pure data, no functions) to detect dependence.
-        # Direct HOAS == fails on nested Pi because body fields are Nix functions.
-        _hs1 = { _htag = "nat"; _sentinel = 1; };
-        _hs2 = { _htag = "nat"; _sentinel = 2; };
-        r1 = builtins.tryEval (hoasTy.body _hs1);
-        r2 = builtins.tryEval (hoasTy.body _hs2);
-        codomainTy =
-          if r1.success && r2.success && H.elab r1.value == H.elab r2.value
-          then r1.value
-          else throw "extract: dependent Pi not supported for extraction";
-      in
+      # Codomain type is computed per-invocation from the type's closure,
+      # supporting both dependent and non-dependent Pi.
+      let domainTy = hoasTy.domain; in
         nixArg:
           let
             hoasArg = elaborateValue domainTy nixArg;
             kernelArg = E.eval [] (H.elab hoasArg);
             resultVal = E.instantiate val.closure kernelArg;
-          in extract codomainTy resultVal
+            codomainTyVal = E.instantiate tyVal.closure kernelArg;
+            r = builtins.tryEval (hoasTy.body hoasArg);
+            codomainHoas = if r.success then r.value else reifyType codomainTyVal;
+          in extractInner codomainHoas codomainTyVal resultVal
 
     else throw "extract: unsupported type '${t}'";
 
+  # -- Value extraction (public API) --
+  #
+  # extract : HoasTree → Val → NixValue
+  # Computes kernel type value from HOAS type, then delegates to extractInner.
+  extract = hoasTy: val:
+    let tyVal = E.eval [] (H.elab hoasTy);
+    in extractInner hoasTy tyVal val;
+
   # -- verifyAndExtract : HoasTree → HoasTree → NixValue --
   # Full pipeline: type-check HOAS term → eval → extract to Nix value.
+  # Computes kernel type value once and uses extractInner directly.
   verifyAndExtract = hoasTy: hoasImpl:
     let
       checked = H.checkHoas hoasTy hoasImpl;
@@ -422,7 +454,8 @@ let
         let
           tm = H.elab hoasImpl;
           val = E.eval [] tm;
-        in extract hoasTy val;
+          tyVal = E.eval [] (H.elab hoasTy);
+        in extractInner hoasTy tyVal val;
 
   # -- Decision procedure --
   #
@@ -473,6 +506,12 @@ in mk {
       VCons chain→list, VInl/VInr→tagged union.
       Pi extraction wraps the VLam as a Nix function with boundary conversion.
       Opaque types (Attrs, Path, Function, Any) throw — kernel discards payloads.
+    - `extractInner : Hoas → Val → Val → NixValue` — three-argument extraction
+      with kernel type value threading. Supports dependent Pi/Sigma via closure
+      instantiation instead of sentinel tests.
+    - `reifyType : Val → Hoas` — converts a kernel type value back to HOAS.
+      Fallback for when HOAS body application fails (dependent types).
+      Loses sugar (VSigma→sigma, not record).
 
     ## Decision Procedure
 
@@ -487,7 +526,7 @@ in mk {
       Throws on type error.
   '';
   value = {
-    inherit elaborateType elaborateValue extract verifyAndExtract decide decideType;
+    inherit elaborateType elaborateValue extract extractInner reifyType verifyAndExtract decide decideType;
   };
   tests = let
     FP = fx.types.primitives;

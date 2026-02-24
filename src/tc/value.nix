@@ -99,6 +99,7 @@ let
     { tag = "ESumElim"; inherit left right motive onLeft onRight; };
   eJ = type: lhs: motive: base: rhs:
     { tag = "EJ"; inherit type lhs motive base rhs; };
+  eStrEq = arg: { tag = "EStrEq"; inherit arg; };
 
 in mk {
   doc = ''
@@ -161,7 +162,7 @@ in mk {
     inherit vString vInt vFloat vAttrs vPath vFunction vAny;
     inherit vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit;
     inherit vNe freshVar;
-    inherit eApp eFst eSnd eNatElim eBoolElim eListElim eAbsurd eSumElim eJ;
+    inherit eApp eFst eSnd eNatElim eBoolElim eListElim eAbsurd eSumElim eJ eStrEq;
   };
   tests = {
     # Closures

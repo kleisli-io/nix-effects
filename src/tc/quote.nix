@@ -118,6 +118,7 @@ let
     else if t == "EJ" then
       T.mkJ (quote d elim.type) (quote d elim.lhs) (quote d elim.motive)
         (quote d elim.base) (quote d elim.rhs) head
+    else if t == "EStrEq" then T.mkStrEq head (quote d elim.arg)
     else throw "tc: quoteElim unknown tag '${t}'";
 
   # Normalize: eval then quote

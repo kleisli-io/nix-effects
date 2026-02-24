@@ -9,38 +9,91 @@ Nix functions from proof terms. You get precise blame when something
 violates a type.
 
 ```
-$ nix build .#buggyService
-error: Type errors in ServiceConfig:
-  - List[FIPSCipher][3]: "3DES" is not a valid FIPSCipher
+$ nix build .#insecure-public
+error: Proof rejected: service 'insecure-public' violates policy
+  (bind ∈ allowed ∧ protocol ∈ allowed ∧ public → https)
 ```
 
-That error is specific: element 3 of the cipher list is `"3DES"`, which
-isn't a valid `FIPSCipher`. Index, type name, rejected value — no chasing
-through a stack trace. No evaluator patches, no external tools. Pure Nix.
+The service never builds. The MLTT kernel evaluated a cross-field
+invariant — public-facing services must use HTTPS — normalized the
+result to `false`, and rejected the `Refl` proof before the builder
+ran. No evaluator patches, no external tools. Pure Nix.
 
 ## The demo
 
-A crypto service requires FIPS-compliant ciphers when `fipsMode = true`.
-The cipher list contract *depends on* the mode flag, making this a
-dependent contract (`Σ(fipsMode:Bool).B(fipsMode)` checked at runtime):
+This example is contrived — you could enforce the same policy with a few
+`assert` statements. The point is that the kernel normalizes and checks
+it as a proof obligation, not a runtime boolean. The interesting direction
+is dependent NixOS module types where the type of one option depends on
+the value of another; that isn't working yet.
+
+Five string fields: bind address, port, protocol, log level, and name.
+The constraint is cross-field: if `bind` is `0.0.0.0` (public),
+`protocol` must be `https`. The kernel verifies this for each concrete
+config by checking `Refl : Eq(Bool, policy(cfg), true)`.
+
+Two tiers of verification work together:
 
 ```nix
 let
-  FIPSCipher = refined "FIPSCipher" String
-    (x: builtins.elem x [ "AES-256-GCM" "AES-192-GCM" "AES-128-GCM" "AES-256-CBC" "AES-128-CBC" ]);
+  H = fx.types.hoas;
+  v = fx.types.verified;
+  inherit (fx.types) elaborateValue;
 
-  ServiceConfig = DepRecord [
-    { name = "fipsMode"; type = Bool; }
-    { name = "cipherSuites"; type = self:
-        if self.fipsMode then ListOf FIPSCipher else ListOf String; }
+  ServiceConfig = H.record [
+    { name = "bind";     type = H.string; }
+    { name = "logLevel"; type = H.string; }
+    { name = "name";     type = H.string; }
+    { name = "port";     type = H.string; }
+    { name = "protocol"; type = H.string; }
   ];
-in ...
+
+  # Tier 2 — verified computation: the kernel proves this function total,
+  # then extracts it as a plain Nix function. Public bind forces HTTPS.
+  effectiveProtocol = v.verify (H.forall "s" ServiceConfig (_: H.string))
+    (v.fn "s" ServiceConfig (s:
+      v.if_ H.string (v.strEq (v.field ServiceConfig "bind" s) (v.str "0.0.0.0")) {
+        then_ = v.str "https";
+        else_ = v.field ServiceConfig "protocol" s;
+      }));
+
+  # policyAnn — validates bind, protocol, port, logLevel ∈ allowed values
+  # plus the cross-field invariant: public bind → HTTPS (see full example)
+
+  # Tier 3 — proof-gated builder: encode config as a kernel term,
+  # apply the policy function, check Refl : Eq(Bool, result, true).
+  mkVerifiedService = cfg:
+    let
+      cfgHoas  = elaborateValue ServiceConfig cfg;
+      proofTy  = H.eq H.bool (H.app policyAnn cfgHoas) H.true_;
+      checked  = H.checkHoas proofTy H.refl;
+      protocol = effectiveProtocol cfg;
+    in if checked ? error
+      then throw "Proof rejected: service '${cfg.name}' violates policy"
+      else pkgs.writeShellScriptBin cfg.name ''
+        echo "${cfg.name} on ${protocol}://${cfg.bind}:${cfg.port}"
+      '';
+in {
+  # Builds — localhost HTTP on port 8080 satisfies all policy constraints
+  api-server = mkVerifiedService {
+    name = "api-server"; bind = "127.0.0.1";
+    port = "8080"; protocol = "http"; logLevel = "info";
+  };
+  # Fails at eval — public bind with HTTP violates the invariant
+  insecure-public = mkVerifiedService {
+    name = "insecure-public"; bind = "0.0.0.0";
+    port = "80"; protocol = "http"; logLevel = "debug";
+  };
+}
 ```
 
-`nix build .#cryptoService` succeeds. `nix build .#buggyService`
-fails at eval time because 3DES slipped in. See
+`nix build .#api-server` succeeds — the kernel normalizes `policy(cfg)` to
+`true` and accepts `Refl`. `nix build .#insecure-public` fails at eval —
+the policy normalizes to `false`, and `Refl : Eq(Bool, false, true)` is
+unprovable. The service is never built. See
 [examples/typed-derivation.nix](examples/typed-derivation.nix) for the
-complete example with handler, error formatting, and both derivations.
+complete 132-line example with the full policy function, string membership
+validation, and both derivations.
 
 **[Documentation](https://docs.kleisli.io/nix-effects)**
 
@@ -309,9 +362,10 @@ fx.stream.fold      fx.stream.toList    fx.stream.length
 fx.stream.sum       fx.stream.any       fx.stream.all
 fx.stream.concat    fx.stream.interleave  fx.stream.zip  fx.stream.zipWith
 
-fx.tc.term          fx.tc.value         fx.tc.eval      fx.tc.quote
-fx.tc.conv          fx.tc.check         fx.tc.hoas      fx.tc.elaborate
-fx.tc.verified
+fx.types.hoas                           fx.types.verified
+fx.types.elaborateType                  fx.types.elaborateValue
+fx.types.extract                        fx.types.verifyAndExtract
+fx.types.decide                         fx.types.decideType
 
 fx.kernel.pure      fx.kernel.send      fx.kernel.bind
 fx.trampoline.handle
@@ -345,7 +399,7 @@ The MLTT type-checking kernel (`src/tc/`) provides bidirectional type
 checking with normalization by evaluation (NbE), proof terms, and formal
 verification for universally quantified properties. The `Certified`
 type's witness is a boolean, not an inhabitation proof — kernel proofs
-use HOAS combinators from `fx.tc.hoas`. See Findler & Felleisen (2002)
+use HOAS combinators from `fx.types.hoas`. See Findler & Felleisen (2002)
 for the contract-theoretic framing and Dunfield & Krishnaswami (2021)
 for the bidirectional checking approach.
 
@@ -399,7 +453,7 @@ nix eval --impure --expr \
 
 Tests cover algebraic laws (functor, monad), all type constructors
 including dependent and linear types, the trampoline at 100k operations,
-error paths, streams, and the typed derivation showcase.
+error paths, streams, and HOAS proof verification.
 
 ## Formal foundations
 

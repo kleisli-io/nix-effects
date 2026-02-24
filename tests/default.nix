@@ -12,8 +12,9 @@ let
   newEffectsTests = import ./new-effects-test.nix { inherit lib fx; };
   streamTests = import ./stream-test.nix { inherit lib fx; };
   linearTests = import ./linear-test.nix { inherit lib fx; };
-  showcaseTests = import ../examples/typed-derivation.nix { inherit lib fx; };
-  linearShowcaseTests = import ../examples/linear-resource.nix { inherit lib fx; };
+  proofBasicsTests = import ../examples/proof-basics.nix { inherit lib fx; };
+  equalityProofTests = import ../examples/equality-proofs.nix { inherit lib fx; };
+  verifiedFunctionTests = import ../examples/verified-functions.nix { inherit lib fx; };
   docsTests = import ./docs-test.nix { inherit lib fx; };
 
 in {
@@ -126,7 +127,37 @@ in {
           typeGradedName typeLinearRoundTrip
           mixedGradedResources;
 
-  inherit (showcaseTests) gateRejectsInvalid gatePassesValid deepBlame;
+  inherit (proofBasicsTests) addZeroZero addThreeFive addTenSeven
+          doubleNegTrue doubleNegFalse lengthThree appendTwoOne
+          witnessZero witnessAddResult witnessDoubleNeg
+          natElimDouble natElimMul
+          boolElimTrue boolElimFalse
+          listSum listMapSucc
+          sumElimLeft sumElimRight
+          polyId exFalso;
+
+  inherit (equalityProofTests) congType congConcrete
+          symType symConcrete
+          transType transConcrete
+          transportType transportConcrete
+          combinedProof;
+
+  inherit (verifiedFunctionTests) succApply5 succApply0
+          notTrue notFalse
+          add2and3 add0and7 add4and0
+          isZeroOf0 isZeroOf5
+          predOf0 predOf1 predOf5
+          mapSuccCorrect mapEmptyCorrect
+          filterZerosCorrect
+          foldSumCorrect
+          composedCorrect
+          sumLeftCorrect sumRightCorrect
+          letCorrect
+          pairFstCorrect pairSndCorrect
+          recordGetXCorrect recordGetYCorrect recordSuccXCorrect
+          strEqSame strEqDiff strEqEmpty
+          strElemFound strElemMissing strElemEmptyList
+          recordStrEqMatch recordStrEqNoMatch;
 
   inherit (docsTests) portExample depContractExample stateEffectExample apiSurfaceSanity;
 
@@ -134,7 +165,8 @@ in {
             && lawTests.allPass && errorPathTests.allPass
             && newEffectsTests.allPass && streamTests.allPass
             && linearTests.allPass
-            && showcaseTests.allPass
-            && linearShowcaseTests.allPass
+            && proofBasicsTests.allPass
+            && equalityProofTests.allPass
+            && verifiedFunctionTests.allPass
             && docsTests.allPass;
 }

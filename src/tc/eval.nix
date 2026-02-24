@@ -22,7 +22,7 @@ let
     vUnit vTt vVoid vSum vInl vInr vEq vRefl vU vNe
     vString vInt vFloat vAttrs vPath vFunction vAny
     vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit
-    eApp eFst eSnd eNatElim eBoolElim eListElim eAbsurd eSumElim eJ;
+    eApp eFst eSnd eNatElim eBoolElim eListElim eAbsurd eSumElim eJ eStrEq;
 
   defaultFuel = 10000000;
 
@@ -81,6 +81,18 @@ let
     else if scrut.tag == "VNe" then
       vNe scrut.level (scrut.spine ++ [ (eBoolElim motive onTrue onFalse) ])
     else throw "tc: vBoolElim on non-bool (tag=${scrut.tag})";
+
+  # vStrEq — string equality primitive.
+  # Both VStringLit → VTrue/VFalse. Neutral arg → extend its spine.
+  # StrEq is symmetric, so we canonicalize neutral-first for the spine.
+  vStrEq = lhs: rhs:
+    if lhs.tag == "VStringLit" && rhs.tag == "VStringLit" then
+      if lhs.value == rhs.value then vTrue else vFalse
+    else if lhs.tag == "VNe" then
+      vNe lhs.level (lhs.spine ++ [ (eStrEq rhs) ])
+    else if rhs.tag == "VNe" then
+      vNe rhs.level (rhs.spine ++ [ (eStrEq lhs) ])
+    else throw "tc: vStrEq on non-string (tags=${lhs.tag}, ${rhs.tag})";
 
   # vListElim — trampolined like vNatElim for large lists.
   vListElimF = fuel: elemTy: motive: onNil: onCons: scrut:
@@ -246,6 +258,9 @@ let
     else if t == "path" then vPath
     else if t == "function" then vFunction
     else if t == "any" then vAny
+
+    # String operations
+    else if t == "str-eq" then vStrEq (ev tm.lhs) (ev tm.rhs)
 
     # Primitive literals
     else if t == "string-lit" then vStringLit tm.value

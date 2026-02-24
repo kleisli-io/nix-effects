@@ -36,7 +36,7 @@ let
 
   Port = refined "Port" Int (x: x >= 1 && x <= 65535);
 in {
-  # Pure guard — fast boolean check
+  # Kernel decision procedure — fast boolean check
   ok  = Port.check 8080;   # true
   bad = Port.check 99999;  # false
 
@@ -148,8 +148,8 @@ The `fx` attrset is the entire public API:
 | `fx.run`, `fx.handle` | Trampoline interpreter |
 | `fx.adapt`, `fx.adaptHandlers` | Handler composition |
 | `fx.types.*` | Type system (primitives, constructors, dependent, refinement, universe) |
-| `fx.tc.hoas` | HOAS surface combinators for the kernel |
-| `fx.tc.elaborate` | Elaboration bridge: fx.types ↔ kernel |
-| `fx.tc.verified` | Convenience combinators for writing verified implementations |
+| `fx.types.hoas` | HOAS surface combinators for the kernel |
+| `fx.types.elaborateType`, etc. | Elaboration bridge: fx.types ↔ kernel |
+| `fx.types.verified` | Convenience combinators for writing verified implementations |
 | `fx.effects.*` | Built-in effects (state, error, reader, writer, acc, choice, conditions, typecheck, linear) |
 | `fx.stream.*` | Effectful lazy sequences |

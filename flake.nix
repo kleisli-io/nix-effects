@@ -20,8 +20,11 @@
       tests = nix-effects.tests.nix-unit;
 
       # Showcase:
-      #   nix build .#cryptoService  — valid FIPS config, builds successfully
-      #   nix build .#buggyService   — 3DES slipped in, caught at eval time
+      #   nix build .#api-server  — valid config, proof-gated derivation builds
+      #
+      # To see the proof rejection for an invalid config:
+      #   nix eval .#insecure-public  — fails: public bind + HTTP violates policy
+      # (Not exposed as a package because it intentionally fails at eval time.)
       packages = forAllSystems (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
@@ -29,14 +32,10 @@
           showcase = import ./examples/typed-derivation.nix {
             fx = nix-effects; inherit pkgs;
           };
-          linearShowcase = import ./examples/linear-resource.nix {
-            fx = nix-effects; inherit pkgs; lib = nixpkgs.lib;
-          };
           # Per-module API markdown generated from extractDocs mk wrappers.
           apiDocsSrc = import ./book/gen { inherit pkgs lib nix-effects; };
         in {
-          inherit (showcase) cryptoService buggyService;
-          inherit (linearShowcase) userConfig buggyConfig;
+          inherit (showcase) api-server;
 
           # Raw generated API markdown (one .md per module).
           api-docs-src = apiDocsSrc;

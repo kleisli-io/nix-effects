@@ -1,6 +1,6 @@
 # nix-effects
 
-A proof-checking kernel, algebraic effects, and dependent types, implemented entirely in pure Nix.
+A proof-checking kernel, algebraic effects, and dependent types, implemented in pure Nix.
 
 nix-effects brings ideas from type theory and functional programming to the Nix ecosystem: a verified type-checking kernel with dependent types, an algebraic effect system for composable side effects, and stack-safe evaluation via trampolining.
 

@@ -514,16 +514,32 @@ normal Nix code and let the type system validate data at boundaries.
 
 ```nix
 let
-  inherit (fx.types) Int refined;
+  inherit (fx.types) Int String refined;
 
   Port = refined "Port" Int (x: x >= 1 && x <= 65535);
+
+  # Refinement with string guard — kernel checks String, guard checks membership
+  LogLevel = refined "LogLevel" String
+    (x: builtins.elem x [ "debug" "info" "warn" "error" ]);
 in {
-  ok  = Port.check 8080;    # true — decide says Int, guard says in range
-  bad = Port.check 99999;   # false — guard rejects
+  ok    = Port.check 8080;       # true — decide says Int, guard says in range
+  bad   = Port.check 99999;      # false — guard rejects (> 65535)
+  wrong = Port.check "http";     # false — decide rejects (not Int)
+
+  info  = LogLevel.check "info";    # true
+  trace = LogLevel.check "trace";   # false — not in the allowed set
+
+  # Effectful validation with blame context
+  result = fx.run (Port.validate 99999)
+    fx.effects.typecheck.collecting [];
+  # result.state = [ { context = "Port"; message = "Expected Port, got int"; ... } ]
 }
 ```
 
 **Cost:** Zero — write normal Nix. The kernel runs behind the scenes.
+Refinement types compose: `ListOf Port` checks that every element is
+an integer in range. The kernel elaborates the list, the guard runs
+per element.
 
 ### Level 2: Boundary
 
@@ -533,70 +549,144 @@ procedure. This is what every type does by default.
 
 ```nix
 let
-  inherit (fx.types) ListOf String;
+  inherit (fx.types) Bool Int String ListOf DepRecord refined;
 
-  # ListOf String has kernelType = H.listOf H.string
-  # .check calls decide(kernelType, value) — the kernel verifies
-  # that the value is a proper list of strings
-  config = ListOf String;
-in
-  config.check ["nginx" "postgresql"]    # true — kernel verified
+  FIPSCipher = refined "FIPSCipher" String
+    (x: builtins.elem x [ "AES-256-GCM" "AES-128-GCM" "AES-256-CBC" ]);
+
+  # Dependent record: when fipsMode is true, cipherSuites must be FIPS-approved.
+  # The kernel elaborates the record to a Sigma chain, checks each field's type
+  # against its kernelType, and the guard on FIPSCipher validates membership.
+  ServiceConfig = DepRecord [
+    { name = "fipsMode"; type = Bool; }
+    { name = "cipherSuites"; type = self:
+        if self.fipsMode then ListOf FIPSCipher else ListOf String; }
+  ];
+in {
+  ok  = ServiceConfig.checkFlat {
+    fipsMode = true;
+    cipherSuites = [ "AES-256-GCM" ];
+  };   # true — kernel verifies each cipher is a valid FIPSCipher
+
+  bad = ServiceConfig.checkFlat {
+    fipsMode = true;
+    cipherSuites = [ "3DES" ];
+  };   # false — "3DES" fails the FIPSCipher guard
+
+  lax = ServiceConfig.checkFlat {
+    fipsMode = false;
+    cipherSuites = [ "ChaCha20" "RC4" ];
+  };   # true — non-FIPS mode accepts any string
+}
 ```
 
 **Cost:** Low — add `kernelType` to custom types (built-in types
-already have it).
+already have it). The dependent record pattern shows how boundary
+checking scales: the kernel handles structural verification, guards
+handle domain predicates, and the dependency between fields is
+resolved at check time.
 
 ### Level 3: Property
 
 Universal properties verified via proof terms. Write proofs in HOAS
 that the kernel checks. The proof term is separate from the
-implementation — the kernel verifies the proof but trusts that the
-implementation matches.
+implementation — you write separate Nix code alongside, and the
+kernel verifies that the stated property holds.
 
 ```nix
 let
   H = fx.types.hoas;
+  inherit (H) nat bool eq forall refl checkHoas;
 
-  # Prove: for all n, succ(n) is a Nat
-  proofType = H.forall "n" H.nat (_: H.nat);
-  proof = H.lam "n" H.nat (n: H.succ n);
+  # Define addition by structural recursion on the first argument
+  add = m: n:
+    H.ind (H.lam "_" nat (_: nat)) n
+      (H.lam "k" nat (_: H.lam "ih" nat (ih: H.succ ih))) m;
 
-  # Kernel verifies: proof : Π(n : Nat). Nat
-  checked = H.checkHoas proofType proof;
-in
-  !(checked ? error)    # true — kernel accepts the proof
+  not_ = b:
+    H.boolElim (H.lam "_" bool (_: bool)) H.false_ H.true_ b;
+in {
+  # Prove: 3 + 5 = 8
+  # The kernel normalizes add(3,5) via NatElim, arrives at 8,
+  # and confirms Refl witnesses Eq(Nat, 8, 8).
+  arithmetic = (checkHoas
+    (eq nat (add (H.natLit 3) (H.natLit 5)) (H.natLit 8))
+    refl).tag == "refl";
+
+  # Prove: not(not(true)) = true
+  # The kernel evaluates two BoolElim steps and confirms the result.
+  doubleNeg = (checkHoas
+    (eq bool (not_ (not_ H.true_)) H.true_)
+    refl).tag == "refl";
+
+  # Prove: append([1,2], [3]) = [1,2,3]
+  # ListElim unfolds the first list, cons-ing each element onto [3].
+  listAppend = let
+    list12  = H.cons nat (H.natLit 1) (H.cons nat (H.natLit 2) (H.nil nat));
+    list3   = H.cons nat (H.natLit 3) (H.nil nat);
+    list123 = H.cons nat (H.natLit 1) (H.cons nat (H.natLit 2)
+                (H.cons nat (H.natLit 3) (H.nil nat)));
+    append = xs: ys:
+      H.listElim nat (H.lam "_" (H.listOf nat) (_: H.listOf nat)) ys
+        (H.lam "h" nat (h: H.lam "t" (H.listOf nat) (_:
+          H.lam "ih" (H.listOf nat) (ih: H.cons nat h ih)))) xs;
+  in (checkHoas (eq (H.listOf nat) (append list12 list3) list123) refl).tag == "refl";
+}
 ```
 
-**Cost:** Medium — write proofs in HOAS.
+**Cost:** Medium — write proofs in HOAS. The proofs are separate from
+production code, so you can add them incrementally to an existing
+codebase without rewriting anything.
 
 ### Level 4: Full
 
 The implementation IS the proof term. Write the entire implementation
 in HOAS, the kernel verifies it, and `extract` produces a Nix
-function that is correct by construction.
+function that is correct by construction. The extracted function is
+plain Nix — no kernel overhead at call time.
 
 ```nix
 let
   H = fx.types.hoas;
   v = fx.types.verified;
 
-  # The implementation IS the proof — written in HOAS
-  addTy = H.forall "m" H.nat (_: H.forall "n" H.nat (_: H.nat));
-  addImpl = v.fn "m" H.nat (m: v.fn "n" H.nat (n:
-    v.match H.nat m {
-      zero = n;
-      succ = _k: ih: H.succ ih;
-    }));
+  RecTy = H.record [
+    { name = "name";   type = H.string; }
+    { name = "target"; type = H.string; }
+  ];
 
-  # Kernel verifies. Extract produces a Nix function.
-  add = v.verify addTy addImpl;
-in
-  add 2 3    # → 5, correct by construction
+  # Verified record validator: checks if two string fields match.
+  # The kernel type-checks the implementation against its type
+  # (Record → Bool), verifies that field projections are well-typed,
+  # and confirms strEq composes correctly. Then extracts a Nix function.
+  matchFn = v.verify (H.forall "r" RecTy (_: H.bool))
+    (v.fn "r" RecTy (r:
+      v.strEq (v.field RecTy "name" r) (v.field RecTy "target" r)));
+
+  # Verified addition: structural recursion extracted as Nix function
+  add = v.verify (H.forall "m" H.nat (_: H.forall "n" H.nat (_: H.nat)))
+    (v.fn "m" H.nat (m: v.fn "n" H.nat (n:
+      v.match H.nat m {
+        zero = n;
+        succ = _k: ih: H.succ ih;
+      })));
+in {
+  sum   = add 2 3;    # → 5, correct by construction
+  yes   = matchFn { name = "hello"; target = "hello"; };    # → true
+  no    = matchFn { name = "hello"; target = "world"; };    # → false
+}
 ```
 
 **Cost:** High — write the implementation in HOAS. Best reserved for
-security-critical code (firewall rules, certificate validation) where
-the cost is justified by the assurance.
+security-critical code (firewall rules, certificate validation,
+cross-field invariants) where the cost is justified by the assurance.
+The `typed-derivation.nix` example illustrates the pattern with a
+service builder where the kernel rejects invalid configurations via a
+machine-checked proof before any derivation is attempted. (The example
+itself is contrived — `assert` could do the same job. The interesting
+direction is dependent module types where `assert` can't.) See the
+[Proof Guide](proof-guide.md) for a progressive tutorial from simple
+proofs through verified extraction to proof-gated derivations.
 
 ## How mkType derives .check
 

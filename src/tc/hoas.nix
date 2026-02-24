@@ -8,7 +8,7 @@
 # combinators, compiled away by elaborate. No Nix lambdas leak into
 # the kernel value domain.
 #
-# Spec reference: kernel-spec.md, kernel-mvp-research.md §2
+# Spec reference: kernel-spec.md §2
 { fx, api, ... }:
 
 let
@@ -86,6 +86,7 @@ let
   pathLit = { _htag = "path-lit"; };
   fnLit = { _htag = "fn-lit"; };
   anyLit = { _htag = "any-lit"; };
+  strEq = lhs: rhs: { _htag = "str-eq"; inherit lhs rhs; };
   absurd = type: term: { _htag = "absurd"; inherit type term; };
   ann = term: type: { _htag = "ann"; inherit term type; };
   app = fn: arg: { _htag = "app"; inherit fn arg; };
@@ -259,6 +260,8 @@ let
       T.mkInl (elaborate depth h.left) (elaborate depth h.right) (elaborate depth h.term)
     else if t == "inr" then
       T.mkInr (elaborate depth h.left) (elaborate depth h.right) (elaborate depth h.term)
+    else if t == "str-eq" then
+      T.mkStrEq (elaborate depth h.lhs) (elaborate depth h.rhs)
     else if t == "absurd" then
       T.mkAbsurd (elaborate depth h.type) (elaborate depth h.term)
     else if t == "ann" then
@@ -310,13 +313,13 @@ let
 
 in mk {
   doc = ''
-    # fx.tc.hoas — HOAS Surface Combinators
+    # fx.types.hoas — HOAS Surface Combinators
 
     Higher-Order Abstract Syntax layer that lets you write kernel terms
     using Nix lambdas for variable binding. The `elaborate` function
     compiles HOAS trees to de Bruijn indexed Tm terms.
 
-    Spec reference: kernel-spec.md, kernel-mvp-research.md §2.
+    Spec reference: kernel-spec.md §2.
 
     ## Example
 
@@ -384,7 +387,7 @@ in mk {
     # Terms
     inherit zero succ true_ false_ tt nil cons pair inl inr refl
       stringLit intLit floatLit attrsLit pathLit fnLit anyLit
-      absurd ann app fst_ snd_;
+      strEq absurd ann app fst_ snd_;
     # Eliminators
     inherit ind boolElim listElim sumElim j;
     # Elaboration

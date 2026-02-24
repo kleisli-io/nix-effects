@@ -20,24 +20,26 @@ nix-effects has two foundation layers:
 pattern for configurable interpretation. This layer is solid — tested at
 1,000,000 operations, constant memory, ~3 seconds.
 
-**The contract type system.** Types are `(specification, guard, verifier)`
-triples. The guard (`check`) is a pure predicate. The verifier
-(`validate`) sends `typeCheck` effects through the freer monad for blame
+**The type-checking kernel.** Every type is defined by its kernel
+representation — an HOAS type tree that the MLTT kernel can check.
+`.check` is derived mechanically from the kernel's `decide` procedure.
+`.validate` sends `typeCheck` effects through the freer monad for blame
 tracking. You choose the error policy by choosing the handler.
 
-The contract system works. But it has a structural limitation: contracts
-check specific values at specific sites. `Pi.check` verifies
-`isFunction` — it can't verify that a function maps every A-value to a
-B-value. Contracts are decidable and total, which makes them practical,
-but they can only state properties about the values in front of them.
+For first-order types, the kernel's decision procedure is the full check.
+But it has an inherent limitation for higher-order types: `Pi.check`
+can only verify `isFunction` — it can't verify that a function maps
+every A-value to a B-value. Decision procedures are decidable and total,
+which makes them practical, but they can only state properties about the
+values in front of them.
 
 "For ALL services in this configuration, if they listen on a port, a
 firewall rule exists" — that's a universally quantified statement. No
-contract can check it. You need structural verification of a proof term,
-not runtime evaluation of a predicate.
+decision procedure can check it. You need structural verification of a
+proof term, not evaluation of a predicate.
 
-An earlier design considered a proof checker alongside the contract
-system, with an adequacy bridge connecting two separate notions of type.
+An earlier design considered separating decision procedures from the
+kernel, with an adequacy bridge connecting two separate notions of type.
 That architecture was rejected. If a kernel exists, the type system
 should be grounded in it from the start.
 
@@ -261,9 +263,9 @@ another effectful program running on the effects infrastructure.
 ## Types grounded in the kernel
 
 This is where the kernel-first approach differs from adding a proof
-checker alongside contracts. Every type in the public API compiles
-to a kernel construction. The current `(spec, guard, verifier)` triple
-is replaced by a kernel type plus derived operations.
+checker alongside ad hoc contracts. Every type in the public API compiles
+to a kernel construction. A type IS its kernel representation, and all
+operations are derived from it.
 
 ### Elaboration: Nix values to kernel terms
 
@@ -285,8 +287,8 @@ value into a kernel term, and the kernel checks it:
 
 Elaborating `42` to `succ^42(zero)` and checking structurally is
 correct but expensive. For decidable properties — which is everything
-the current contract system handles — we derive a fast path from the
-kernel type definition.
+the decision procedure handles — we derive a fast path from the kernel
+type definition.
 
 The kernel defines `Nat` as an inductive type with `zero` and `succ`.
 From that definition, a decision procedure is mechanically derived:
@@ -297,12 +299,11 @@ Nat.check = v: builtins.isInt v && v >= 0;
 
 ```
 
-This is the same predicate the current system uses. The difference:
-it's now justified by the kernel, not ad hoc. You prove once (by
-structural induction on the derivation rules) that the decision
-procedure agrees with the kernel type. Then you use the fast predicate
-at runtime and fall back to the kernel for properties the predicate
-can't express.
+This is the same predicate the surface API exposes. It's justified by
+the kernel, not ad hoc. You prove once (by structural induction on the
+derivation rules) that the decision procedure agrees with the kernel
+type. Then you use the fast predicate at eval time and fall back to the
+kernel for properties the predicate can't express.
 
 This is how Lean handles `Decidable` instances. For decidable
 propositions, evaluation IS proof. The decision procedure is the
@@ -566,7 +567,7 @@ the type-checking kernel runs on.
 
 The type system layer in `src/types/` is grounded in the kernel:
 
-- `foundation.nix` — `mkType` with `(spec, guard, verifier)` triples
+- `foundation.nix` — `mkType` with `kernelType` + optional refinement `guard`
 - `primitives.nix` — `String`, `Int`, `Bool`, etc. wrapping `builtins.is*`
 - `constructors.nix` — `Record`, `ListOf`, `Maybe`, `Either`, `Variant`
 - `dependent.nix` — `Pi`, `Sigma`, `Certified`, `Vector`, `DepRecord`

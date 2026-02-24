@@ -83,6 +83,9 @@ let
   mkFunction = { tag = "function"; };
   mkAny = { tag = "any"; };
 
+  # -- String operations --
+  mkStrEq = lhs: rhs: { tag = "str-eq"; inherit lhs rhs; };
+
   # -- Primitive literals --
   mkStringLit = s: { tag = "string-lit"; value = s; };
   mkIntLit = n: { tag = "int-lit"; value = n; };
@@ -154,6 +157,7 @@ in mk {
     inherit mkEq mkRefl mkJ;
     inherit mkU;
     inherit mkString mkInt mkFloat mkAttrs mkPath mkFunction mkAny;
+    inherit mkStrEq;
     inherit mkStringLit mkIntLit mkFloatLit mkAttrsLit mkPathLit mkFnLit mkAnyLit;
   };
   tests = {

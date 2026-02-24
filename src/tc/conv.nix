@@ -142,6 +142,7 @@ let
       conv d e1.type e2.type && conv d e1.lhs e2.lhs
       && conv d e1.motive e2.motive && conv d e1.base e2.base
       && conv d e1.rhs e2.rhs
+    else if t1 == "EStrEq" then conv d e1.arg e2.arg
     else false;
 
 in mk {

@@ -125,6 +125,43 @@ let
             (H.cons elemTy h ih) ih (H.app predAnn h)))))
       list;
 
+  # -- String comparison --
+  # v.strEq a b — kernel string equality (returns Bool HOAS term)
+  strEq = H.strEq;
+
+  # v.strElem target list — check if target string is in list of strings.
+  # Uses fold with strEq to check membership. Returns Bool.
+  strElem = target: list:
+    fold H.string H.bool false_
+      (fn "s" H.string (s: fn "acc" H.bool (acc:
+        if_ H.bool (H.strEq s target) { then_ = true_; else_ = acc; })))
+      list;
+
+  # -- Record field access --
+  # v.field recordTy fieldName record — project a named field from a record.
+  # Desugars to nested fst/snd chains based on field position in the record type.
+  # recordTy must be an H.record [...] type. The field name must exist in it.
+  field = recordTy: fieldName: record:
+    let
+      fields = recordTy.fields;
+      n = builtins.length fields;
+      found = builtins.filter (i: (builtins.elemAt fields i).name == fieldName)
+                (builtins.genList (i: i) n);
+      idx = if found == []
+            then throw "v.field: field '${fieldName}' not found in record"
+            else builtins.head found;
+      # Navigate: apply snd idx times, then fst (unless last field).
+      # For n==1, there's no sigma nesting — the record IS the field value.
+      navigate = depth: expr:
+        if depth == 0 then
+          if idx < n - 1 then H.fst_ expr else expr
+        else
+          navigate (depth - 1) (H.snd_ expr);
+    in
+      if n == 0 then throw "v.field: empty record"
+      else if n == 1 then record
+      else navigate idx record;
+
   # -- Full pipeline wrapper --
   # v.verify type impl → Nix value (type-checked and extracted)
   verify = Elab.verifyAndExtract;
@@ -163,6 +200,7 @@ in mk {
     ## Data Operations
 
     - `pair`, `fst`, `snd` — Σ-type construction and projection
+    - `field : Hoas → String → Hoas → Hoas` — record field projection by name
     - `inl`, `inr` — Sum injection
     - `app` — function application
 
@@ -192,8 +230,8 @@ in mk {
     # Binding
     inherit fn;
     let_ = let__;
-    # Pairs
-    inherit pair fst snd;
+    # Pairs / Records
+    inherit pair fst snd field;
     # Sums
     inherit inl inr;
     # Application
@@ -202,6 +240,8 @@ in mk {
     inherit if_ match matchList matchSum;
     # Derived
     inherit map fold filter;
+    # String
+    inherit strEq strElem;
     # Pipeline
     inherit verify;
   };
@@ -449,6 +489,76 @@ in mk {
         constImpl = fn "_" BoolT (_: nat 42);
         constFn = verify constTy constImpl;
       in constFn true;
+      expected = 42;
+    };
+
+    # ===== Record-domain verified functions =====
+
+    # v.field: project first field from 2-field record
+    "v-record-get-fst" = {
+      expr = let
+        recTy = H.record [ { name = "x"; type = NatT; } { name = "y"; type = BoolT; } ];
+        getFst = verify (H.forall "r" recTy (_: NatT))
+          (fn "r" recTy (r: field recTy "x" r));
+      in getFst { x = 3; y = true; };
+      expected = 3;
+    };
+
+    # v.field: project second field from 2-field record
+    "v-record-get-snd" = {
+      expr = let
+        recTy = H.record [ { name = "x"; type = NatT; } { name = "y"; type = BoolT; } ];
+        getSnd = verify (H.forall "r" recTy (_: BoolT))
+          (fn "r" recTy (r: field recTy "y" r));
+      in getSnd { x = 3; y = true; };
+      expected = true;
+    };
+
+    # v.field: 3-field record, access middle field
+    "v-record-3field-middle" = {
+      expr = let
+        recTy = H.record [
+          { name = "a"; type = NatT; }
+          { name = "b"; type = StringT; }
+          { name = "c"; type = BoolT; }
+        ];
+        getB = verify (H.forall "r" recTy (_: StringT))
+          (fn "r" recTy (r: field recTy "b" r));
+      in getB { a = 7; b = "hello"; c = false; };
+      expected = "hello";
+    };
+
+    # v.field: 3-field record, access last field
+    "v-record-3field-last" = {
+      expr = let
+        recTy = H.record [
+          { name = "a"; type = NatT; }
+          { name = "b"; type = StringT; }
+          { name = "c"; type = BoolT; }
+        ];
+        getC = verify (H.forall "r" recTy (_: BoolT))
+          (fn "r" recTy (r: field recTy "c" r));
+      in getC { a = 7; b = "hello"; c = true; };
+      expected = true;
+    };
+
+    # Record-domain function with computation: project field and add 1
+    "v-record-compute" = {
+      expr = let
+        recTy = H.record [ { name = "x"; type = NatT; } { name = "y"; type = BoolT; } ];
+        succX = verify (H.forall "r" recTy (_: NatT))
+          (fn "r" recTy (r: H.succ (field recTy "x" r)));
+      in succX { x = 10; y = false; };
+      expected = 11;
+    };
+
+    # 1-field record: v.field returns the record itself
+    "v-record-1field" = {
+      expr = let
+        recTy = H.record [ { name = "x"; type = NatT; } ];
+        getX = verify (H.forall "r" recTy (_: NatT))
+          (fn "r" recTy (r: field recTy "x" r));
+      in getX { x = 42; };
       expected = 42;
     };
   };

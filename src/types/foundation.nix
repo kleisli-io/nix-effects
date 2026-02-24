@@ -24,17 +24,6 @@
 # The guard is NOT part of the kernel — it's a contract-level constraint
 # that the kernel can't express (e.g., x >= 0 for natural numbers).
 #
-# Per Pedrot & Tabareau "Fire Triangle" (POPL 2020):
-#   Level 1: types as pure values (this attrset)
-#   Level 2: type checking as effectful computation (validate)
-#   Level 3: error policy as handler (strict/collecting/logging)
-#
-# Handler semantics (Level 3):
-#   strict     — throws on first failure (abort semantics)
-#   collecting — accumulates all errors in state (continues with false resume)
-#   logging    — records all checks (pass and fail) for observability
-#   all-pass   — boolean state tracking whether ALL checks passed
-#
 # Known constraint: builtins.tryEval only evaluates to WHNF.
 # When catching handler throws, force .value on the result to trigger
 # trampoline execution: builtins.tryEval ((fx.handle {...} comp).value).
@@ -84,14 +73,6 @@ let
         Suppresses `_kernel`, `kernelCheck`, and `prove` on the result,
         since the kernel representation doesn't precisely capture this type.
         The kernelType is still used internally for universe computation.
-
-      Per Pedrot & Tabareau "Fire Triangle" (POPL 2020):
-
-      ```
-      Level 1: types as pure values (this attrset)
-      Level 2: type checking as effectful computation (validate)
-      Level 3: error policy as handler (strict/collecting/logging)
-      ```
     '';
     value = { name, kernelType ? null, guard ? null, verify ? null, description ? name, universe ? null, approximate ? false }:
       let

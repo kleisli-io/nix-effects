@@ -92,7 +92,7 @@ in {
 the policy normalizes to `false`, and `Refl : Eq(Bool, false, true)` is
 unprovable. The service is never built. See
 [examples/typed-derivation.nix](examples/typed-derivation.nix) for the
-complete 132-line example with the full policy function, string membership
+complete example with the full policy function, string membership
 validation, and both derivations.
 
 **[Documentation](https://docs.kleisli.io/nix-effects)**
@@ -228,7 +228,7 @@ Types themselves have types, stratified to prevent accidental paradoxes
 Type_0  # Type of value types (Int, String, ...)
 Type_1  # Type of Type_0
 Type_2  # Type of Type_1
-# ...up to Type_4
+# typeAt n works for any n; Type_0 through Type_4 are convenience aliases
 
 (typeAt 0).check Int   # true — Int lives at universe 0
 level Int               # 0
@@ -346,7 +346,7 @@ fx.types.positive   fx.types.nonNegative  fx.types.inRange
 fx.types.nonEmpty   fx.types.matching
 
 fx.types.typeAt     fx.types.level
-fx.types.Type_0 .. fx.types.Type_4
+fx.types.Type_0 .. fx.types.Type_4      # convenience aliases; typeAt n works for any n
 
 fx.effects.get      fx.effects.put      fx.effects.modify   fx.effects.gets
 fx.effects.state    fx.effects.error    fx.effects.typecheck

@@ -19,13 +19,13 @@
 #        v
 #   Pure Nix
 #
-# Types with kernel backing ARE kernel types. The decidable checking that
-# .check performs is the decidable fragment of kernel type checking,
-# optimized as a fast path. Types without kernelType (String, Int, Float,
-# Attrs, Path, Function, Record, Maybe, Variant) remain runtime contracts.
-# The kernel adds what decidable checking cannot express: proof terms for
-# universally quantified properties (∀ services, if enabled then firewall
-# rule exists).
+# Every type is a kernel type. The kernel representation (kernelType) IS
+# the type, and .check is derived mechanically from the kernel's decide
+# procedure. All types — including primitives (String, Int, Float, Attrs,
+# Path, Function, Any) and compound constructors (Record, Maybe, Variant)
+# — have kernel backing. The kernel adds what decidable checking cannot
+# express: proof terms for universally quantified properties (∀ services,
+# if enabled then firewall rule exists).
 #
 # == Trust model ==
 #
@@ -38,15 +38,14 @@
 #
 # Every type carries:
 #
-#   Decidable checking (all types):
-#     check      — pure predicate, the decidable fragment of kernel checking
+#   Decidable checking (all types — derived from kernel):
+#     check      — pure predicate, derived from decide(kernelType, value)
 #     validate   — effectful, sends typeCheck effects for blame tracking
+#     kernelCheck — same as check (legacy alias)
 #
-#   Kernel verification (when kernelType provided):
-#     _kernel     — kernel Tm representation
+#   Kernel verification:
+#     _kernel     — kernel Tm representation (the type IS this)
 #     prove       — (term → bool) verify a proof term against _kernel
-#     kernelCheck — (value → bool) elaborate a Nix value and kernel-check
-#                   (data types only — Nix closures are opaque)
 #
 # Handler semantics for validate (configurable error policy):
 #   strict     — throws on first failure
@@ -71,8 +70,8 @@
 #
 # == Operations naming convention ==
 #
-#   check / validate       = decidable checking (guard / effectful)
-#   prove / kernelCheck    = kernel verification (proof term / value)
+#   check / validate       = decidable checking (derived from kernel / effectful)
+#   prove                  = kernel proof verification (proof term)
 #   apply / proj1 / proj2  = elimination
 #   checkAt                = deferred elimination check (Pi only)
 #   pair / pairE           = introduction construction
@@ -91,7 +90,7 @@
 #   Introduction: .check (exact guard), .validate (decomposed for blame)
 #   Elimination:  .proj1, .proj2
 #   Computation:  π₁(a,b) ≡ a, π₂(a,b) ≡ b
-#   Kernel:       .prove, .kernelCheck (data — can elaborate), ._kernel
+#   Kernel:       .prove (proof term), ._kernel (Tm representation)
 #
 # Known Nix constraint: builtins.tryEval only catches `throw` and `assert`.
 # Cross-type comparison (e.g. "str" > 0) is uncatchable — predicates must
@@ -156,9 +155,10 @@ let
       == Universe level ==
 
       Universe level is an explicit parameter. In MLTT, the level is computed
-      as `max(i, sup_{a:A} level(B(a)))` by inspecting the syntax of B. Since
-      nix-effects operates on runtime predicates (not syntax trees), the
-      universe is declared by the caller.
+      as `max(i, sup_{a:A} level(B(a)))` by inspecting the syntax of B.
+      For types with explicit kernelType, the kernel computes and verifies
+      levels via checkTypeLevel. The explicit universe parameter provides
+      the level for the surface API's `.universe` field.
 
       == MLTT rule mapping ==
 
@@ -180,26 +180,21 @@ let
     '';
     value = { domain, codomain, universe, name ? "Π(${domain.name})", kernelType ? null }:
       let
-        # Kernel fields for Pi (dependent or non-dependent): _kernel and prove
-        # only, no kernelCheck (function values are opaque — can't elaborate a
-        # Nix closure to a kernel term). Caller provides kernelType via HOAS.
-        piKernelFields =
-          if kernelType != null then {
-            _kernel = kernelType;
-            prove = term:
-              let result = builtins.tryEval (
-                !((H.checkHoas kernelType term) ? error));
-              in result.success && result.value;
-          }
-          else {};
         piType = mkType {
-        inherit name universe;
+        inherit name;
+        kernelType = if kernelType != null then kernelType else H.function_;
+        # When no explicit kernelType, H.function_ is a sound but lossy
+        # approximation — it loses domain/codomain structure. Mark as
+        # approximate so _kernel/kernelCheck/prove are suppressed, letting
+        # elaborateType do structural auto-detection.
+        approximate = kernelType == null;
         # Guard: immediate first-order part of the higher-order contract.
         # Soundly rejects non-functions. The deferred part (domain +
         # codomain verification) is checked at elimination sites via
         # .checkAt — standard Findler-Felleisen higher-order contract
         # decomposition.
-        check = builtins.isFunction;
+        guard = builtins.isFunction;
+        universe = universe;
       } // {
         inherit domain codomain;
 
@@ -244,13 +239,13 @@ let
             universe = other.universe;
             name = "compose(${name}, ${other.name})";
           };
-      } // piKernelFields;
+      };
       in piType;
     tests = {
       "pi-accepts-function" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             piT = Pi.value { domain = IntT; codomain = _: IntT; universe = 0; };
           in check piT (x: x + 1);
         expected = true;
@@ -258,7 +253,7 @@ let
       "pi-rejects-non-function" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             piT = Pi.value { domain = IntT; codomain = _: IntT; universe = 0; };
           in check piT 42;
         expected = false;
@@ -266,8 +261,8 @@ let
       "pi-apply-computes-codomain" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
-            StrT = mkType { name = "String"; check = builtins.isString; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
+            StrT = mkType { name = "String"; kernelType = H.string; };
             piT = Pi.value {
               domain = IntT;
               codomain = n: if n > 0 then StrT else IntT;
@@ -279,8 +274,8 @@ let
       "pi-apply-codomain-depends-on-value" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
-            StrT = mkType { name = "String"; check = builtins.isString; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
+            StrT = mkType { name = "String"; kernelType = H.string; };
             piT = Pi.value {
               domain = IntT;
               codomain = n: if n > 0 then StrT else IntT;
@@ -292,7 +287,7 @@ let
       "pi-checkAt-returns-computation" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             piT = Pi.value { domain = IntT; codomain = _: IntT; universe = 0; };
           in (piT.checkAt (x: x * 2) 21)._tag;
         expected = "Impure";
@@ -300,7 +295,7 @@ let
       "pi-checkAt-first-effect-is-typeCheck" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             piT = Pi.value { domain = IntT; codomain = _: IntT; universe = 0; };
           in (piT.checkAt (x: x * 2) 21).effect.name;
         expected = "typeCheck";
@@ -308,7 +303,7 @@ let
       "pi-checkAt-domain-context" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             piT = Pi.value { domain = IntT; codomain = _: IntT; universe = 0; };
             comp = piT.checkAt (x: x * 2) 21;
           in comp.effect.param.context;
@@ -319,7 +314,7 @@ let
         # check — it wraps builtins.isFunction in a typeCheck effect.
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             piT = Pi.value { domain = IntT; codomain = _: IntT; universe = 0; };
           in (piT.validate (x: x))._tag;
         expected = "Impure";
@@ -329,7 +324,7 @@ let
         # checkAt takes TWO args (function + argument for elimination checking).
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             piT = Pi.value { domain = IntT; codomain = _: IntT; universe = 0; };
             comp = piT.validate (x: x);
           in comp.effect.param.context;
@@ -340,7 +335,7 @@ let
         # system (sends typeCheck) rather than crashing Nix.
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             piT = Pi.value { domain = IntT; codomain = _: IntT; universe = 0; };
           in (piT.checkAt 42 5)._tag;
         expected = "Impure";
@@ -348,7 +343,7 @@ let
       "pi-checkAt-total-context" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             piT = Pi.value { domain = IntT; codomain = _: IntT; universe = 0; };
           in (piT.checkAt 42 5).effect.param.context;
         expected = "Π check (Π(Int))";
@@ -356,9 +351,9 @@ let
       "pi-compose-name" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
-            StrT = mkType { name = "String"; check = builtins.isString; };
-            BoolT = mkType { name = "Bool"; check = builtins.isBool; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
+            StrT = mkType { name = "String"; kernelType = H.string; };
+            BoolT = mkType { name = "Bool"; kernelType = H.bool; };
             f = Pi.value { domain = IntT; codomain = _: StrT; name = "f"; universe = 0; };
             g = Pi.value { domain = StrT; codomain = _: BoolT; name = "g"; universe = 0; };
           in (f.compose toString g).name;
@@ -367,9 +362,9 @@ let
       "pi-compose-codomain" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
-            StrT = mkType { name = "String"; check = builtins.isString; };
-            BoolT = mkType { name = "Bool"; check = builtins.isBool; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
+            StrT = mkType { name = "String"; kernelType = H.string; };
+            BoolT = mkType { name = "Bool"; kernelType = H.bool; };
             f = Pi.value { domain = IntT; codomain = _: StrT; name = "f"; universe = 0; };
             g = Pi.value { domain = StrT; codomain = _: BoolT; name = "g"; universe = 0; };
             composed = f.compose toString g;
@@ -380,8 +375,8 @@ let
         # When B is constant, Π(x:A).B = A → B (ordinary function type)
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
-            StrT = mkType { name = "String"; check = builtins.isString; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
+            StrT = mkType { name = "String"; kernelType = H.string; };
             arrowT = Pi.value {
               domain = IntT;
               codomain = _: StrT;
@@ -392,13 +387,13 @@ let
         expected = "Int → String";
       };
       "pi-universe-explicit" = {
-        # Universe is an explicit trusted parameter (not computed as in MLTT)
-        # because computing sup_{a:A} codomain(a).universe requires
-        # evaluating the codomain on all domain values — undecidable.
+        # Universe is an explicit parameter at the surface API level.
+        # The kernel independently computes and verifies levels via
+        # checkTypeLevel when kernelType is provided.
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
-            TypeT = mkType { name = "Type"; check = v: v ? _tag && v._tag == "Type"; universe = 1; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
+            TypeT = mkType { name = "Type"; kernelType = H.u 0; guard = v: builtins.isAttrs v && v ? _tag && v._tag == "Type"; };
             # Int → Type lives in Type_1 (maps values to types)
             piT = Pi.value { domain = IntT; codomain = _: TypeT; universe = 1; };
           in piT.universe;
@@ -408,26 +403,27 @@ let
         # Pi with explicit kernelType gets _kernel and prove
         expr =
           let
-            BoolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
-            NatT = mkType { name = "Nat"; check = v: builtins.isInt v && v >= 0; kernelType = H.nat; };
+            BoolT = mkType { name = "Bool"; kernelType = H.bool; };
+            NatT = mkType { name = "Nat"; kernelType = H.nat; };
             piT = Pi.value { domain = BoolT; codomain = _: NatT; universe = 0; kernelType = H.forall "x" H.bool (_: H.nat); };
           in piT ? _kernel && piT ? prove;
         expected = true;
       };
-      "pi-no-kernelCheck" = {
-        # Pi never gets kernelCheck — functions are opaque values
+      "pi-has-kernelCheck" = {
+        # Pi has kernelCheck from mkType (derived from decide)
         expr =
           let
-            BoolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+            BoolT = mkType { name = "Bool"; kernelType = H.bool; };
             piT = Pi.value { domain = BoolT; codomain = _: BoolT; universe = 0; kernelType = H.forall "x" H.bool (_: H.bool); };
           in piT ? kernelCheck;
-        expected = false;
+        expected = true;
       };
       "pi-without-kernelType-no-kernel" = {
-        # Pi without kernelType has no kernel fields
+        # Pi without explicit kernelType is approximate — _kernel suppressed
+        # so elaborateType can do structural auto-detection
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             piT = Pi.value { domain = IntT; codomain = n: if n > 0 then IntT else IntT; universe = 0; };
           in piT ? _kernel;
         expected = false;
@@ -509,14 +505,20 @@ let
     '';
     value = { fst, snd, universe, name ? "Σ(${fst.name})", kernelType ? null }:
       mkType {
-        inherit name universe kernelType;
+        inherit name;
+        kernelType = if kernelType != null then kernelType else H.any;
+        # When no explicit kernelType, H.any is the weakest approximation —
+        # it loses all Sigma structure. Mark as approximate so _kernel is
+        # suppressed, letting elaborateType do structural auto-detection.
+        approximate = kernelType == null;
         # Guard: exact first-order contract. Both components are concrete
         # data, so the full dependent introduction rule is decidable.
-        check = v:
+        guard = v:
           builtins.isAttrs v
           && v ? fst && v ? snd
           && fst.check v.fst
           && (snd v.fst).check v.snd;
+        universe = universe;
         # Custom verifier: recursively validates sub-components via their own
         # .validate (not atomic .check) for deep blame tracking. A Sigma with
         # ListOf fst produces per-element typeCheck effects — the handler sees
@@ -596,15 +598,17 @@ let
         pullback = f: g: Sigma.value {
           fst = mkType {
             name = "${fst.name}'";
-            check = v: fst.check (f v);
-            inherit (fst) universe;
+            kernelType = if fst ? _kernel then fst._kernel else H.any;
+            guard = v: fst.check (f v);
+            universe = fst.universe;
           };
           snd = x:
             let orig = snd (f x);
             in mkType {
               name = "${orig.name}'";
-              check = v: orig.check (g v);
-              inherit (orig) universe;
+              kernelType = if orig ? _kernel then orig._kernel else H.any;
+              guard = v: orig.check (g v);
+              universe = orig.universe;
             };
           name = "pullback(${name})";
           inherit universe;
@@ -614,12 +618,13 @@ let
       "sigma-accepts-valid-pair" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma.value {
               fst = IntT;
               snd = n: mkType {
                 name = "List[${toString n}]";
-                check = v: builtins.isList v && builtins.length v == n;
+                kernelType = H.any;
+                guard = v: builtins.isList v && builtins.length v == n;
               };
               universe = 0;
             };
@@ -629,12 +634,13 @@ let
       "sigma-rejects-dependent-mismatch" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma.value {
               fst = IntT;
               snd = n: mkType {
                 name = "List[${toString n}]";
-                check = v: builtins.isList v && builtins.length v == n;
+                kernelType = H.any;
+                guard = v: builtins.isList v && builtins.length v == n;
               };
               universe = 0;
             };
@@ -644,7 +650,7 @@ let
       "sigma-rejects-bad-fst" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma.value {
               fst = IntT;
               snd = _: IntT;
@@ -656,7 +662,7 @@ let
       "sigma-proj1" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma.value { fst = IntT; snd = _: IntT; universe = 0; };
           in sigT.proj1 { fst = 42; snd = 0; };
         expected = 42;
@@ -664,7 +670,7 @@ let
       "sigma-proj2" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma.value { fst = IntT; snd = _: IntT; universe = 0; };
           in sigT.proj2 { fst = 0; snd = 42; };
         expected = 42;
@@ -672,7 +678,7 @@ let
       "sigma-validate-returns-computation" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma.value { fst = IntT; snd = _: IntT; universe = 0; };
           in (sigT.validate { fst = 1; snd = 2; })._tag;
         expected = "Impure";
@@ -680,7 +686,7 @@ let
       "sigma-validate-effect-is-typeCheck" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma.value { fst = IntT; snd = _: IntT; universe = 0; };
           in (sigT.validate { fst = 1; snd = 2; }).effect.name;
         expected = "typeCheck";
@@ -690,7 +696,7 @@ let
         # system rather than crashing Nix.
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma.value { fst = IntT; snd = _: IntT; universe = 0; };
           in (sigT.validate 42)._tag;
         expected = "Impure";
@@ -698,7 +704,7 @@ let
       "sigma-validate-total-on-missing-fields" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma.value { fst = IntT; snd = _: IntT; universe = 0; };
           in (sigT.validate { x = 1; })._tag;
         expected = "Impure";
@@ -706,7 +712,7 @@ let
       "sigma-pairE-returns-computation" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma.value { fst = IntT; snd = _: IntT; universe = 0; };
           in (sigT.pairE 1 2)._tag;
         expected = "Impure";
@@ -714,7 +720,7 @@ let
       "sigma-curry-uncurry" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma.value { fst = IntT; snd = _: IntT; universe = 0; };
             add = sigT.curry (p: p.fst + p.snd);
             addPair = sigT.uncurry (a: b: a + b);
@@ -725,8 +731,8 @@ let
         # When B is constant, Σ(x:A).B = A × B (ordinary product)
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
-            StrT = mkType { name = "String"; check = builtins.isString; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
+            StrT = mkType { name = "String"; kernelType = H.string; };
             prodT = Sigma.value {
               fst = IntT;
               snd = _: StrT;
@@ -739,7 +745,7 @@ let
       "sigma-pullback-name" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma.value { fst = IntT; snd = _: IntT; name = "IntPair"; universe = 0; };
           in (sigT.pullback (x: x) (x: x)).name;
         expected = "pullback(IntPair)";
@@ -747,7 +753,7 @@ let
       "sigma-has-pullback" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma.value { fst = IntT; snd = _: IntT; universe = 0; };
           in sigT ? pullback;
         expected = true;
@@ -756,8 +762,8 @@ let
         # Sigma with explicit kernelType gets kernelCheck and prove
         expr =
           let
-            BoolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
-            NatT = mkType { name = "Nat"; check = v: builtins.isInt v && v >= 0; kernelType = H.nat; };
+            BoolT = mkType { name = "Bool"; kernelType = H.bool; };
+            NatT = mkType { name = "Nat"; kernelType = H.nat; };
             sigT = Sigma.value { fst = NatT; snd = _: BoolT; universe = 0; kernelType = H.sigma "x" H.nat (_: H.bool); };
           in sigT ? kernelCheck && sigT ? prove;
         expected = true;
@@ -765,8 +771,8 @@ let
       "sigma-kernelCheck-accepts" = {
         expr =
           let
-            NatT = mkType { name = "Nat"; check = v: builtins.isInt v && v >= 0; kernelType = H.nat; };
-            BoolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+            NatT = mkType { name = "Nat"; kernelType = H.nat; };
+            BoolT = mkType { name = "Bool"; kernelType = H.bool; };
             sigT = Sigma.value { fst = NatT; snd = _: BoolT; universe = 0; kernelType = H.sigma "x" H.nat (_: H.bool); };
           in sigT.kernelCheck { fst = 0; snd = true; };
         expected = true;
@@ -774,23 +780,24 @@ let
       "sigma-kernelCheck-rejects" = {
         expr =
           let
-            NatT = mkType { name = "Nat"; check = v: builtins.isInt v && v >= 0; kernelType = H.nat; };
-            BoolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+            NatT = mkType { name = "Nat"; kernelType = H.nat; };
+            BoolT = mkType { name = "Bool"; kernelType = H.bool; };
             sigT = Sigma.value { fst = NatT; snd = _: BoolT; universe = 0; kernelType = H.sigma "x" H.nat (_: H.bool); };
           in sigT.kernelCheck { fst = true; snd = true; };
         expected = false;
       };
       "sigma-without-kernelType-no-kernel" = {
-        # Sigma without kernelType has no kernel backing
+        # Sigma without explicit kernelType is approximate — kernel fields
+        # suppressed so elaborateType can do structural auto-detection
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma.value {
               fst = IntT;
-              snd = n: mkType { name = "L${toString n}"; check = v: builtins.isList v && builtins.length v == n; };
+              snd = n: mkType { name = "L${toString n}"; kernelType = H.any; guard = v: builtins.isList v && builtins.length v == n; };
               universe = 0;
             };
-          in sigT ? kernelCheck;
+          in sigT ? kernelCheck || sigT ? _kernel;
         expected = false;
       };
     };
@@ -840,7 +847,8 @@ let
         fst = base;
         snd = v: mkType {
           name = "Proof(${name})";
-          check = proof: proof == true && predicate v;
+          kernelType = H.bool;
+          guard = proof: proof == true && predicate v;
         };
         inherit name;
         inherit (base) universe;
@@ -869,7 +877,8 @@ let
               let
                 proofType = mkType {
                   name = "Proof(${name})";
-                  check = (proof: proof == true && predicate v);
+                  kernelType = H.bool;
+                  guard = (proof: proof == true && predicate v);
                 };
                 # Guard against throwing predicates: if predicate crashes, catch it
                 # and pass false to the typeCheck effect. The handler sees a failed
@@ -883,7 +892,7 @@ let
       "certified-accepts-valid-proof" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             PosInt = Certified.value {
               base = IntT;
               predicate = x: x > 0;
@@ -895,7 +904,7 @@ let
       "certified-rejects-failing-predicate" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             PosInt = Certified.value {
               base = IntT;
               predicate = x: x > 0;
@@ -907,7 +916,7 @@ let
       "certified-rejects-false-proof" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             PosInt = Certified.value {
               base = IntT;
               predicate = x: x > 0;
@@ -919,7 +928,7 @@ let
       "certified-certifyE-returns-computation" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             PosInt = Certified.value {
               base = IntT;
               predicate = x: x > 0;
@@ -931,7 +940,7 @@ let
       "certified-certifyE-effect-is-typeCheck" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             PosInt = Certified.value {
               base = IntT;
               predicate = x: x > 0;
@@ -946,7 +955,7 @@ let
         # already-formed pair and verifies it effectfully.
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             PosInt = Certified.value {
               base = IntT;
               predicate = x: x > 0;
@@ -958,7 +967,7 @@ let
       "certify-constructs-valid-pair" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             PosInt = Certified.value {
               base = IntT;
               predicate = x: x > 0;
@@ -976,7 +985,7 @@ let
   # ===========================================================================
 
   # NatT — non-negative integer type used by Vector as domain
-  NatT = mkType { name = "Nat"; check = v: builtins.isInt v && v >= 0; };
+  NatT = mkType { name = "Nat"; kernelType = H.nat; };
 
   Vector = mk {
     doc = ''
@@ -1002,7 +1011,8 @@ let
         domain = NatT;
         codomain = n: mkType {
           name = "Vector[${toString n}, ${elemType.name}]";
-          check = v:
+          kernelType = H.any;
+          guard = v:
             builtins.isList v
             && builtins.length v == n
             && builtins.all elemType.check v;
@@ -1013,14 +1023,14 @@ let
     tests = {
       "vector-is-pi-type" = {
         expr =
-          let IntT = mkType { name = "Int"; check = builtins.isInt; };
+          let IntT = mkType { name = "Int"; kernelType = H.int_; };
           in (Vector.value IntT) ? validate;
         expected = true;
       };
       "vector-apply-gives-specific-type" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             v3i = (Vector.value IntT).apply 3;
           in check v3i [1 2 3];
         expected = true;
@@ -1028,7 +1038,7 @@ let
       "vector-apply-rejects-wrong-length" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             v3i = (Vector.value IntT).apply 3;
           in check v3i [1 2];
         expected = false;
@@ -1036,7 +1046,7 @@ let
       "vector-apply-rejects-wrong-element-type" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             v3i = (Vector.value IntT).apply 3;
           in check v3i [1 "two" 3];
         expected = false;
@@ -1044,14 +1054,14 @@ let
       "vector-zero-accepts-empty" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             v0 = (Vector.value IntT).apply 0;
           in check v0 [];
         expected = true;
       };
       "vector-has-compose" = {
         expr =
-          let IntT = mkType { name = "Int"; check = builtins.isInt; };
+          let IntT = mkType { name = "Int"; kernelType = H.int_; };
           in (Vector.value IntT) ? compose;
         expected = true;
       };
@@ -1059,7 +1069,7 @@ let
         # The Pi type's introduction form check: Vector values are functions
         # (from Nat to sized lists). This is the type-theoretic view.
         expr =
-          let IntT = mkType { name = "Int"; check = builtins.isInt; };
+          let IntT = mkType { name = "Int"; kernelType = H.int_; };
           in check (Vector.value IntT) (n: builtins.genList (_: 0) n);
         expected = true;
       };
@@ -1078,7 +1088,7 @@ let
   # .proj1, .proj2, .pair, .pairE, .curry, .uncurry.
 
   # Unit type for the terminal case of nested Sigma
-  UnitT = mkType { name = "Unit"; check = v: v == null; };
+  UnitT = mkType { name = "Unit"; kernelType = H.unit; };
 
   DepRecord = mk {
     doc = ''
@@ -1194,8 +1204,8 @@ let
       "deprec-sigma-accepts-nested-pair" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
-            StrT = mkType { name = "String"; check = builtins.isString; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
+            StrT = mkType { name = "String"; kernelType = H.string; };
             recT = DepRecord.value [
               { name = "n"; type = IntT; }
               { name = "s"; type = StrT; }
@@ -1207,8 +1217,8 @@ let
       "deprec-sigma-rejects-bad-type" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
-            StrT = mkType { name = "String"; check = builtins.isString; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
+            StrT = mkType { name = "String"; kernelType = H.string; };
             recT = DepRecord.value [
               { name = "n"; type = IntT; }
               { name = "s"; type = StrT; }
@@ -1219,13 +1229,14 @@ let
       "deprec-dependent-field" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             recT = DepRecord.value [
               { name = "n"; type = IntT; }
               { name = "items"; type = (self:
                 mkType {
                   name = "List[n=${toString self.n}]";
-                  check = v: builtins.isList v && builtins.length v == self.n;
+                  kernelType = H.any;
+                  guard = v: builtins.isList v && builtins.length v == self.n;
                 });
               }
             ];
@@ -1236,13 +1247,14 @@ let
       "deprec-dependent-mismatch" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
             recT = DepRecord.value [
               { name = "n"; type = IntT; }
               { name = "items"; type = (self:
                 mkType {
                   name = "List[n=${toString self.n}]";
-                  check = v: builtins.isList v && builtins.length v == self.n;
+                  kernelType = H.any;
+                  guard = v: builtins.isList v && builtins.length v == self.n;
                 });
               }
             ];
@@ -1252,8 +1264,8 @@ let
       "deprec-has-validate" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
-            StrT = mkType { name = "String"; check = builtins.isString; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
+            StrT = mkType { name = "String"; kernelType = H.string; };
             recT = DepRecord.value [
               { name = "n"; type = IntT; }
               { name = "s"; type = StrT; }
@@ -1264,8 +1276,8 @@ let
       "deprec-pack-unpack" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
-            StrT = mkType { name = "String"; check = builtins.isString; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
+            StrT = mkType { name = "String"; kernelType = H.string; };
             recT = DepRecord.value [
               { name = "n"; type = IntT; }
               { name = "s"; type = StrT; }
@@ -1279,8 +1291,8 @@ let
       "deprec-checkFlat" = {
         expr =
           let
-            IntT = mkType { name = "Int"; check = builtins.isInt; };
-            StrT = mkType { name = "String"; check = builtins.isString; };
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
+            StrT = mkType { name = "String"; kernelType = H.string; };
             recT = DepRecord.value [
               { name = "n"; type = IntT; }
               { name = "s"; type = StrT; }
@@ -1292,8 +1304,8 @@ let
         # Non-dependent DepRecord with kernel-backed fields propagates kernel
         expr =
           let
-            NatT = mkType { name = "Nat"; check = v: builtins.isInt v && v >= 0; kernelType = H.nat; };
-            BoolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
+            NatT = mkType { name = "Nat"; kernelType = H.nat; };
+            BoolT = mkType { name = "Bool"; kernelType = H.bool; };
             recT = DepRecord.value [
               { name = "n"; type = NatT; }
               { name = "b"; type = BoolT; }

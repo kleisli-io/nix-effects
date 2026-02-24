@@ -16,6 +16,7 @@ run (bind (bind (bind ... (send "get" null) ...) ...) ...)
     → run step2
       → run step3
         → ...  (N frames deep)
+
 ```
 
 For validation of a large config — say, a NixOS module with hundreds of
@@ -31,6 +32,7 @@ genericClosure {
   startSet = [ initialNode ];
   operator = node -> [ ...nextNodes ];
 }
+
 ```
 
 `operator` is called on each node. New nodes returned by `operator` are
@@ -50,6 +52,7 @@ steps = builtins.genericClosure {
     then []          # halt
     else [ nextStep ]; # one more step
 };
+
 ```
 
 Stack depth: **O(1)**. `genericClosure` handles its own iteration
@@ -62,8 +65,10 @@ deduplication). All other fields — including `_state` and `_comp` — are
 lazy thunks.
 
 Without intervention, after N steps the `_state` field would be:
+
 ```
 f(f(f(... f(initialState) ...)))  # N thunks deep
+
 ```
 
 Forcing the final `_state` would then rebuild the entire call stack in
@@ -73,6 +78,7 @@ The fix: make `key` depend on `builtins.deepSeq newState`:
 
 ```nix
 key = builtins.deepSeq newState (step.key + 1)
+
 ```
 
 Since `genericClosure` forces `key`, it also forces `deepSeq newState`,

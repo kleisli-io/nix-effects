@@ -1,28 +1,28 @@
 # nix-effects type system foundation
 #
-# Core type constructor (mkType) and operations. Every type is a
-# (Specification, Guard, Verifier) triple:
+# Core type constructor (mkType) and operations. Every type is defined by
+# its kernel representation (kernelType). All type operations are derived:
 #
 #   _tag = "Type"
-#   name : String             — specification (human-readable)
-#   check : Value → Bool      — guard (pure, compositional)
-#   validate : Value → Comp   — verifier (effectful, observable)
-#   universe : Int            — universe level (0 for value types)
+#   name : String             — human-readable name
+#   _kernel : HoasType        — kernel representation (the type IS this)
+#   check : Value → Bool      — derived from decide(kernelType, value)
+#   kernelCheck : Value → Bool — same as check (for legacy callers)
+#   prove : HoasTerm → Bool   — kernel proof checking
+#   validate : Value → Comp   — effectful check (sends typeCheck effect)
+#   universe : Int             — derived from checkTypeLevel(kernelType)
 #   description : String      — documentation
 #
-# The guard (check) is the foundation — composite types compose by calling
-# sub-type guards, which must be pure Bool returns. The verifier (validate)
-# is auto-derived by mkType: it wraps check in a typeCheck effect for
-# blame tracking. Types with decomposed checking (e.g. Sigma) supply a
-# custom verifier via the `verify` parameter.
+# The kernel type IS the type. check is its decision procedure, derived
+# mechanically from the kernel via decide. No hand-written predicates.
+# Universe levels are computed, not declared. This is the "one system"
+# architecture — there is no separate contract system, no adequacy bridge,
+# no possibility of disagreement between check and kernel.
 #
-# Adequacy invariant: T.check v ⟺ all typeCheck effects in T.validate v pass
-# Totality: validate is total where check is total. Structurally malformed
-# inputs fail through the effect system, never crash Nix. Composite verifiers
-# (Sigma, Pi, Certified) short-circuit on sub-check failure: dependent
-# expressions (snd type family, function application, predicate evaluation)
-# are never evaluated on wrong-typed inputs. This mirrors check's &&
-# short-circuit behavior and prevents crashes in dependent type families.
+# For refinement types, an optional `guard` adds a runtime predicate
+# on top of the kernel check: check = decide(kernelType, v) && guard(v).
+# The guard is NOT part of the kernel — it's a contract-level constraint
+# that the kernel can't express (e.g., x >= 0 for natural numbers).
 #
 # Per Pedrot & Tabareau "Fire Triangle" (POPL 2020):
 #   Level 1: types as pure values (this attrset)
@@ -33,8 +33,7 @@
 #   strict     — throws on first failure (abort semantics)
 #   collecting — accumulates all errors in state (continues with false resume)
 #   logging    — records all checks (pass and fail) for observability
-#   all-pass   — boolean state tracking whether ALL checks passed;
-#                canonical handler for testing the adequacy invariant
+#   all-pass   — boolean state tracking whether ALL checks passed
 #
 # Known constraint: builtins.tryEval only evaluates to WHNF.
 # When catching handler throws, force .value on the result to trigger
@@ -52,44 +51,39 @@ let
 
   mkType = mk {
     doc = ''
-      Create a type as a (Specification, Guard, Verifier) triple.
+      Create a type from its kernel representation.
 
-      A nix-effects type is a tuple `(S, G, V)` where:
+      A nix-effects type is defined by its `kernelType` — an HOAS type tree
+      representing the type in the MLTT kernel. All fields are derived:
 
-      ```
-      S = Specification — the type-theoretic content (name, universe)
-      G = Guard — a decidable pure predicate: check : Value → Bool
-      V = Verifier — an effectful procedure: validate : Value → Computation Value
-      ```
+      - `.check` = `decide(kernelType, v)` — the decision procedure
+      - `.universe` = `checkTypeLevel(kernelType)` — computed universe level
+      - `.kernelCheck` = same as `.check`
+      - `.prove` = kernel proof checking for HOAS terms
 
       Arguments:
 
       - `name` — Human-readable type name
-      - `check` — Guard predicate (pure, compositional, used inside composite types)
+      - `kernelType` — HOAS type tree (required — this IS the type)
+      - `guard` — Optional runtime predicate for refinement types.
+        When provided, `.check = decide(kernelType, v) && guard(v)`.
+        The guard is NOT part of the kernel — it handles constraints
+        the kernel can't express (e.g., x >= 0 for Nat).
       - `verify` — Optional custom verifier (`self → value → Computation`).
-        Receives the type object (`self`) for structural failure
-        reporting. When null (default), `validate` is auto-derived
-        by wrapping `check` in a `typeCheck` effect. Supply a custom
-        `verify` for types that decompose checking (e.g. Sigma sends
-        separate effects for `fst` and `snd` for blame tracking).
-      - `universe` — Universe level (default 0)
+        When null (default), `validate` is auto-derived by wrapping
+        `check` in a `typeCheck` effect. Supply a custom `verify` for
+        types that decompose checking (e.g. Sigma sends separate effects
+        for `fst` and `snd` for blame tracking).
       - `description` — Documentation string (default = `name`)
-
-      The auto-derived `validate` satisfies the adequacy invariant:
-
-      ```
-      T.check v ⟺ all typeCheck effects in T.validate v pass
-      ```
-
-      Tested via the all-pass handler:
-      `state = state ∧ (param.type.check param.value)`
-
-      The guard (`check`) is the foundation — pure, compositional, defines type
-      membership. Composite types like Sigma compose by calling sub-type guards
-      (`fst.check`, `snd.check`) which MUST be pure Bool returns. The verifier
-      (`validate`) is built on top for observability — it sends `typeCheck` effects
-      through the freer monad so handlers can implement blame tracking, error
-      collection, or logging.
+      - `universe` — Optional universe level override. When null (default),
+        computed from `checkTypeLevel(kernelType)`. Use when the kernelType
+        is a fallback (e.g., `H.function_` for Pi) that doesn't capture the
+        real universe level.
+      - `approximate` — When true, the kernelType is a sound but lossy
+        approximation (e.g., `H.function_` for Pi, `H.any` for Sigma).
+        Suppresses `_kernel`, `kernelCheck`, and `prove` on the result,
+        since the kernel representation doesn't precisely capture this type.
+        The kernelType is still used internally for universe computation.
 
       Per Pedrot & Tabareau "Fire Triangle" (POPL 2020):
 
@@ -99,49 +93,201 @@ let
       Level 3: error policy as handler (strict/collecting/logging)
       ```
     '';
-    value = { name, check, verify ? null, universe ? 0, description ? name, kernelType ? null }:
+    value = { name, kernelType ? null, guard ? null, verify ? null, description ? name, universe ? null, approximate ? false }:
       let
+        # Effective kernel type: when omitted, fall back to the weakest type.
+        # Types without an explicit kernelType are always approximate.
+        effectiveKernelType = if kernelType != null then kernelType else fx.tc.hoas.any;
+        isApproximate = approximate || kernelType == null;
+
+        # The kernel's decision procedure
+        kernelDecide = v: fx.tc.elaborate.decide effectiveKernelType v;
+
+        # .check: guard overrides decide when provided (for types where
+        # the nix-effects value representation can't be elaborated to kernel
+        # values — e.g., Record, Maybe, Variant, Universe). When null,
+        # check is purely derived from the kernel via decide.
+        # When kernelType is omitted (no kernel representation at all),
+        # guard is required — otherwise check would use decide(H.any, v)
+        # which accepts everything.
+        effectiveCheck =
+          if guard != null then guard
+          else kernelDecide;
+
+        # .universe: override if provided, otherwise computed from checkTypeLevel
+        effectiveUniverse =
+          if universe != null then universe
+          else
+            let
+              tm = fx.tc.hoas.elab effectiveKernelType;
+              result = fx.tc.check.runCheck
+                (fx.tc.check.checkTypeLevel fx.tc.check.emptyCtx tm);
+            in if result ? error then 0 else result.level;
+
+        # Kernel fields: only present when kernelType is precise (not approximate).
+        # When approximate (e.g., H.function_ for Pi, H.any for Sigma without
+        # explicit kernelType), these are suppressed so that:
+        #   - elaborateType can fall through to structural detection
+        #   - callers know kernel checking is not available
         kernelFields =
-          if kernelType != null then {
-            _kernel = kernelType;
-            kernelCheck = v: fx.tc.elaborate.decide kernelType v;
+          if isApproximate then {}
+          else {
+            _kernel = effectiveKernelType;
+            kernelCheck = kernelDecide;
             prove = term:
               let result = builtins.tryEval (
-                !((fx.tc.hoas.checkHoas kernelType term) ? error));
+                !((fx.tc.hoas.checkHoas effectiveKernelType term) ? error));
               in result.success && result.value;
-          } else {};
+          };
+
         self = {
           _tag = "Type";
-          inherit name check universe description;
+          inherit name description;
+          check = effectiveCheck;
+          universe = effectiveUniverse;
           validate =
             if verify != null then verify self
             else v: send "typeCheck" { type = self; context = name; value = v; };
         } // kernelFields;
       in self;
-    tests = {
+    tests = let
+      H = fx.tc.hoas;
+    in {
+      # -- Core construction --
       "creates-type" = {
-        expr = (mkType.value { name = "Test"; check = _: true; })._tag;
+        expr = (mkType.value { name = "Test"; kernelType = H.any; })._tag;
         expected = "Type";
       };
-      "default-universe-is-zero" = {
-        expr = (mkType.value { name = "Test"; check = _: true; }).universe;
-        expected = 0;
-      };
-      "has-validate" = {
-        expr = (mkType.value { name = "T"; check = _: true; }) ? validate;
+      "has-kernel" = {
+        expr = (mkType.value { name = "T"; kernelType = H.bool; }) ? _kernel;
         expected = true;
       };
+      "has-kernelCheck" = {
+        expr = (mkType.value { name = "T"; kernelType = H.bool; }) ? kernelCheck;
+        expected = true;
+      };
+      "has-prove" = {
+        expr = (mkType.value { name = "T"; kernelType = H.bool; }) ? prove;
+        expected = true;
+      };
+      "has-validate" = {
+        expr = (mkType.value { name = "T"; kernelType = H.any; }) ? validate;
+        expected = true;
+      };
+      # -- Derived check --
+      "check-accepts-valid-bool" = {
+        expr = (mkType.value { name = "Bool"; kernelType = H.bool; }).check true;
+        expected = true;
+      };
+      "check-rejects-invalid-bool" = {
+        expr = (mkType.value { name = "Bool"; kernelType = H.bool; }).check 42;
+        expected = false;
+      };
+      "check-accepts-valid-string" = {
+        expr = (mkType.value { name = "String"; kernelType = H.string; }).check "hello";
+        expected = true;
+      };
+      "check-rejects-invalid-string" = {
+        expr = (mkType.value { name = "String"; kernelType = H.string; }).check 42;
+        expected = false;
+      };
+      "check-accepts-valid-nat" = {
+        expr = (mkType.value { name = "Nat"; kernelType = H.nat; }).check 5;
+        expected = true;
+      };
+      "check-rejects-negative-nat" = {
+        expr = (mkType.value { name = "Nat"; kernelType = H.nat; }).check (-1);
+        expected = false;
+      };
+      "check-any-accepts-all" = {
+        expr =
+          let t = mkType.value { name = "Any"; kernelType = H.any; };
+          in t.check 42 && t.check "s" && t.check true && t.check null;
+        expected = true;
+      };
+      # -- Derived universe --
+      "universe-level-0" = {
+        expr = (mkType.value { name = "Bool"; kernelType = H.bool; }).universe;
+        expected = 0;
+      };
+      "universe-pi-level" = {
+        expr = (mkType.value { name = "Arrow"; kernelType = H.forall "x" H.nat (_: H.bool); }).universe;
+        expected = 0;
+      };
+      "universe-U0" = {
+        expr = (mkType.value { name = "U0"; kernelType = H.u 0; }).universe;
+        expected = 1;
+      };
+      # -- Guard (complete check override) --
+      "guard-overrides-decide" = {
+        expr =
+          let
+            decide = v: fx.tc.elaborate.decide H.int_ v;
+            t = mkType.value {
+              name = "Pos";
+              kernelType = H.int_;
+              guard = v: decide v && v > 0;
+            };
+          in t.check 5;
+        expected = true;
+      };
+      "guard-rejects" = {
+        expr =
+          let
+            decide = v: fx.tc.elaborate.decide H.int_ v;
+            t = mkType.value {
+              name = "Pos";
+              kernelType = H.int_;
+              guard = v: decide v && v > 0;
+            };
+          in t.check (-1);
+        expected = false;
+      };
+      "guard-rejects-wrong-base-type" = {
+        expr =
+          let
+            decide = v: fx.tc.elaborate.decide H.int_ v;
+            t = mkType.value {
+              name = "Pos";
+              kernelType = H.int_;
+              guard = v: decide v && v > 0;
+            };
+          in t.check "not-an-int";
+        expected = false;
+      };
+      "kernelCheck-ignores-guard" = {
+        expr =
+          let
+            decide = v: fx.tc.elaborate.decide H.int_ v;
+            t = mkType.value {
+              name = "Pos";
+              kernelType = H.int_;
+              guard = v: decide v && v > 0;
+            };
+          in t.kernelCheck (-1);  # kernel accepts (it's an int), guard would reject
+        expected = true;
+      };
+      # -- Prove --
+      "prove-accepts-valid" = {
+        expr = (mkType.value { name = "Bool"; kernelType = H.bool; }).prove H.true_;
+        expected = true;
+      };
+      "prove-rejects-wrong-type" = {
+        expr = (mkType.value { name = "Bool"; kernelType = H.bool; }).prove H.zero;
+        expected = false;
+      };
+      # -- Validate --
       "auto-validate-returns-impure" = {
-        expr = ((mkType.value { name = "T"; check = _: true; }).validate 42)._tag;
+        expr = ((mkType.value { name = "T"; kernelType = H.any; }).validate 42)._tag;
         expected = "Impure";
       };
       "auto-validate-effect-name" = {
-        expr = ((mkType.value { name = "T"; check = _: true; }).validate 42).effect.name;
+        expr = ((mkType.value { name = "T"; kernelType = H.any; }).validate 42).effect.name;
         expected = "typeCheck";
       };
       "auto-validate-passes-type" = {
         expr =
-          let t = mkType.value { name = "MyT"; check = _: true; };
+          let t = mkType.value { name = "MyT"; kernelType = H.any; };
           in (t.validate 1).effect.param.type.name;
         expected = "MyT";
       };
@@ -149,50 +295,11 @@ let
         expr =
           let t = mkType.value {
             name = "Custom";
-            check = _: true;
+            kernelType = H.any;
             verify = _self: v: pure v;
           };
           in (t.validate 42)._tag;
         expected = "Pure";
-      };
-      "kernelType-absent-by-default" = {
-        expr = (mkType.value { name = "T"; check = _: true; }) ? kernelCheck;
-        expected = false;
-      };
-      "kernelType-adds-fields" = {
-        expr = let
-          H = fx.tc.hoas;
-          t = mkType.value { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
-        in t ? kernelCheck && t ? prove && t ? _kernel;
-        expected = true;
-      };
-      "kernelCheck-accepts-valid" = {
-        expr = let
-          H = fx.tc.hoas;
-          t = mkType.value { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
-        in t.kernelCheck true;
-        expected = true;
-      };
-      "kernelCheck-rejects-invalid" = {
-        expr = let
-          H = fx.tc.hoas;
-          t = mkType.value { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
-        in t.kernelCheck 42;
-        expected = false;
-      };
-      "prove-accepts-valid" = {
-        expr = let
-          H = fx.tc.hoas;
-          t = mkType.value { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
-        in t.prove H.true_;
-        expected = true;
-      };
-      "prove-rejects-wrong-type" = {
-        expr = let
-          H = fx.tc.hoas;
-          t = mkType.value { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
-        in t.prove H.zero;
-        expected = false;
       };
     };
   };
@@ -200,13 +307,13 @@ let
   check = mk {
     doc = "Check whether a value inhabits a type. Returns bool.";
     value = type: value: type.check value;
-    tests = {
+    tests = let H = fx.tc.hoas; in {
       "check-passes" = {
-        expr = check.value (mkType.value { name = "Any"; check = _: true; }) 42;
+        expr = check.value (mkType.value { name = "Any"; kernelType = H.any; }) 42;
         expected = true;
       };
       "check-fails" = {
-        expr = check.value (mkType.value { name = "Never"; check = _: false; }) 42;
+        expr = check.value (mkType.value { name = "Void"; kernelType = H.void; }) 42;
         expected = false;
       };
     };
@@ -218,9 +325,9 @@ let
       if type.check v
       then v
       else builtins.throw "nix-effects type error: expected ${type.name}, got ${builtins.typeOf v}";
-    tests = {
+    tests = let H = fx.tc.hoas; in {
       "make-passes" = {
-        expr = make.value (mkType.value { name = "Any"; check = _: true; }) 42;
+        expr = make.value (mkType.value { name = "Any"; kernelType = H.any; }) 42;
         expected = 42;
       };
     };
@@ -229,31 +336,31 @@ let
   refine = mk {
     doc = ''
       Narrow a type with an additional predicate. Creates a refinement type
-      whose check = base.check AND predicate.
+      whose check = decide(kernelType, v) AND predicate(v).
+      The base type's kernelType provides the kernel backing; the predicate
+      is a runtime-only guard the kernel cannot express.
       Grounded in Freeman & Pfenning (1991) "Refinement Types for ML" and Rondon et al. (2008) "Liquid Types".
     '';
     value = base: predicate: mkType.value {
       name = "${base.name}[refined]";
-      check = v: base.check v && predicate v;
-      inherit (base) universe;
+      kernelType = base._kernel;
+      guard = v: base.check v && predicate v;
       description = "${base.description} (refined)";
     };
-    tests = {
+    tests = let H = fx.tc.hoas; in {
       "refine-narrows" = {
         expr =
           let
-            nat = refine.value
-              (mkType.value { name = "Int"; check = builtins.isInt; })
-              (x: x >= 0);
+            int = mkType.value { name = "Int"; kernelType = H.int_; };
+            nat = refine.value int (x: x >= 0);
           in check.value nat 5;
         expected = true;
       };
       "refine-rejects" = {
         expr =
           let
-            nat = refine.value
-              (mkType.value { name = "Int"; check = builtins.isInt; })
-              (x: x >= 0);
+            int = mkType.value { name = "Int"; kernelType = H.int_; };
+            nat = refine.value int (x: x >= 0);
           in check.value nat (-1);
         expected = false;
       };
@@ -286,25 +393,25 @@ let
     '';
     value = type: v: context:
       send "typeCheck" { inherit type context; value = v; };
-    tests = {
+    tests = let H = fx.tc.hoas; in {
       "validate-returns-impure" = {
         expr =
           let
-            t = mkType.value { name = "Int"; check = builtins.isInt; };
+            t = mkType.value { name = "Int"; kernelType = H.int_; };
           in (validate.value t 42 "test")._tag;
         expected = "Impure";
       };
       "validate-effect-name" = {
         expr =
           let
-            t = mkType.value { name = "Int"; check = builtins.isInt; };
+            t = mkType.value { name = "Int"; kernelType = H.int_; };
           in (validate.value t 42 "test").effect.name;
         expected = "typeCheck";
       };
       "validate-effect-has-type-and-context" = {
         expr =
           let
-            t = mkType.value { name = "Int"; check = builtins.isInt; };
+            t = mkType.value { name = "Int"; kernelType = H.int_; };
             comp = validate.value t 42 "test-ctx";
           in comp.effect.param.context;
         expected = "test-ctx";

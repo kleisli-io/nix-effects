@@ -30,6 +30,20 @@ let
     else if t1 == "VTt" && t2 == "VTt" then true
     else if t1 == "VRefl" && t2 == "VRefl" then true
     else if t1 == "VU" && t2 == "VU" then v1.level == v2.level
+    else if t1 == "VString" && t2 == "VString" then true
+    else if t1 == "VInt" && t2 == "VInt" then true
+    else if t1 == "VFloat" && t2 == "VFloat" then true
+    else if t1 == "VAttrs" && t2 == "VAttrs" then true
+    else if t1 == "VPath" && t2 == "VPath" then true
+    else if t1 == "VFunction" && t2 == "VFunction" then true
+    else if t1 == "VAny" && t2 == "VAny" then true
+    else if t1 == "VStringLit" && t2 == "VStringLit" then v1.value == v2.value
+    else if t1 == "VIntLit" && t2 == "VIntLit" then v1.value == v2.value
+    else if t1 == "VFloatLit" && t2 == "VFloatLit" then v1.value == v2.value
+    else if t1 == "VAttrsLit" && t2 == "VAttrsLit" then true
+    else if t1 == "VPathLit" && t2 == "VPathLit" then true
+    else if t1 == "VFnLit" && t2 == "VFnLit" then true
+    else if t1 == "VAnyLit" && t2 == "VAnyLit" then true
     # VSucc — trampolined for deep naturals (S^5000+)
     else if t1 == "VSucc" && t2 == "VSucc" then
       let
@@ -132,15 +146,48 @@ let
 
 in mk {
   doc = ''
-    Conversion checker for the type-checking kernel.
-    conv : Depth -> Val -> Val -> Bool.
-    Structural equality on normalized values. No eta. No type info.
+    # fx.tc.conv — Conversion (Definitional Equality)
+
+    Checks whether two values are definitionally equal at a given
+    binding depth. Purely structural — no type information used, no
+    eta expansion. Pure function — part of the TCB.
+
+    Spec reference: kernel-spec.md §6.
+
+    ## Core Functions
+
+    - `conv : Depth → Val → Val → Bool` — check definitional equality.
+    - `convSp : Depth → Spine → Spine → Bool` — check spine equality
+      (same length, pairwise `convElim`).
+    - `convElim : Depth → Elim → Elim → Bool` — check elimination frame
+      equality (same tag, recursively conv on carried values).
+
+    ## Conversion Rules
+
+    - §6.1 **Structural**: same-constructor values with matching fields.
+      Universe levels compared by `==`. Primitive literals by value.
+    - §6.2 **Binding forms**: Pi, Lam, Sigma compared under a fresh
+      variable at depth d (instantiate both closures, compare at d+1).
+    - §6.3 **Compound values**: recursive on all components.
+    - §6.4 **Neutrals**: same head level and convertible spines.
+    - §6.5 **Catch-all**: different constructors → false.
+
+    ## Trampolining
+
+    VSucc and VCons chains use `genericClosure` to avoid stack overflow
+    on S^5000 or cons^5000 comparisons.
+
+    ## No Eta
+
+    `conv` does not perform eta expansion: a neutral `f` and
+    `λx. f(x)` are **not** definitionally equal. Cumulativity
+    (`U(i) ≤ U(j)`) is handled in check.nix, not here.
   '';
   value = { inherit conv convSp convElim; };
   tests = let
     inherit (V) vNat vZero vSucc vBool vTrue vFalse vPi vLam vSigma vPair
       vList vNil vCons vUnit vTt vVoid vSum vInl vInr vEq vRefl vU vNe
-      mkClosure eApp eFst eSnd;
+      mkClosure eApp eFst eSnd eNatElim eBoolElim eListElim eAbsurd eSumElim eJ;
     T = fx.tc.term;
   in {
     # §6.1 Structural rules — reflexivity
@@ -155,6 +202,27 @@ in mk {
     "conv-refl" = { expr = conv 0 vRefl vRefl; expected = true; };
     "conv-U0" = { expr = conv 0 (vU 0) (vU 0); expected = true; };
     "conv-U1" = { expr = conv 0 (vU 1) (vU 1); expected = true; };
+
+    # Primitive types
+    "conv-string" = { expr = conv 0 V.vString V.vString; expected = true; };
+    "conv-int" = { expr = conv 0 V.vInt V.vInt; expected = true; };
+    "conv-float" = { expr = conv 0 V.vFloat V.vFloat; expected = true; };
+    "conv-attrs" = { expr = conv 0 V.vAttrs V.vAttrs; expected = true; };
+    "conv-path" = { expr = conv 0 V.vPath V.vPath; expected = true; };
+    "conv-function" = { expr = conv 0 V.vFunction V.vFunction; expected = true; };
+    "conv-any" = { expr = conv 0 V.vAny V.vAny; expected = true; };
+    "conv-string-int" = { expr = conv 0 V.vString V.vInt; expected = false; };
+    "conv-stringlit-eq" = { expr = conv 0 (V.vStringLit "a") (V.vStringLit "a"); expected = true; };
+    "conv-stringlit-neq" = { expr = conv 0 (V.vStringLit "a") (V.vStringLit "b"); expected = false; };
+    "conv-intlit-eq" = { expr = conv 0 (V.vIntLit 1) (V.vIntLit 1); expected = true; };
+    "conv-intlit-neq" = { expr = conv 0 (V.vIntLit 1) (V.vIntLit 2); expected = false; };
+    "conv-floatlit-eq" = { expr = conv 0 (V.vFloatLit 1.0) (V.vFloatLit 1.0); expected = true; };
+    "conv-floatlit-neq" = { expr = conv 0 (V.vFloatLit 1.0) (V.vFloatLit 2.0); expected = false; };
+    "conv-attrslit" = { expr = conv 0 V.vAttrsLit V.vAttrsLit; expected = true; };
+    "conv-pathlit" = { expr = conv 0 V.vPathLit V.vPathLit; expected = true; };
+    "conv-fnlit" = { expr = conv 0 V.vFnLit V.vFnLit; expected = true; };
+    "conv-anylit" = { expr = conv 0 V.vAnyLit V.vAnyLit; expected = true; };
+    "conv-stringlit-intlit" = { expr = conv 0 (V.vStringLit "1") (V.vIntLit 1); expected = false; };
 
     # Structural rules — inequality
     "conv-nat-bool" = { expr = conv 0 vNat vBool; expected = false; };
@@ -305,6 +373,38 @@ in mk {
     "conv-ne-diff-elim" = {
       expr = conv 1 (vNe 0 [ eFst ]) (vNe 0 [ eSnd ]);
       expected = false;
+    };
+    "conv-ne-nat-elim" = {
+      expr = conv 1 (vNe 0 [ (eNatElim vNat vZero vZero) ]) (vNe 0 [ (eNatElim vNat vZero vZero) ]);
+      expected = true;
+    };
+    "conv-ne-nat-elim-diff" = {
+      expr = conv 1 (vNe 0 [ (eNatElim vNat vZero vZero) ]) (vNe 0 [ (eNatElim vBool vZero vZero) ]);
+      expected = false;
+    };
+    "conv-ne-bool-elim" = {
+      expr = conv 1 (vNe 0 [ (eBoolElim vNat vZero (vSucc vZero)) ]) (vNe 0 [ (eBoolElim vNat vZero (vSucc vZero)) ]);
+      expected = true;
+    };
+    "conv-ne-list-elim" = {
+      expr = conv 1 (vNe 0 [ (eListElim vNat vNat vZero vZero) ]) (vNe 0 [ (eListElim vNat vNat vZero vZero) ]);
+      expected = true;
+    };
+    "conv-ne-absurd" = {
+      expr = conv 1 (vNe 0 [ (eAbsurd vNat) ]) (vNe 0 [ (eAbsurd vNat) ]);
+      expected = true;
+    };
+    "conv-ne-absurd-diff" = {
+      expr = conv 1 (vNe 0 [ (eAbsurd vNat) ]) (vNe 0 [ (eAbsurd vBool) ]);
+      expected = false;
+    };
+    "conv-ne-sum-elim" = {
+      expr = conv 1 (vNe 0 [ (eSumElim vNat vBool vNat vZero vZero) ]) (vNe 0 [ (eSumElim vNat vBool vNat vZero vZero) ]);
+      expected = true;
+    };
+    "conv-ne-j" = {
+      expr = conv 1 (vNe 0 [ (eJ vNat vZero vNat vZero vZero) ]) (vNe 0 [ (eJ vNat vZero vNat vZero vZero) ]);
+      expected = true;
     };
 
     # Symmetry property

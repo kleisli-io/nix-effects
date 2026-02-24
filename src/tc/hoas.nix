@@ -34,10 +34,25 @@ let
   bool = { _htag = "bool"; };
   unit = { _htag = "unit"; };
   void = { _htag = "void"; };
+  string = { _htag = "string"; };
+  int_ = { _htag = "int"; };
+  float_ = { _htag = "float"; };
+  attrs = { _htag = "attrs"; };
+  path = { _htag = "path"; };
+  function_ = { _htag = "function"; };
+  any = { _htag = "any"; };
   listOf = elem: { _htag = "list"; inherit elem; };
   sum = left: right: { _htag = "sum"; inherit left right; };
   eq = type: lhs: rhs: { _htag = "eq"; inherit type lhs rhs; };
   u = level: { _htag = "U"; inherit level; };
+
+  # Compound types (sugar for nested sigma/sum — carry structural info for elaborateValue)
+  # fields: [ { name; type; } ... ] — sorted by name
+  record = fields: { _htag = "record"; inherit fields; };
+  # maybe = Sum(inner, Unit) — null for Right/Unit, value for Left/inner
+  maybe = inner: { _htag = "maybe"; inherit inner; };
+  # branches: [ { tag; type; } ... ] — sorted by tag
+  variant = branches: { _htag = "variant"; inherit branches; };
 
   # Binding types — take Nix lambda for the body
   forall = name: domain: bodyFn:
@@ -64,9 +79,18 @@ let
   inl = left: right: term: { _htag = "inl"; inherit left right term; };
   inr = left: right: term: { _htag = "inr"; inherit left right term; };
   refl = { _htag = "refl"; };
+  stringLit = s: { _htag = "string-lit"; value = s; };
+  intLit = n: { _htag = "int-lit"; value = n; };
+  floatLit = f: { _htag = "float-lit"; value = f; };
+  attrsLit = { _htag = "attrs-lit"; };
+  pathLit = { _htag = "path-lit"; };
+  fnLit = { _htag = "fn-lit"; };
+  anyLit = { _htag = "any-lit"; };
   absurd = type: term: { _htag = "absurd"; inherit type term; };
   ann = term: type: { _htag = "ann"; inherit term type; };
   app = fn: arg: { _htag = "app"; inherit fn arg; };
+  fst_ = pair: { _htag = "fst"; inherit pair; };
+  snd_ = pair: { _htag = "snd"; inherit pair; };
 
   # Eliminators
   ind = motive: base: step: scrut:
@@ -108,11 +132,51 @@ let
     else if t == "bool" then T.mkBool
     else if t == "unit" then T.mkUnit
     else if t == "void" then T.mkVoid
+    else if t == "string" then T.mkString
+    else if t == "int" then T.mkInt
+    else if t == "float" then T.mkFloat
+    else if t == "attrs" then T.mkAttrs
+    else if t == "path" then T.mkPath
+    else if t == "function" then T.mkFunction
+    else if t == "any" then T.mkAny
     else if t == "U" then T.mkU h.level
     else if t == "list" then T.mkList (elaborate depth h.elem)
     else if t == "sum" then T.mkSum (elaborate depth h.left) (elaborate depth h.right)
     else if t == "eq" then
       T.mkEq (elaborate depth h.type) (elaborate depth h.lhs) (elaborate depth h.rhs)
+
+    # -- Compound types (sugar for nested sigma/sum) --
+    else if t == "record" then
+      let
+        fields = h.fields;
+        n = builtins.length fields;
+      in if n == 0 then T.mkUnit
+         else if n == 1 then elaborate depth (builtins.head fields).type
+         else
+           # Build nested Sigma right-to-left: Σ(f1:T1).Σ(f2:T2)...Tn
+           let lastType = elaborate depth (builtins.elemAt fields (n - 1)).type;
+           in builtins.foldl' (acc: i:
+             let field = builtins.elemAt fields (n - 2 - i); in
+             T.mkSigma field.name (elaborate depth field.type) acc
+           ) lastType (builtins.genList (x: x) (n - 1))
+
+    else if t == "maybe" then
+      # Sum(inner, Unit) — Left = value present, Right = null
+      T.mkSum (elaborate depth h.inner) T.mkUnit
+
+    else if t == "variant" then
+      let
+        branches = h.branches;
+        n = builtins.length branches;
+      in if n == 0 then T.mkVoid
+         else if n == 1 then elaborate depth (builtins.head branches).type
+         else
+           # Build nested Sum right-to-left: Sum(T1, Sum(T2, ...Tn))
+           let lastType = elaborate depth (builtins.elemAt branches (n - 1)).type;
+           in builtins.foldl' (acc: i:
+             let branch = builtins.elemAt branches (n - 2 - i); in
+             T.mkSum (elaborate depth branch.type) acc
+           ) lastType (builtins.genList (x: x) (n - 1))
 
     # -- Binding types and terms (trampolined for deep nesting) --
     else if t == "pi" || t == "sigma" || t == "lam" || t == "let" then
@@ -165,6 +229,13 @@ let
     else if t == "false" then T.mkFalse
     else if t == "tt" then T.mkTt
     else if t == "refl" then T.mkRefl
+    else if t == "string-lit" then T.mkStringLit h.value
+    else if t == "int-lit" then T.mkIntLit h.value
+    else if t == "float-lit" then T.mkFloatLit h.value
+    else if t == "attrs-lit" then T.mkAttrsLit
+    else if t == "path-lit" then T.mkPathLit
+    else if t == "fn-lit" then T.mkFnLit
+    else if t == "any-lit" then T.mkAnyLit
     else if t == "nil" then T.mkNil (elaborate depth h.elem)
     # cons — trampolined for deep lists (5000+ elements)
     else if t == "cons" then
@@ -194,6 +265,8 @@ let
       T.mkAnn (elaborate depth h.term) (elaborate depth h.type)
     else if t == "app" then
       T.mkApp (elaborate depth h.fn) (elaborate depth h.arg)
+    else if t == "fst" then T.mkFst (elaborate depth h.pair)
+    else if t == "snd" then T.mkSnd (elaborate depth h.pair)
 
     # -- Eliminators --
     else if t == "nat-elim" then
@@ -237,17 +310,81 @@ let
 
 in mk {
   doc = ''
-    HOAS surface combinators for the type-checking kernel.
-    Use Nix lambdas for variable binding — elaborate compiles to de Bruijn Tm.
-    Example: forall "A" (u 0) (A: forall "x" A (_: A))  →  Π(A:U₀). A → A
+    # fx.tc.hoas — HOAS Surface Combinators
+
+    Higher-Order Abstract Syntax layer that lets you write kernel terms
+    using Nix lambdas for variable binding. The `elaborate` function
+    compiles HOAS trees to de Bruijn indexed Tm terms.
+
+    Spec reference: kernel-spec.md, kernel-mvp-research.md §2.
+
+    ## Example
+
+    ```nix
+    # Π(A:U₀). A → A
+    H.forall "A" (H.u 0) (A: H.forall "x" A (_: A))
+    ```
+
+    ## Type Combinators
+
+    - `nat`, `bool`, `unit`, `void` — base types
+    - `string`, `int_`, `float_`, `attrs`, `path`, `function_`, `any` — primitive types
+    - `listOf : Hoas → Hoas` — List(elem)
+    - `sum : Hoas → Hoas → Hoas` — Sum(left, right)
+    - `eq : Hoas → Hoas → Hoas → Hoas` — Eq(type, lhs, rhs)
+    - `u : Int → Hoas` — Universe at level
+    - `forall : String → Hoas → (Hoas → Hoas) → Hoas` — Π-type (Nix lambda for body)
+    - `sigma : String → Hoas → (Hoas → Hoas) → Hoas` — Σ-type
+
+    ## Compound Types (Sugar)
+
+    - `record : [{ name; type; }] → Hoas` — nested Sigma (sorted fields)
+    - `maybe : Hoas → Hoas` — Sum(inner, Unit)
+    - `variant : [{ tag; type; }] → Hoas` — nested Sum (sorted tags)
+
+    ## Term Combinators
+
+    - `lam : String → Hoas → (Hoas → Hoas) → Hoas` — λ-abstraction
+    - `let_ : String → Hoas → Hoas → (Hoas → Hoas) → Hoas` — let binding
+    - `zero`, `succ`, `true_`, `false_`, `tt`, `refl` — intro forms
+    - `nil`, `cons`, `pair`, `inl`, `inr` — data constructors
+    - `stringLit`, `intLit`, `floatLit`, `attrsLit`, `pathLit`, `fnLit`, `anyLit` — primitive literals
+    - `absurd`, `ann`, `app`, `fst_`, `snd_` — elimination/annotation
+
+    ## Eliminators
+
+    - `ind` — NatElim(motive, base, step, scrut)
+    - `boolElim` — BoolElim(motive, onTrue, onFalse, scrut)
+    - `listElim` — ListElim(elem, motive, onNil, onCons, scrut)
+    - `sumElim` — SumElim(left, right, motive, onLeft, onRight, scrut)
+    - `j` — J(type, lhs, motive, base, rhs, eq)
+
+    ## Elaboration
+
+    - `elaborate : Int → Hoas → Tm` — compile at given depth
+    - `elab : Hoas → Tm` — compile from depth 0
+
+    ## Convenience
+
+    - `checkHoas : Hoas → Hoas → Tm|Error` — elaborate type+term, type-check
+    - `inferHoas : Hoas → { term; type; }|Error` — elaborate and infer
+    - `natLit : Int → Hoas` — build S^n(zero)
+
+    ## Stack Safety
+
+    Binding chains (pi/lam/sigma/let), succ chains, and cons chains
+    are elaborated iteratively via `genericClosure` — safe to 8000+ depth.
   '';
   value = {
     # Types
-    inherit nat bool unit void listOf sum eq u;
+    inherit nat bool unit void string int_ float_ attrs path function_ any listOf sum eq u
+      record maybe variant;
     # Binding
     inherit forall sigma lam let_;
     # Terms
-    inherit zero succ true_ false_ tt nil cons pair inl inr refl absurd ann app;
+    inherit zero succ true_ false_ tt nil cons pair inl inr refl
+      stringLit intLit floatLit attrsLit pathLit fnLit anyLit
+      absurd ann app fst_ snd_;
     # Eliminators
     inherit ind boolElim listElim sumElim j;
     # Elaboration
@@ -325,6 +462,8 @@ in mk {
     "elab-ann" = { expr = (elab (ann zero nat)).tag; expected = "ann"; };
     "elab-app" = { expr = (elab (app (lam "x" nat (x: x)) zero)).tag; expected = "app"; };
     "elab-absurd" = { expr = (elab (absurd nat (lam "x" void (x: x)))).tag; expected = "absurd"; };
+    "elab-fst" = { expr = (elab (fst_ (pair zero true_ (sigma "x" nat (_: bool))))).tag; expected = "fst"; };
+    "elab-snd" = { expr = (elab (snd_ (pair zero true_ (sigma "x" nat (_: bool))))).tag; expected = "snd"; };
 
     # -- Error path: non-serializable value doesn't crash toJSON --
     "elab-error-non-serializable" = {
@@ -573,6 +712,60 @@ in mk {
     "natLit-5000" = {
       expr = (elab (natLit 5000)).tag;
       expected = "succ";
+    };
+
+    # ===== Primitive type elaboration =====
+
+    "elab-string" = { expr = (elab string).tag; expected = "string"; };
+    "elab-int" = { expr = (elab int_).tag; expected = "int"; };
+    "elab-float" = { expr = (elab float_).tag; expected = "float"; };
+    "elab-attrs" = { expr = (elab attrs).tag; expected = "attrs"; };
+    "elab-path" = { expr = (elab path).tag; expected = "path"; };
+    "elab-function" = { expr = (elab function_).tag; expected = "function"; };
+    "elab-any" = { expr = (elab any).tag; expected = "any"; };
+
+    # ===== Primitive literal elaboration =====
+
+    "elab-string-lit" = { expr = (elab (stringLit "hi")).tag; expected = "string-lit"; };
+    "elab-string-lit-value" = { expr = (elab (stringLit "hi")).value; expected = "hi"; };
+    "elab-int-lit" = { expr = (elab (intLit 42)).tag; expected = "int-lit"; };
+    "elab-int-lit-value" = { expr = (elab (intLit 42)).value; expected = 42; };
+    "elab-float-lit" = { expr = (elab (floatLit 3.14)).tag; expected = "float-lit"; };
+    "elab-float-lit-value" = { expr = (elab (floatLit 3.14)).value; expected = 3.14; };
+    "elab-attrs-lit" = { expr = (elab attrsLit).tag; expected = "attrs-lit"; };
+    "elab-path-lit" = { expr = (elab pathLit).tag; expected = "path-lit"; };
+    "elab-fn-lit" = { expr = (elab fnLit).tag; expected = "fn-lit"; };
+    "elab-any-lit" = { expr = (elab anyLit).tag; expected = "any-lit"; };
+
+    # ===== Primitive kernel integration =====
+
+    "check-string-lit" = {
+      expr = (checkHoas string (stringLit "hello")).tag;
+      expected = "string-lit";
+    };
+    "check-int-lit" = {
+      expr = (checkHoas int_ (intLit 7)).tag;
+      expected = "int-lit";
+    };
+    "check-float-lit" = {
+      expr = (checkHoas float_ (floatLit 2.5)).tag;
+      expected = "float-lit";
+    };
+    "check-attrs-lit" = {
+      expr = (checkHoas attrs attrsLit).tag;
+      expected = "attrs-lit";
+    };
+    "check-path-lit" = {
+      expr = (checkHoas path pathLit).tag;
+      expected = "path-lit";
+    };
+    "check-fn-lit" = {
+      expr = (checkHoas function_ fnLit).tag;
+      expected = "fn-lit";
+    };
+    "check-any-lit" = {
+      expr = (checkHoas any anyLit).tag;
+      expected = "any-lit";
     };
   };
 }

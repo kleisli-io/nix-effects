@@ -74,11 +74,72 @@ let
   # -- Universes --
   mkU = level: { tag = "U"; inherit level; };
 
+  # -- Axiomatized primitives --
+  mkString = { tag = "string"; };
+  mkInt = { tag = "int"; };
+  mkFloat = { tag = "float"; };
+  mkAttrs = { tag = "attrs"; };
+  mkPath = { tag = "path"; };
+  mkFunction = { tag = "function"; };
+  mkAny = { tag = "any"; };
+
+  # -- Primitive literals --
+  mkStringLit = s: { tag = "string-lit"; value = s; };
+  mkIntLit = n: { tag = "int-lit"; value = n; };
+  mkFloatLit = f: { tag = "float-lit"; value = f; };
+  mkAttrsLit = { tag = "attrs-lit"; };
+  mkPathLit = { tag = "path-lit"; };
+  mkFnLit = { tag = "fn-lit"; };
+  mkAnyLit = { tag = "any-lit"; };
+
 in mk {
   doc = ''
-    Core term constructors for the type-checking kernel.
-    All terms use de Bruijn indices. `tag` field (not `_tag`)
-    distinguishes kernel terms from effect system nodes.
+    # fx.tc.term — Core Term Constructors (Tm)
+
+    Syntax of the kernel's term language. All 48 constructors produce
+    attrsets with a `tag` field (not `_tag`, to distinguish kernel terms
+    from effect system nodes). Binding is de Bruijn indexed: `mkVar i`
+    refers to the i-th enclosing binder (0 = innermost).
+
+    Name annotations (`name` parameter on `mkPi`, `mkLam`, `mkSigma`,
+    `mkLet`) are cosmetic — used only in error messages, never in
+    equality checking.
+
+    Spec reference: kernel-spec.md §2.
+
+    ## Constructors
+
+    ### Variables and Binding
+    - `mkVar : Int → Tm` — variable by de Bruijn index
+    - `mkLet : String → Tm → Tm → Tm → Tm` — `let name : type = val in body`
+    - `mkAnn : Tm → Tm → Tm` — type annotation `(term : type)`
+
+    ### Functions (§2.2)
+    - `mkPi : String → Tm → Tm → Tm` — dependent function type `Π(name : domain). codomain`
+    - `mkLam : String → Tm → Tm → Tm` — lambda `λ(name : domain). body`
+    - `mkApp : Tm → Tm → Tm` — application `fn arg`
+
+    ### Pairs (§2.3)
+    - `mkSigma : String → Tm → Tm → Tm` — dependent pair type `Σ(name : fst). snd`
+    - `mkPair : Tm → Tm → Tm → Tm` — pair constructor `(fst, snd) : ann`
+    - `mkFst : Tm → Tm` — first projection
+    - `mkSnd : Tm → Tm` — second projection
+
+    ### Inductive Types
+    - `mkNat`, `mkZero`, `mkSucc`, `mkNatElim` — natural numbers with eliminator
+    - `mkBool`, `mkTrue`, `mkFalse`, `mkBoolElim` — booleans with eliminator
+    - `mkList`, `mkNil`, `mkCons`, `mkListElim` — lists with eliminator
+    - `mkUnit`, `mkTt` — unit type and value
+    - `mkVoid`, `mkAbsurd` — empty type and ex falso
+    - `mkSum`, `mkInl`, `mkInr`, `mkSumElim` — disjoint sum with eliminator
+    - `mkEq`, `mkRefl`, `mkJ` — identity type with J eliminator
+
+    ### Universes
+    - `mkU : Int → Tm` — universe at level i
+
+    ### Axiomatized Primitives (§2.1)
+    - `mkString`, `mkInt`, `mkFloat`, `mkAttrs`, `mkPath`, `mkFunction`, `mkAny` — type formers
+    - `mkStringLit`, `mkIntLit`, `mkFloatLit`, `mkAttrsLit`, `mkPathLit`, `mkFnLit`, `mkAnyLit` — literal values
   '';
   value = {
     inherit mkVar mkLet mkAnn;
@@ -92,6 +153,8 @@ in mk {
     inherit mkSum mkInl mkInr mkSumElim;
     inherit mkEq mkRefl mkJ;
     inherit mkU;
+    inherit mkString mkInt mkFloat mkAttrs mkPath mkFunction mkAny;
+    inherit mkStringLit mkIntLit mkFloatLit mkAttrsLit mkPathLit mkFnLit mkAnyLit;
   };
   tests = {
     "var-tag" = { expr = (mkVar 0).tag; expected = "var"; };
@@ -134,5 +197,22 @@ in mk {
     "U-level" = { expr = (mkU 1).level; expected = 1; };
     "let-tag" = { expr = (mkLet "x" mkNat mkZero (mkVar 0)).tag; expected = "let"; };
     "ann-tag" = { expr = (mkAnn mkZero mkNat).tag; expected = "ann"; };
+    "string-tag" = { expr = mkString.tag; expected = "string"; };
+    "int-tag" = { expr = mkInt.tag; expected = "int"; };
+    "float-tag" = { expr = mkFloat.tag; expected = "float"; };
+    "attrs-tag" = { expr = mkAttrs.tag; expected = "attrs"; };
+    "path-tag" = { expr = mkPath.tag; expected = "path"; };
+    "function-tag" = { expr = mkFunction.tag; expected = "function"; };
+    "any-tag" = { expr = mkAny.tag; expected = "any"; };
+    "string-lit-tag" = { expr = (mkStringLit "hello").tag; expected = "string-lit"; };
+    "string-lit-value" = { expr = (mkStringLit "hello").value; expected = "hello"; };
+    "int-lit-tag" = { expr = (mkIntLit 42).tag; expected = "int-lit"; };
+    "int-lit-value" = { expr = (mkIntLit 42).value; expected = 42; };
+    "float-lit-tag" = { expr = (mkFloatLit 3.14).tag; expected = "float-lit"; };
+    "float-lit-value" = { expr = (mkFloatLit 3.14).value; expected = 3.14; };
+    "attrs-lit-tag" = { expr = mkAttrsLit.tag; expected = "attrs-lit"; };
+    "path-lit-tag" = { expr = mkPathLit.tag; expected = "path-lit"; };
+    "fn-lit-tag" = { expr = mkFnLit.tag; expected = "fn-lit"; };
+    "any-lit-tag" = { expr = mkAnyLit.tag; expected = "any-lit"; };
   };
 }

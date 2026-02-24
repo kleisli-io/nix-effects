@@ -120,6 +120,25 @@ Tm ::=
 
   -- Annotations
   | Ann(t : Tm, A : Tm)                -- (t : A)
+
+  -- Axiomatized primitive types
+  | String                              -- string type
+  | Int                                 -- integer type
+  | Float                               -- float type
+  | Attrs                               -- attribute set type
+  | Path                                -- path type
+  | Function                            -- opaque function type
+  | Any                                 -- dynamic/any type
+
+  -- Primitive literals
+  | StringLit(s)                        -- string literal
+  | IntLit(n)                           -- integer literal
+  | FloatLit(f)                         -- float literal
+  | AttrsLit                            -- attribute set literal
+  | PathLit                             -- path literal
+  | FnLit                               -- opaque function literal
+  | AnyLit                              -- any literal
+
 ```
 
 ### 2.2 Binding convention
@@ -192,6 +211,13 @@ Val ::=
   -- Universes
   | VU(i : ℕ)
 
+  -- Axiomatized primitive types
+  | VString | VInt | VFloat | VAttrs | VPath | VFunction | VAny
+
+  -- Primitive literal values
+  | VStringLit(s) | VIntLit(n) | VFloatLit(f)
+  | VAttrsLit | VPathLit | VFnLit | VAnyLit
+
   -- Neutrals (stuck computations)
   | VNe(level : ℕ, spine : [Elim])
 
@@ -208,6 +234,7 @@ Elim ::=
 
 Closure ::= (env : Env, body : Tm)
 Env     ::= [Val]          -- list indexed by de Bruijn index
+
 ```
 
 ### 3.1 Level/index relationship
@@ -220,6 +247,7 @@ Conversion between index and level:
 ```
 index = depth - level - 1
 level = depth - index - 1
+
 ```
 
 where `depth` is the current binding depth (length of the context).
@@ -234,6 +262,7 @@ under binders.
 
 ```
 instantiate((env, body), v) = eval([v] ++ env, body)
+
 ```
 
 ---
@@ -249,6 +278,7 @@ a value. All rules are deterministic.
 eval(ρ, Var(i))           = ρ[i]
 eval(ρ, Let(n, A, t, u))  = eval([eval(ρ, t)] ++ ρ, u)
 eval(ρ, Ann(t, A))        = eval(ρ, t)
+
 ```
 
 ### 4.2 Functions
@@ -257,6 +287,7 @@ eval(ρ, Ann(t, A))        = eval(ρ, t)
 eval(ρ, Pi(n, A, B))   = VPi(n, eval(ρ, A), (ρ, B))
 eval(ρ, Lam(n, A, t))  = VLam(n, eval(ρ, A), (ρ, t))
 eval(ρ, App(t, u))     = vApp(eval(ρ, t), eval(ρ, u))
+
 ```
 
 where `vApp` performs beta reduction or accumulates:
@@ -265,6 +296,7 @@ where `vApp` performs beta reduction or accumulates:
 vApp(VLam(n, A, cl), v)  = instantiate(cl, v)
 vApp(VNe(l, sp), v)      = VNe(l, sp ++ [EApp(v)])
 vApp(_, _)               = THROW "kernel bug: vApp on non-function"
+
 ```
 
 ### 4.3 Pairs
@@ -274,6 +306,7 @@ eval(ρ, Sigma(n, A, B))  = VSigma(n, eval(ρ, A), (ρ, B))
 eval(ρ, Pair(a, b, T))   = VPair(eval(ρ, a), eval(ρ, b))
 eval(ρ, Fst(t))          = vFst(eval(ρ, t))
 eval(ρ, Snd(t))          = vSnd(eval(ρ, t))
+
 ```
 
 where:
@@ -286,6 +319,7 @@ vFst(_)             = THROW "kernel bug: vFst on non-pair"
 vSnd(VPair(a, b))   = b
 vSnd(VNe(l, sp))    = VNe(l, sp ++ [ESnd])
 vSnd(_)             = THROW "kernel bug: vSnd on non-pair"
+
 ```
 
 ### 4.4 Natural numbers
@@ -295,6 +329,7 @@ eval(ρ, Nat)             = VNat
 eval(ρ, Zero)            = VZero
 eval(ρ, Succ(t))         = VSucc(eval(ρ, t))   -- MUST trampoline for deep naturals
 eval(ρ, NatElim(P,z,s,n)) = vNatElim(eval(ρ,P), eval(ρ,z), eval(ρ,s), eval(ρ,n))
+
 ```
 
 where:
@@ -304,6 +339,7 @@ vNatElim(P, z, s, VZero)     = z
 vNatElim(P, z, s, VSucc(n))  = vApp(vApp(s, n), vNatElim(P, z, s, n))
 vNatElim(P, z, s, VNe(l,sp)) = VNe(l, sp ++ [ENatElim(P, z, s)])
 vNatElim(_, _, _, _)         = THROW "kernel bug: vNatElim on non-nat"
+
 ```
 
 **Note**: `vNatElim` on `VSucc` recurses. The implementation MUST
@@ -316,6 +352,7 @@ eval(ρ, Bool)             = VBool
 eval(ρ, True)             = VTrue
 eval(ρ, False)            = VFalse
 eval(ρ, BoolElim(P,t,f,b)) = vBoolElim(eval(ρ,P), eval(ρ,t), eval(ρ,f), eval(ρ,b))
+
 ```
 
 where:
@@ -325,6 +362,7 @@ vBoolElim(P, t, f, VTrue)     = t
 vBoolElim(P, t, f, VFalse)    = f
 vBoolElim(P, t, f, VNe(l,sp)) = VNe(l, sp ++ [EBoolElim(P, t, f)])
 vBoolElim(_, _, _, _)         = THROW "kernel bug: vBoolElim on non-bool"
+
 ```
 
 ### 4.6 Lists
@@ -335,6 +373,7 @@ eval(ρ, Nil(A))             = VNil(eval(ρ, A))
 eval(ρ, Cons(A, h, t))      = VCons(eval(ρ, A), eval(ρ, h), eval(ρ, t))  -- MUST trampoline for deep lists
 eval(ρ, ListElim(A,P,n,c,l)) =
   vListElim(eval(ρ,A), eval(ρ,P), eval(ρ,n), eval(ρ,c), eval(ρ,l))
+
 ```
 
 where:
@@ -347,6 +386,7 @@ vListElim(A, P, n, c, VNe(l, sp))      =
   VNe(l, sp ++ [EListElim(A, P, n, c)])
 vListElim(_, _, _, _, _)               =
   THROW "kernel bug: vListElim on non-list"
+
 ```
 
 **Note**: `vListElim` on `VCons` recurses. Must be trampolined.
@@ -356,6 +396,7 @@ vListElim(_, _, _, _, _)               =
 ```
 eval(ρ, Unit)  = VUnit
 eval(ρ, Tt)    = VTt
+
 ```
 
 Unit has no eliminator in the core. The kernel does NOT implement
@@ -370,6 +411,7 @@ to the kernel.
 ```
 eval(ρ, Void)         = VVoid
 eval(ρ, Absurd(A, t)) = vAbsurd(eval(ρ, A), eval(ρ, t))
+
 ```
 
 where:
@@ -377,6 +419,7 @@ where:
 ```
 vAbsurd(A, VNe(l, sp)) = VNe(l, sp ++ [EAbsurd(A)])
 vAbsurd(_, _)          = THROW "kernel bug: vAbsurd on non-neutral"
+
 ```
 
 `Absurd` never computes — there is no closed value of type `Void`.
@@ -391,6 +434,7 @@ eval(ρ, Inl(A, B, t))     = VInl(eval(ρ, A), eval(ρ, B), eval(ρ, t))
 eval(ρ, Inr(A, B, t))     = VInr(eval(ρ, A), eval(ρ, B), eval(ρ, t))
 eval(ρ, SumElim(A,B,P,l,r,s)) =
   vSumElim(eval(ρ,A), eval(ρ,B), eval(ρ,P), eval(ρ,l), eval(ρ,r), eval(ρ,s))
+
 ```
 
 where:
@@ -402,6 +446,7 @@ vSumElim(A, B, P, l, r, VNe(k, sp))     =
   VNe(k, sp ++ [ESumElim(A, B, P, l, r)])
 vSumElim(_, _, _, _, _, _)              =
   THROW "kernel bug: vSumElim on non-sum"
+
 ```
 
 ### 4.10 Identity
@@ -411,6 +456,7 @@ eval(ρ, Eq(A, a, b))        = VEq(eval(ρ, A), eval(ρ, a), eval(ρ, b))
 eval(ρ, Refl)                = VRefl
 eval(ρ, J(A, a, P, pr, b, eq)) =
   vJ(eval(ρ,A), eval(ρ,a), eval(ρ,P), eval(ρ,pr), eval(ρ,b), eval(ρ,eq))
+
 ```
 
 where:
@@ -420,13 +466,44 @@ vJ(A, a, P, pr, b, VRefl)    = pr
 vJ(A, a, P, pr, b, VNe(l,sp)) =
   VNe(l, sp ++ [EJ(A, a, P, pr, b)])
 vJ(_, _, _, _, _, _)          = THROW "kernel bug: vJ on non-refl"
+
 ```
 
 ### 4.11 Universes
 
 ```
 eval(ρ, U(i)) = VU(i)
+
 ```
+
+### 4.12 Axiomatized primitives
+
+Type formers evaluate to their corresponding values. Literals
+carry their payload through. No computation, no recursion — these
+are axiomatized constants.
+
+```
+eval(ρ, String)       = VString
+eval(ρ, Int)          = VInt
+eval(ρ, Float)        = VFloat
+eval(ρ, Attrs)        = VAttrs
+eval(ρ, Path)         = VPath
+eval(ρ, Function)     = VFunction
+eval(ρ, Any)          = VAny
+
+eval(ρ, StringLit(s)) = VStringLit(s)
+eval(ρ, IntLit(n))    = VIntLit(n)
+eval(ρ, FloatLit(f))  = VFloatLit(f)
+eval(ρ, AttrsLit)     = VAttrsLit
+eval(ρ, PathLit)      = VPathLit
+eval(ρ, FnLit)        = VFnLit
+eval(ρ, AnyLit)       = VAnyLit
+
+```
+
+These primitives have no eliminators. They exist to integrate
+Nix's native types into the kernel's type system as opaque,
+axiomatized constants.
 
 ---
 
@@ -458,6 +535,20 @@ quote(d, VInr(A, B, v))    = Inr(quote(d, A), quote(d, B), quote(d, v))
 quote(d, VEq(A, a, b))     = Eq(quote(d, A), quote(d, a), quote(d, b))
 quote(d, VRefl)            = Refl
 quote(d, VU(i))            = U(i)
+quote(d, VString)          = String
+quote(d, VInt)             = Int
+quote(d, VFloat)           = Float
+quote(d, VAttrs)           = Attrs
+quote(d, VPath)            = Path
+quote(d, VFunction)        = Function
+quote(d, VAny)             = Any
+quote(d, VStringLit(s))    = StringLit(s)
+quote(d, VIntLit(n))       = IntLit(n)
+quote(d, VFloatLit(f))     = FloatLit(f)
+quote(d, VAttrsLit)        = AttrsLit
+quote(d, VPathLit)         = PathLit
+quote(d, VFnLit)           = FnLit
+quote(d, VAnyLit)          = AnyLit
 quote(d, VNe(l, sp))       = quoteSp(d, Var(d - l - 1), sp)
 
 quoteSp(d, head, [])                      = head
@@ -478,6 +569,7 @@ quoteSp(d, head, [EJ(A,a,P,pr,b) | rest]) =
   quoteSp(d, J(quote(d,A), quote(d,a), quote(d,P), quote(d,pr), quote(d,b), head), rest)
 
 fresh(d) = VNe(d, [])
+
 ```
 
 ---
@@ -502,6 +594,21 @@ conv(d, VFalse,   VFalse)   = true
 conv(d, VTt,      VTt)      = true
 conv(d, VRefl,    VRefl)    = true
 conv(d, VSucc(a), VSucc(b)) = conv(d, a, b)
+conv(d, VString,      VString)      = true
+conv(d, VInt,         VInt)         = true
+conv(d, VFloat,       VFloat)       = true
+conv(d, VAttrs,       VAttrs)       = true
+conv(d, VPath,        VPath)        = true
+conv(d, VFunction,    VFunction)    = true
+conv(d, VAny,         VAny)         = true
+conv(d, VStringLit(s₁), VStringLit(s₂)) = (s₁ == s₂)
+conv(d, VIntLit(n₁),    VIntLit(n₂))    = (n₁ == n₂)
+conv(d, VFloatLit(f₁),  VFloatLit(f₂))  = (f₁ == f₂)
+conv(d, VAttrsLit,    VAttrsLit)    = true
+conv(d, VPathLit,     VPathLit)     = true
+conv(d, VFnLit,       VFnLit)       = true
+conv(d, VAnyLit,      VAnyLit)      = true
+
 ```
 
 ### 6.2 Binding forms
@@ -517,6 +624,7 @@ conv(d, VLam(_, _, cl₁), VLam(_, _, cl₂)) =
 
 conv(d, VSigma(_, A₁, cl₁), VSigma(_, A₂, cl₂)) =
   conv(d, A₁, A₂) ∧ conv(d+1, instantiate(cl₁, fresh(d)), instantiate(cl₂, fresh(d)))
+
 ```
 
 ### 6.3 Compound values
@@ -536,6 +644,7 @@ conv(d, VInr(A₁, B₁, v₁),      VInr(A₂, B₂, v₂))      = conv(d, A₁
 
 conv(d, VEq(A₁, a₁, b₁), VEq(A₂, a₂, b₂)) =
   conv(d, A₁, A₂) ∧ conv(d, a₁, a₂) ∧ conv(d, b₁, b₂)
+
 ```
 
 ### 6.4 Neutrals
@@ -563,12 +672,14 @@ convElim(d, ESumElim(A₁,B₁,P₁,l₁,r₁), ESumElim(A₂,B₂,P₂,l₂,r�
 convElim(d, EJ(A₁,a₁,P₁,pr₁,b₁), EJ(A₂,a₂,P₂,pr₂,b₂)) =
   conv(d, A₁, A₂) ∧ conv(d, a₁, a₂) ∧ conv(d, P₁, P₂) ∧ conv(d, pr₁, pr₂) ∧ conv(d, b₁, b₂)
 convElim(_, _, _) = false
+
 ```
 
 ### 6.5 Catch-all
 
 ```
 conv(d, _, _) = false
+
 ```
 
 Any pair of values not matching the above rules is not definitionally
@@ -598,6 +709,7 @@ extend(Γ, n, A) = {
 
 lookupType(Γ, i) = Γ.types[i]
   -- THROW if i >= length(Γ.types)
+
 ```
 
 ### 7.2 Notation
@@ -607,6 +719,7 @@ lookupType(Γ, i) = Γ.types[i]
 Γ ⊢ t ⇒ A  ↝  t'     synthesis mode: infer(Γ, t) = (t', A)
 Γ ⊢ T type  ↝  T'     type formation: checkType(Γ, T) = T'
 Γ ⊢ T type@i  ↝  T'   type + level:  checkTypeLevel(Γ, T) = (T', i)
+
 ```
 
 The output `t'` is the elaborated core term (fully annotated).
@@ -614,22 +727,27 @@ The output `t'` is the elaborated core term (fully annotated).
 ### 7.3 Synthesis rules (infer)
 
 **Var**
+
 ```
                 lookupType(Γ, i) = A
                 ──────────────────────
                 Γ ⊢ Var(i) ⇒ A  ↝  Var(i)
+
 ```
 
 **Ann** (annotation)
+
 ```
                 Γ ⊢ A type  ↝  A'
                 Â = eval(Γ.env, A')
                 Γ ⊢ t ⇐ Â  ↝  t'
                 ──────────────────────
                 Γ ⊢ Ann(t, A) ⇒ Â  ↝  Ann(t', A')
+
 ```
 
 **App** (application)
+
 ```
                 Γ ⊢ f ⇒ fTy  ↝  f'
                 whnf(fTy) = VPi(n, A, cl)
@@ -637,6 +755,7 @@ The output `t'` is the elaborated core term (fully annotated).
                 B = instantiate(cl, eval(Γ.env, u'))
                 ──────────────────────
                 Γ ⊢ App(f, u) ⇒ B  ↝  App(f', u')
+
 ```
 
 **CRITICAL**: `whnf(fTy)` must normalize `fTy` to weak head normal
@@ -648,20 +767,24 @@ all values. But this invariant must be maintained if the value
 representation changes.
 
 **Fst** (first projection)
+
 ```
                 Γ ⊢ t ⇒ tTy  ↝  t'
                 whnf(tTy) = VSigma(n, A, cl)
                 ──────────────────────
                 Γ ⊢ Fst(t) ⇒ A  ↝  Fst(t')
+
 ```
 
 **Snd** (second projection)
+
 ```
                 Γ ⊢ t ⇒ tTy  ↝  t'
                 whnf(tTy) = VSigma(n, A, cl)
                 B = instantiate(cl, vFst(eval(Γ.env, t')))
                 ──────────────────────
                 Γ ⊢ Snd(t) ⇒ B  ↝  Snd(t')
+
 ```
 
 **Eliminator motive checking (checkMotive).**
@@ -680,6 +803,7 @@ type, not a value). For example, `NatElim(λn. U(0), ...)` is valid
 and returns types at universe 1.
 
 **NatElim**
+
 ```
                 Γ ⊢ P ⇐ VPi(_, VNat, ([], U(k)))  ↝  P'
                 P̂ = eval(Γ.env, P')
@@ -690,15 +814,19 @@ and returns types at universe 1.
                 ──────────────────────
                 Γ ⊢ NatElim(P, z, s, n) ⇒ vApp(P̂, eval(Γ.env, n'))
                    ↝  NatElim(P', z', s', n')
+
 ```
 
 The full typing of `s` is:
+
 ```
 s : Π(k : ℕ). P(k) → P(S(k))
+
 ```
 This is checked by constructing the appropriate Pi type from `P̂`.
 
 **BoolElim**
+
 ```
                 Γ ⊢ P ⇐ VPi(_, VBool, ([], U(k)))  ↝  P'
                 P̂ = eval(Γ.env, P')
@@ -708,9 +836,11 @@ This is checked by constructing the appropriate Pi type from `P̂`.
                 ──────────────────────
                 Γ ⊢ BoolElim(P, t, f, b) ⇒ vApp(P̂, eval(Γ.env, b'))
                    ↝  BoolElim(P', t', f', b')
+
 ```
 
 **ListElim**
+
 ```
                 Γ ⊢ A type  ↝  A'
                 Â = eval(Γ.env, A')
@@ -722,18 +852,22 @@ This is checked by constructing the appropriate Pi type from `P̂`.
                 ──────────────────────
                 Γ ⊢ ListElim(A, P, n, c, l) ⇒ vApp(P̂, eval(Γ.env, l'))
                    ↝  ListElim(A', P', n', c', l')
+
 ```
 
 **Absurd** (ex falso)
+
 ```
                 Γ ⊢ A type  ↝  A'
                 Â = eval(Γ.env, A')
                 Γ ⊢ t ⇐ VVoid  ↝  t'
                 ──────────────────────
                 Γ ⊢ Absurd(A, t) ⇒ Â  ↝  Absurd(A', t')
+
 ```
 
 **SumElim**
+
 ```
                 Γ ⊢ A type  ↝  A'    Â = eval(Γ.env, A')
                 Γ ⊢ B type  ↝  B'    B̂ = eval(Γ.env, B')
@@ -745,9 +879,11 @@ This is checked by constructing the appropriate Pi type from `P̂`.
                 ──────────────────────
                 Γ ⊢ SumElim(A,B,P,l,r,s) ⇒ vApp(P̂, eval(Γ.env, s'))
                    ↝  SumElim(A',B',P',l',r',s')
+
 ```
 
 **J** (identity elimination)
+
 ```
                 Γ ⊢ A type  ↝  A'    Â = eval(Γ.env, A')
                 Γ ⊢ a ⇐ Â  ↝  a'    â = eval(Γ.env, a')
@@ -759,6 +895,7 @@ This is checked by constructing the appropriate Pi type from `P̂`.
                 ──────────────────────
                 Γ ⊢ J(A, a, P, pr, b, eq) ⇒ vApp(vApp(P̂, b̂), eval(Γ.env, eq'))
                    ↝  J(A', a', P', pr', b', eq')
+
 ```
 
 **J motive verification.** For non-lambda motives, the
@@ -773,9 +910,45 @@ For lambda motives (`P = λy. body`), the body is checked via
 verification on the inner structure. This catches motive errors
 at the motive itself rather than deferring to the base case.
 
+**Axiomatized primitive type formers** (synthesis)
+
+Primitive type formers are synthesized directly — they infer as
+inhabitants of `U(0)`:
+
+```
+                ──────────────────────
+                Γ ⊢ String ⇒ VU(0)  ↝  String
+
+                ──────────────────────
+                Γ ⊢ Int ⇒ VU(0)  ↝  Int
+
+```
+
+(Similarly for Float, Attrs, Path, Function, Any — all at level 0.)
+
+**Primitive literals** (synthesis)
+
+Literals synthesize their corresponding type:
+
+```
+                ──────────────────────
+                Γ ⊢ StringLit(s) ⇒ VString  ↝  StringLit(s)
+
+                ──────────────────────
+                Γ ⊢ IntLit(n) ⇒ VInt  ↝  IntLit(n)
+
+                ──────────────────────
+                Γ ⊢ FloatLit(f) ⇒ VFloat  ↝  FloatLit(f)
+
+```
+
+(Similarly for AttrsLit → VAttrs, PathLit → VPath,
+FnLit → VFunction, AnyLit → VAny.)
+
 ### 7.4 Checking rules (check)
 
 **Lam** (lambda introduction)
+
 ```
                 whnf(A) = VPi(n, dom, cl)
                 Γ' = extend(Γ, n, dom)
@@ -783,9 +956,11 @@ at the motive itself rather than deferring to the base case.
                 Γ' ⊢ t ⇐ cod  ↝  t'
                 ──────────────────────
                 Γ ⊢ Lam(n, _, t) ⇐ A  ↝  Lam(n, quote(Γ.depth, dom), t')
+
 ```
 
 **Pair** (pair introduction)
+
 ```
                 whnf(T) = VSigma(n, A, cl)
                 Γ ⊢ a ⇐ A  ↝  a'
@@ -793,24 +968,30 @@ at the motive itself rather than deferring to the base case.
                 Γ ⊢ b ⇐ B  ↝  b'
                 ──────────────────────
                 Γ ⊢ Pair(a, b, _) ⇐ T  ↝  Pair(a', b', quote(Γ.depth, T))
+
 ```
 
 **Zero**
+
 ```
                 whnf(A) = VNat
                 ──────────────────────
                 Γ ⊢ Zero ⇐ A  ↝  Zero
+
 ```
 
 **Succ** (MUST trampoline for deep naturals)
+
 ```
                 whnf(A) = VNat
                 Γ ⊢ t ⇐ VNat  ↝  t'
                 ──────────────────────
                 Γ ⊢ Succ(t) ⇐ A  ↝  Succ(t')
+
 ```
 
 **True / False**
+
 ```
                 whnf(A) = VBool
                 ──────────────────────
@@ -819,32 +1000,40 @@ at the motive itself rather than deferring to the base case.
                 whnf(A) = VBool
                 ──────────────────────
                 Γ ⊢ False ⇐ A  ↝  False
+
 ```
 
 **Nil**
+
 ```
                 whnf(A) = VList(Â)
                 ──────────────────────
                 Γ ⊢ Nil(_) ⇐ A  ↝  Nil(quote(Γ.depth, Â))
+
 ```
 
 **Cons** (MUST trampoline for deep lists)
+
 ```
                 whnf(A) = VList(Â)
                 Γ ⊢ h ⇐ Â  ↝  h'
                 Γ ⊢ t ⇐ VList(Â)  ↝  t'
                 ──────────────────────
                 Γ ⊢ Cons(_, h, t) ⇐ A  ↝  Cons(quote(Γ.depth, Â), h', t')
+
 ```
 
 **Tt**
+
 ```
                 whnf(A) = VUnit
                 ──────────────────────
                 Γ ⊢ Tt ⇐ A  ↝  Tt
+
 ```
 
 **Inl / Inr**
+
 ```
                 whnf(T) = VSum(A, B)
                 Γ ⊢ t ⇐ A  ↝  t'
@@ -855,21 +1044,58 @@ at the motive itself rather than deferring to the base case.
                 Γ ⊢ t ⇐ B  ↝  t'
                 ──────────────────────
                 Γ ⊢ Inr(_, _, t) ⇐ T  ↝  Inr(quote(Γ.depth, A), quote(Γ.depth, B), t')
+
 ```
 
 **Refl**
+
 ```
                 whnf(T) = VEq(A, a, b)
                 conv(Γ.depth, a, b) = true
                 ──────────────────────
                 Γ ⊢ Refl ⇐ T  ↝  Refl
+
 ```
 
 If `conv(Γ.depth, a, b) = false`, this is a **type error**: the
 two sides of the equation are not definitionally equal, and `refl`
 cannot prove the equation. Report via effect.
 
+**Primitive literals** (checked against their corresponding types)
+
+```
+                whnf(A) = VString
+                ──────────────────────
+                Γ ⊢ StringLit(s) ⇐ A  ↝  StringLit(s)
+
+                whnf(A) = VInt
+                ──────────────────────
+                Γ ⊢ IntLit(n) ⇐ A  ↝  IntLit(n)
+
+                whnf(A) = VFloat
+                ──────────────────────
+                Γ ⊢ FloatLit(f) ⇐ A  ↝  FloatLit(f)
+
+                whnf(A) = VAttrs
+                ──────────────────────
+                Γ ⊢ AttrsLit ⇐ A  ↝  AttrsLit
+
+                whnf(A) = VPath
+                ──────────────────────
+                Γ ⊢ PathLit ⇐ A  ↝  PathLit
+
+                whnf(A) = VFunction
+                ──────────────────────
+                Γ ⊢ FnLit ⇐ A  ↝  FnLit
+
+                whnf(A) = VAny
+                ──────────────────────
+                Γ ⊢ AnyLit ⇐ A  ↝  AnyLit
+
+```
+
 **Let**
+
 ```
                 Γ ⊢ A type  ↝  A'
                 Â = eval(Γ.env, A')
@@ -879,17 +1105,20 @@ cannot prove the equation. Report via effect.
                 Γ' ⊢ u ⇐ B  ↝  u'
                 ──────────────────────
                 Γ ⊢ Let(n, A, t, u) ⇐ B  ↝  Let(n, A', t', u')
+
 ```
 
 Note: `Let` in checking mode — the expected type `B` is for the
 body `u`, not for the definition `t`.
 
 **Sub** (mode switch: fall through to synthesis)
+
 ```
                 Γ ⊢ t ⇒ A  ↝  t'
                 conv(Γ.depth, A, B) = true   -- or cumulativity check
                 ──────────────────────
                 Γ ⊢ t ⇐ B  ↝  t'
+
 ```
 
 This is the catch-all. If no other checking rule applies, try
@@ -916,6 +1145,11 @@ levels are computed structurally during the type formation check
 
                 ──────────────────────
                 Γ ⊢ Void type  ↝  Void
+
+                ──────────────────────
+                Γ ⊢ String type  ↝  String
+
+                (Similarly for Int, Float, Attrs, Path, Function, Any)
 
                 ──────────────────────
                 Γ ⊢ U(i) type  ↝  U(i)
@@ -953,6 +1187,7 @@ levels are computed structurally during the type formation check
                 whnf(A) = VU(i)
                 ──────────────────────
                 Γ ⊢ T type  ↝  T'
+
 ```
 
 ---
@@ -963,6 +1198,7 @@ levels are computed structurally during the type formation check
 
 ```
 U(i) : U(i + 1)                for all i ≥ 0
+
 ```
 
 ### 8.2 Type former levels
@@ -970,13 +1206,21 @@ U(i) : U(i + 1)                for all i ≥ 0
 Universe levels are computed by `checkTypeLevel`, which returns
 `{ term; level; }` from the **typing derivation**, not from
 post-hoc value inspection. This avoids the problem of unknown
-levels for neutral type variables.
+levels for neutral type variables. We write `level(A)` as shorthand
+for `checkTypeLevel(Γ, A).level`.
 
 ```
 checkTypeLevel(Γ, Nat)         = { Nat,     0 }
 checkTypeLevel(Γ, Bool)        = { Bool,    0 }
 checkTypeLevel(Γ, Unit)        = { Unit,    0 }
 checkTypeLevel(Γ, Void)        = { Void,    0 }
+checkTypeLevel(Γ, String)      = { String,  0 }
+checkTypeLevel(Γ, Int)         = { Int,     0 }
+checkTypeLevel(Γ, Float)       = { Float,   0 }
+checkTypeLevel(Γ, Attrs)       = { Attrs,   0 }
+checkTypeLevel(Γ, Path)        = { Path,    0 }
+checkTypeLevel(Γ, Function)    = { Function, 0 }
+checkTypeLevel(Γ, Any)         = { Any,     0 }
 checkTypeLevel(Γ, List(A))     = { List(A'), level(A) }
 checkTypeLevel(Γ, Sum(A, B))   = { Sum(A',B'), max(level(A), level(B)) }
 checkTypeLevel(Γ, Pi(n, A, B)) = { Pi(n,A',B'), max(level(A), level(B)) }
@@ -985,6 +1229,7 @@ checkTypeLevel(Γ, Eq(A, a, b)) = { Eq(A',a',b'), level(A) }
 checkTypeLevel(Γ, U(i))        = { U(i),   i + 1 }
 -- Fallback: infer type, require VU(i), extract i
 checkTypeLevel(Γ, T)           = { T', i }  where Γ ⊢ T ⇒ VU(i)
+
 ```
 
 The fallback handles neutral type expressions (variables,
@@ -1007,6 +1252,7 @@ The cumulativity check is in `check`:
 -- In the Sub rule:
 -- If inferredTy = VU(i) and expectedTy = VU(j) and i ≤ j:  accept
 -- Otherwise: conv(Γ.depth, inferredTy, expectedTy) must hold
+
 ```
 
 ### 8.4 Universe consistency
@@ -1031,6 +1277,7 @@ by one before evaluating the term. When fuel reaches 0:
 
 ```
 evalF(fuel=0, ρ, t) = THROW "normalization budget exceeded"
+
 ```
 
 The kernel aborts via `throw`. Layer 0 (TCB) has no access to the
@@ -1086,6 +1333,7 @@ foldl'(λ{acc, fuel}. λi.
   else { acc = step(fuel, acc, chain[i]); fuel = fuel - 1; })
   {acc = base; fuel = fuel}
   [1..n]
+
 ```
 
 This ensures that an N-element chain consumes N units of fuel from
@@ -1153,6 +1401,7 @@ the context:
 
 ```
 quote(d, eval(ρ, quote(d, eval(ρ, t)))) = quote(d, eval(ρ, t))
+
 ```
 
 Evaluation followed by quotation is idempotent. The result is a
@@ -1164,6 +1413,7 @@ For any value `v`:
 
 ```
 conv(d, v, v) = true
+
 ```
 
 ### 10.6 Conversion symmetry
@@ -1172,6 +1422,7 @@ For any values `v₁, v₂`:
 
 ```
 conv(d, v₁, v₂) = conv(d, v₂, v₁)
+
 ```
 
 ### 10.7 Conversion transitivity
@@ -1180,6 +1431,7 @@ For any values `v₁, v₂, v₃`:
 
 ```
 conv(d, v₁, v₂) ∧ conv(d, v₂, v₃)  ⟹  conv(d, v₁, v₃)
+
 ```
 
 ### 10.8 Type preservation under evaluation
@@ -1247,6 +1499,7 @@ v : Void ⊢ Absurd(Nat, v) : Nat
 ⊢ Let(x, Nat, Zero, Var(0)) : Nat
 
 -- Cumulativity: Nat : U(0) should also be accepted at U(1)
+
 ```
 
 ### 11.2 Required negative tests (kernel must REJECT)
@@ -1275,6 +1528,7 @@ v : Void ⊢ Absurd(Nat, v) : Nat
 
 -- Ill-typed pair
 ⊢ Pair(Zero, Zero, Sigma(x, Nat, Bool))  REJECT  (snd is Nat, expected Bool)
+
 ```
 
 ### 11.3 Required stress tests
@@ -1290,13 +1544,16 @@ v : Void ⊢ Absurd(Nat, v) : Nat
 -- Fuel exhaustion: artificially low fuel on complex term    REJECT (fuel)
 -- Fuel threading: NatElim fold decrements fuel per step    ACCEPT
 -- Fuel threading: ListElim fold decrements fuel per step   ACCEPT
+
 ```
 
 ### 11.4 Required roundtrip tests
 
 For each value form, verify:
+
 ```
 quote(d, eval(ρ, t)) = normal_form(t)
+
 ```
 
 where `normal_form(t)` is the expected normal form.
@@ -1336,7 +1593,7 @@ where `normal_form(t)` is the expected normal form.
 The following are documented implementation choices or limitations,
 not bugs. They are recorded here so auditors do not rediscover them.
 
-### 13.1 Pair quotation uses dummy type annotation (Q1)
+### 13.1 Pair quotation uses dummy type annotation
 
 `quote(d, VPair(a, b))` produces `Pair(quote(d,a), quote(d,b), Unit)`
 — the type annotation is always `Unit` regardless of the actual pair
@@ -1345,7 +1602,7 @@ in NbE), so the annotation cannot be reconstructed without additional
 context. Quoted pairs are structurally correct but carry a dummy
 annotation.
 
-### 13.2 Lambda domain annotations discarded in checking mode (C2)
+### 13.2 Lambda domain annotations discarded in checking mode
 
 When checking `Lam(n, A, t)` against `VPi(n, dom, cl)`, the lambda's
 domain annotation `A` is discarded and replaced by `dom` from the
@@ -1354,7 +1611,7 @@ Krishnaswami 2021, §4): in checking mode, the expected type provides
 the domain, not the term. The elaborated output uses `quote(d, dom)`,
 making the original annotation unrecoverable.
 
-### 13.3 Term constructors do not validate argument types (V1)
+### 13.3 Term constructors do not validate argument types
 
 Term constructors (`mkVar`, `mkSucc`, etc.) accept arbitrary Nix
 values without type validation. `mkVar "hello"` produces
@@ -1362,7 +1619,7 @@ values without type validation. `mkVar "hello"` produces
 The trust boundary is the HOAS layer (`hoas.nix`), which is the
 public API — direct term construction is internal to the kernel.
 
-### 13.4 `tryEval` only catches `throw` and `assert false` (E1)
+### 13.4 `tryEval` only catches `throw` and `assert false`
 
 `builtins.tryEval` in the elaborator's `isConstantFamily` sentinel
 detection only catches explicit `throw` and `assert false`. Nix
@@ -1371,17 +1628,21 @@ missing attribute access, and type comparison errors are uncatchable.
 The elaborator uses `builtins.typeOf` in error paths to avoid
 triggering coercion errors.
 
-### 13.5 HOAS structural equality may produce false negatives (E2)
+### 13.5 HOAS sentinel comparison
 
-Sigma value elaboration uses Nix structural equality (`==`) on HOAS
-nodes to detect non-dependent pairs. Semantically equal types with
-different structural representations (different elaboration paths)
-may compare as unequal, causing the elaborator to incorrectly treat
-a non-dependent sigma as dependent. This is a safe failure mode —
-the kernel still type-checks the result correctly, but elaboration
-may produce unnecessarily complex terms.
+The `isConstantFamily` sentinel test in the elaborator applies two
+distinct sentinel values and compares the results to detect whether
+a binding body is dependent. Both Pi and Sigma paths compare
+**elaborated kernel terms** (`H.elab r1.value == H.elab r2.value`)
+rather than raw HOAS trees. This avoids false negatives from Nix's
+function identity comparison (`==` on lambdas). However, if `H.elab`
+itself produces structurally different terms for semantically
+equivalent types (e.g., through different elaboration paths), false
+negatives remain possible. This is a safe failure mode — the kernel
+still type-checks correctly, but elaboration may require explicit
+`_kernel` annotations unnecessarily.
 
-### 13.6 Spine comparison is O(n) per element, O(n²) total (P1)
+### 13.6 Spine comparison complexity
 
 `convSp` uses `builtins.elemAt` in a fold to compare neutral spines.
 In Nix, `builtins.elemAt` on lists is O(1) (Nix lists are internally

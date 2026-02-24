@@ -1,10 +1,12 @@
 # nix-effects
 
-Algebraic effects, value-dependent contracts, and refinement types in pure Nix.
+A type-checking kernel, algebraic effects, and dependent types in pure Nix.
 
 nix-effects catches configuration errors at `nix eval` time — before
-anything builds or ships. You write typed contracts for your configs
-and get precise blame when something violates them.
+anything builds or ships. Every type is backed by an MLTT proof checker
+that verifies values, computes universe levels, and extracts certified
+Nix functions from proof terms. You get precise blame when something
+violates a type.
 
 ```
 $ nix build .#buggyService
@@ -67,10 +69,10 @@ in ...
 
 ## Type system
 
-Types are `(Specification, Guard, Verifier)` triples: runtime contracts, not
-a syntactic type checker. The guard (`check`) is a pure predicate. The
-verifier (`validate`) sends `typeCheck` effects through the freer monad for
-blame tracking. You choose the error policy by choosing the handler.
+Every type is grounded in an MLTT type-checking kernel. The guard (`check`)
+is derived from the kernel's `decide` procedure. The verifier (`validate`)
+sends `typeCheck` effects through the freer monad for blame tracking. You
+choose the error policy by choosing the handler.
 
 ### Primitives
 
@@ -167,7 +169,7 @@ Built-in refinements: `positive`, `nonNegative`, `inRange`, `nonEmpty`, `matchin
 ### Universe hierarchy
 
 Types themselves have types, stratified to prevent accidental paradoxes
-(universe levels are advisory; see [Known limitations](#known-limitations)):
+(universe levels are enforced by the kernel's `checkTypeLevel`; see [Known limitations](#known-limitations)):
 
 ```nix
 Type_0  # Type of value types (Int, String, ...)
@@ -309,15 +311,16 @@ fx.stream.concat    fx.stream.interleave  fx.stream.zip  fx.stream.zipWith
 
 fx.tc.term          fx.tc.value         fx.tc.eval      fx.tc.quote
 fx.tc.conv          fx.tc.check         fx.tc.hoas      fx.tc.elaborate
+fx.tc.verified
 
 fx.kernel.pure      fx.kernel.send      fx.kernel.bind
 fx.trampoline.handle
 ```
 
-Types with `kernelType` additionally expose:
+Types additionally expose:
 
 ```
-T.kernelCheck v    -- elaborate v to a kernel term and verify
+T.check v          -- decide via kernel (elaborate + type-check)
 T.prove term       -- verify a HOAS proof term against the kernel type
 T._kernel          -- the kernel type (HOAS tree)
 ```
@@ -336,17 +339,15 @@ manual runs confirm 1,000,000 operations in ~3 seconds with constant memory.
 
 ## Known limitations
 
-**Contracts and kernel coexist.** The contract layer (types as
-guard/verifier pairs) provides fast, decidable checking for data values.
-The MLTT type-checking kernel (`src/tc/`) adds bidirectional type
+**Kernel is the single source of truth.** Every `.check` call runs through
+the kernel's `decide` procedure — there is no separate contract system.
+The MLTT type-checking kernel (`src/tc/`) provides bidirectional type
 checking with normalization by evaluation (NbE), proof terms, and formal
-verification for universally quantified properties. Types with
-`kernelType` get kernel-backed checking via `.prove` and `.kernelCheck`.
-Types without kernel backing remain pure runtime contracts. The
-`Certified` type's witness is a boolean, not an inhabitation proof —
-kernel proofs use HOAS combinators from `fx.tc.hoas`. See Findler &
-Felleisen (2002) for the contract-theoretic framing and Dunfield &
-Krishnaswami (2021) for the bidirectional checking approach.
+verification for universally quantified properties. The `Certified`
+type's witness is a boolean, not an inhabitation proof — kernel proofs
+use HOAS combinators from `fx.tc.hoas`. See Findler & Felleisen (2002)
+for the contract-theoretic framing and Dunfield & Krishnaswami (2021)
+for the bidirectional checking approach.
 
 **Universe levels are partially enforced.** For kernel-backed types,
 `checkTypeLevel` computes the correct universe level from the typing derivation.
@@ -369,14 +370,11 @@ forwarding to outer handlers. The `adapt` combinator addresses state
 shape composition, not effect isolation.
 
 **O(1) stack depth caveat.** The trampoline gives O(1) stack for the main
-dispatch loop. However, `qApp` recurses within a single trampoline step
-for consecutive `Pure` returns. A chain of 10,000+ binds where every
-continuation returns `Pure` (no intermediate effects) can exceed Nix's
-stack limit. In practice, effectful computations interleave `Pure` and
-`Impure`, keeping `qApp` depth low. Similarly, `viewlGo` recurses on
-left-nested queue trees during deconstruction (proportional to left-nesting
-depth), though `snoc` (the common operation) produces right-leaning trees
-where `viewlGo` terminates in one step.
+dispatch loop. Both `qApp` (continuation application) and `viewlGo` (queue
+rotation) are trampolined via `builtins.genericClosure`, so chains of
+10,000+ pure binds and deep left-nested queues are handled iteratively.
+The remaining stack risk is in user-supplied handler functions that recurse
+deeply within a single trampoline step.
 
 **Handler state must be deepSeq-safe.** The trampoline uses
 `builtins.deepSeq` on handler state at each step to break thunk chains.
@@ -408,9 +406,9 @@ error paths, streams, and the typed derivation showcase.
 Key papers that shaped the design:
 
 - **Martin-Löf (1984)** *Intuitionistic Type Theory*. Pi, Sigma, universe
-  hierarchy. nix-effects implements these as runtime contracts, not a
-  syntactic type checker — the types share structure with MLTT but operate
-  on values at eval time.
+  hierarchy. nix-effects implements these in an MLTT type-checking kernel
+  (`src/tc/`) — all types are grounded in the kernel, which operates at
+  `nix eval` time.
 
 - **Findler & Felleisen (2002)** *Contracts for Higher-Order Functions*.
   The guard/verifier decomposition follows their strategy: first-order

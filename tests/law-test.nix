@@ -194,7 +194,8 @@ let
     let
       PosIntT = fx.types.mkType {
         name = "PosInt";
-        check = v: builtins.isInt v && v > 0;
+        kernelType = fx.types.hoas.int_;
+        guard = v: builtins.isInt v && v > 0;
       };
       sigPos = fx.types.Sigma {
         fst = PosIntT;

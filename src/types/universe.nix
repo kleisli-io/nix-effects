@@ -9,6 +9,9 @@
 #   Type_n = { types with universe <= n }
 #   Type_n itself has universe = n + 1
 #
+# The kernel's checkTypeLevel computes and verifies universe levels from
+# the typing derivation (kernel-spec.md §8.2), enforcing U(i) : U(i+1).
+#
 # Grounded in Martin-Löf (1984) "Intuitionistic Type Theory" for the
 # stratified universe hierarchy, and Russell's original paradox resolution.
 { fx, api, ... }:
@@ -30,28 +33,27 @@ let
       Type_n : Type_(n+1) for all n
       ```
     '';
-    value = n: mkType {
-      name = "Type_${toString n}";
-      # The `v ? universe` guard is a crash boundary: without it, accessing
-      # v.universe on a fake type attrset (has _tag="Type" but no universe
-      # field) would crash Nix. With the guard, such values are rejected
-      # cleanly (check returns false).
-      check = v: isType v && v ? universe && v.universe <= n;
-      universe = n + 1;
-      description = "Universe level ${toString n}";
-    } // {
-      # Kernel backing: _kernel for elaboration, prove for proof verification.
-      # No kernelCheck — types-as-values can't be elaborated by decide().
-      _kernel = H.u n;
-      prove = term:
-        let result = builtins.tryEval (
-          !((H.checkHoas (H.u n) term) ? error));
-        in result.success && result.value;
-    };
+    value = n:
+      # Universe types have a precise kernel type (U(n)) but their VALUES
+      # (nix-effects type attrsets) can't be elaborated by decide — the
+      # kernel has no representation for runtime type attrsets. So we keep
+      # _kernel and prove (the kernel type IS U(n)) but remove kernelCheck.
+      # Instead, check uses a guard that verifies the attrset structure.
+      builtins.removeAttrs (mkType {
+        name = "Type_${toString n}";
+        kernelType = H.u n;
+        # Guard: types-as-values can't be elaborated by decide(), so the
+        # guard replaces kernel decide. The `v ? universe` check is a crash
+        # boundary: without it, accessing v.universe on a fake type attrset
+        # (has _tag="Type" but no universe field) would crash Nix.
+        guard = v: isType v && v ? universe && v.universe <= n;
+        universe = n + 1;
+        description = "Universe level ${toString n}";
+      }) ["kernelCheck"];
     tests = {
       "type0-accepts-level0-type" = {
         expr =
-          let IntType = mkType { name = "Int"; check = builtins.isInt; universe = 0; };
+          let IntType = mkType { name = "Int"; kernelType = H.int_; };
           in check (typeAt.value 0) IntType;
         expected = true;
       };
@@ -69,7 +71,7 @@ let
       };
       "cumulative-type1-accepts-level0" = {
         expr =
-          let IntType = mkType { name = "Int"; check = builtins.isInt; universe = 0; };
+          let IntType = mkType { name = "Int"; kernelType = H.int_; };
           in check (typeAt.value 1) IntType;
         expected = true;
       };
@@ -108,7 +110,7 @@ let
     value = type: type.universe;
     tests = {
       "level0-for-primitive" = {
-        expr = level.value (mkType { name = "Int"; check = builtins.isInt; });
+        expr = level.value (mkType { name = "Int"; kernelType = H.int_; });
         expected = 0;
       };
       "level1-for-type0" = {

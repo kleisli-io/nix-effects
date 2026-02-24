@@ -15,6 +15,7 @@ Add nix-effects as a flake input:
       # fx.types, fx.run, fx.send, fx.bind, fx.effects, fx.stream ...
     };
 }
+
 ```
 
 Or import directly without flakes:
@@ -22,6 +23,7 @@ Or import directly without flakes:
 ```nix
 let fx = import ./path/to/nix-effects { lib = nixpkgs.lib; };
 in ...
+
 ```
 
 ## Your first type
@@ -43,11 +45,13 @@ in {
     fx.effects.typecheck.collecting [];
   # result.state = [ { context = "Port"; message = "Expected Port, got int"; ... } ]
 }
+
 ```
 
-## Your first dependent contract
+## Your first dependent type
 
-One field's type depends on another field's value:
+One field's type depends on another field's value — this is a genuine
+dependent type, checked by the MLTT proof-checking kernel:
 
 ```nix
 let
@@ -65,6 +69,7 @@ in {
   ok  = ServiceConfig.checkFlat { fipsMode = true;  cipherSuites = [ "AES-256-GCM" ]; };  # true
   bad = ServiceConfig.checkFlat { fipsMode = true;  cipherSuites = [ "3DES" ]; };         # false
 }
+
 ```
 
 ## Your first effect
@@ -83,6 +88,7 @@ let
   # result.value = 21  (old state returned)
   # result.state = 42  (state doubled)
 in result
+
 ```
 
 ## Running the showcase
@@ -103,7 +109,34 @@ nix build .#buggyService
 
 # Run all tests
 nix flake check
+
 ```
+
+## The kernel behind every type
+
+Every `.check` call runs the MLTT type-checking kernel. When you write
+`Port.check 8080`, the kernel elaborates `8080` into a term,
+type-checks it, and returns a boolean. This is not a separate system —
+it is what `.check` does.
+
+You can also write verified implementations using HOAS combinators:
+
+```nix
+let
+  H = fx.types.hoas;
+  v = fx.types.verified;
+
+  # Write a function in HOAS, kernel type-checks it, extract as Nix function
+  succ = v.verify (H.forall "x" H.nat (_: H.nat))
+                   (v.fn "x" H.nat (x: H.succ x));
+in
+  succ 5    # 6 — a certified Nix function
+```
+
+The kernel checks the implementation against its type at `nix eval` time.
+If the types don't match, you get an error before anything builds.
+See the [Kernel Architecture](kernel-architecture.md) chapter for the
+full pipeline.
 
 ## What's in the box
 
@@ -115,5 +148,8 @@ The `fx` attrset is the entire public API:
 | `fx.run`, `fx.handle` | Trampoline interpreter |
 | `fx.adapt`, `fx.adaptHandlers` | Handler composition |
 | `fx.types.*` | Type system (primitives, constructors, dependent, refinement, universe) |
+| `fx.tc.hoas` | HOAS surface combinators for the kernel |
+| `fx.tc.elaborate` | Elaboration bridge: fx.types ↔ kernel |
+| `fx.tc.verified` | Convenience combinators for writing verified implementations |
 | `fx.effects.*` | Built-in effects (state, error, reader, writer, acc, choice, conditions, typecheck, linear) |
 | `fx.stream.*` | Effectful lazy sequences |

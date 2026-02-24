@@ -181,6 +181,15 @@ let
           in bind (check ctx' tm.body ty) (uTm:
             pure (T.mkLet tm.name aTm tTm uTm))))
 
+    # Primitive literals checked against their types
+    else if t == "string-lit" && ty.tag == "VString" then pure (T.mkStringLit tm.value)
+    else if t == "int-lit" && ty.tag == "VInt" then pure (T.mkIntLit tm.value)
+    else if t == "float-lit" && ty.tag == "VFloat" then pure (T.mkFloatLit tm.value)
+    else if t == "attrs-lit" && ty.tag == "VAttrs" then pure T.mkAttrsLit
+    else if t == "path-lit" && ty.tag == "VPath" then pure T.mkPathLit
+    else if t == "fn-lit" && ty.tag == "VFunction" then pure T.mkFnLit
+    else if t == "any-lit" && ty.tag == "VAny" then pure T.mkAnyLit
+
     # Sub rule: fall through to synthesis (§7.4 Sub)
     else
       bind (infer ctx tm) (result:
@@ -381,6 +390,22 @@ let
     else if t == "bool" then pure { term = T.mkBool; type = V.vU 0; }
     else if t == "unit" then pure { term = T.mkUnit; type = V.vU 0; }
     else if t == "void" then pure { term = T.mkVoid; type = V.vU 0; }
+    else if t == "string" then pure { term = T.mkString; type = V.vU 0; }
+    else if t == "int" then pure { term = T.mkInt; type = V.vU 0; }
+    else if t == "float" then pure { term = T.mkFloat; type = V.vU 0; }
+    else if t == "attrs" then pure { term = T.mkAttrs; type = V.vU 0; }
+    else if t == "path" then pure { term = T.mkPath; type = V.vU 0; }
+    else if t == "function" then pure { term = T.mkFunction; type = V.vU 0; }
+    else if t == "any" then pure { term = T.mkAny; type = V.vU 0; }
+
+    # Primitive literals infer their types
+    else if t == "string-lit" then pure { term = T.mkStringLit tm.value; type = V.vString; }
+    else if t == "int-lit" then pure { term = T.mkIntLit tm.value; type = V.vInt; }
+    else if t == "float-lit" then pure { term = T.mkFloatLit tm.value; type = V.vFloat; }
+    else if t == "attrs-lit" then pure { term = T.mkAttrsLit; type = V.vAttrs; }
+    else if t == "path-lit" then pure { term = T.mkPathLit; type = V.vPath; }
+    else if t == "fn-lit" then pure { term = T.mkFnLit; type = V.vFunction; }
+    else if t == "any-lit" then pure { term = T.mkAnyLit; type = V.vAny; }
 
     else if t == "pi" || t == "sigma" || t == "list" || t == "sum" || t == "eq" then
       bind (checkTypeLevel ctx tm) (r:
@@ -397,6 +422,13 @@ let
     else if t == "bool" then pure { term = T.mkBool; level = 0; }
     else if t == "unit" then pure { term = T.mkUnit; level = 0; }
     else if t == "void" then pure { term = T.mkVoid; level = 0; }
+    else if t == "string" then pure { term = T.mkString; level = 0; }
+    else if t == "int" then pure { term = T.mkInt; level = 0; }
+    else if t == "float" then pure { term = T.mkFloat; level = 0; }
+    else if t == "attrs" then pure { term = T.mkAttrs; level = 0; }
+    else if t == "path" then pure { term = T.mkPath; level = 0; }
+    else if t == "function" then pure { term = T.mkFunction; level = 0; }
+    else if t == "any" then pure { term = T.mkAny; level = 0; }
     else if t == "U" then pure { term = tm; level = tm.level + 1; }
     else if t == "list" then
       bind (checkTypeLevel ctx tm.elem) (r:
@@ -456,9 +488,45 @@ let
 
 in mk {
   doc = ''
-    Bidirectional type checker for the MLTT kernel.
-    check/infer return Computation values (freer monad).
-    Type errors reported via fx.send "typeError".
+    # fx.tc.check — Bidirectional Type Checker
+
+    Semi-trusted (Layer 1): uses the TCB (eval/quote/conv) and reports
+    type errors via `send "typeError"`. Bugs here may produce wrong
+    error messages but cannot cause unsoundness.
+
+    Spec reference: kernel-spec.md §7–§9.
+
+    ## Core Functions
+
+    - `check : Ctx → Tm → Val → Computation Tm` — checking mode (§7.4).
+      Verifies that `tm` has type `ty` and returns an elaborated term.
+    - `infer : Ctx → Tm → Computation { term; type; }` — synthesis mode (§7.3).
+      Infers the type of `tm` and returns the elaborated term with its type.
+    - `checkType : Ctx → Tm → Computation Tm` — verify a term is a type (§7.5).
+    - `checkTypeLevel : Ctx → Tm → Computation { term; level; }` — like
+      `checkType` but also returns the universe level (§8.2).
+
+    ## Context Operations (§7.1)
+
+    - `emptyCtx` — empty typing context `{ env = []; types = []; depth = 0; }`
+    - `extend : Ctx → String → Val → Ctx` — add a binding (index 0 = most recent)
+    - `lookupType : Ctx → Int → Val` — look up a variable's type by index
+
+    ## Test Helpers
+
+    - `runCheck : Computation → Value` — run a computation through the
+      trampoline handler, aborting on `typeError` effects.
+    - `checkTm : Ctx → Tm → Val → Tm|Error` — check and unwrap.
+    - `inferTm : Ctx → Tm → { term; type; }|Error` — infer and unwrap.
+
+    ## Key Behaviors
+
+    - **Sub rule**: when checking mode doesn't match (e.g., checking a
+      variable), falls through to `infer` and uses `conv` to compare.
+    - **Cumulativity**: `U(i) ≤ U(j)` when `i ≤ j` (§8.3).
+    - **Large elimination**: motives may return any universe, enabling
+      type-computing eliminators (`checkMotive`).
+    - **Trampolining**: Succ and Cons chains checked iteratively (§11.3).
   '';
   value = {
     inherit check infer checkType checkTypeLevel;
@@ -467,7 +535,9 @@ in mk {
   };
   tests = let
     inherit (V) vNat vZero vSucc vBool vPi vSigma
-      vList vUnit vVoid vSum vEq vU mkClosure;
+      vList vUnit vVoid vSum vEq vU mkClosure
+      vString vInt vFloat vAttrs vPath vFunction vAny
+      vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit;
 
     # Shorthand
     ctx0 = emptyCtx;
@@ -618,6 +688,19 @@ in mk {
       in (inferTm ctx0 (T.mkSnd p)).type.tag;
       expected = "VBool";
     };
+    # Dependent Snd: Σ(b:Bool). if b then Nat else Bool — snd type depends on fst
+    "infer-snd-dependent" = {
+      expr = let
+        # Motive: λ(b:Bool). U(0)
+        motive = T.mkLam "b" T.mkBool (T.mkU 0);
+        # Body: BoolElim(λb.U(0), Nat, Bool, Var(0)) — depends on x
+        sndBody = T.mkBoolElim motive T.mkNat T.mkBool (T.mkVar 0);
+        sigTy = T.mkSigma "b" T.mkBool sndBody;
+        # Pair: (True, Zero) — snd type is BoolElim(..., True) = Nat
+        pair = T.mkAnn (T.mkPair T.mkTrue T.mkZero T.mkUnit) sigTy;
+      in (inferTm ctx0 (T.mkSnd pair)).type.tag;
+      expected = "VNat";
+    };
 
     # Let binding: let x:Nat = 0 in x  checked against Nat
     "check-let" = {
@@ -641,6 +724,17 @@ in mk {
       expr = (inferTm ctx0 (T.mkBoolElim
         (T.mkLam "b" T.mkBool T.mkNat)
         T.mkZero (T.mkSucc T.mkZero) T.mkTrue)).type.tag;
+      expected = "VNat";
+    };
+
+    # Non-lambda motive: Ann(λb.Nat, Bool→U(0)) as the motive (exercises checkMotive infer path)
+    "infer-bool-elim-nonlam-motive" = {
+      expr = let
+        # Annotated motive: (λb.Nat : Bool → U(0))
+        motive = T.mkAnn
+          (T.mkLam "b" T.mkBool T.mkNat)
+          (T.mkPi "b" T.mkBool (T.mkU 0));
+      in (inferTm ctx0 (T.mkBoolElim motive T.mkZero (T.mkSucc T.mkZero) T.mkTrue)).type.tag;
       expected = "VNat";
     };
 
@@ -968,6 +1062,29 @@ in mk {
       expected = "VNat";
     };
 
+    # cons^5000 : List(Nat)  (spec §11.3 — trampoline stress)
+    "stress-large-list" = {
+      expr = let
+        bigList = builtins.foldl' (acc: _: T.mkCons T.mkNat T.mkZero acc)
+          (T.mkNil T.mkNat) (builtins.genList (x: x) 5000);
+      in (checkTm ctx0 bigList (vList vNat)).tag;
+      expected = "cons";
+    };
+
+    # ListElim on cons^1000 — trampoline stress (spec §11.3)
+    "stress-list-elim-1000" = {
+      expr = let
+        list1000 = builtins.foldl' (acc: _: T.mkCons T.mkNat T.mkZero acc)
+          (T.mkNil T.mkNat) (builtins.genList (x: x) 1000);
+      in (inferTm ctx0 (T.mkListElim T.mkNat
+        (T.mkLam "l" (T.mkList T.mkNat) T.mkNat)
+        T.mkZero
+        (T.mkLam "h" T.mkNat (T.mkLam "t" (T.mkList T.mkNat)
+          (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0)))))
+        list1000)).type.tag;
+      expected = "VNat";
+    };
+
     # Deeply nested Pi n=500 (spec §11.3)
     "stress-nested-pi" = {
       expr = let
@@ -1212,6 +1329,200 @@ in mk {
         ctxAB = extend (extend ctx0 "A" (vU 2)) "B" (vU 1);
       in (inferTm ctxAB (T.mkSigma "x" (T.mkVar 1) (T.mkVar 1))).type.level;
       expected = 2;
+    };
+
+    # -- Primitive type checkTypeLevel tests --
+
+    "checkTypeLevel-string" = {
+      expr = (runCheck (checkTypeLevel ctx0 T.mkString)).level;
+      expected = 0;
+    };
+    "checkTypeLevel-int" = {
+      expr = (runCheck (checkTypeLevel ctx0 T.mkInt)).level;
+      expected = 0;
+    };
+    "checkTypeLevel-float" = {
+      expr = (runCheck (checkTypeLevel ctx0 T.mkFloat)).level;
+      expected = 0;
+    };
+    "checkTypeLevel-attrs" = {
+      expr = (runCheck (checkTypeLevel ctx0 T.mkAttrs)).level;
+      expected = 0;
+    };
+    "checkTypeLevel-path" = {
+      expr = (runCheck (checkTypeLevel ctx0 T.mkPath)).level;
+      expected = 0;
+    };
+    "checkTypeLevel-function" = {
+      expr = (runCheck (checkTypeLevel ctx0 T.mkFunction)).level;
+      expected = 0;
+    };
+    "checkTypeLevel-any" = {
+      expr = (runCheck (checkTypeLevel ctx0 T.mkAny)).level;
+      expected = 0;
+    };
+    "checkTypeLevel-eq" = {
+      expr = (runCheck (checkTypeLevel ctx0 (T.mkEq T.mkNat T.mkZero T.mkZero))).level;
+      expected = 0;
+    };
+
+    # -- Primitive literal check mode tests --
+
+    "check-string-lit" = {
+      expr = (checkTm ctx0 (T.mkStringLit "hello") vString).tag;
+      expected = "string-lit";
+    };
+    "check-int-lit" = {
+      expr = (checkTm ctx0 (T.mkIntLit 42) vInt).tag;
+      expected = "int-lit";
+    };
+    "check-float-lit" = {
+      expr = (checkTm ctx0 (T.mkFloatLit 3.14) vFloat).tag;
+      expected = "float-lit";
+    };
+    "check-attrs-lit" = {
+      expr = (checkTm ctx0 T.mkAttrsLit vAttrs).tag;
+      expected = "attrs-lit";
+    };
+    "check-path-lit" = {
+      expr = (checkTm ctx0 T.mkPathLit vPath).tag;
+      expected = "path-lit";
+    };
+    "check-fn-lit" = {
+      expr = (checkTm ctx0 T.mkFnLit vFunction).tag;
+      expected = "fn-lit";
+    };
+    "check-any-lit" = {
+      expr = (checkTm ctx0 T.mkAnyLit vAny).tag;
+      expected = "any-lit";
+    };
+
+    # -- Primitive literal infer tests --
+
+    "infer-string-lit" = {
+      expr = (inferTm ctx0 (T.mkStringLit "hi")).type.tag;
+      expected = "VString";
+    };
+    "infer-int-lit" = {
+      expr = (inferTm ctx0 (T.mkIntLit 7)).type.tag;
+      expected = "VInt";
+    };
+    "infer-float-lit" = {
+      expr = (inferTm ctx0 (T.mkFloatLit 2.0)).type.tag;
+      expected = "VFloat";
+    };
+    "infer-attrs-lit" = {
+      expr = (inferTm ctx0 T.mkAttrsLit).type.tag;
+      expected = "VAttrs";
+    };
+    "infer-path-lit" = {
+      expr = (inferTm ctx0 T.mkPathLit).type.tag;
+      expected = "VPath";
+    };
+    "infer-fn-lit" = {
+      expr = (inferTm ctx0 T.mkFnLit).type.tag;
+      expected = "VFunction";
+    };
+    "infer-any-lit" = {
+      expr = (inferTm ctx0 T.mkAnyLit).type.tag;
+      expected = "VAny";
+    };
+
+    # -- Primitive type infer tests (type formers infer as U(0)) --
+
+    "infer-string-type" = {
+      expr = (inferTm ctx0 T.mkString).type.level;
+      expected = 0;
+    };
+    "infer-int-type" = {
+      expr = (inferTm ctx0 T.mkInt).type.level;
+      expected = 0;
+    };
+    "infer-float-type" = {
+      expr = (inferTm ctx0 T.mkFloat).type.level;
+      expected = 0;
+    };
+    "infer-attrs-type" = {
+      expr = (inferTm ctx0 T.mkAttrs).type.level;
+      expected = 0;
+    };
+    "infer-path-type" = {
+      expr = (inferTm ctx0 T.mkPath).type.level;
+      expected = 0;
+    };
+    "infer-function-type" = {
+      expr = (inferTm ctx0 T.mkFunction).type.level;
+      expected = 0;
+    };
+    "infer-any-type" = {
+      expr = (inferTm ctx0 T.mkAny).type.level;
+      expected = 0;
+    };
+
+    # -- Primitive literal rejection tests (wrong type) --
+
+    "reject-string-lit-as-int" = {
+      expr = (checkTm ctx0 (T.mkStringLit "hi") vInt) ? error;
+      expected = true;
+    };
+    "reject-int-lit-as-string" = {
+      expr = (checkTm ctx0 (T.mkIntLit 42) vString) ? error;
+      expected = true;
+    };
+    "reject-float-lit-as-nat" = {
+      expr = (checkTm ctx0 (T.mkFloatLit 1.0) vNat) ? error;
+      expected = true;
+    };
+    "reject-attrs-lit-as-bool" = {
+      expr = (checkTm ctx0 T.mkAttrsLit vBool) ? error;
+      expected = true;
+    };
+    "reject-string-lit-as-nat" = {
+      expr = (checkTm ctx0 (T.mkStringLit "x") vNat) ? error;
+      expected = true;
+    };
+
+    # -- Primitive type roundtrip tests (eval∘quote∘eval idempotency) --
+
+    "roundtrip-string-type" = {
+      expr = Q.nf [] (Q.nf [] T.mkString) == Q.nf [] T.mkString;
+      expected = true;
+    };
+    "roundtrip-int-type" = {
+      expr = Q.nf [] (Q.nf [] T.mkInt) == Q.nf [] T.mkInt;
+      expected = true;
+    };
+    "roundtrip-float-type" = {
+      expr = Q.nf [] (Q.nf [] T.mkFloat) == Q.nf [] T.mkFloat;
+      expected = true;
+    };
+    "roundtrip-string-lit" = {
+      expr = Q.nf [] (Q.nf [] (T.mkStringLit "abc")) == Q.nf [] (T.mkStringLit "abc");
+      expected = true;
+    };
+    "roundtrip-int-lit" = {
+      expr = Q.nf [] (Q.nf [] (T.mkIntLit 99)) == Q.nf [] (T.mkIntLit 99);
+      expected = true;
+    };
+    "roundtrip-float-lit" = {
+      expr = Q.nf [] (Q.nf [] (T.mkFloatLit 1.5)) == Q.nf [] (T.mkFloatLit 1.5);
+      expected = true;
+    };
+    "roundtrip-attrs-lit" = {
+      expr = Q.nf [] (Q.nf [] T.mkAttrsLit) == Q.nf [] T.mkAttrsLit;
+      expected = true;
+    };
+    "roundtrip-path-lit" = {
+      expr = Q.nf [] (Q.nf [] T.mkPathLit) == Q.nf [] T.mkPathLit;
+      expected = true;
+    };
+    "roundtrip-fn-lit" = {
+      expr = Q.nf [] (Q.nf [] T.mkFnLit) == Q.nf [] T.mkFnLit;
+      expected = true;
+    };
+    "roundtrip-any-lit" = {
+      expr = Q.nf [] (Q.nf [] T.mkAnyLit) == Q.nf [] T.mkAnyLit;
+      expected = true;
     };
   };
 }

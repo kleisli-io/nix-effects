@@ -1,6 +1,7 @@
 # Theory
 
-Nine papers shaped the design of nix-effects. Here's how each maps to code.
+Nine papers shaped the design of nix-effects — from its effects kernel
+to its MLTT type-checking kernel. Here's how each maps to code.
 
 ## Algebraic effects and the freer monad
 
@@ -20,6 +21,7 @@ nix-effects implements it directly. A computation is either:
 ```nix
 send "get" null
 # Impure { effect = { name = "get"; param = null; }; queue = [k]; }
+
 ```
 
 `bind` appends to the continuation queue:
@@ -27,6 +29,7 @@ send "get" null
 ```nix
 bind (send "get" null) (s: pure (s * 2))
 # Impure { effect = get; queue = [k1, k2] }  — O(1) per bind
+
 ```
 
 Handlers provide the interpretation:
@@ -36,6 +39,7 @@ handlers = {
   get = { param, state }: { resume = state; inherit state; };
   put = { param, state }: { resume = null; state = param; };
 };
+
 ```
 
 `resume` feeds a value to the continuation; `abort` discards it and halts.
@@ -46,6 +50,7 @@ Naïve free monads have O(n²) bind chains. The problem is reassociation:
 
 ```
 (m >>= f) >>= g  ≡  m >>= (f >=> g)
+
 ```
 
 Each reassociation traverses the whole tree. Kiselyov & Ishii (2015)
@@ -58,23 +63,26 @@ This matters because a `DepRecord` with 100 fields sends 100 effects, each
 of which binds. Without the queue, validation time would be quadratic in
 the number of fields.
 
-## Value-dependent contracts
+## Value-dependent types
 
-Types that depend on values come from Martin-Löf (1984). We implement the
-structure of two key forms as runtime contracts — not as a static type
-system, which is an important distinction.
+Types that depend on values come from Martin-Löf (1984). All types are
+grounded in the MLTT kernel (`src/tc/`). The user-facing API provides
+convenience constructors, while the kernel provides type checking,
+universe level computation, and proof verification.
 
 **Sigma (Σ)** — dependent pair. The second type is a function of the
 first value:
 
 ```nix
 Σ(fipsMode : Bool). if fipsMode then ListOf FIPSCipher else ListOf String
+
 ```
 
 In nix-effects:
 
 ```nix
 Sigma { fst = Bool; snd = b: if b then ListOf FIPSCipher else ListOf String; }
+
 ```
 
 `Sigma.validate` decomposes the check: validate `fst` first, then — only
@@ -86,10 +94,11 @@ argument:
 
 ```nix
 Pi { domain = String; codomain = _: Int; }
+
 ```
 
-The guard checks `isFunction`. Full contract verification happens at
-elimination via `.checkAt arg result`.
+The guard checks `isFunction`. Full verification happens at
+elimination via the kernel's type-checking judgment.
 
 **Universe hierarchy.** Types themselves have types, stratified from
 `Type_0` through `Type_4` to guard against Russell's paradox:
@@ -98,12 +107,13 @@ elimination via `.checkAt arg result`.
 (typeAt 0).check Int  # true — Int lives at universe 0
 level String           # 0
 (typeAt 1).check (typeAt 0)  # true — Type_0 lives at universe 1
+
 ```
 
-The `universe` field is a trusted declaration, not a computed invariant.
-We can't actually compute `sup_{a:A} level(B(a))` without evaluating the
-type family on all domain values, which is undecidable. So the hierarchy
-prevents accidental paradoxes, not adversarial ones.
+Universe levels are computed by the kernel's `checkTypeLevel`: `level(Pi(A,B))
+= max(level(A), level(B))`, `level(U(i)) = i+1`. The kernel rejects
+self-containing universes (`U(i) : U(i)` fails), preventing both accidental
+and adversarial paradoxes for all kernel-backed types.
 
 ## Refinement types
 
@@ -116,6 +126,7 @@ checking — no solver, just `refined`:
 Port     = refined "Port"     Int (x: x >= 1 && x <= 65535);
 NonEmpty = refined "NonEmpty" String (s: builtins.stringLength s > 0);
 Nat      = refined "Nat"      Int (x: x >= 0);
+
 ```
 
 The guard composes: `Port.check` first checks `Int`, then the predicate.
@@ -125,6 +136,7 @@ Combinators for building compound predicates:
 allOf [ pred1 pred2 ]  # conjunction
 anyOf [ pred1 pred2 ]  # disjunction
 negate pred            # negation
+
 ```
 
 ## The Fire Triangle and Nix's purity boundary
@@ -161,7 +173,7 @@ fails at eval time — no sandbox spins up, no build script runs.
 
 So why mention the Fire Triangle at all? Because it validates the design.
 If types were themselves effectful — if constructing a `DepRecord` could
-trigger effects — dependent contracts would face the coherence problems
+trigger effects — dependent types would face the coherence problems
 the theorem describes: evaluating a dependent type might trigger effects,
 and you'd need to synchronize those effects between term and type (the
 paper's ∂CBPV `dlet` binder addresses exactly this). By keeping types as
@@ -169,7 +181,7 @@ pure values, nix-effects avoids the problem by construction. The
 three-level separation (pure types / effectful validation / handler
 interpretation) comes from the handler pattern (Plotkin & Pretnar) and the
 guard/verifier decomposition (Findler & Felleisen), but the Fire Triangle
-is why keeping Level 1 pure matters in a system with dependent contracts.
+is why keeping Level 1 pure matters in a system with dependent types.
 
 The MLTT type-checking kernel (`src/tc/`) makes the Fire Triangle
 argument concrete. The kernel implements a cumulative universe hierarchy
@@ -177,8 +189,8 @@ argument concrete. The kernel implements a cumulative universe hierarchy
 the typing derivation — `level(Pi(A, B)) = max(level(A), level(B))`,
 `level(U(i)) = i + 1`. This prevents Girard's paradox: `U(i) : U(i)` is
 rejected because `level(U(i)) = i + 1 > i`. The kernel verifies this
-stratification for every type it checks, turning what was previously an
-advisory convention into an enforced invariant for kernel-backed types.
+stratification for every type it checks, making universe levels an
+enforced invariant rather than an advisory convention.
 
 ## Graded linear types
 
@@ -200,6 +212,7 @@ The adequacy invariant connects the pure guard to the effectful verifier:
 
 ```
 T.check v  ⟺  all typeCheck effects in T.validate v pass
+
 ```
 
 We test this via the all-pass handler: the final state is `true` iff every
@@ -246,4 +259,5 @@ system.
   `mk { doc, value, tests }` API pattern, and effect module vocabulary
   (`state`, `acc`, `conditions`, `choice`, streams), while building a
   new core on the freer monad encoding from Kiselyov & Ishii (2015)
-  and adding value-dependent contracts that nfx does not attempt.
+  and adding value-dependent types and a type-checking kernel that nfx
+  does not attempt.

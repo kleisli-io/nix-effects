@@ -40,17 +40,18 @@ let
   inherit (fx) pure bind handle adaptHandlers;
   inherit (fx.effects) linear state typecheck;
   inherit (fx.types) mkType refined;
+  H = fx.types.hoas;
 
   # =========================================================================
   # TYPES
   # =========================================================================
 
   ServiceName = refined "ServiceName"
-    (mkType { name = "String"; check = builtins.isString; })
+    (mkType { name = "String"; kernelType = H.string; })
     (s: builtins.stringLength s > 0 && builtins.match "[a-z][-a-z0-9]*" s != null);
 
   SystemId = refined "SystemID"
-    (mkType { name = "Int"; check = builtins.isInt; })
+    (mkType { name = "Int"; kernelType = H.int_; })
     (n: n >= 1 && n <= 65534);
 
   # =========================================================================

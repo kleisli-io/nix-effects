@@ -61,6 +61,24 @@ let
   # Universes
   vU = level: { tag = "VU"; inherit level; };
 
+  # Axiomatized primitives
+  vString = { tag = "VString"; };
+  vInt = { tag = "VInt"; };
+  vFloat = { tag = "VFloat"; };
+  vAttrs = { tag = "VAttrs"; };
+  vPath = { tag = "VPath"; };
+  vFunction = { tag = "VFunction"; };
+  vAny = { tag = "VAny"; };
+
+  # Primitive literals
+  vStringLit = s: { tag = "VStringLit"; value = s; };
+  vIntLit = n: { tag = "VIntLit"; value = n; };
+  vFloatLit = f: { tag = "VFloatLit"; value = f; };
+  vAttrsLit = { tag = "VAttrsLit"; };
+  vPathLit = { tag = "VPathLit"; };
+  vFnLit = { tag = "VFnLit"; };
+  vAnyLit = { tag = "VAnyLit"; };
+
   # -- Neutrals (stuck computations) --
   # A neutral is a variable (identified by level) applied to a spine of eliminators.
   vNe = level: spine: { tag = "VNe"; inherit level spine; };
@@ -84,9 +102,49 @@ let
 
 in mk {
   doc = ''
-    Value constructors for the type-checking kernel.
-    Values use de Bruijn levels. Closures are defunctionalized { env, body }.
-    Neutrals carry a spine of elimination frames.
+    # fx.tc.value — Value Domain (Val)
+
+    Values are the semantic domain produced by evaluation. They use
+    de Bruijn *levels* (counting outward from the top of the context),
+    not indices, which makes weakening trivial.
+
+    Spec reference: kernel-spec.md §3.
+
+    ## Closures
+
+    `mkClosure : Env → Tm → Closure` — defunctionalized closure.
+    No Nix lambdas in the TCB; a closure is `{ env, body }` where
+    `body` is a kernel Tm evaluated by `eval.instantiate`.
+
+    ## Value Constructors
+
+    Each `v*` constructor mirrors a term constructor:
+
+    - `vLam`, `vPi` — function values/types (carry name, domain, closure)
+    - `vSigma`, `vPair` — pair types/values
+    - `vNat`, `vZero`, `vSucc` — natural number values
+    - `vBool`, `vTrue`, `vFalse` — boolean values
+    - `vList`, `vNil`, `vCons` — list values
+    - `vUnit`, `vTt` — unit
+    - `vVoid` — empty type
+    - `vSum`, `vInl`, `vInr` — sum values
+    - `vEq`, `vRefl` — identity values
+    - `vU` — universe values
+    - `vString`, `vInt`, `vFloat`, `vAttrs`, `vPath`, `vFunction`, `vAny` — primitive types
+    - `vStringLit`, `vIntLit`, `vFloatLit`, `vAttrsLit`, `vPathLit`, `vFnLit`, `vAnyLit` — primitive literals
+
+    ## Neutrals
+
+    `vNe : Level → Spine → Val` — a stuck computation: a variable
+    (identified by de Bruijn level) applied to a spine of eliminators.
+
+    `freshVar : Depth → Val` — neutral with empty spine at the given depth.
+    Used during type-checking to introduce fresh variables under binders.
+
+    ## Elimination Frames (Spine Entries)
+
+    - `eApp`, `eFst`, `eSnd` — function/pair eliminators
+    - `eNatElim`, `eBoolElim`, `eListElim`, `eAbsurd`, `eSumElim`, `eJ` — inductive eliminators
   '';
   value = {
     inherit mkClosure;
@@ -100,6 +158,8 @@ in mk {
     inherit vSum vInl vInr;
     inherit vEq vRefl;
     inherit vU;
+    inherit vString vInt vFloat vAttrs vPath vFunction vAny;
+    inherit vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit;
     inherit vNe freshVar;
     inherit eApp eFst eSnd eNatElim eBoolElim eListElim eAbsurd eSumElim eJ;
   };
@@ -139,6 +199,23 @@ in mk {
     "vrefl-tag" = { expr = vRefl.tag; expected = "VRefl"; };
     "vu-tag" = { expr = (vU 0).tag; expected = "VU"; };
     "vu-level" = { expr = (vU 1).level; expected = 1; };
+    "vstring-tag" = { expr = vString.tag; expected = "VString"; };
+    "vint-tag" = { expr = vInt.tag; expected = "VInt"; };
+    "vfloat-tag" = { expr = vFloat.tag; expected = "VFloat"; };
+    "vattrs-tag" = { expr = vAttrs.tag; expected = "VAttrs"; };
+    "vpath-tag" = { expr = vPath.tag; expected = "VPath"; };
+    "vfunction-tag" = { expr = vFunction.tag; expected = "VFunction"; };
+    "vany-tag" = { expr = vAny.tag; expected = "VAny"; };
+    "vstringlit-tag" = { expr = (vStringLit "hi").tag; expected = "VStringLit"; };
+    "vstringlit-value" = { expr = (vStringLit "hi").value; expected = "hi"; };
+    "vintlit-tag" = { expr = (vIntLit 7).tag; expected = "VIntLit"; };
+    "vintlit-value" = { expr = (vIntLit 7).value; expected = 7; };
+    "vfloatlit-tag" = { expr = (vFloatLit 2.5).tag; expected = "VFloatLit"; };
+    "vfloatlit-value" = { expr = (vFloatLit 2.5).value; expected = 2.5; };
+    "vattrslit-tag" = { expr = vAttrsLit.tag; expected = "VAttrsLit"; };
+    "vpathlit-tag" = { expr = vPathLit.tag; expected = "VPathLit"; };
+    "vfnlit-tag" = { expr = vFnLit.tag; expected = "VFnLit"; };
+    "vanylit-tag" = { expr = vAnyLit.tag; expected = "VAnyLit"; };
 
     # Neutrals
     "vne-tag" = { expr = (vNe 0 []).tag; expected = "VNe"; };

@@ -20,6 +20,8 @@ let
     vLam vPi vSigma vPair vNat vZero vSucc
     vBool vTrue vFalse vList vNil vCons
     vUnit vTt vVoid vSum vInl vInr vEq vRefl vU vNe
+    vString vInt vFloat vAttrs vPath vFunction vAny
+    vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit
     eApp eFst eSnd eNatElim eBoolElim eListElim eAbsurd eSumElim eJ;
 
   defaultFuel = 10000000;
@@ -236,6 +238,24 @@ let
     # Universes
     else if t == "U" then vU tm.level
 
+    # Axiomatized primitives
+    else if t == "string" then vString
+    else if t == "int" then vInt
+    else if t == "float" then vFloat
+    else if t == "attrs" then vAttrs
+    else if t == "path" then vPath
+    else if t == "function" then vFunction
+    else if t == "any" then vAny
+
+    # Primitive literals
+    else if t == "string-lit" then vStringLit tm.value
+    else if t == "int-lit" then vIntLit tm.value
+    else if t == "float-lit" then vFloatLit tm.value
+    else if t == "attrs-lit" then vAttrsLit
+    else if t == "path-lit" then vPathLit
+    else if t == "fn-lit" then vFnLit
+    else if t == "any-lit" then vAnyLit
+
     else throw "tc: eval unknown tag '${t}'";
 
   # -- Public API (default fuel) --
@@ -248,9 +268,41 @@ let
 
 in mk {
   doc = ''
-    Evaluator for the type-checking kernel. eval : Env -> Tm -> Val.
-    Pure function with trampolined NatElim/ListElim and fuel mechanism (§9).
-    evalF : Fuel -> Env -> Tm -> Val for custom fuel budgets.
+    # fx.tc.eval — Evaluator
+
+    Pure evaluator: interprets kernel terms in an environment of
+    values. Zero effect system imports — part of the trusted computing
+    base (TCB).
+
+    Spec reference: kernel-spec.md §4, §9.
+
+    ## Core Functions
+
+    - `eval : Env → Tm → Val` — evaluate with default fuel (10M steps)
+    - `evalF : Int → Env → Tm → Val` — evaluate with explicit fuel budget
+    - `instantiate : Closure → Val → Val` — apply a closure to an argument
+
+    ## Elimination Helpers
+
+    - `vApp : Val → Val → Val` — apply a function value (beta-reduces VLam, extends spine for VNe)
+    - `vFst`, `vSnd` — pair projections
+    - `vNatElim`, `vBoolElim`, `vListElim` — inductive eliminators
+    - `vAbsurd` — ex falso (only on neutrals)
+    - `vSumElim` — sum elimination
+    - `vJ` — identity elimination (computes to base on VRefl)
+
+    ## Trampolining (§11.3)
+
+    `vNatElim`, `vListElim`, `succ` chains, and `cons` chains use
+    `builtins.genericClosure` to flatten recursive structures iteratively,
+    guaranteeing O(1) stack depth on inputs like S^10000(0) or cons^5000.
+
+    ## Fuel Mechanism (§9)
+
+    Each `evalF` call decrements a fuel counter. When fuel reaches 0,
+    evaluation throws `"normalization budget exceeded"`. This bounds
+    total work and prevents unbounded computation in the Nix evaluator.
+    Default budget: 10,000,000 steps.
   '';
   value = {
     inherit eval evalF instantiate;
@@ -427,6 +479,25 @@ in mk {
     "eval-U0" = { expr = (eval [] (T.mkU 0)).tag; expected = "VU"; };
     "eval-U0-level" = { expr = (eval [] (T.mkU 0)).level; expected = 0; };
     "eval-U1-level" = { expr = (eval [] (T.mkU 1)).level; expected = 1; };
+
+    # -- Axiomatized primitives --
+    "eval-string" = { expr = (eval [] T.mkString).tag; expected = "VString"; };
+    "eval-int" = { expr = (eval [] T.mkInt).tag; expected = "VInt"; };
+    "eval-float" = { expr = (eval [] T.mkFloat).tag; expected = "VFloat"; };
+    "eval-attrs" = { expr = (eval [] T.mkAttrs).tag; expected = "VAttrs"; };
+    "eval-path" = { expr = (eval [] T.mkPath).tag; expected = "VPath"; };
+    "eval-function" = { expr = (eval [] T.mkFunction).tag; expected = "VFunction"; };
+    "eval-any" = { expr = (eval [] T.mkAny).tag; expected = "VAny"; };
+    "eval-string-lit" = { expr = (eval [] (T.mkStringLit "hello")).tag; expected = "VStringLit"; };
+    "eval-string-lit-value" = { expr = (eval [] (T.mkStringLit "hello")).value; expected = "hello"; };
+    "eval-int-lit" = { expr = (eval [] (T.mkIntLit 42)).tag; expected = "VIntLit"; };
+    "eval-int-lit-value" = { expr = (eval [] (T.mkIntLit 42)).value; expected = 42; };
+    "eval-float-lit" = { expr = (eval [] (T.mkFloatLit 3.14)).tag; expected = "VFloatLit"; };
+    "eval-float-lit-value" = { expr = (eval [] (T.mkFloatLit 3.14)).value; expected = 3.14; };
+    "eval-attrs-lit" = { expr = (eval [] T.mkAttrsLit).tag; expected = "VAttrsLit"; };
+    "eval-path-lit" = { expr = (eval [] T.mkPathLit).tag; expected = "VPathLit"; };
+    "eval-fn-lit" = { expr = (eval [] T.mkFnLit).tag; expected = "VFnLit"; };
+    "eval-any-lit" = { expr = (eval [] T.mkAnyLit).tag; expected = "VAnyLit"; };
 
     # -- Closure instantiation --
     "instantiate-identity" = {

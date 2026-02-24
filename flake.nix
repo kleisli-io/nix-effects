@@ -1,5 +1,5 @@
 {
-  description = "Algebraic effects, value-dependent contracts, and refinement types in pure Nix";
+  description = "A type-checking kernel, algebraic effects, and dependent types in pure Nix";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

@@ -17,6 +17,7 @@
 
 let
   inherit (fx) types;
+  H = types.hoas;
 
   # All-pass handler: the canonical handler for testing the adequacy invariant.
   # Resumes with the check result so computation proceeds naturally, while
@@ -81,7 +82,8 @@ let
         { name = "items"; type = (self:
           types.mkType {
             name = "List[n=${toString self.n}]";
-            check = v: builtins.isList v && builtins.length v == self.n;
+            kernelType = H.any;
+            guard = v: builtins.isList v && builtins.length v == self.n;
           });
         }
       ];
@@ -236,7 +238,8 @@ let
         fst = types.Int;
         snd = n: types.mkType {
           name = "List[${toString n}]";
-          check = v: builtins.isList v && builtins.length v == n;
+          kernelType = H.any;
+          guard = v: builtins.isList v && builtins.length v == n;
         };
         universe = 0;
       };
@@ -703,7 +706,8 @@ let
         # Type family that CRASHES on non-int fst (arithmetic on string)
         snd = n: types.mkType {
           name = "Items[${toString (n + 1)}]";  # n + 1 crashes if n is string
-          check = v: builtins.isList v && builtins.length v == n + 1;
+          kernelType = H.any;
+          guard = v: builtins.isList v && builtins.length v == n + 1;
         };
         universe = 0;
       };
@@ -756,14 +760,14 @@ let
   # -- Test 51: ListOf validate is effectful (per-element) --
   listOfValidateIsEffectful =
     let
-      IntT = types.mkType { name = "Int"; check = builtins.isInt; };
+      IntT = types.mkType { name = "Int"; kernelType = H.int_; };
       listT = types.ListOf IntT;
     in (listT.validate [1 2 3])._tag == "Impure";
 
   # -- Test 52: ListOf collecting handler gets per-element errors with indices --
   listOfCollectingPerElement =
     let
-      IntT = types.mkType { name = "Int"; check = builtins.isInt; };
+      IntT = types.mkType { name = "Int"; kernelType = H.int_; };
       listT = types.ListOf IntT;
       result = fx.handle {
         handlers.typeCheck = { param, state }:
@@ -781,14 +785,14 @@ let
   # -- Test 53: ListOf empty list validate returns pure --
   listOfEmptyValidatePure =
     let
-      IntT = types.mkType { name = "Int"; check = builtins.isInt; };
+      IntT = types.mkType { name = "Int"; kernelType = H.int_; };
       listT = types.ListOf IntT;
     in (listT.validate [])._tag == "Pure";
 
   # -- Test 54: ListOf non-list input totality --
   listOfNonListTotality =
     let
-      IntT = types.mkType { name = "Int"; check = builtins.isInt; };
+      IntT = types.mkType { name = "Int"; kernelType = H.int_; };
       listT = types.ListOf IntT;
       # Non-list goes through effect system, doesn't crash
     in (listT.validate 42)._tag == "Impure"
@@ -797,7 +801,7 @@ let
   # -- Test 55: ListOf adequacy (check agrees with all-pass handler) --
   listOfAdequacy =
     let
-      IntT = types.mkType { name = "Int"; check = builtins.isInt; };
+      IntT = types.mkType { name = "Int"; kernelType = H.int_; };
       listT = types.ListOf IntT;
       # All-pass handler: state = state AND check-passed
       allPassHandler = {
@@ -894,7 +898,8 @@ let
         # snd type family crashes if fst is not a list (calls builtins.length)
         snd = lst: types.mkType {
           name = "SizedVec[${toString (builtins.length lst)}]";
-          check = _: true;
+          kernelType = H.any;
+          guard = _: true;
         };
         universe = 0;
       };

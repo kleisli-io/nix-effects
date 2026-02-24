@@ -1,6 +1,8 @@
 # nix-effects type constructors
 #
 # Higher-kinded type constructors that build compound types from simpler ones.
+# All types require kernelType. When sub-types lack kernel backing (_kernel),
+# kernelType = H.any with a guard fallback for the real check.
 { fx, api, ... }:
 
 let
@@ -15,21 +17,32 @@ let
       that a value has all required fields with correct types.
       Extra fields are permitted (open record semantics).
     '';
-    value = schema: mkType {
-      name = "Record{${builtins.concatStringsSep ", " (builtins.attrNames schema)}}";
-      check = v:
-        builtins.isAttrs v
-        && builtins.all (field:
-          v ? ${field} && (schema.${field}).check v.${field}
-        ) (builtins.attrNames schema);
-    };
-    tests = {
+    value = schema:
+      let
+        sortedNames = builtins.sort builtins.lessThan (builtins.attrNames schema);
+        allHaveKernel = builtins.all (f: schema.${f} ? _kernel) sortedNames;
+        hoasFields = map (f: { name = f; type = schema.${f}._kernel; }) sortedNames;
+        kernelType = if allHaveKernel && sortedNames != []
+          then H.record hoasFields
+          else H.any;
+        guard = v:
+          builtins.isAttrs v
+          && builtins.all (field:
+            v ? ${field} && (schema.${field}).check v.${field}
+          ) sortedNames;
+      in mkType {
+        name = "Record{${builtins.concatStringsSep ", " sortedNames}}";
+        inherit kernelType guard;
+      };
+    tests = let
+      FP = fx.types.primitives;
+    in {
       "accepts-matching-record" = {
         expr =
           let
             PersonT = Record.value {
-              name = mkType { name = "String"; check = builtins.isString; };
-              age = mkType { name = "Int"; check = builtins.isInt; };
+              name = FP.String;
+              age = FP.Int;
             };
           in check PersonT { name = "Alice"; age = 30; };
         expected = true;
@@ -38,8 +51,8 @@ let
         expr =
           let
             PersonT = Record.value {
-              name = mkType { name = "String"; check = builtins.isString; };
-              age = mkType { name = "Int"; check = builtins.isInt; };
+              name = FP.String;
+              age = FP.Int;
             };
           in check PersonT { name = "Alice"; };
         expected = false;
@@ -48,8 +61,8 @@ let
         expr =
           let
             PersonT = Record.value {
-              name = mkType { name = "String"; check = builtins.isString; };
-              age = mkType { name = "Int"; check = builtins.isInt; };
+              name = FP.String;
+              age = FP.Int;
             };
           in check PersonT { name = "Alice"; age = "thirty"; };
         expected = false;
@@ -58,9 +71,13 @@ let
         expr =
           let
             PersonT = Record.value {
-              name = mkType { name = "String"; check = builtins.isString; };
+              name = FP.String;
             };
           in check PersonT { name = "Alice"; age = 30; };
+        expected = true;
+      };
+      "has-kernelCheck" = {
+        expr = (Record.value { n = FP.Int; b = FP.Bool; }) ? kernelCheck;
         expected = true;
       };
     };
@@ -75,75 +92,66 @@ let
       are independent — no short-circuit. All elements are checked; the handler
       decides error policy (strict aborts on first, collecting gathers all).
     '';
-    value = elemType: mkType {
-      name = "List[${elemType.name}]";
-      kernelType =
-        if elemType ? _kernel then H.listOf elemType._kernel
-        else null;
-      check = v:
-        builtins.isList v && builtins.all elemType.check v;
-      # Per-element effectful verify for blame tracking.
-      # Sends typeCheck per element with indexed context: "List[Int][0]", etc.
-      # Non-list inputs fall back to a single typeCheck for the whole type.
-      verify = self: v:
-        if !(builtins.isList v) then
-          send "typeCheck" { type = self; context = self.name; value = v; }
-        else
-          let
-            n = builtins.length v;
-            # Build chain right-to-left so effects execute in index order (0, 1, 2, ...)
-            checkAll = builtins.foldl'
-              (acc: i:
-                bind (send "typeCheck" {
-                  type = elemType;
-                  context = "${self.name}[${toString i}]";
-                  value = builtins.elemAt v i;
-                }) (_: acc))
-              (pure v)
-              (builtins.genList (i: n - 1 - i) n);
-          in if n == 0 then pure v else checkAll;
-    };
-    tests = {
+    value = elemType:
+      let
+        hasKernel = elemType ? _kernel;
+        kernelType = if hasKernel then H.listOf elemType._kernel else H.any;
+        # Always guard with element-level .check: refined types (and any type
+        # with a guard) have .check ≠ .kernelCheck, so kernel decide on
+        # listOf(elemKernel) would miss the refinement predicate.
+        # .kernelCheck (via kernelType) remains pure kernel for formal paths.
+        guard = v: builtins.isList v && builtins.all elemType.check v;
+      in mkType {
+        name = "List[${elemType.name}]";
+        inherit kernelType guard;
+        # Per-element effectful verify for blame tracking.
+        verify = self: v:
+          if !(builtins.isList v) then
+            send "typeCheck" { type = self; context = self.name; value = v; }
+          else
+            let
+              n = builtins.length v;
+              # Build chain right-to-left so effects execute in index order (0, 1, 2, ...)
+              checkAll = builtins.foldl'
+                (acc: i:
+                  bind (send "typeCheck" {
+                    type = elemType;
+                    context = "${self.name}[${toString i}]";
+                    value = builtins.elemAt v i;
+                  }) (_: acc))
+                (pure v)
+                (builtins.genList (i: n - 1 - i) n);
+            in if n == 0 then pure v else checkAll;
+      };
+    tests = let FP = fx.types.primitives; in {
       "accepts-matching-list" = {
         expr =
-          let intList = ListOf.value (mkType { name = "Int"; check = builtins.isInt; });
+          let intList = ListOf.value FP.Int;
           in check intList [1 2 3];
         expected = true;
       };
       "rejects-mixed-list" = {
         expr =
-          let intList = ListOf.value (mkType { name = "Int"; check = builtins.isInt; });
+          let intList = ListOf.value FP.Int;
           in check intList [1 "two" 3];
         expected = false;
       };
       "accepts-empty-list" = {
         expr =
-          let intList = ListOf.value (mkType { name = "Int"; check = builtins.isInt; });
+          let intList = ListOf.value FP.Int;
           in check intList [];
         expected = true;
       };
       "kernel-propagates" = {
-        expr =
-          let boolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
-          in (ListOf.value boolT) ? kernelCheck;
+        expr = (ListOf.value FP.Bool) ? kernelCheck;
         expected = true;
       };
       "kernelCheck-accepts" = {
-        expr =
-          let boolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
-          in (ListOf.value boolT).kernelCheck [true false];
+        expr = (ListOf.value FP.Bool).kernelCheck [true false];
         expected = true;
       };
       "kernelCheck-rejects-bad-elem" = {
-        expr =
-          let boolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
-          in (ListOf.value boolT).kernelCheck [42];
-        expected = false;
-      };
-      "no-kernel-without-elem-kernel" = {
-        expr =
-          let intT = mkType { name = "Int"; check = builtins.isInt; };
-          in (ListOf.value intT) ? kernelCheck;
+        expr = (ListOf.value FP.Bool).kernelCheck [42];
         expected = false;
       };
     };
@@ -151,28 +159,33 @@ let
 
   Maybe = mk {
     doc = "Option type. Maybe Type accepts null or a value of Type.";
-    value = innerType: mkType {
-      name = "Maybe[${innerType.name}]";
-      check = v: v == null || innerType.check v;
-    };
-    tests = {
+    value = innerType:
+      let
+        hasKernel = innerType ? _kernel;
+        kernelType = if hasKernel then H.maybe innerType._kernel else H.any;
+        guard =
+          if hasKernel then null
+          else v: v == null || innerType.check v;
+      in mkType {
+        name = "Maybe[${innerType.name}]";
+        inherit kernelType guard;
+      };
+    tests = let FP = fx.types.primitives; in {
       "accepts-null" = {
-        expr =
-          let maybeInt = Maybe.value (mkType { name = "Int"; check = builtins.isInt; });
-          in check maybeInt null;
+        expr = check (Maybe.value FP.Int) null;
         expected = true;
       };
       "accepts-value" = {
-        expr =
-          let maybeInt = Maybe.value (mkType { name = "Int"; check = builtins.isInt; });
-          in check maybeInt 42;
+        expr = check (Maybe.value FP.Int) 42;
         expected = true;
       };
       "rejects-wrong-type" = {
-        expr =
-          let maybeInt = Maybe.value (mkType { name = "Int"; check = builtins.isInt; });
-          in check maybeInt "hello";
+        expr = check (Maybe.value FP.Int) "hello";
         expected = false;
+      };
+      "has-kernelCheck" = {
+        expr = (Maybe.value FP.Int) ? kernelCheck;
+        expected = true;
       };
     };
   };
@@ -182,68 +195,52 @@ let
       Tagged union of two types. Accepts `{ _tag = "Left"; value = a; }`
       or `{ _tag = "Right"; value = b; }`.
     '';
-    value = leftType: rightType: mkType {
-      name = "Either[${leftType.name}, ${rightType.name}]";
-      kernelType =
-        if leftType ? _kernel && rightType ? _kernel
-        then H.sum leftType._kernel rightType._kernel
-        else null;
-      check = v:
-        builtins.isAttrs v
-        && v ? _tag && v ? value
-        && ((v._tag == "Left" && leftType.check v.value)
-            || (v._tag == "Right" && rightType.check v.value));
-    };
-    tests = {
+    value = leftType: rightType:
+      let
+        hasKernel = leftType ? _kernel && rightType ? _kernel;
+        kernelType = if hasKernel
+          then H.sum leftType._kernel rightType._kernel
+          else H.any;
+        guard =
+          if hasKernel then null
+          else v:
+            builtins.isAttrs v
+            && v ? _tag && v ? value
+            && ((v._tag == "Left" && leftType.check v.value)
+                || (v._tag == "Right" && rightType.check v.value));
+      in mkType {
+        name = "Either[${leftType.name}, ${rightType.name}]";
+        inherit kernelType guard;
+      };
+    tests = let FP = fx.types.primitives; in {
       "accepts-left" = {
         expr =
-          let
-            e = Either.value
-              (mkType { name = "String"; check = builtins.isString; })
-              (mkType { name = "Int"; check = builtins.isInt; });
+          let e = Either.value FP.String FP.Int;
           in check e { _tag = "Left"; value = "error"; };
         expected = true;
       };
       "accepts-right" = {
         expr =
-          let
-            e = Either.value
-              (mkType { name = "String"; check = builtins.isString; })
-              (mkType { name = "Int"; check = builtins.isInt; });
+          let e = Either.value FP.String FP.Int;
           in check e { _tag = "Right"; value = 42; };
         expected = true;
       };
       "rejects-wrong-tag" = {
         expr =
-          let
-            e = Either.value
-              (mkType { name = "String"; check = builtins.isString; })
-              (mkType { name = "Int"; check = builtins.isInt; });
+          let e = Either.value FP.String FP.Int;
           in check e { _tag = "Other"; value = 42; };
         expected = false;
       };
       "kernel-propagates" = {
-        expr =
-          let
-            natT = mkType { name = "Nat"; check = v: builtins.isInt v && v >= 0; kernelType = H.nat; };
-            boolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
-          in (Either.value natT boolT) ? kernelCheck;
+        expr = (Either.value FP.Int FP.Bool) ? kernelCheck;
         expected = true;
       };
       "kernelCheck-accepts-left" = {
-        expr =
-          let
-            natT = mkType { name = "Nat"; check = v: builtins.isInt v && v >= 0; kernelType = H.nat; };
-            boolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
-          in (Either.value natT boolT).kernelCheck { _tag = "Left"; value = 0; };
+        expr = (Either.value FP.Int FP.Bool).kernelCheck { _tag = "Left"; value = 42; };
         expected = true;
       };
       "kernelCheck-rejects-wrong-val" = {
-        expr =
-          let
-            natT = mkType { name = "Nat"; check = v: builtins.isInt v && v >= 0; kernelType = H.nat; };
-            boolT = mkType { name = "Bool"; check = builtins.isBool; kernelType = H.bool; };
-          in (Either.value natT boolT).kernelCheck { _tag = "Left"; value = true; };
+        expr = (Either.value FP.Int FP.Bool).kernelCheck { _tag = "Left"; value = true; };
         expected = false;
       };
     };
@@ -254,21 +251,30 @@ let
       Discriminated union. Takes `{ tag = Type; ... }` schema.
       Accepts `{ _tag = "tag"; value = ...; }` where value has the corresponding type.
     '';
-    value = schema: mkType {
-      name = "Variant{${builtins.concatStringsSep " | " (builtins.attrNames schema)}}";
-      check = v:
-        builtins.isAttrs v
-        && v ? _tag && v ? value
-        && schema ? ${v._tag}
-        && (schema.${v._tag}).check v.value;
-    };
-    tests = {
+    value = schema:
+      let
+        sortedTags = builtins.sort builtins.lessThan (builtins.attrNames schema);
+        allHaveKernel = builtins.all (t: schema.${t} ? _kernel) sortedTags;
+        hoasBranches = map (t: { tag = t; type = schema.${t}._kernel; }) sortedTags;
+        kernelType = if allHaveKernel && sortedTags != []
+          then H.variant hoasBranches
+          else H.any;
+        guard = v:
+          builtins.isAttrs v
+          && v ? _tag && v ? value
+          && schema ? ${v._tag}
+          && (schema.${v._tag}).check v.value;
+      in mkType {
+        name = "Variant{${builtins.concatStringsSep " | " sortedTags}}";
+        inherit kernelType guard;
+      };
+    tests = let FP = fx.types.primitives; in {
       "accepts-valid-variant" = {
         expr =
           let
             Shape = Variant.value {
-              circle = mkType { name = "Float"; check = builtins.isFloat; };
-              rect = mkType { name = "Attrs"; check = builtins.isAttrs; };
+              circle = FP.Float;
+              rect = FP.Attrs;
             };
           in check Shape { _tag = "circle"; value = 5.0; };
         expected = true;
@@ -277,10 +283,14 @@ let
         expr =
           let
             Shape = Variant.value {
-              circle = mkType { name = "Float"; check = builtins.isFloat; };
+              circle = FP.Float;
             };
           in check Shape { _tag = "triangle"; value = null; };
         expected = false;
+      };
+      "has-kernelCheck" = {
+        expr = (Variant.value { a = FP.Int; b = FP.Bool; }) ? kernelCheck;
+        expected = true;
       };
     };
   };

@@ -62,15 +62,28 @@ let
     in
     addFrontMatter title "${moduleDoc}${body}";
 
-  # Map of hand-written chapters to their display titles.
-  guideChapters = {
-    introduction = "Introduction";
-    getting-started = "Getting Started";
-    theory = "Theory";
-    trampoline = "Trampoline";
-    kernel-spec = "Kernel Specification";
-    vision = "Vision";
-  };
+  # Parse SUMMARY.md to extract ordered guide chapters.
+  # Returns list of { title, filename } for lines matching "- [Title](filename.md)".
+  # Only includes guide chapters (no "/" in filename — excludes api/ paths).
+  # Uses POSIX ERE bracket expressions ([[] for literal [) since builtins.match
+  # doesn't support backslash escapes for brackets.
+  parseSummary = let
+    lines = builtins.filter builtins.isString
+      (builtins.split "\n" (builtins.readFile (bookSrc + "/SUMMARY.md")));
+    parse = line:
+      let m = builtins.match "- [[]([^]]+)[]][(]([^)]+)[.]md[)]" line;
+      in if m != null
+        then { title = builtins.elemAt m 0; filename = builtins.elemAt m 1; }
+        else null;
+    all = builtins.filter (x: x != null) (map parse lines);
+  in builtins.filter (x: builtins.match ".+/.+" x.filename == null) all;
+
+  # Map of hand-written chapters to their display titles (derived from SUMMARY.md).
+  guideChapters = builtins.listToAttrs
+    (map (ch: { name = ch.filename; value = ch.title; }) parseSummary);
+
+  # Ordered page slugs for the guide section (preserves SUMMARY.md reading order).
+  guidePageOrder = map (ch: ch.filename) parseSummary;
 
   # Capitalise a module name for display: "state" -> "State", "acc" -> "Acc".
   capitalise = s:
@@ -150,10 +163,11 @@ let
   projectJson = builtins.toJSON {
     id = "nix-effects";
     name = "nix-effects";
-    description = "Algebraic effects, dependent contracts, and refinement types in pure Nix.";
+    description = "A type-checking kernel, algebraic effects, and dependent types in pure Nix.";
     source-url = "https://github.com/kleisli-io/nix-effects";
+    index = "index.md";
     sections = [
-      { slug = "guide"; title = "Guide"; order = 1; }
+      { slug = "guide"; title = "Guide"; order = 1; pages = guidePageOrder; }
       { slug = "core-api"; title = "Core API"; order = 2;
         reference = true;
         banner = "Auto-generated API reference from nix-effects source."; }
@@ -177,5 +191,13 @@ let
     path = pkgs.writeText "project.json" projectJson;
   };
 
+  # Landing page content for docs.kleisli.io/nix-effects.
+  # Rendered above section cards on the project page.
+  indexEntry = {
+    name = "nix-effects/index.md";
+    path = pkgs.writeText "index.md"
+      (addFrontMatter "nix-effects" (builtins.readFile (bookSrc + "/index.md")));
+  };
+
 in
-  pkgs.linkFarm "nix-effects-kleisli-docs" ([ projectEntry ] ++ guideEntries ++ apiEntries)
+  pkgs.linkFarm "nix-effects-kleisli-docs" ([ projectEntry indexEntry ] ++ guideEntries ++ apiEntries)

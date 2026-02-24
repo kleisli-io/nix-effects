@@ -1,4 +1,4 @@
-# nix-effects: Algebraic effects, value-dependent contracts, and refinement types in pure Nix
+# nix-effects: Algebraic effects, dependent types, and a type-checking kernel in pure Nix
 #
 # Usage:
 #   let fx = import ./. { lib = nixpkgs.lib; };
@@ -89,6 +89,9 @@ let
       # Foundation
       inherit (types.foundation) mkType check validate make refine;
 
+      # HOAS type constructors (for mkType kernelType parameter)
+      hoas = src.tc.hoas;
+
       # Primitives
       inherit (types.primitives) String Int Bool Float Attrs Path Function Null Unit Any;
 
@@ -107,6 +110,12 @@ let
 
       # Universe
       inherit (types.universe) typeAt level Type_0 Type_1 Type_2 Type_3 Type_4;
+
+      # Elaboration bridge (kernel ↔ Nix values)
+      inherit (src.tc.elaborate) elaborateType elaborateValue extract verifyAndExtract decide decideType;
+
+      # Verified combinators (natural syntax for writing type-checked implementations)
+      verified = src.tc.verified;
     };
 
     # Effects (reusable operations + handlers)

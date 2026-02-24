@@ -78,6 +78,20 @@ let
     else if t == "VEq" then T.mkEq (quote d v.type) (quote d v.lhs) (quote d v.rhs)
     else if t == "VRefl" then T.mkRefl
     else if t == "VU" then T.mkU v.level
+    else if t == "VString" then T.mkString
+    else if t == "VInt" then T.mkInt
+    else if t == "VFloat" then T.mkFloat
+    else if t == "VAttrs" then T.mkAttrs
+    else if t == "VPath" then T.mkPath
+    else if t == "VFunction" then T.mkFunction
+    else if t == "VAny" then T.mkAny
+    else if t == "VStringLit" then T.mkStringLit v.value
+    else if t == "VIntLit" then T.mkIntLit v.value
+    else if t == "VFloatLit" then T.mkFloatLit v.value
+    else if t == "VAttrsLit" then T.mkAttrsLit
+    else if t == "VPathLit" then T.mkPathLit
+    else if t == "VFnLit" then T.mkFnLit
+    else if t == "VAnyLit" then T.mkAnyLit
     else if t == "VNe" then quoteSp d (T.mkVar (lvl2Ix d v.level)) v.spine
     else throw "tc: quote unknown tag '${t}'";
 
@@ -111,14 +125,40 @@ let
 
 in mk {
   doc = ''
-    Quotation for the type-checking kernel. quote : Depth -> Val -> Tm.
-    Converts values (with de Bruijn levels) back to terms (with indices).
+    # fx.tc.quote — Quotation (Read-back)
+
+    Converts values back to terms, translating de Bruijn levels to
+    indices. Pure function — part of the TCB.
+
+    Spec reference: kernel-spec.md §5.
+
+    ## Core Functions
+
+    - `quote : Depth → Val → Tm` — read back a value at binding depth d.
+      Level-to-index conversion: `index = depth - level - 1`.
+    - `quoteSp : Depth → Tm → Spine → Tm` — quote a spine of eliminators
+      applied to a head term (folds left over the spine).
+    - `quoteElim : Depth → Tm → Elim → Tm` — quote a single elimination
+      frame applied to a head term.
+    - `nf : Env → Tm → Tm` — normalize: `eval` then `quote`. Useful for
+      testing roundtrip idempotency (`nf env (nf env tm) == nf env tm`).
+    - `lvl2Ix : Depth → Level → Index` — level-to-index helper.
+
+    ## Trampolining
+
+    VSucc and VCons chains are quoted iteratively via `genericClosure`
+    for O(1) stack depth on deep values (5000+ elements).
+
+    ## Binder Quotation
+
+    For VPi, VLam, VSigma: instantiates the closure with a fresh
+    variable at the current depth, then quotes the body at `depth + 1`.
   '';
   value = { inherit quote quoteSp quoteElim nf lvl2Ix; };
   tests = let
     inherit (V) vNat vZero vSucc vBool vTrue vFalse vPi vLam vSigma vPair
       vList vNil vCons vUnit vTt vVoid vSum vInl vInr vEq vRefl vU vNe
-      mkClosure eApp eFst eSnd eNatElim;
+      mkClosure eApp eFst eSnd eNatElim eBoolElim eListElim eAbsurd eSumElim eJ;
   in {
     # -- Level to index --
     "lvl2ix-0" = { expr = lvl2Ix 1 0; expected = 0; };
@@ -138,6 +178,22 @@ in mk {
     "quote-refl" = { expr = (quote 0 vRefl).tag; expected = "refl"; };
     "quote-U0" = { expr = (quote 0 (vU 0)).tag; expected = "U"; };
     "quote-U0-level" = { expr = (quote 0 (vU 0)).level; expected = 0; };
+    "quote-string" = { expr = (quote 0 V.vString).tag; expected = "string"; };
+    "quote-int" = { expr = (quote 0 V.vInt).tag; expected = "int"; };
+    "quote-float" = { expr = (quote 0 V.vFloat).tag; expected = "float"; };
+    "quote-attrs" = { expr = (quote 0 V.vAttrs).tag; expected = "attrs"; };
+    "quote-path" = { expr = (quote 0 V.vPath).tag; expected = "path"; };
+    "quote-function" = { expr = (quote 0 V.vFunction).tag; expected = "function"; };
+    "quote-any" = { expr = (quote 0 V.vAny).tag; expected = "any"; };
+    "quote-string-lit" = { expr = (quote 0 (V.vStringLit "hi")).tag; expected = "string-lit"; };
+    "quote-string-lit-value" = { expr = (quote 0 (V.vStringLit "hi")).value; expected = "hi"; };
+    "quote-int-lit" = { expr = (quote 0 (V.vIntLit 7)).tag; expected = "int-lit"; };
+    "quote-int-lit-value" = { expr = (quote 0 (V.vIntLit 7)).value; expected = 7; };
+    "quote-float-lit" = { expr = (quote 0 (V.vFloatLit 1.5)).tag; expected = "float-lit"; };
+    "quote-attrs-lit" = { expr = (quote 0 V.vAttrsLit).tag; expected = "attrs-lit"; };
+    "quote-path-lit" = { expr = (quote 0 V.vPathLit).tag; expected = "path-lit"; };
+    "quote-fn-lit" = { expr = (quote 0 V.vFnLit).tag; expected = "fn-lit"; };
+    "quote-any-lit" = { expr = (quote 0 V.vAnyLit).tag; expected = "any-lit"; };
 
     # -- Compound values --
     "quote-pair" = { expr = (quote 0 (vPair vZero vTrue)).tag; expected = "pair"; };
@@ -180,6 +236,26 @@ in mk {
     "quote-ne-nat-elim" = {
       expr = (quote 1 (vNe 0 [ (eNatElim vNat vZero vZero) ])).tag;
       expected = "nat-elim";
+    };
+    "quote-ne-bool-elim" = {
+      expr = (quote 1 (vNe 0 [ (eBoolElim vNat vZero (vSucc vZero)) ])).tag;
+      expected = "bool-elim";
+    };
+    "quote-ne-list-elim" = {
+      expr = (quote 1 (vNe 0 [ (eListElim vNat vNat vZero vZero) ])).tag;
+      expected = "list-elim";
+    };
+    "quote-ne-absurd" = {
+      expr = (quote 1 (vNe 0 [ (eAbsurd vNat) ])).tag;
+      expected = "absurd";
+    };
+    "quote-ne-sum-elim" = {
+      expr = (quote 1 (vNe 0 [ (eSumElim vNat vBool vNat vZero vZero) ])).tag;
+      expected = "sum-elim";
+    };
+    "quote-ne-j" = {
+      expr = (quote 1 (vNe 0 [ (eJ vNat vZero vNat vZero vZero) ])).tag;
+      expected = "J";
     };
 
     # -- Binders (Pi, Lam, Sigma) --

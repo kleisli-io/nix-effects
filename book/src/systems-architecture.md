@@ -1,25 +1,19 @@
-# Vision: A Kernel-First Type System in Pure Nix
+# Systems Architecture
 
-This document describes the long-term vision for nix-effects' type
-system: grounding all types in a small, trusted type-checking kernel
-— a Lean-light core running entirely at `nix eval` time, built on
-the effects infrastructure that already exists.
+nix-effects grounds all types in a small, trusted type-checking kernel
+— a Lean-light MLTT core running entirely at `nix eval` time, built on
+the effects infrastructure.
 
-**Current status.** The MLTT kernel is implemented (`src/tc/`) and
-integrated: types with `kernelType` get `.prove` and `.kernelCheck`.
-Contracts and kernel coexist — most types remain pure runtime
-contracts, while kernel-backed types (Bool, Nat, Unit, List, Sum,
-Sigma, Pi, typeAt) additionally support formal verification. See
-the "Implementation status" section at the end for details.
+The kernel is implemented in `src/tc/` (~2200 lines) and fully integrated.
+All types have kernel backing — `.check` is derived mechanically from
+the kernel's `decide` procedure. There is no separate contract system
+and no adequacy bridge. Universe levels are computed by the kernel's
+`checkTypeLevel`. One notion of type, one checking mechanism, with
+decidable checking as a derived operation.
 
-The end-state goal: one notion of type, one checking mechanism,
-formally verified NixOS configurations. No adequacy gap between
-"contracts" and "proofs" because all types would be kernel types,
-with decidable checking as a derived operation.
+## Foundation layers
 
-## Where we are
-
-nix-effects has two working layers:
+nix-effects has two foundation layers:
 
 **The effects kernel.** Freer monad with FTCQueue for O(1) bind.
 `builtins.genericClosure` trampoline for O(1) stack depth. Handler-swap
@@ -42,12 +36,12 @@ firewall rule exists" — that's a universally quantified statement. No
 contract can check it. You need structural verification of a proof term,
 not runtime evaluation of a predicate.
 
-The current vision document described a proof checker alongside the
-contract system, with an adequacy bridge connecting two separate notions
-of type. That's the wrong architecture. If we're building a kernel
-anyway, the type system should be grounded in it from the start.
+An earlier design considered a proof checker alongside the contract
+system, with an adequacy bridge connecting two separate notions of type.
+That architecture was rejected. If a kernel exists, the type system
+should be grounded in it from the start.
 
-## The kernel-first idea
+## The kernel-first architecture
 
 Instead of two systems with a bridge:
 
@@ -56,8 +50,12 @@ Contracts (ad hoc)          Proofs (kernel)
   Record, ListOf, Pi...       Pi, Sigma, Nat, eq...
        \                        /
         \   adequacy bridge    /
-         v                    v
-      Effects kernel
+         \                    /
+          \                  /
+           \                /
+            v              v
+             Effects kernel
+
 ```
 
 One system, one source of truth:
@@ -76,6 +74,7 @@ Effects kernel (freer monad, FTCQueue, trampoline, handlers)
        |
        v
 Pure Nix
+
 ```
 
 Types are kernel types. `Record`, `ListOf`, `DepRecord`, `refined` —
@@ -104,6 +103,7 @@ ctx ⊢ term : type       (type checking)
 ctx ⊢ term ⇒ type       (type inference)
 type_a ≡ type_b         (definitional equality, via normalization)
 ⊢ ctx ok                (context well-formedness)
+
 ```
 
 ### The term language
@@ -138,6 +138,7 @@ Terms are Nix attrsets. Each has a `tag` field for the constructor:
 { tag = "ann"; term = ...; type = ...; }     # annotation
 { tag = "let"; name = "x"; type = ...; val = ...; body = ...; }  # let
 # Eliminators: nat-elim, bool-elim, list-elim, sum-elim
+
 ```
 
 We use de Bruijn indices internally. The surface language uses names
@@ -193,6 +194,7 @@ normalize = term:
                    _term = next.term; }];
     };
   in (lib.last steps)._term;
+
 ```
 
 O(1) stack depth. `deepSeq` breaks thunk chains. The same technique that
@@ -223,6 +225,7 @@ infer = ctx: term: send "infer" { inherit ctx term; };
 unify = a: b: send "unify" { inherit a b; };
 freshLevel = send "freshLevel" null;
 typeError = msg: send "typeError" msg;
+
 ```
 
 The handler determines checking behavior:
@@ -248,6 +251,7 @@ interactiveChecker = {
     { resume = null; state = state // { paused = param; }; };
   ...
 };
+
 ```
 
 Same handler-swap pattern that the current `ServiceConfig.validate`
@@ -274,6 +278,7 @@ value into a kernel term, and the kernel checks it:
 # (ListOf Nat).check [1, 2, 3]
 # Elaboration: [1,2,3] → cons(succ(zero), cons(succ(succ(zero)), cons(succ(succ(succ(zero))), nil)))
 # Kernel: ⊢ cons(1, cons(2, cons(3, nil))) : List Nat  ✓
+
 ```
 
 ### Decidable fast paths
@@ -289,6 +294,7 @@ From that definition, a decision procedure is mechanically derived:
 ```nix
 # Decision procedure derived from kernel Nat definition
 Nat.check = v: builtins.isInt v && v >= 0;
+
 ```
 
 This is the same predicate the current system uses. The difference:
@@ -342,6 +348,7 @@ checkWithBlame = type: value: context:
   let judgment = elaborate type value;
   in bind (send "typeCheck" { inherit type value context; }) (_:
     kernelCheck judgment);
+
 ```
 
 ## Infinite universes via streams
@@ -353,6 +360,7 @@ universes = stream.iterate (u: {
   level = u.level + 1;
   type = typeAt (u.level + 1);
 }) { level = 0; type = typeAt 0; };
+
 ```
 
 The stream unfolds on demand. If your types max out at level 3, level 4
@@ -367,6 +375,7 @@ level(Nat)           = 0
 level(Pi A B)        = max(level(A), level(B))
 level(Sigma A B)     = max(level(A), level(B))
 level(Type n)        = n + 1
+
 ```
 
 No manual annotations. The kernel infers levels and verifies
@@ -389,6 +398,7 @@ atLevel3 = fx.run polyList (fixedLevel 3) null;
 allLevels = stream.map (u:
   fx.run polyList (fixedLevel u) null
 ) (stream.iterate (n: n + 1) 0);
+
 ```
 
 The definition doesn't commit to a level. The handler decides.
@@ -411,6 +421,7 @@ solveLevels = constraints:
                 inherit (next) solved changed; }];
     };
   in (lib.last steps).solved;
+
 ```
 
 Same trampoline. Same `deepSeq` trick. The universe solver reuses
@@ -437,9 +448,10 @@ prop = forall nat (n: eq nat (plus n zero) n);
 # Proof: induction on n
 pf = ind nat
   (k: eq nat (plus k zero) k)   # motive
-  refl                            # base: 0 + 0 = 0
-  (k: ih: cong succ ih)          # step: cong S on IH
+  refl                          # base: 0 + 0 = 0
+  (k: ih: cong succ ih)         # step: cong S on IH
 ;
+
 ```
 
 The combinator `forall nat (n: ...)` calls the Nix function with a
@@ -465,6 +477,7 @@ let
     in { term = mkApp fn.term arg.term;
          type = subst fn.type.codomain arg.term; };
 in ...
+
 ```
 
 Error messages point to the combinator call that failed, not to a
@@ -487,86 +500,8 @@ let
   z = E zero nat;
 in
   (n.plus z).eq n  # reads as: n + 0 = n
+
 ```
-
-### String DSL: custom syntax parsed at eval time
-
-The nuclear option. Parse a Lean-like surface syntax from strings:
-
-```nix
-proof.check ''
-  theorem plus_zero : forall (n : Nat), n + 0 = n :=
-    Nat.rec refl (fun k ih => cong succ ih)
-''
-```
-
-The parser uses `builtins.match` for tokenization and
-`builtins.genericClosure` for the parse loop — a Pratt parser driven
-by the trampoline. The elaborator resolves names, inserts implicit
-arguments, and produces de Bruijn core terms.
-
-For NixOS configuration proofs, which tend to be short (structural
-properties, not deep mathematics), the parsing overhead is negligible.
-
-## Verified NixOS configurations
-
-The point of all this: machine configurations with structural
-guarantees.
-
-### What you can verify
-
-**Security invariants across modules.** "For every service in this
-configuration, if it listens on a port, a corresponding firewall rule
-exists." Universally quantified over services — not checked for this
-specific config, but proved for the module's entire output space.
-
-**Module composition correctness.** NixOS modules are functions from
-config to config fragments. Prove that composing module A with module B
-preserves an invariant established by module C. Currently you find out
-at build time, or in production.
-
-**Compliance as types.** Formalize CIS benchmarks or FIPS requirements
-as dependent types. A configuration that type-checks against the spec
-is provably compliant — the proof term IS the compliance certificate.
-
-**Resource bounds.** "The sum of all container memory limits does not
-exceed physical RAM." "For all systemd services with `DynamicUser=yes`,
-`ProtectHome=yes` is also set."
-
-### What the workflow looks like
-
-```nix
-# my-module.nix
-{ config, lib, proof, ... }:
-let
-  Policy = proof.spec ''
-    forall (svc : Service config),
-      svc.listensPorts -> subset svc.ports config.firewall.allowed
-  '';
-
-  correctness = proof.verify Policy ''
-    intro svc h.
-    cases svc.
-    - apply subset_trans. exact web_ports_ok.
-    - contradiction. exact db_no_listen.
-  '';
-in {
-  config = lib.mkIf config.myService.enable {
-    networking.firewall.allowedTCPPorts = [ 443 ];
-    services.nginx.enable = true;
-  };
-
-  meta.proofs.firewallComplete = correctness;
-}
-```
-
-The tactic script is parsed at eval time. Each tactic transforms proof
-goals, building the proof term incrementally. The kernel verifies the
-final term. If it checks, the module is verified. If not, `nix eval`
-fails with a proof obligation you couldn't discharge.
-
-Nix's evaluation cache means the proof only re-checks when the module
-or the policy changes.
 
 ## The self-reference boundary
 
@@ -618,22 +553,18 @@ the queue, the monad, the handlers, and the streams. nix-effects was
 built to do effectful computation in a language that has no effects. A
 type checker is effectful computation.
 
-## Big bang migration
+## Current architecture
 
-nix-effects is new. Nothing important depends on the current contract
-API. This makes a clean break viable.
+### Effects substrate
 
-### What stays
-
-The effects kernel: `pure`, `impure`, `send`, `bind`, `run`, `handle`,
+The effects kernel — `pure`, `impure`, `send`, `bind`, `run`, `handle`,
 `adapt`, FTCQueue, trampoline, all effect modules (state, error, reader,
-writer, acc, choice, conditions, linear), streams. None of this changes.
-It's the substrate the type-checking kernel runs on.
+writer, acc, choice, conditions, linear), streams — is the substrate
+the type-checking kernel runs on.
 
-### What gets replaced (end-state)
+### Type system grounding
 
-In the full vision, the type system layer in `src/types/` would be
-fully grounded in the kernel:
+The type system layer in `src/types/` is grounded in the kernel:
 
 - `foundation.nix` — `mkType` with `(spec, guard, verifier)` triples
 - `primitives.nix` — `String`, `Int`, `Bool`, etc. wrapping `builtins.is*`
@@ -642,11 +573,9 @@ fully grounded in the kernel:
 - `refinement.nix` — `refined`, predicate combinators
 - `universe.nix` — `typeAt`, `Type_0` through `Type_4`, `level`
 
-Currently, the kernel coexists with these (types with `kernelType`
-get kernel backing; others remain pure runtime contracts). Full
-replacement would produce:
+All types have kernel backing via `kernelType`. The architecture is:
 
-1. **Kernel module** (`src/tc/`, currently ~2200 lines) — term/value
+1. **Kernel module** (`src/tc/`, ~2200 lines) — term/value
    representations, NbE evaluator, quotation, conversion, bidirectional
    checking. Uses environments and closures, not explicit substitution.
 
@@ -654,80 +583,79 @@ replacement would produce:
    translates the surface API into kernel types and translates Nix
    values into kernel terms. HOAS combinators for readable proof terms.
 
-3. **Decision procedures** — the fast paths. For each kernel type
-   with a decidable membership test, a Nix predicate that gives the
-   same answer as kernel checking. These ARE the current `check`
-   functions, now justified by the kernel rather than ad hoc.
+3. **Extraction layer** (`extract` in `elaborate.nix`) — reverses
+   elaboration: kernel values back to Nix values. Enables verified
+   functions: write in HOAS, kernel-check, extract usable Nix code.
 
-4. **Surface API** — the public-facing `fx.types.*` attrset. Same
+4. **Convenience combinators** (`src/tc/verified.nix`) — higher-level
+   interface for writing verified implementations with automatic motive
+   construction and annotation insertion.
+
+5. **Decision procedures** — `.check` on every type is the kernel's
+   `decide` procedure: elaborate value to HOAS, kernel-check, return
+   boolean. This is the "one system" architecture — no separate
+   contract system, no adequacy bridge.
+
+6. **Surface API** — the public-facing `fx.types.*` attrset. Same
    names, same usage patterns. `Record`, `ListOf`,
-   `DepRecord`, `refined`, `Pi`, `Sigma` all still work. Internally
-   they elaborate to kernel types. `T.check v` runs the decision
-   procedure (fast). `T.kernelCheck v` runs full kernel checking.
-   `T.prove prop` checks a proof term.
+   `DepRecord`, `refined`, `Pi`, `Sigma` all work. `T.check v` runs
+   the kernel's decide procedure. `T.prove prop` checks a proof term.
 
-### What the API looks like after
+### What the API looks like
 
 ```nix
-# Checking a value (fast path — same as today)
+# Checking a value (decide via kernel)
 fx.types.Nat.check 42                    # true
 fx.types.(ListOf Nat).check [1, 2, 3]   # true
 
-# Effectful validation with blame (same as today)
+# Effectful validation with blame
 fx.run (fx.types.Nat.validate 42) handlers []
 
-# NEW: kernel checking (full structural verification)
-fx.types.Nat.kernelCheck 42             # { ok = true; }
-
-# NEW: proving a universal property
+# Proving a universal property
 fx.types.prove (
   forall nat (n: eq nat (plus n zero) n)
 ) proofTerm                              # { ok = true; } or type error
+
+# Verified function extraction
+v.verify (H.forall "x" H.nat (_: H.nat)) (v.fn "x" H.nat (x: H.succ x))
+# → Nix function, correct by construction
+
 ```
 
-The migration is transparent for users who only call `T.check` and
-`T.validate` — the API is the same, the behavior is the same, the
-backing is different.
+## What exists
 
-## Implementation status
+1. **Type-checking kernel** (`src/tc/eval.nix`, `check.nix`,
+   `quote.nix`, `conv.nix`, `term.nix`, `value.nix`). Pi, Sigma, Nat,
+   Bool, List, Sum, Unit, Void, identity types, cumulative universes,
+   and 7 axiomatized primitive types (String, Int, Float, Attrs, Path,
+   Function, Any). Bidirectional checking with NbE. Fuel-bounded
+   evaluation with `genericClosure` trampolining for stack safety.
 
-### Implemented
-
-1. **Type-checking kernel.** (`src/tc/eval.nix`, `check.nix`,
-   `quote.nix`, `conv.nix`, `term.nix`, `value.nix`) Pi, Sigma, Nat,
-   Bool, List, Sum, Unit, Void, identity types, cumulative universes.
-   Bidirectional checking with NbE. Fuel-bounded evaluation with
-   `genericClosure` trampolining for stack safety.
-
-2. **HOAS surface combinators.** (`src/tc/hoas.nix`) `forall`, `lam`,
+2. **HOAS surface combinators** (`src/tc/hoas.nix`). `forall`, `lam`,
    `sigma`, `pair`, `natLit`, `natElim`, `boolElim`, `listElim`,
    `sumElim`, `j`, `refl`, `eq`, and more. Variable binding via Nix
    lambdas. Automatic elaboration from HOAS to de Bruijn core terms.
 
-3. **Elaboration from current types.** (`src/tc/elaborate.nix`) Maps
-   Bool, Nat, Unit, List, Sum, Sigma values to kernel terms. `decide`
-   function provides `kernelCheck` for data types. Sentinel-based
-   constant family detection for non-dependent Sigma.
+3. **Elaboration and extraction** (`src/tc/elaborate.nix`). Maps all
+   type values to kernel terms via `elaborateValue`. `decide` function
+   provides `.check` for all types. `extract` reverses elaboration,
+   converting kernel values back to Nix values. Sentinel-based
+   constant family detection for non-dependent Sigma/Pi.
 
-4. **Surface API integration.** Types with `kernelType` get `.prove`
-   (proof term verification) and `.kernelCheck` (value elaboration +
-   kernel checking). `foundation.nix` provides `kernelCheck` on any
-   type with kernel backing. Pi types get `._kernel` and `.prove` but
-   not `.kernelCheck` (functions are opaque).
+4. **Kernel-grounded foundation** (`src/types/foundation.nix`). `mkType`
+   requires `kernelType` and derives `.check` from `decide`. No
+   hand-written predicates. All types — primitives, constructors,
+   dependent types — have kernel backing.
 
-5. **Verified NixOS property.** Demonstrated the full pipeline: NixOS
-   config data → HOAS property type → kernel proof verification. The
-   property `∀ svc ∈ config.services, svc.enable → svc.port ∈
-   firewall.allowedPorts` is encoded via Curry-Howard as Sigma-chains
-   of Eq/Unit/Void obligations, with Refl/tt as witnesses.
+5. **Convenience combinators** (`src/tc/verified.nix`). Higher-level
+   interface: `v.verify type impl` writes in HOAS, kernel-checks,
+   and extracts a usable Nix function. Includes `if_`, `match`,
+   `matchList`, `matchSum`, `map`, `fold`, `filter`.
 
-### Future work
+## Future work
 
-The following features from the original vision remain unimplemented:
+The following features remain unimplemented:
 
-- **String DSL parser.** Lean-like surface syntax parsed at eval time
-  via `builtins.match` + `genericClosure` Pratt parser.
-- **Tactic engine.** Interactive proof construction via tactic scripts.
 - **Universe polymorphism as an effect.** Level allocation via
   `freshLevel` effect with handler-determined instantiation.
 - **Constraint solving via genericClosure.** Level constraint
@@ -735,9 +663,6 @@ The following features from the original vision remain unimplemented:
 - **Tagless final construction.** Type-checking during combinator
   construction.
 - **Builder pattern notation.** Method chaining for readable proof terms.
-- **Full NixOS module system integration.** Proof-carrying NixOS
-  modules with `meta.proofs`.
-- **Interactive checker handler.** Yield-on-error for tactic guidance.
 
 ## References
 

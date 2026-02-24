@@ -10,6 +10,7 @@
 let
   inherit (api) mk;
   inherit (fx.types.foundation) mkType check;
+  H = fx.tc.hoas;
 
   # -- Named refinement constructor --
 
@@ -23,15 +24,15 @@ let
     '';
     value = name: base: predicate: mkType {
       inherit name;
-      check = v: base.check v && predicate v;
-      inherit (base) universe;
+      kernelType = if base ? _kernel then base._kernel else H.any;
+      guard = v: base.check v && predicate v;
       description = "${name} (refined from ${base.name})";
     };
     tests = {
       "named-refinement-accepts" = {
         expr =
           let
-            IntType = mkType { name = "Int"; check = builtins.isInt; };
+            IntType = mkType { name = "Int"; kernelType = H.int_; };
             Nat = refined.value "Nat" IntType (x: x >= 0);
           in check Nat 5;
         expected = true;
@@ -39,7 +40,7 @@ let
       "named-refinement-rejects" = {
         expr =
           let
-            IntType = mkType { name = "Int"; check = builtins.isInt; };
+            IntType = mkType { name = "Int"; kernelType = H.int_; };
             Nat = refined.value "Nat" IntType (x: x >= 0);
           in check Nat (-1);
         expected = false;

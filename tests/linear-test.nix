@@ -9,6 +9,7 @@ let
   inherit (fx) pure bind handle adaptHandlers;
   inherit (fx.effects) linear state typecheck;
   inherit (fx.types) mkType check Linear Graded;
+  H = fx.types.hoas;
 
   # =========================================================================
   # BASIC LIFECYCLE
@@ -202,7 +203,7 @@ let
   compositionThreeEffects = {
     expr =
       let
-        IntT = mkType { name = "Int"; check = builtins.isInt; };
+        IntT = mkType { name = "Int"; kernelType = H.int_; };
         comp =
           bind (IntT.validate 42) (_:
           bind (linear.acquireLinear "api-key") (token:
@@ -224,7 +225,7 @@ let
   compositionTypeErrorPlusLeak = {
     expr =
       let
-        IntT = mkType { name = "Int"; check = builtins.isInt; };
+        IntT = mkType { name = "Int"; kernelType = H.int_; };
         comp =
           bind (IntT.validate "not-int") (_:
           bind (linear.acquireLinear "leaked") (_:
@@ -300,7 +301,7 @@ let
   stressComposed50Cycles = {
     expr =
       let
-        IntT = mkType { name = "Int"; check = builtins.isInt; };
+        IntT = mkType { name = "Int"; kernelType = H.int_; };
         mkCycle = i:
           bind (IntT.validate i) (_:
           bind (linear.acquireLinear "r-${toString i}") (token:
@@ -328,7 +329,7 @@ let
   typeLinearCheckValid = {
     expr =
       let
-        IntT = mkType { name = "Int"; check = builtins.isInt; };
+        IntT = mkType { name = "Int"; kernelType = H.int_; };
         LIntT = Linear IntT;
       in check LIntT { _linear = true; id = 0; resource = 42; };
     expected = true;
@@ -337,7 +338,7 @@ let
   typeLinearCheckInvalid = {
     expr =
       let
-        IntT = mkType { name = "Int"; check = builtins.isInt; };
+        IntT = mkType { name = "Int"; kernelType = H.int_; };
         LIntT = Linear IntT;
       in check LIntT { _linear = true; id = 0; resource = "not-int"; };
     expected = false;
@@ -346,13 +347,13 @@ let
   typeLinearCheckNonToken = {
     expr =
       let
-        IntT = mkType { name = "Int"; check = builtins.isInt; };
+        IntT = mkType { name = "Int"; kernelType = H.int_; };
       in check (Linear IntT) 42;
     expected = false;
   };
 
   typeGradedName = {
-    expr = (Graded { maxUses = 5; innerType = mkType { name = "String"; check = builtins.isString; }; }).name;
+    expr = (Graded { maxUses = 5; innerType = mkType { name = "String"; kernelType = H.string; }; }).name;
     expected = "Graded(5, String)";
   };
 
@@ -360,7 +361,7 @@ let
   typeLinearRoundTrip = {
     expr =
       let
-        IntT = mkType { name = "Int"; check = builtins.isInt; };
+        IntT = mkType { name = "Int"; kernelType = H.int_; };
         LIntT = Linear IntT;
         comp = bind (linear.acquireLinear 42) (token:
           bind (linear.consume token) (_:

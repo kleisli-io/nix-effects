@@ -132,7 +132,7 @@ let
               result = vl.head state._val;
             in
             if vl.tail != null && result._tag == "Pure"
-            then [{ key = state.key + 1; _queue = vl.tail; _val = result.value; }]
+            then [{ key = builtins.deepSeq result.value (state.key + 1); _queue = vl.tail; _val = result.value; }]
             else [];
         };
         last = builtins.elemAt steps (builtins.length steps - 1);

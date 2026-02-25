@@ -256,7 +256,7 @@ in mk {
     };
     "quote-ne-j" = {
       expr = (quote 1 (vNe 0 [ (eJ vNat vZero vNat vZero vZero) ])).tag;
-      expected = "J";
+      expected = "j";
     };
 
     # -- Binders (Pi, Lam, Sigma) --

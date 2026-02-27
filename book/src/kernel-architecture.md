@@ -42,23 +42,23 @@ bidirectional type checking. Six modules, each with a single
 responsibility:
 
 ```
-term.nix ──→ eval.nix ──→ value.nix
-                              │
-                          quote.nix ──→ term.nix
-                              │
+term.nix --> eval.nix --> value.nix
+                              |
+                          quote.nix --> term.nix
+                              |
                           conv.nix
-                              │
+                              |
                           check.nix
 ```
 
 | Module | Function | Signature |
 |--------|----------|-----------|
 | `term.nix` | Term constructors | `mkVar`, `mkPi`, `mkLam`, `mkApp`, ... |
-| `eval.nix` | Evaluation | `Env × Tm → Val` |
+| `eval.nix` | Evaluation | `Env × Tm -> Val` |
 | `value.nix` | Value constructors | `VLam`, `VPi`, `VPair`, `VZero`, ... |
-| `quote.nix` | Quotation | `ℕ × Val → Tm` |
-| `conv.nix` | Conversion checking | `ℕ × Val × Val → Bool` |
-| `check.nix` | Type checking | `Ctx × Tm × Val → Tm` / `Ctx × Tm → Tm × Val` |
+| `quote.nix` | Quotation | `ℕ × Val -> Tm` |
+| `conv.nix` | Conversion checking | `ℕ × Val × Val -> Bool` |
+| `check.nix` | Type checking | `Ctx × Tm × Val -> Tm` / `Ctx × Tm -> Tm × Val` |
 
 **Terms** (`Tm`) are the syntax — de Bruijn indexed expressions with
 explicit binding structure. **Values** (`Val`) are the semantics —
@@ -214,7 +214,7 @@ H.lam "x" H.nat (x: H.succ x)
   │
   ▼ elaborate (depth=0)
   │
-  │ marker at level 0 → T.mkVar(0 - 0 - 1) = T.mkVar(0)
+  │ marker at level 0 -> T.mkVar(0 - 0 - 1) = T.mkVar(0)
   │
   ▼
 Lam("x", Nat, Succ(Var(0)))   ← de Bruijn term
@@ -230,12 +230,12 @@ system to the kernel. It has six operations:
 
 | Operation | Signature | Direction |
 |-----------|-----------|-----------|
-| `elaborateType` | `FxType → HoasTree` | type system → kernel |
-| `elaborateValue` | `HoasTree × NixVal → HoasTree` | Nix value → kernel term |
-| `extract` | `HoasTree × Val → NixValue` | kernel value → Nix value |
-| `decide` | `HoasTree × NixVal → Bool` | decision procedure |
-| `decideType` | `FxType × NixVal → Bool` | elaborate type, then decide |
-| `verifyAndExtract` | `HoasTree × HoasTree → NixValue` | full pipeline |
+| `elaborateType` | `FxType -> HoasTree` | type system -> kernel |
+| `elaborateValue` | `HoasTree × NixVal -> HoasTree` | Nix value -> kernel term |
+| `extract` | `HoasTree × Val -> NixValue` | kernel value -> Nix value |
+| `decide` | `HoasTree × NixVal -> Bool` | decision procedure |
+| `decideType` | `FxType × NixVal -> Bool` | elaborate type, then decide |
+| `verifyAndExtract` | `HoasTree × HoasTree -> NixValue` | full pipeline |
 
 ### elaborateType
 
@@ -244,7 +244,7 @@ things, in order:
 
 1. The `_kernel` field (types built via `mkType` with `kernelType`)
 2. Structural fields (Pi: `domain`/`codomain`, Sigma: `fstType`/`sndFamily`)
-3. Name convention (`"Bool"` → `H.bool`, `"String"` → `H.string`, etc.)
+3. Name convention (`"Bool"` -> `H.bool`, `"String"` -> `H.string`, etc.)
 
 ### elaborateValue
 
@@ -262,20 +262,20 @@ verifies it, `eval` produces a kernel value, and `extract` converts
 the result to a usable Nix value.
 
 ```nix
-# extract : HoasTree → Val → NixValue
-extract H.nat (VSucc (VSucc VZero))   # → 2
-extract H.bool VTrue                   # → true
-extract H.string (VStringLit "hi")     # → "hi"
-extract (H.listOf H.nat) (VCons ...)   # → [1 2 3]
-extract (H.forall "x" ...) (VLam ...)  # → Nix function (!)
+# extract : HoasTree -> Val -> NixValue
+extract H.nat (VSucc (VSucc VZero))   # -> 2
+extract H.bool VTrue                   # -> true
+extract H.string (VStringLit "hi")     # -> "hi"
+extract (H.listOf H.nat) (VCons ...)   # -> [1 2 3]
+extract (H.forall "x" ...) (VLam ...)  # -> Nix function (!)
 ```
 
 The Pi case is the most important. Extracting a verified function
 produces a Nix function that:
 
-1. Elaborates its argument into a kernel value (Nix → kernel)
+1. Elaborates its argument into a kernel value (Nix -> kernel)
 2. Applies the kernel-verified closure
-3. Extracts the result back (kernel → Nix)
+3. Extracts the result back (kernel -> Nix)
 
 Correct by construction — the kernel verified the term, `eval`
 produced the closure, `extract` wraps with value conversion at the
@@ -314,9 +314,9 @@ verifyAndExtract = hoasTy: hoasImpl:
     then throw "verifyAndExtract: type check failed"
     else
       let
-        tm = H.elab hoasImpl;         # HOAS → de Bruijn
+        tm = H.elab hoasImpl;         # HOAS -> de Bruijn
         val = E.eval [] tm;           # evaluate to Val
-      in extract hoasTy val;          # Val → Nix value
+      in extract hoasTy val;          # Val -> Nix value
 ```
 
 ## Convenience combinators
@@ -440,7 +440,7 @@ let
   # Then extracts a 2-argument Nix function
   add = v.verify addTy addImpl;
 in
-  add 2 3    # → 5
+  add 2 3    # -> 5
 ```
 
 What happens step by step:
@@ -463,7 +463,7 @@ let
   H = fx.types.hoas;
   v = fx.types.verified;
 
-  # Successor function: Nat → Nat
+  # Successor function: Nat -> Nat
   succFn = v.fn "x" H.nat (x: H.succ x);
 
   # Map successor over a list
@@ -473,7 +473,7 @@ let
 
   result = v.verify (H.listOf H.nat) (v.map H.nat H.nat succFn input);
 in
-  result    # → [1 2 3]
+  result    # -> [1 2 3]
 ```
 
 ### Example: verified filter
@@ -483,7 +483,7 @@ let
   H = fx.types.hoas;
   v = fx.types.verified;
 
-  # isZero : Nat → Bool
+  # isZero : Nat -> Bool
   isZero = v.fn "n" H.nat (n:
     v.match H.bool n {
       zero = v.true_;
@@ -497,7 +497,7 @@ let
 
   result = v.verify (H.listOf H.nat) (v.filter H.nat isZero input);
 in
-  result    # → [0 0]
+  result    # -> [0 0]
 ```
 
 ## The verification spectrum
@@ -657,7 +657,7 @@ let
 
   # Verified record validator: checks if two string fields match.
   # The kernel type-checks the implementation against its type
-  # (Record → Bool), verifies that field projections are well-typed,
+  # (Record -> Bool), verifies that field projections are well-typed,
   # and confirms strEq composes correctly. Then extracts a Nix function.
   matchFn = v.verify (H.forall "r" RecTy (_: H.bool))
     (v.fn "r" RecTy (r:
@@ -671,9 +671,9 @@ let
         succ = _k: ih: H.succ ih;
       })));
 in {
-  sum   = add 2 3;    # → 5, correct by construction
-  yes   = matchFn { name = "hello"; target = "hello"; };    # → true
-  no    = matchFn { name = "hello"; target = "world"; };    # → false
+  sum   = add 2 3;    # -> 5, correct by construction
+  yes   = matchFn { name = "hello"; target = "hello"; };    # -> true
+  no    = matchFn { name = "hello"; target = "world"; };    # -> false
 }
 ```
 
@@ -696,9 +696,9 @@ mechanically:
 
 ```
 _kernel : HoasType        ← the type IS this
-check : Value → Bool       ← derived from decide(kernelType, value)
-kernelCheck : Value → Bool ← same as check (legacy alias)
-prove : HoasTerm → Bool    ← kernel proof checking
+check : Value -> Bool       ← derived from decide(kernelType, value)
+kernelCheck : Value -> Bool ← same as check (legacy alias)
+prove : HoasTerm -> Bool    ← kernel proof checking
 universe : Int             ← computed from checkTypeLevel(kernelType)
 ```
 
@@ -735,6 +735,6 @@ for type-checking (deciding membership) but not for the full
 verify-and-extract pipeline.
 
 **Extraction has boundary cost.** Extracted functions elaborate their
-arguments at every call (Nix → kernel value → apply → extract → Nix).
+arguments at every call (Nix -> kernel value -> apply -> extract -> Nix).
 For hot paths, the contract layer's `.check` fast path is more
 efficient.

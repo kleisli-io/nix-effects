@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-02-27
+
+### Added
+
+- Effects-powered build module (`fx.build`): typed build steps, eval-time validation, and derivation materialization
+- `fx.build.BuildStep` and `fx.build.BuildPlan` Record types for describing build pipelines
+- `fx.build.plan`: eval-time validation pipeline that type-checks steps and filters conditional steps via `when` predicates, collecting all errors without throwing
+- `fx.build.materialize`: converts a validated BuildPlan + pkgs into a `pkgs.runCommand` derivation with per-step env isolation, source copying, and shell generation
+
+## [0.2.0] - 2026-02-27
+
+### Added
+
+- Typed pipeline framework (`fx.pipeline`): composable stages with `mkStage`, `compose`, and `run`, wiring reader, error, acc, and typecheck effects with typed boundaries between stages
+- Pipeline convenience re-exports: `ask`, `asks`, `raise`, `raiseWith`, `warn`, `pure`, `bind`, `map` for use inside stage transforms
+- 14 inline tests and 2 integration tests for the pipeline module
+
 ## [0.1.0] - 2026-02-25
 
 Initial release.

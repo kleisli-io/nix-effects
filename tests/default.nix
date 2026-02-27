@@ -16,6 +16,7 @@ let
   equalityProofTests = import ../examples/equality-proofs.nix { inherit lib fx; };
   verifiedFunctionTests = import ../examples/verified-functions.nix { inherit lib fx; };
   docsTests = import ./docs-test.nix { inherit lib fx; };
+  pipelineTests = import ./pipeline-test.nix { inherit lib fx; };
 
 in {
   inherit (trampolineTests) pureComputation singleEffect simpleCounter
@@ -161,6 +162,8 @@ in {
 
   inherit (docsTests) portExample depContractExample stateEffectExample apiSurfaceSanity;
 
+  inherit (pipelineTests) fullPipelineTest pureOnlyTest;
+
   allPass = trampolineTests.allPass && typesTests.allPass && effectsTests.allPass
             && lawTests.allPass && errorPathTests.allPass
             && newEffectsTests.allPass && streamTests.allPass
@@ -168,5 +171,6 @@ in {
             && proofBasicsTests.allPass
             && equalityProofTests.allPass
             && verifiedFunctionTests.allPass
-            && docsTests.allPass;
+            && docsTests.allPass
+            && pipelineTests.allPass;
 }

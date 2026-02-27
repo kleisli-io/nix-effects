@@ -69,6 +69,8 @@ let
   types = src.types;
   effects = src.effects;
   stream = src.stream;
+  pipeline = src.pipeline;
+  build = src.build;
 
   # The public library interface
   fx = {
@@ -139,6 +141,20 @@ let
       inherit (stream.limit) take takeWhile drop;
       inherit (stream.reduce) fold toList length sum any all;
       inherit (stream.combine) concat interleave zip zipWith;
+    };
+
+    # Pipeline (typed stage composition with reader/error/acc)
+    pipeline = {
+      inherit (pipeline) mkStage compose run;
+      inherit (pipeline) pure bind map;
+      inherit (pipeline) ask asks raise raiseWith warn;
+    };
+
+    # Build (effects-powered builder types, eval-time pipeline, materialization)
+    build = {
+      inherit (build.types) BuildStep BuildPlan;
+      plan = build.plan;
+      materialize = build.materialize;
     };
 
     # API utilities

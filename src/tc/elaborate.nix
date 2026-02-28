@@ -3,9 +3,10 @@
 # Bridges fx.types to kernel term representation (de Bruijn Tm)
 # via the HOAS surface combinator layer.
 #
-# Six operations:
+# Eight operations:
 #   elaborateType    : FxType → HoasTree              (type level)
 #   elaborateValue   : HoasTree → NixVal → HoasTree   (value level: Nix → HOAS)
+#   validateValue    : String → HoasTree → NixVal → [Error]  (structural validation)
 #   extract          : HoasTree → Val → NixValue       (value level: kernel → Nix)
 #   extractInner     : HoasTree → Val → Val → NixValue (3-arg: HOAS + type val + val)
 #   reifyType        : Val → HoasTree                  (kernel type val → HOAS fallback)
@@ -242,6 +243,146 @@ let
         in inject branches value
 
     else throw "elaborateValue: unsupported type tag '${t}'";
+
+  # -- Structural validation --
+  #
+  # validateValue : String → HoasTree → NixVal → [{ path; msg; }]
+  #
+  # Mirrors elaborateValue's structural recursion over HOAS type tags but
+  # returns a list of errors instead of producing HOAS terms or throwing.
+  # Empty list means the value would elaborate successfully.
+  #
+  # Design:
+  #   elaborateValue is monadic (Either) — fails fast on the first error.
+  #   validateValue is applicative (Validation) — accumulates all errors.
+  #   These are different morphisms: one produces values, the other diagnostics.
+  #   The path accumulator is the Reader effect (inherited attribute in the fold).
+  #   The error list is the Writer effect (free monoid).
+  #
+  # Soundness: checks the same predicates as elaborateValue. If validateValue
+  # returns [] then elaborateValue will not throw (and vice versa). Both have
+  # catch-all branches for unknown tags, so they cannot silently diverge.
+  validateValue = path: hoasTy: value:
+    let t = hoasTy._htag or "invalid"; in
+
+    # -- Scalar types --
+
+    if t == "bool" then
+      if !(builtins.isBool value)
+      then [{ inherit path; msg = "expected bool, got ${builtins.typeOf value}"; }]
+      else []
+
+    else if t == "nat" then
+      if !(builtins.isInt value) || value < 0
+      then [{ inherit path; msg = "expected non-negative integer, got ${builtins.typeOf value}"; }]
+      else []
+
+    else if t == "unit" then
+      if value != null
+      then [{ inherit path; msg = "expected null (unit), got ${builtins.typeOf value}"; }]
+      else []
+
+    else if t == "string" then
+      if !(builtins.isString value)
+      then [{ inherit path; msg = "expected string, got ${builtins.typeOf value}"; }]
+      else []
+
+    else if t == "int" then
+      if !(builtins.isInt value)
+      then [{ inherit path; msg = "expected integer, got ${builtins.typeOf value}"; }]
+      else []
+
+    else if t == "float" then
+      if !(builtins.isFloat value)
+      then [{ inherit path; msg = "expected float, got ${builtins.typeOf value}"; }]
+      else []
+
+    else if t == "attrs" then
+      if !(builtins.isAttrs value)
+      then [{ inherit path; msg = "expected attrset, got ${builtins.typeOf value}"; }]
+      else []
+
+    else if t == "path" then
+      if !(builtins.isPath value)
+      then [{ inherit path; msg = "expected path, got ${builtins.typeOf value}"; }]
+      else []
+
+    else if t == "function" then
+      if !(builtins.isFunction value)
+      then [{ inherit path; msg = "expected function, got ${builtins.typeOf value}"; }]
+      else []
+
+    else if t == "any" then []
+
+    # -- List: validate every element with indexed path --
+
+    else if t == "list" then
+      if !(builtins.isList value)
+      then [{ inherit path; msg = "expected list, got ${builtins.typeOf value}"; }]
+      else
+        let
+          elemTy = hoasTy.elem;
+          len = builtins.length value;
+        in builtins.concatMap (i:
+          validateValue "${path}[${toString i}]" elemTy (builtins.elemAt value i)
+        ) (builtins.genList (x: x) len)
+
+    # -- Sum: validate tag structure then recurse into branch --
+
+    else if t == "sum" then
+      if !(builtins.isAttrs value && value ? _tag && value ? value)
+      then [{ inherit path; msg = "expected { _tag = \"Left\"|\"Right\"; value = ...; }"; }]
+      else if value._tag == "Left" then validateValue "${path}.Left" hoasTy.left value.value
+      else if value._tag == "Right" then validateValue "${path}.Right" hoasTy.right value.value
+      else [{ inherit path; msg = "_tag must be \"Left\" or \"Right\", got \"${value._tag}\""; }]
+
+    # -- Sigma: non-dependent only (same sentinel test as elaborateValue) --
+
+    else if t == "sigma" then
+      if !(builtins.isAttrs value && value ? fst && value ? snd)
+      then [{ inherit path; msg = "expected { fst; snd; }"; }]
+      else
+        let
+          _hs1 = { _htag = "nat"; _sentinel = 1; };
+          _hs2 = { _htag = "nat"; _sentinel = 2; };
+          r1 = builtins.tryEval (hoasTy.body _hs1);
+          r2 = builtins.tryEval (hoasTy.body _hs2);
+        in
+        if !(r1.success && r2.success && H.elab r1.value == H.elab r2.value)
+        then [{ inherit path; msg = "dependent Sigma requires explicit _kernel annotation"; }]
+        else
+          (validateValue "${path}.fst" hoasTy.fst value.fst)
+          ++ (validateValue "${path}.snd" r1.value value.snd)
+
+    # -- Compound types (record, maybe, variant) --
+
+    else if t == "record" then
+      if !(builtins.isAttrs value)
+      then [{ inherit path; msg = "expected record (attrset), got ${builtins.typeOf value}"; }]
+      else
+        builtins.concatMap (f:
+          if !(builtins.hasAttr f.name value)
+          then [{ path = "${path}.${f.name}"; msg = "missing required field"; }]
+          else validateValue "${path}.${f.name}" f.type value.${f.name}
+        ) (hoasTy.fields or [])
+
+    else if t == "maybe" then
+      if value == null then []
+      else validateValue path hoasTy.inner value
+
+    else if t == "variant" then
+      if !(builtins.isAttrs value && value ? _tag && value ? value)
+      then [{ inherit path; msg = "expected { _tag; value; }"; }]
+      else
+        let
+          branches = hoasTy.branches;
+          matching = builtins.filter (b: b.tag == value._tag) branches;
+        in
+        if matching == []
+        then [{ inherit path; msg = "unknown variant tag \"${value._tag}\"; expected one of: ${builtins.concatStringsSep ", " (map (b: "\"${b.tag}\"") branches)}"; }]
+        else validateValue "${path}.${value._tag}" (builtins.head matching).type value.value
+
+    else [{ inherit path; msg = "unsupported type tag '${t}'"; }];
 
   # -- Reification: kernel type value → HOAS type --
   #
@@ -499,6 +640,15 @@ in mk {
       an HOAS term tree given its HOAS type. Bool→true_/false_, Int→natLit,
       List→cons chain, Sum→inl/inr, Sigma→pair. Trampolined for large lists.
 
+    ## Structural Validation
+
+    - `validateValue : String → Hoas → NixVal → [{ path; msg; }]` —
+      applicative structural validator. Mirrors `elaborateValue`'s recursion
+      but accumulates all errors instead of throwing on the first.
+      Path accumulator threads structural context (Reader effect).
+      Error list is the free monoid (Writer effect).
+      Empty list ↔ `elaborateValue` would succeed (soundness invariant).
+
     ## Value Extraction
 
     - `extract : Hoas → Val → NixValue` — reverse of `elaborateValue`.
@@ -526,7 +676,7 @@ in mk {
       Throws on type error.
   '';
   value = {
-    inherit elaborateType elaborateValue extract extractInner reifyType verifyAndExtract decide decideType;
+    inherit elaborateType elaborateValue validateValue extract extractInner reifyType verifyAndExtract decide decideType;
   };
   tests = let
     FP = fx.types.primitives;

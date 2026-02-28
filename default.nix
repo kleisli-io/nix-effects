@@ -114,7 +114,7 @@ let
       inherit (types.universe) typeAt level Type_0 Type_1 Type_2 Type_3 Type_4;
 
       # Elaboration bridge (kernel ↔ Nix values)
-      inherit (src.tc.elaborate) elaborateType elaborateValue extract extractInner reifyType verifyAndExtract decide decideType;
+      inherit (src.tc.elaborate) elaborateType elaborateValue validateValue extract extractInner reifyType verifyAndExtract decide decideType;
 
       # Verified combinators (natural syntax for writing type-checked implementations)
       verified = src.tc.verified;

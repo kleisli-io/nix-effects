@@ -23,9 +23,7 @@ ran. No evaluator patches, no external tools. Pure Nix.
 
 This example is contrived — you could enforce the same policy with a few
 `assert` statements. The point is that the kernel normalizes and checks
-it as a proof obligation, not a runtime boolean. The interesting direction
-is dependent NixOS module types where the type of one option depends on
-the value of another; that isn't working yet.
+it as a proof obligation, not a runtime boolean. 
 
 Five string fields: bind address, port, protocol, log level, and name.
 The constraint is cross-field: if `bind` is `0.0.0.0` (public),
@@ -168,40 +166,6 @@ PersonT.check { name = "Alice"; age = 30; }  # true
 `ListOf` sends per-element `typeCheck` effects with indexed context
 (`List[Int][0]`, `List[Int][1]`, ...) so handlers report exactly which
 element failed.
-
-### Value-dependent contracts
-
-Contract specifications whose predicates depend on runtime values,
-structured after Martin-Löf's Pi and Sigma types (1984) and enforced
-as higher-order contracts (Findler & Felleisen 2002).
-
-```nix
-# Sigma (Σ) — dependent pair: the second type depends on the first value
-Sigma { fst = Bool; snd = b: if b then Int else String; }
-# check { fst = true; snd = 42; }    → true
-# check { fst = true; snd = "no"; }  → false
-
-# Pi (Π) — dependent function: the return type depends on the argument
-Pi { domain = String; codomain = _: Int; }
-# Guards: isFunction. Full contract checked at elimination via .checkAt
-
-# DepRecord — syntactic sugar over nested Sigma
-DepRecord [
-  { name = "mode"; type = Bool; }
-  { name = "data"; type = self: if self.mode then Int else String; }
-]
-
-# Vector — length-indexed list (a Pi type: Nat → SizedList)
-v3i = (Vector Int).apply 3;
-v3i.check [ 1 2 3 ]  # true
-v3i.check [ 1 2 ]    # false
-
-# Certified — value paired with witness (predicate passed)
-Certified { base = Int; predicate = x: x > 0; name = "Positive"; }
-```
-
-`Sigma.validate` decomposes checking recursively — per-element blame flows
-through compound types (DepRecord → Sigma → ListOf → each element).
 
 ### Refinement types
 

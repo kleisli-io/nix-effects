@@ -20,10 +20,10 @@ let
     value = f: stream:
       bind stream (step:
         if step._tag == "Done" then pure step
-        else pure { _tag = "More"; head = f step.head; tail = smap.value f step.tail; });
+        else pure { _tag = "More"; head = f step.head; tail = smap f step.tail; });
     tests = {
       "map-done" = {
-        expr = let s = smap.value (x: x * 2) (core.done null);
+        expr = let s = smap (x: x * 2) (core.done null);
                in (bind s (step: pure step._tag)).value;
         expected = "Done";
       };
@@ -42,11 +42,11 @@ let
       bind stream (step:
         if step._tag == "Done" then pure step
         else if pred step.head
-          then pure { _tag = "More"; inherit (step) head; tail = sfilter.value pred step.tail; }
-          else sfilter.value pred step.tail);
+          then pure { _tag = "More"; inherit (step) head; tail = sfilter pred step.tail; }
+          else sfilter pred step.tail);
     tests = {
       "filter-done" = {
-        expr = let s = sfilter.value (x: x > 0) (core.done null);
+        expr = let s = sfilter (x: x > 0) (core.done null);
                in (bind s (step: pure step._tag)).value;
         expected = "Done";
       };
@@ -66,7 +66,7 @@ let
         if step._tag == "Done" then core.more z (core.done null)
         else
           let next = f z step.head;
-          in pure { _tag = "More"; head = z; tail = scanl.value f next step.tail; });
+          in pure { _tag = "More"; head = z; tail = scanl f next step.tail; });
   };
 
 in mk {

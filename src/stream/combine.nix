@@ -19,7 +19,7 @@ let
     value = s1: s2:
       bind s1 (step:
         if step._tag == "Done" then s2
-        else pure { _tag = "More"; inherit (step) head; tail = concat.value step.tail s2; });
+        else pure { _tag = "More"; inherit (step) head; tail = concat step.tail s2; });
   };
 
   interleave = mk {
@@ -36,7 +36,7 @@ let
         else pure {
           _tag = "More";
           inherit (step1) head;
-          tail = interleave.value s2 step1.tail;
+          tail = interleave s2 step1.tail;
         });
   };
 
@@ -57,7 +57,7 @@ let
           else pure {
             _tag = "More";
             head = { fst = step1.head; snd = step2.head; };
-            tail = zip.value step1.tail step2.tail;
+            tail = zip step1.tail step2.tail;
           }));
   };
 
@@ -77,7 +77,7 @@ let
           else pure {
             _tag = "More";
             head = f step1.head step2.head;
-            tail = zipWith.value f step1.tail step2.tail;
+            tail = zipWith f step1.tail step2.tail;
           }));
   };
 

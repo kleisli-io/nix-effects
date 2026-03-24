@@ -54,71 +54,71 @@ let
       "type0-accepts-level0-type" = {
         expr =
           let IntType = mkType { name = "Int"; kernelType = H.int_; };
-          in check (typeAt.value 0) IntType;
+          in check (typeAt 0) IntType;
         expected = true;
       };
       "type0-rejects-itself" = {
-        expr = check (typeAt.value 0) (typeAt.value 0);
+        expr = check (typeAt 0) (typeAt 0);
         expected = false;
       };
       "type1-accepts-type0" = {
-        expr = check (typeAt.value 1) (typeAt.value 0);
+        expr = check (typeAt 1) (typeAt 0);
         expected = true;
       };
       "no-self-membership" = {
-        expr = check (typeAt.value 3) (typeAt.value 3);
+        expr = check (typeAt 3) (typeAt 3);
         expected = false;
       };
       "cumulative-type1-accepts-level0" = {
         expr =
           let IntType = mkType { name = "Int"; kernelType = H.int_; };
-          in check (typeAt.value 1) IntType;
+          in check (typeAt 1) IntType;
         expected = true;
       };
       "has-kernel" = {
-        expr = (typeAt.value 0) ? _kernel;
+        expr = (typeAt 0) ? _kernel;
         expected = true;
       };
       "has-prove" = {
-        expr = (typeAt.value 0) ? prove;
+        expr = (typeAt 0) ? prove;
         expected = true;
       };
       "prove-accepts-nat-in-U0" = {
-        expr = (typeAt.value 0).prove H.nat;
+        expr = (typeAt 0).prove H.nat;
         expected = true;
       };
       "prove-accepts-bool-in-U0" = {
-        expr = (typeAt.value 0).prove H.bool;
+        expr = (typeAt 0).prove H.bool;
         expected = true;
       };
       "no-kernelCheck" = {
         # Types-as-values can't be elaborated
-        expr = (typeAt.value 0) ? kernelCheck;
+        expr = (typeAt 0) ? kernelCheck;
         expected = false;
       };
     };
   };
 
-  Type_0 = typeAt.value 0;
-  Type_1 = typeAt.value 1;
-  Type_2 = typeAt.value 2;
-  Type_3 = typeAt.value 3;
-  Type_4 = typeAt.value 4;
+  Type_0 = typeAt 0;
+  Type_1 = typeAt 1;
+  Type_2 = typeAt 2;
+  Type_3 = typeAt 3;
+  Type_4 = typeAt 4;
 
   level = mk {
     doc = "Get the universe level of a type.";
     value = type: type.universe;
     tests = {
       "level0-for-primitive" = {
-        expr = level.value (mkType { name = "Int"; kernelType = H.int_; });
+        expr = level (mkType { name = "Int"; kernelType = H.int_; });
         expected = 0;
       };
       "level1-for-type0" = {
-        expr = level.value Type_0;
+        expr = level Type_0;
         expected = 1;
       };
       "level2-for-type1" = {
-        expr = level.value Type_1;
+        expr = level Type_1;
         expected = 2;
       };
     };

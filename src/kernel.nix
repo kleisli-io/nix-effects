@@ -22,11 +22,11 @@ let
     value = value: { _tag = "Pure"; inherit value; };
     tests = {
       "creates-pure" = {
-        expr = (pure.value 42)._tag;
+        expr = (pure 42)._tag;
         expected = "Pure";
       };
       "stores-value" = {
-        expr = (pure.value 42).value;
+        expr = (pure 42).value;
         expected = 42;
       };
     };
@@ -41,7 +41,7 @@ let
     };
     tests = {
       "creates-impure" = {
-        expr = (impure.value { name = "test"; param = null; } (queue.singleton (x: pure.value x)))._tag;
+        expr = (impure { name = "test"; param = null; } (queue.singleton (x: pure x)))._tag;
         expected = "Impure";
       };
     };
@@ -58,15 +58,15 @@ let
     };
     tests = {
       "creates-impure-with-effect" = {
-        expr = (send.value "get" null).effect.name;
+        expr = (send "get" null).effect.name;
         expected = "get";
       };
       "queue-applied-returns-pure" = {
-        expr = (queue.qApp (send.value "get" null).queue 42)._tag;
+        expr = (queue.qApp (send "get" null).queue 42)._tag;
         expected = "Pure";
       };
       "queue-applied-passes-value" = {
-        expr = (queue.qApp (send.value "get" null).queue 42).value;
+        expr = (queue.qApp (send "get" null).queue 42).value;
         expected = 42;
       };
     };
@@ -94,17 +94,17 @@ let
       };
     tests = {
       "pure-bind-applies-f" = {
-        expr = (bind.value (pure.value 21) (x: pure.value (x * 2))).value;
+        expr = (bind (pure 21) (x: pure (x * 2))).value;
         expected = 42;
       };
       "impure-bind-preserves-effect" = {
-        expr = (bind.value (send.value "get" null) (x: pure.value x)).effect.name;
+        expr = (bind (send "get" null) (x: pure x)).effect.name;
         expected = "get";
       };
       "impure-bind-chains-via-queue" = {
         expr =
           let
-            comp = bind.value (send.value "get" null) (x: pure.value (x + 1));
+            comp = bind (send "get" null) (x: pure (x + 1));
           in (queue.qApp comp.queue 10).value;
         expected = 11;
       };
@@ -113,10 +113,10 @@ let
 
   mapComp = mk {
     doc = "Map a function over the result of a computation (Functor instance).";
-    value = f: comp: bind.value comp (x: pure.value (f x));
+    value = f: comp: bind comp (x: pure (f x));
     tests = {
       "maps-pure" = {
-        expr = (mapComp.value (x: x * 2) (pure.value 21)).value;
+        expr = (mapComp (x: x * 2) (pure 21)).value;
         expected = 42;
       };
     };
@@ -128,12 +128,12 @@ let
     doc = "Sequence a list of computations, threading state via bind. Returns the last result.";
     value = comps:
       builtins.foldl'
-        (acc: comp: bind.value acc (_: comp))
-        (pure.value null)
+        (acc: comp: bind acc (_: comp))
+        (pure null)
         comps;
     tests = {
       "sequences-empty" = {
-        expr = (seq.value [])._tag;
+        expr = (seq [])._tag;
         expected = "Pure";
       };
     };

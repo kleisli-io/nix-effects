@@ -40,7 +40,7 @@ let
       "accepts-matching-record" = {
         expr =
           let
-            PersonT = Record.value {
+            PersonT = Record {
               name = FP.String;
               age = FP.Int;
             };
@@ -50,7 +50,7 @@ let
       "rejects-missing-field" = {
         expr =
           let
-            PersonT = Record.value {
+            PersonT = Record {
               name = FP.String;
               age = FP.Int;
             };
@@ -60,7 +60,7 @@ let
       "rejects-wrong-type" = {
         expr =
           let
-            PersonT = Record.value {
+            PersonT = Record {
               name = FP.String;
               age = FP.Int;
             };
@@ -70,14 +70,14 @@ let
       "allows-extra-fields" = {
         expr =
           let
-            PersonT = Record.value {
+            PersonT = Record {
               name = FP.String;
             };
           in check PersonT { name = "Alice"; age = 30; };
         expected = true;
       };
       "has-kernelCheck" = {
-        expr = (Record.value { n = FP.Int; b = FP.Bool; }) ? kernelCheck;
+        expr = (Record { n = FP.Int; b = FP.Bool; }) ? kernelCheck;
         expected = true;
       };
     };
@@ -126,32 +126,32 @@ let
     tests = let FP = fx.types.primitives; in {
       "accepts-matching-list" = {
         expr =
-          let intList = ListOf.value FP.Int;
+          let intList = ListOf FP.Int;
           in check intList [1 2 3];
         expected = true;
       };
       "rejects-mixed-list" = {
         expr =
-          let intList = ListOf.value FP.Int;
+          let intList = ListOf FP.Int;
           in check intList [1 "two" 3];
         expected = false;
       };
       "accepts-empty-list" = {
         expr =
-          let intList = ListOf.value FP.Int;
+          let intList = ListOf FP.Int;
           in check intList [];
         expected = true;
       };
       "kernel-propagates" = {
-        expr = (ListOf.value FP.Bool) ? kernelCheck;
+        expr = (ListOf FP.Bool) ? kernelCheck;
         expected = true;
       };
       "kernelCheck-accepts" = {
-        expr = (ListOf.value FP.Bool).kernelCheck [true false];
+        expr = (ListOf FP.Bool).kernelCheck [true false];
         expected = true;
       };
       "kernelCheck-rejects-bad-elem" = {
-        expr = (ListOf.value FP.Bool).kernelCheck [42];
+        expr = (ListOf FP.Bool).kernelCheck [42];
         expected = false;
       };
     };
@@ -172,19 +172,19 @@ let
       };
     tests = let FP = fx.types.primitives; in {
       "accepts-null" = {
-        expr = check (Maybe.value FP.Int) null;
+        expr = check (Maybe FP.Int) null;
         expected = true;
       };
       "accepts-value" = {
-        expr = check (Maybe.value FP.Int) 42;
+        expr = check (Maybe FP.Int) 42;
         expected = true;
       };
       "rejects-wrong-type" = {
-        expr = check (Maybe.value FP.Int) "hello";
+        expr = check (Maybe FP.Int) "hello";
         expected = false;
       };
       "has-kernelCheck" = {
-        expr = (Maybe.value FP.Int) ? kernelCheck;
+        expr = (Maybe FP.Int) ? kernelCheck;
         expected = true;
       };
     };
@@ -215,32 +215,32 @@ let
     tests = let FP = fx.types.primitives; in {
       "accepts-left" = {
         expr =
-          let e = Either.value FP.String FP.Int;
+          let e = Either FP.String FP.Int;
           in check e { _tag = "Left"; value = "error"; };
         expected = true;
       };
       "accepts-right" = {
         expr =
-          let e = Either.value FP.String FP.Int;
+          let e = Either FP.String FP.Int;
           in check e { _tag = "Right"; value = 42; };
         expected = true;
       };
       "rejects-wrong-tag" = {
         expr =
-          let e = Either.value FP.String FP.Int;
+          let e = Either FP.String FP.Int;
           in check e { _tag = "Other"; value = 42; };
         expected = false;
       };
       "kernel-propagates" = {
-        expr = (Either.value FP.Int FP.Bool) ? kernelCheck;
+        expr = (Either FP.Int FP.Bool) ? kernelCheck;
         expected = true;
       };
       "kernelCheck-accepts-left" = {
-        expr = (Either.value FP.Int FP.Bool).kernelCheck { _tag = "Left"; value = 42; };
+        expr = (Either FP.Int FP.Bool).kernelCheck { _tag = "Left"; value = 42; };
         expected = true;
       };
       "kernelCheck-rejects-wrong-val" = {
-        expr = (Either.value FP.Int FP.Bool).kernelCheck { _tag = "Left"; value = true; };
+        expr = (Either FP.Int FP.Bool).kernelCheck { _tag = "Left"; value = true; };
         expected = false;
       };
     };
@@ -272,7 +272,7 @@ let
       "accepts-valid-variant" = {
         expr =
           let
-            Shape = Variant.value {
+            Shape = Variant {
               circle = FP.Float;
               rect = FP.Attrs;
             };
@@ -282,14 +282,14 @@ let
       "rejects-unknown-tag" = {
         expr =
           let
-            Shape = Variant.value {
+            Shape = Variant {
               circle = FP.Float;
             };
           in check Shape { _tag = "triangle"; value = null; };
         expected = false;
       };
       "has-kernelCheck" = {
-        expr = (Variant.value { a = FP.Int; b = FP.Bool; }) ? kernelCheck;
+        expr = (Variant { a = FP.Int; b = FP.Bool; }) ? kernelCheck;
         expected = true;
       };
     };

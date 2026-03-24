@@ -31,11 +31,11 @@ let
     };
     tests = {
       "accepts-minimal-step" = {
-        expr = check BuildStep.value { name = "test"; run = "echo hello"; };
+        expr = check BuildStep { name = "test"; run = "echo hello"; };
         expected = true;
       };
       "accepts-full-step" = {
-        expr = check BuildStep.value {
+        expr = check BuildStep {
           name = "compile";
           description = "Compile CSS";
           tools = [];
@@ -46,27 +46,27 @@ let
         expected = true;
       };
       "allows-extra-fields" = {
-        expr = check BuildStep.value { name = "test"; run = "echo"; custom = 42; };
+        expr = check BuildStep { name = "test"; run = "echo"; custom = 42; };
         expected = true;
       };
       "rejects-missing-name" = {
-        expr = check BuildStep.value { run = "echo hello"; };
+        expr = check BuildStep { run = "echo hello"; };
         expected = false;
       };
       "rejects-missing-run" = {
-        expr = check BuildStep.value { name = "test"; };
+        expr = check BuildStep { name = "test"; };
         expected = false;
       };
       "rejects-non-string-name" = {
-        expr = check BuildStep.value { name = 42; run = "echo hello"; };
+        expr = check BuildStep { name = 42; run = "echo hello"; };
         expected = false;
       };
       "rejects-empty-name" = {
-        expr = check BuildStep.value { name = ""; run = "echo hello"; };
+        expr = check BuildStep { name = ""; run = "echo hello"; };
         expected = false;
       };
       "rejects-non-attrs" = {
-        expr = check BuildStep.value "not-an-attrset";
+        expr = check BuildStep "not-an-attrset";
         expected = false;
       };
     };
@@ -85,14 +85,14 @@ let
     };
     tests = {
       "accepts-minimal-plan" = {
-        expr = check BuildPlan.value {
+        expr = check BuildPlan {
           name = "my-build";
           steps = [{ name = "step1"; run = "echo hello"; }];
         };
         expected = true;
       };
       "accepts-full-plan" = {
-        expr = check BuildPlan.value {
+        expr = check BuildPlan {
           name = "css-pipeline";
           steps = [
             { name = "filter"; run = "grep -v docstring"; }
@@ -104,30 +104,30 @@ let
         expected = true;
       };
       "accepts-empty-steps" = {
-        expr = check BuildPlan.value { name = "empty"; steps = []; };
+        expr = check BuildPlan { name = "empty"; steps = []; };
         expected = true;
       };
       "rejects-missing-name" = {
-        expr = check BuildPlan.value { steps = [{ name = "s"; run = "echo"; }]; };
+        expr = check BuildPlan { steps = [{ name = "s"; run = "echo"; }]; };
         expected = false;
       };
       "rejects-missing-steps" = {
-        expr = check BuildPlan.value { name = "build"; };
+        expr = check BuildPlan { name = "build"; };
         expected = false;
       };
       "rejects-invalid-step-in-plan" = {
-        expr = check BuildPlan.value {
+        expr = check BuildPlan {
           name = "build";
           steps = [{ name = "s"; }];
         };
         expected = false;
       };
       "rejects-non-list-steps" = {
-        expr = check BuildPlan.value { name = "build"; steps = "not-a-list"; };
+        expr = check BuildPlan { name = "build"; steps = "not-a-list"; };
         expected = false;
       };
       "rejects-non-attrs" = {
-        expr = check BuildPlan.value 42;
+        expr = check BuildPlan 42;
         expected = false;
       };
     };

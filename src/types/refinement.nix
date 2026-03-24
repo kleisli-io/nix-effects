@@ -33,7 +33,7 @@ let
         expr =
           let
             IntType = mkType { name = "Int"; kernelType = H.int_; };
-            Nat = refined.value "Nat" IntType (x: x >= 0);
+            Nat = refined "Nat" IntType (x: x >= 0);
           in check Nat 5;
         expected = true;
       };
@@ -41,7 +41,7 @@ let
         expr =
           let
             IntType = mkType { name = "Int"; kernelType = H.int_; };
-            Nat = refined.value "Nat" IntType (x: x >= 0);
+            Nat = refined "Nat" IntType (x: x >= 0);
           in check Nat (-1);
         expected = false;
       };
@@ -54,9 +54,9 @@ let
     doc = "Combine predicates with conjunction: (allOf [p1 p2]) v = p1 v && p2 v.";
     value = preds: v: builtins.all (p: p v) preds;
     tests = {
-      "all-true" = { expr = allOf.value [(x: x > 0) (x: x < 10)] 5; expected = true; };
-      "one-false" = { expr = allOf.value [(x: x > 0) (x: x < 10)] 15; expected = false; };
-      "empty-is-true" = { expr = allOf.value [] 42; expected = true; };
+      "all-true" = { expr = allOf [(x: x > 0) (x: x < 10)] 5; expected = true; };
+      "one-false" = { expr = allOf [(x: x > 0) (x: x < 10)] 15; expected = false; };
+      "empty-is-true" = { expr = allOf [] 42; expected = true; };
     };
   };
 
@@ -64,9 +64,9 @@ let
     doc = "Combine predicates with disjunction: (anyOf [p1 p2]) v = p1 v || p2 v.";
     value = preds: v: builtins.foldl' (acc: p: acc || p v) false preds;
     tests = {
-      "one-true" = { expr = anyOf.value [(x: x > 10) (x: x < 0)] (-5); expected = true; };
-      "none-true" = { expr = anyOf.value [(x: x > 10) (x: x < 0)] 5; expected = false; };
-      "empty-is-false" = { expr = anyOf.value [] 42; expected = false; };
+      "one-true" = { expr = anyOf [(x: x > 10) (x: x < 0)] (-5); expected = true; };
+      "none-true" = { expr = anyOf [(x: x > 10) (x: x < 0)] 5; expected = false; };
+      "empty-is-false" = { expr = anyOf [] 42; expected = false; };
     };
   };
 
@@ -74,8 +74,8 @@ let
     doc = "Negate a predicate: (negate p) v = !(p v).";
     value = p: v: !(p v);
     tests = {
-      "negates-true" = { expr = negate.value (x: x > 0) (-1); expected = true; };
-      "negates-false" = { expr = negate.value (x: x > 0) 1; expected = false; };
+      "negates-true" = { expr = negate (x: x > 0) (-1); expected = true; };
+      "negates-false" = { expr = negate (x: x > 0) 1; expected = false; };
     };
   };
 
@@ -85,8 +85,8 @@ let
     doc = "Predicate: value > 0.";
     value = x: x > 0;
     tests = {
-      "accepts-positive" = { expr = positive.value 5; expected = true; };
-      "rejects-zero" = { expr = positive.value 0; expected = false; };
+      "accepts-positive" = { expr = positive 5; expected = true; };
+      "rejects-zero" = { expr = positive 0; expected = false; };
     };
   };
 
@@ -94,8 +94,8 @@ let
     doc = "Predicate: value >= 0.";
     value = x: x >= 0;
     tests = {
-      "accepts-zero" = { expr = nonNegative.value 0; expected = true; };
-      "rejects-negative" = { expr = nonNegative.value (-1); expected = false; };
+      "accepts-zero" = { expr = nonNegative 0; expected = true; };
+      "rejects-negative" = { expr = nonNegative (-1); expected = false; };
     };
   };
 
@@ -103,9 +103,9 @@ let
     doc = "Predicate factory: (inRange lo hi) v = lo <= v <= hi.";
     value = lo: hi: x: x >= lo && x <= hi;
     tests = {
-      "in-range" = { expr = inRange.value 1 10 5; expected = true; };
-      "out-of-range" = { expr = inRange.value 1 10 15; expected = false; };
-      "at-boundary" = { expr = inRange.value 1 10 10; expected = true; };
+      "in-range" = { expr = inRange 1 10 5; expected = true; };
+      "out-of-range" = { expr = inRange 1 10 15; expected = false; };
+      "at-boundary" = { expr = inRange 1 10 10; expected = true; };
     };
   };
 
@@ -116,10 +116,10 @@ let
       else if builtins.isList x then builtins.length x > 0
       else false;
     tests = {
-      "non-empty-string" = { expr = nonEmpty.value "hello"; expected = true; };
-      "empty-string" = { expr = nonEmpty.value ""; expected = false; };
-      "non-empty-list" = { expr = nonEmpty.value [1]; expected = true; };
-      "empty-list" = { expr = nonEmpty.value []; expected = false; };
+      "non-empty-string" = { expr = nonEmpty "hello"; expected = true; };
+      "empty-string" = { expr = nonEmpty ""; expected = false; };
+      "non-empty-list" = { expr = nonEmpty [1]; expected = true; };
+      "empty-list" = { expr = nonEmpty []; expected = false; };
     };
   };
 
@@ -128,8 +128,8 @@ let
     value = pattern: s:
       builtins.isString s && builtins.match pattern s != null;
     tests = {
-      "matches" = { expr = matching.value "[a-z]+" "hello"; expected = true; };
-      "no-match" = { expr = matching.value "[a-z]+" "123"; expected = false; };
+      "matches" = { expr = matching "[a-z]+" "hello"; expected = true; };
+      "no-match" = { expr = matching "[a-z]+" "123"; expected = false; };
     };
   };
 

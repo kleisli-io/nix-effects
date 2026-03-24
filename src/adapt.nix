@@ -51,7 +51,7 @@ let
         expr =
           let
             inner = { param, state }: { resume = null; state = state + param; };
-            outer = adapt.value {
+            outer = adapt {
               get = s: s.counter;
               set = s: c: s // { counter = c; };
             } inner;
@@ -63,7 +63,7 @@ let
         expr =
           let
             inner = { param, state }: { resume = null; state = state + param; };
-            outer = adapt.value {
+            outer = adapt {
               get = s: s.counter;
               set = s: c: s // { counter = c; };
             } inner;
@@ -75,7 +75,7 @@ let
         expr =
           let
             inner = { param, state }: { resume = param * 2; inherit state; };
-            outer = adapt.value {
+            outer = adapt {
               get = s: s;
               set = _: s: s;
             } inner;
@@ -87,7 +87,7 @@ let
         expr =
           let
             inner = { param, state }: { abort = "stopped"; inherit state; };
-            outer = adapt.value {
+            outer = adapt {
               get = s: s.x;
               set = s: x: s // { inherit x; };
             } inner;
@@ -112,7 +112,7 @@ let
       ```
     '';
     value = lens: handlers:
-      builtins.mapAttrs (_: handler: adapt.value lens handler) handlers;
+      builtins.mapAttrs (_: handler: adapt lens handler) handlers;
     tests = {
       "adapts-all-handlers" = {
         expr =
@@ -121,7 +121,7 @@ let
               inc = { param, state }: { resume = null; state = state + param; };
               get = { param, state }: { resume = state; inherit state; };
             };
-            adapted = adaptHandlers.value {
+            adapted = adaptHandlers {
               get = s: s.n;
               set = s: n: s // { inherit n; };
             } handlers;

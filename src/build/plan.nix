@@ -68,7 +68,7 @@ let
     tests = {
       "all-valid-steps" = {
         expr =
-          let r = plan.value {
+          let r = plan {
             name = "test";
             steps = [
               { name = "a"; run = "echo a"; }
@@ -80,7 +80,7 @@ let
       };
       "collects-error-for-invalid-step" = {
         expr =
-          let r = plan.value {
+          let r = plan {
             name = "test";
             steps = [
               { name = "good"; run = "echo ok"; }
@@ -92,7 +92,7 @@ let
       };
       "filters-conditional-step" = {
         expr =
-          let r = plan.value {
+          let r = plan {
             name = "test";
             context = { mode = "dev"; };
             steps = [
@@ -109,7 +109,7 @@ let
       };
       "keeps-step-when-condition-met" = {
         expr =
-          let r = plan.value {
+          let r = plan {
             name = "test";
             context = { mode = "production"; };
             steps = [
@@ -122,7 +122,7 @@ let
       };
       "preserves-name-and-sources" = {
         expr =
-          let r = plan.value {
+          let r = plan {
             name = "my-css";
             sources = { src = /tmp; };
             steps = [{ name = "s"; run = "e"; }];
@@ -132,7 +132,7 @@ let
       };
       "empty-steps" = {
         expr =
-          let r = plan.value { name = "empty"; steps = []; };
+          let r = plan { name = "empty"; steps = []; };
           in { stepCount = builtins.length r.plan.steps; errors = r.errors; };
         expected = { stepCount = 0; errors = []; };
       };

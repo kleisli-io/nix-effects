@@ -25,11 +25,11 @@ let
     value = v: pure { _tag = "Done"; value = v; };
     tests = {
       "done-is-pure" = {
-        expr = (done.value null)._tag;
+        expr = (done null)._tag;
         expected = "Pure";
       };
       "done-value-tag" = {
-        expr = (done.value null).value._tag;
+        expr = (done null).value._tag;
         expected = "Done";
       };
     };
@@ -46,11 +46,11 @@ let
     value = head: tail: pure { _tag = "More"; inherit head tail; };
     tests = {
       "more-is-pure" = {
-        expr = (more.value 1 (done.value null))._tag;
+        expr = (more 1 (done null))._tag;
         expected = "Pure";
       };
       "more-head" = {
-        expr = (more.value 42 (done.value null)).value.head;
+        expr = (more 42 (done null)).value.head;
         expected = 42;
       };
     };
@@ -65,15 +65,15 @@ let
       ```
     '';
     value = xs:
-      if xs == [] then done.value null
-      else more.value (builtins.head xs) (fromList.value (builtins.tail xs));
+      if xs == [] then done null
+      else more (builtins.head xs) (fromList (builtins.tail xs));
     tests = {
       "empty-list-is-done" = {
-        expr = (fromList.value []).value._tag;
+        expr = (fromList []).value._tag;
         expected = "Done";
       };
       "singleton-head" = {
-        expr = (fromList.value [ 42 ]).value.head;
+        expr = (fromList [ 42 ]).value.head;
         expected = 42;
       };
     };
@@ -93,10 +93,10 @@ let
       iterate : (a -> a) -> a -> Computation (Step r a)
       ```
     '';
-    value = f: x: more.value x (iterate.value f (f x));
+    value = f: x: more x (iterate f (f x));
     tests = {
       "iterate-first" = {
-        expr = (iterate.value (x: x + 1) 0).value.head;
+        expr = (iterate (x: x + 1) 0).value.head;
         expected = 0;
       };
     };
@@ -111,15 +111,15 @@ let
       ```
     '';
     value = start: end:
-      if start >= end then done.value null
-      else more.value start (range.value (start + 1) end);
+      if start >= end then done null
+      else more start (range (start + 1) end);
     tests = {
       "range-empty" = {
-        expr = (range.value 5 5).value._tag;
+        expr = (range 5 5).value._tag;
         expected = "Done";
       };
       "range-first" = {
-        expr = (range.value 0 3).value.head;
+        expr = (range 0 3).value.head;
         expected = 0;
       };
     };
@@ -134,15 +134,15 @@ let
       ```
     '';
     value = n: x:
-      if n <= 0 then done.value null
-      else more.value x (replicate.value (n - 1) x);
+      if n <= 0 then done null
+      else more x (replicate (n - 1) x);
     tests = {
       "replicate-zero" = {
-        expr = (replicate.value 0 "x").value._tag;
+        expr = (replicate 0 "x").value._tag;
         expected = "Done";
       };
       "replicate-head" = {
-        expr = (replicate.value 3 "x").value.head;
+        expr = (replicate 3 "x").value.head;
         expected = "x";
       };
     };

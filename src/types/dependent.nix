@@ -64,7 +64,7 @@
 #   H.sigma "x" H.nat (x: H.vec x H.bool)      — dependent pair
 #
 # Kernel types flow DOWN from explicit construction:
-#   Pi.value { domain; codomain; universe; kernelType = H.forall ...; }
+#   Pi { domain; codomain; universe; kernelType = H.forall ...; }
 # The elaborator (src/tc/elaborate.nix) may compute kernelType as a
 # Layer 2 convenience — if wrong, the kernel catches it.
 #
@@ -79,14 +79,14 @@
 # == MLTT rule mapping ==
 #
 # Π(x:A).B(x) — Dependent function (Curry-Howard: ∀)
-#   Formation:    Pi.value { domain, codomain, universe, kernelType? }
+#   Formation:    Pi { domain, codomain, universe, kernelType? }
 #   Introduction: .check (isFunction), .validate (effectful)
 #   Elimination:  .apply (pure), .checkAt (deferred)
 #   Computation:  β-reduction (Nix evaluation)
 #   Kernel:       .prove (proof term), ._kernel (Tm)
 #
 # Σ(x:A).B(x) — Dependent pair (Curry-Howard: ∃)
-#   Formation:    Sigma.value { fst, snd, universe, kernelType? }
+#   Formation:    Sigma { fst, snd, universe, kernelType? }
 #   Introduction: .check (exact guard), .validate (decomposed for blame)
 #   Elimination:  .proj1, .proj2
 #   Computation:  π₁(a,b) ≡ a, π₂(a,b) ≡ b
@@ -163,7 +163,7 @@ let
       == MLTT rule mapping ==
 
       ```
-      Formation:          Pi.value { domain, codomain, universe }
+      Formation:          Pi { domain, codomain, universe }
       Introduction check: .check (guard: isFunction)
       Introduction verify: .validate (effectful guard, auto-derived)
       Elimination:        .apply (pure), .checkAt (effectful, deferred contract)
@@ -233,7 +233,7 @@ let
         # produce Π(x:A)→D(f(x)). Requires a witness function f inhabiting
         # this Pi type, because the composed codomain depends on f's output.
         compose = f: other:
-          Pi.value {
+          Pi {
             inherit domain;
             codomain = x: other.codomain (f x);
             universe = other.universe;
@@ -246,7 +246,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            piT = Pi.value { domain = IntT; codomain = _: IntT; universe = 0; };
+            piT = Pi { domain = IntT; codomain = _: IntT; universe = 0; };
           in check piT (x: x + 1);
         expected = true;
       };
@@ -254,7 +254,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            piT = Pi.value { domain = IntT; codomain = _: IntT; universe = 0; };
+            piT = Pi { domain = IntT; codomain = _: IntT; universe = 0; };
           in check piT 42;
         expected = false;
       };
@@ -263,7 +263,7 @@ let
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             StrT = mkType { name = "String"; kernelType = H.string; };
-            piT = Pi.value {
+            piT = Pi {
               domain = IntT;
               codomain = n: if n > 0 then StrT else IntT;
               universe = 0;
@@ -276,7 +276,7 @@ let
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             StrT = mkType { name = "String"; kernelType = H.string; };
-            piT = Pi.value {
+            piT = Pi {
               domain = IntT;
               codomain = n: if n > 0 then StrT else IntT;
               universe = 0;
@@ -288,7 +288,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            piT = Pi.value { domain = IntT; codomain = _: IntT; universe = 0; };
+            piT = Pi { domain = IntT; codomain = _: IntT; universe = 0; };
           in (piT.checkAt (x: x * 2) 21)._tag;
         expected = "Impure";
       };
@@ -296,7 +296,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            piT = Pi.value { domain = IntT; codomain = _: IntT; universe = 0; };
+            piT = Pi { domain = IntT; codomain = _: IntT; universe = 0; };
           in (piT.checkAt (x: x * 2) 21).effect.name;
         expected = "typeCheck";
       };
@@ -304,7 +304,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            piT = Pi.value { domain = IntT; codomain = _: IntT; universe = 0; };
+            piT = Pi { domain = IntT; codomain = _: IntT; universe = 0; };
             comp = piT.checkAt (x: x * 2) 21;
           in comp.effect.param.context;
         expected = "Π domain (Π(Int))";
@@ -315,7 +315,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            piT = Pi.value { domain = IntT; codomain = _: IntT; universe = 0; };
+            piT = Pi { domain = IntT; codomain = _: IntT; universe = 0; };
           in (piT.validate (x: x))._tag;
         expected = "Impure";
       };
@@ -325,7 +325,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            piT = Pi.value { domain = IntT; codomain = _: IntT; universe = 0; };
+            piT = Pi { domain = IntT; codomain = _: IntT; universe = 0; };
             comp = piT.validate (x: x);
           in comp.effect.param.context;
         expected = "Π(Int)";
@@ -336,7 +336,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            piT = Pi.value { domain = IntT; codomain = _: IntT; universe = 0; };
+            piT = Pi { domain = IntT; codomain = _: IntT; universe = 0; };
           in (piT.checkAt 42 5)._tag;
         expected = "Impure";
       };
@@ -344,7 +344,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            piT = Pi.value { domain = IntT; codomain = _: IntT; universe = 0; };
+            piT = Pi { domain = IntT; codomain = _: IntT; universe = 0; };
           in (piT.checkAt 42 5).effect.param.context;
         expected = "Π check (Π(Int))";
       };
@@ -354,8 +354,8 @@ let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             StrT = mkType { name = "String"; kernelType = H.string; };
             BoolT = mkType { name = "Bool"; kernelType = H.bool; };
-            f = Pi.value { domain = IntT; codomain = _: StrT; name = "f"; universe = 0; };
-            g = Pi.value { domain = StrT; codomain = _: BoolT; name = "g"; universe = 0; };
+            f = Pi { domain = IntT; codomain = _: StrT; name = "f"; universe = 0; };
+            g = Pi { domain = StrT; codomain = _: BoolT; name = "g"; universe = 0; };
           in (f.compose toString g).name;
         expected = "compose(f, g)";
       };
@@ -365,8 +365,8 @@ let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             StrT = mkType { name = "String"; kernelType = H.string; };
             BoolT = mkType { name = "Bool"; kernelType = H.bool; };
-            f = Pi.value { domain = IntT; codomain = _: StrT; name = "f"; universe = 0; };
-            g = Pi.value { domain = StrT; codomain = _: BoolT; name = "g"; universe = 0; };
+            f = Pi { domain = IntT; codomain = _: StrT; name = "f"; universe = 0; };
+            g = Pi { domain = StrT; codomain = _: BoolT; name = "g"; universe = 0; };
             composed = f.compose toString g;
           in (composed.apply 42).name;
         expected = "Bool";
@@ -377,7 +377,7 @@ let
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             StrT = mkType { name = "String"; kernelType = H.string; };
-            arrowT = Pi.value {
+            arrowT = Pi {
               domain = IntT;
               codomain = _: StrT;
               name = "Int → String";
@@ -395,7 +395,7 @@ let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             TypeT = mkType { name = "Type"; kernelType = H.u 0; guard = v: builtins.isAttrs v && v ? _tag && v._tag == "Type"; };
             # Int → Type lives in Type_1 (maps values to types)
-            piT = Pi.value { domain = IntT; codomain = _: TypeT; universe = 1; };
+            piT = Pi { domain = IntT; codomain = _: TypeT; universe = 1; };
           in piT.universe;
         expected = 1;
       };
@@ -405,7 +405,7 @@ let
           let
             BoolT = mkType { name = "Bool"; kernelType = H.bool; };
             NatT = mkType { name = "Nat"; kernelType = H.nat; };
-            piT = Pi.value { domain = BoolT; codomain = _: NatT; universe = 0; kernelType = H.forall "x" H.bool (_: H.nat); };
+            piT = Pi { domain = BoolT; codomain = _: NatT; universe = 0; kernelType = H.forall "x" H.bool (_: H.nat); };
           in piT ? _kernel && piT ? prove;
         expected = true;
       };
@@ -414,7 +414,7 @@ let
         expr =
           let
             BoolT = mkType { name = "Bool"; kernelType = H.bool; };
-            piT = Pi.value { domain = BoolT; codomain = _: BoolT; universe = 0; kernelType = H.forall "x" H.bool (_: H.bool); };
+            piT = Pi { domain = BoolT; codomain = _: BoolT; universe = 0; kernelType = H.forall "x" H.bool (_: H.bool); };
           in piT ? kernelCheck;
         expected = true;
       };
@@ -424,7 +424,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            piT = Pi.value { domain = IntT; codomain = n: if n > 0 then IntT else IntT; universe = 0; };
+            piT = Pi { domain = IntT; codomain = n: if n > 0 then IntT else IntT; universe = 0; };
           in piT ? _kernel;
         expected = false;
       };
@@ -485,7 +485,7 @@ let
       == MLTT rule mapping ==
 
       ```
-      Formation:    Sigma.value { fst, snd, universe }
+      Formation:    Sigma { fst, snd, universe }
       Introduction: .check (exact guard), .validate (effectful, decomposed)
       Elimination:  .proj1 (π₁), .proj2 (π₂)
       Computation:  π₁(a,b) ≡ a, π₂(a,b) ≡ b
@@ -595,7 +595,7 @@ let
         # Composition law (contravariant):
         #   pullback (f∘g) (h∘k) = pullback g k >>> pullback f h
         # Note the REVERSED order vs. covariant bimap.
-        pullback = f: g: Sigma.value {
+        pullback = f: g: Sigma {
           fst = mkType {
             name = "${fst.name}'";
             kernelType = if fst ? _kernel then fst._kernel else H.any;
@@ -619,7 +619,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            sigT = Sigma.value {
+            sigT = Sigma {
               fst = IntT;
               snd = n: mkType {
                 name = "List[${toString n}]";
@@ -635,7 +635,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            sigT = Sigma.value {
+            sigT = Sigma {
               fst = IntT;
               snd = n: mkType {
                 name = "List[${toString n}]";
@@ -651,7 +651,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            sigT = Sigma.value {
+            sigT = Sigma {
               fst = IntT;
               snd = _: IntT;
               universe = 0;
@@ -663,7 +663,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            sigT = Sigma.value { fst = IntT; snd = _: IntT; universe = 0; };
+            sigT = Sigma { fst = IntT; snd = _: IntT; universe = 0; };
           in sigT.proj1 { fst = 42; snd = 0; };
         expected = 42;
       };
@@ -671,7 +671,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            sigT = Sigma.value { fst = IntT; snd = _: IntT; universe = 0; };
+            sigT = Sigma { fst = IntT; snd = _: IntT; universe = 0; };
           in sigT.proj2 { fst = 0; snd = 42; };
         expected = 42;
       };
@@ -679,7 +679,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            sigT = Sigma.value { fst = IntT; snd = _: IntT; universe = 0; };
+            sigT = Sigma { fst = IntT; snd = _: IntT; universe = 0; };
           in (sigT.validate { fst = 1; snd = 2; })._tag;
         expected = "Impure";
       };
@@ -687,7 +687,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            sigT = Sigma.value { fst = IntT; snd = _: IntT; universe = 0; };
+            sigT = Sigma { fst = IntT; snd = _: IntT; universe = 0; };
           in (sigT.validate { fst = 1; snd = 2; }).effect.name;
         expected = "typeCheck";
       };
@@ -697,7 +697,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            sigT = Sigma.value { fst = IntT; snd = _: IntT; universe = 0; };
+            sigT = Sigma { fst = IntT; snd = _: IntT; universe = 0; };
           in (sigT.validate 42)._tag;
         expected = "Impure";
       };
@@ -705,7 +705,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            sigT = Sigma.value { fst = IntT; snd = _: IntT; universe = 0; };
+            sigT = Sigma { fst = IntT; snd = _: IntT; universe = 0; };
           in (sigT.validate { x = 1; })._tag;
         expected = "Impure";
       };
@@ -713,7 +713,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            sigT = Sigma.value { fst = IntT; snd = _: IntT; universe = 0; };
+            sigT = Sigma { fst = IntT; snd = _: IntT; universe = 0; };
           in (sigT.pairE 1 2)._tag;
         expected = "Impure";
       };
@@ -721,7 +721,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            sigT = Sigma.value { fst = IntT; snd = _: IntT; universe = 0; };
+            sigT = Sigma { fst = IntT; snd = _: IntT; universe = 0; };
             add = sigT.curry (p: p.fst + p.snd);
             addPair = sigT.uncurry (a: b: a + b);
           in { curried = add 3 4; uncurried = addPair { fst = 3; snd = 4; }; };
@@ -733,7 +733,7 @@ let
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             StrT = mkType { name = "String"; kernelType = H.string; };
-            prodT = Sigma.value {
+            prodT = Sigma {
               fst = IntT;
               snd = _: StrT;
               name = "Int × String";
@@ -746,7 +746,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            sigT = Sigma.value { fst = IntT; snd = _: IntT; name = "IntPair"; universe = 0; };
+            sigT = Sigma { fst = IntT; snd = _: IntT; name = "IntPair"; universe = 0; };
           in (sigT.pullback (x: x) (x: x)).name;
         expected = "pullback(IntPair)";
       };
@@ -754,7 +754,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            sigT = Sigma.value { fst = IntT; snd = _: IntT; universe = 0; };
+            sigT = Sigma { fst = IntT; snd = _: IntT; universe = 0; };
           in sigT ? pullback;
         expected = true;
       };
@@ -764,7 +764,7 @@ let
           let
             BoolT = mkType { name = "Bool"; kernelType = H.bool; };
             NatT = mkType { name = "Nat"; kernelType = H.nat; };
-            sigT = Sigma.value { fst = NatT; snd = _: BoolT; universe = 0; kernelType = H.sigma "x" H.nat (_: H.bool); };
+            sigT = Sigma { fst = NatT; snd = _: BoolT; universe = 0; kernelType = H.sigma "x" H.nat (_: H.bool); };
           in sigT ? kernelCheck && sigT ? prove;
         expected = true;
       };
@@ -773,7 +773,7 @@ let
           let
             NatT = mkType { name = "Nat"; kernelType = H.nat; };
             BoolT = mkType { name = "Bool"; kernelType = H.bool; };
-            sigT = Sigma.value { fst = NatT; snd = _: BoolT; universe = 0; kernelType = H.sigma "x" H.nat (_: H.bool); };
+            sigT = Sigma { fst = NatT; snd = _: BoolT; universe = 0; kernelType = H.sigma "x" H.nat (_: H.bool); };
           in sigT.kernelCheck { fst = 0; snd = true; };
         expected = true;
       };
@@ -782,7 +782,7 @@ let
           let
             NatT = mkType { name = "Nat"; kernelType = H.nat; };
             BoolT = mkType { name = "Bool"; kernelType = H.bool; };
-            sigT = Sigma.value { fst = NatT; snd = _: BoolT; universe = 0; kernelType = H.sigma "x" H.nat (_: H.bool); };
+            sigT = Sigma { fst = NatT; snd = _: BoolT; universe = 0; kernelType = H.sigma "x" H.nat (_: H.bool); };
           in sigT.kernelCheck { fst = true; snd = true; };
         expected = false;
       };
@@ -792,7 +792,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            sigT = Sigma.value {
+            sigT = Sigma {
               fst = IntT;
               snd = n: mkType { name = "L${toString n}"; kernelType = H.any; guard = v: builtins.isList v && builtins.length v == n; };
               universe = 0;
@@ -843,7 +843,7 @@ let
       an already-formed pair.
     '';
     value = { base, predicate, name ? "Certified(${base.name})" }:
-      Sigma.value {
+      Sigma {
         fst = base;
         snd = v: mkType {
           name = "Proof(${name})";
@@ -893,7 +893,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            PosInt = Certified.value {
+            PosInt = Certified {
               base = IntT;
               predicate = x: x > 0;
               name = "PosInt";
@@ -905,7 +905,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            PosInt = Certified.value {
+            PosInt = Certified {
               base = IntT;
               predicate = x: x > 0;
               name = "PosInt";
@@ -917,7 +917,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            PosInt = Certified.value {
+            PosInt = Certified {
               base = IntT;
               predicate = x: x > 0;
               name = "PosInt";
@@ -929,7 +929,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            PosInt = Certified.value {
+            PosInt = Certified {
               base = IntT;
               predicate = x: x > 0;
               name = "PosInt";
@@ -941,7 +941,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            PosInt = Certified.value {
+            PosInt = Certified {
               base = IntT;
               predicate = x: x > 0;
               name = "PosInt";
@@ -956,7 +956,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            PosInt = Certified.value {
+            PosInt = Certified {
               base = IntT;
               predicate = x: x > 0;
               name = "PosInt";
@@ -968,7 +968,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            PosInt = Certified.value {
+            PosInt = Certified {
               base = IntT;
               predicate = x: x > 0;
               name = "PosInt";
@@ -1007,7 +1007,7 @@ let
       ```
     '';
     value = elemType:
-      Pi.value {
+      Pi {
         domain = NatT;
         codomain = n: mkType {
           name = "Vector[${toString n}, ${elemType.name}]";
@@ -1024,14 +1024,14 @@ let
       "vector-is-pi-type" = {
         expr =
           let IntT = mkType { name = "Int"; kernelType = H.int_; };
-          in (Vector.value IntT) ? validate;
+          in (Vector IntT) ? validate;
         expected = true;
       };
       "vector-apply-gives-specific-type" = {
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            v3i = (Vector.value IntT).apply 3;
+            v3i = (Vector IntT).apply 3;
           in check v3i [1 2 3];
         expected = true;
       };
@@ -1039,7 +1039,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            v3i = (Vector.value IntT).apply 3;
+            v3i = (Vector IntT).apply 3;
           in check v3i [1 2];
         expected = false;
       };
@@ -1047,7 +1047,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            v3i = (Vector.value IntT).apply 3;
+            v3i = (Vector IntT).apply 3;
           in check v3i [1 "two" 3];
         expected = false;
       };
@@ -1055,14 +1055,14 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            v0 = (Vector.value IntT).apply 0;
+            v0 = (Vector IntT).apply 0;
           in check v0 [];
         expected = true;
       };
       "vector-has-compose" = {
         expr =
           let IntT = mkType { name = "Int"; kernelType = H.int_; };
-          in (Vector.value IntT) ? compose;
+          in (Vector IntT) ? compose;
         expected = true;
       };
       "vector-check-is-function" = {
@@ -1070,7 +1070,7 @@ let
         # (from Nat to sized lists). This is the type-theoretic view.
         expr =
           let IntT = mkType { name = "Int"; kernelType = H.int_; };
-          in check (Vector.value IntT) (n: builtins.genList (_: 0) n);
+          in check (Vector IntT) (n: builtins.genList (_: 0) n);
         expected = true;
       };
     };
@@ -1154,7 +1154,7 @@ let
                     H.sigma "x" fieldType._kernel (_: restType._kernel)
                   else null
                 else null;
-            in Sigma.value {
+            in Sigma {
               fst = fieldType;
               snd = v: buildSigma rest (partial // { ${field.name} = v; });
               name = "DepRec{${namesStr}}.${field.name}";
@@ -1206,7 +1206,7 @@ let
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             StrT = mkType { name = "String"; kernelType = H.string; };
-            recT = DepRecord.value [
+            recT = DepRecord [
               { name = "n"; type = IntT; }
               { name = "s"; type = StrT; }
             ];
@@ -1219,7 +1219,7 @@ let
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             StrT = mkType { name = "String"; kernelType = H.string; };
-            recT = DepRecord.value [
+            recT = DepRecord [
               { name = "n"; type = IntT; }
               { name = "s"; type = StrT; }
             ];
@@ -1230,7 +1230,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            recT = DepRecord.value [
+            recT = DepRecord [
               { name = "n"; type = IntT; }
               { name = "items"; type = (self:
                 mkType {
@@ -1248,7 +1248,7 @@ let
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
-            recT = DepRecord.value [
+            recT = DepRecord [
               { name = "n"; type = IntT; }
               { name = "items"; type = (self:
                 mkType {
@@ -1266,7 +1266,7 @@ let
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             StrT = mkType { name = "String"; kernelType = H.string; };
-            recT = DepRecord.value [
+            recT = DepRecord [
               { name = "n"; type = IntT; }
               { name = "s"; type = StrT; }
             ];
@@ -1278,7 +1278,7 @@ let
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             StrT = mkType { name = "String"; kernelType = H.string; };
-            recT = DepRecord.value [
+            recT = DepRecord [
               { name = "n"; type = IntT; }
               { name = "s"; type = StrT; }
             ];
@@ -1293,7 +1293,7 @@ let
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             StrT = mkType { name = "String"; kernelType = H.string; };
-            recT = DepRecord.value [
+            recT = DepRecord [
               { name = "n"; type = IntT; }
               { name = "s"; type = StrT; }
             ];
@@ -1306,7 +1306,7 @@ let
           let
             NatT = mkType { name = "Nat"; kernelType = H.nat; };
             BoolT = mkType { name = "Bool"; kernelType = H.bool; };
-            recT = DepRecord.value [
+            recT = DepRecord [
               { name = "n"; type = NatT; }
               { name = "b"; type = BoolT; }
             ];

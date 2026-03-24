@@ -20,11 +20,11 @@ let
     value = item: send "emit" item;
     tests = {
       "emit-is-impure" = {
-        expr = (emit.value 42)._tag;
+        expr = (emit 42)._tag;
         expected = "Impure";
       };
       "emit-effect-name" = {
-        expr = (emit.value 42).effect.name;
+        expr = (emit 42).effect.name;
         expected = "emit";
       };
     };
@@ -41,7 +41,7 @@ let
     value = items: send "emitAll" items;
     tests = {
       "emitAll-is-impure" = {
-        expr = (emitAll.value [ 1 2 ])._tag;
+        expr = (emitAll [ 1 2 ])._tag;
         expected = "Impure";
       };
     };

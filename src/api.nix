@@ -22,25 +22,22 @@ rec {
     else x;
 
   # Recursively extract all inline tests from nested mk wrappers.
-  # Returns flat attrset: { "prefix.testName" = { expr; expected; }; ... }
-  extractTests = prefix: x:
+  extractTests = x:
     let
       ownTests =
         if x ? _type && x._type == "nix-effects-api" && x.tests != {}
         then lib.mapAttrs' (name: test: {
-          name = "${prefix}.${name}";
+          name = "test-${name}";
           value = test;
         }) x.tests
         else {};
       childTests =
-        if x ? _type && x._type == "nix-effects-api" && builtins.isAttrs x.value
-        then lib.foldl' (acc: key:
-          acc // extractTests "${prefix}.${key}" x.value.${key}
-        ) {} (builtins.attrNames x.value)
-        else if builtins.isAttrs x && !(x ? _type) && !(x ? _tag)
-        then lib.foldl' (acc: key:
-          acc // extractTests "${prefix}.${key}" x.${key}
-        ) {} (builtins.attrNames x)
+        let
+          isAPI = builtins.isAttrs (x.value or null) && x._type or null == "nix-effects-api";
+          isRaw = builtins.isAttrs x && !(x ? _type) && !(x ? _tag);
+        in
+        if isAPI then lib.mapAttrs (_: extractTests) x.value
+        else if isRaw then lib.mapAttrs (_: extractTests) x
         else {};
     in ownTests // childTests;
 

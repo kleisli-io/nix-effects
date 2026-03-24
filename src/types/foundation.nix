@@ -136,67 +136,67 @@ let
     in {
       # -- Core construction --
       "creates-type" = {
-        expr = (mkType.value { name = "Test"; kernelType = H.any; })._tag;
+        expr = (mkType { name = "Test"; kernelType = H.any; })._tag;
         expected = "Type";
       };
       "has-kernel" = {
-        expr = (mkType.value { name = "T"; kernelType = H.bool; }) ? _kernel;
+        expr = (mkType { name = "T"; kernelType = H.bool; }) ? _kernel;
         expected = true;
       };
       "has-kernelCheck" = {
-        expr = (mkType.value { name = "T"; kernelType = H.bool; }) ? kernelCheck;
+        expr = (mkType { name = "T"; kernelType = H.bool; }) ? kernelCheck;
         expected = true;
       };
       "has-prove" = {
-        expr = (mkType.value { name = "T"; kernelType = H.bool; }) ? prove;
+        expr = (mkType { name = "T"; kernelType = H.bool; }) ? prove;
         expected = true;
       };
       "has-validate" = {
-        expr = (mkType.value { name = "T"; kernelType = H.any; }) ? validate;
+        expr = (mkType { name = "T"; kernelType = H.any; }) ? validate;
         expected = true;
       };
       # -- Derived check --
       "check-accepts-valid-bool" = {
-        expr = (mkType.value { name = "Bool"; kernelType = H.bool; }).check true;
+        expr = (mkType { name = "Bool"; kernelType = H.bool; }).check true;
         expected = true;
       };
       "check-rejects-invalid-bool" = {
-        expr = (mkType.value { name = "Bool"; kernelType = H.bool; }).check 42;
+        expr = (mkType { name = "Bool"; kernelType = H.bool; }).check 42;
         expected = false;
       };
       "check-accepts-valid-string" = {
-        expr = (mkType.value { name = "String"; kernelType = H.string; }).check "hello";
+        expr = (mkType { name = "String"; kernelType = H.string; }).check "hello";
         expected = true;
       };
       "check-rejects-invalid-string" = {
-        expr = (mkType.value { name = "String"; kernelType = H.string; }).check 42;
+        expr = (mkType { name = "String"; kernelType = H.string; }).check 42;
         expected = false;
       };
       "check-accepts-valid-nat" = {
-        expr = (mkType.value { name = "Nat"; kernelType = H.nat; }).check 5;
+        expr = (mkType { name = "Nat"; kernelType = H.nat; }).check 5;
         expected = true;
       };
       "check-rejects-negative-nat" = {
-        expr = (mkType.value { name = "Nat"; kernelType = H.nat; }).check (-1);
+        expr = (mkType { name = "Nat"; kernelType = H.nat; }).check (-1);
         expected = false;
       };
       "check-any-accepts-all" = {
         expr =
-          let t = mkType.value { name = "Any"; kernelType = H.any; };
+          let t = mkType { name = "Any"; kernelType = H.any; };
           in t.check 42 && t.check "s" && t.check true && t.check null;
         expected = true;
       };
       # -- Derived universe --
       "universe-level-0" = {
-        expr = (mkType.value { name = "Bool"; kernelType = H.bool; }).universe;
+        expr = (mkType { name = "Bool"; kernelType = H.bool; }).universe;
         expected = 0;
       };
       "universe-pi-level" = {
-        expr = (mkType.value { name = "Arrow"; kernelType = H.forall "x" H.nat (_: H.bool); }).universe;
+        expr = (mkType { name = "Arrow"; kernelType = H.forall "x" H.nat (_: H.bool); }).universe;
         expected = 0;
       };
       "universe-U0" = {
-        expr = (mkType.value { name = "U0"; kernelType = H.u 0; }).universe;
+        expr = (mkType { name = "U0"; kernelType = H.u 0; }).universe;
         expected = 1;
       };
       # -- Guard (complete check override) --
@@ -204,7 +204,7 @@ let
         expr =
           let
             decide = v: fx.tc.elaborate.decide H.int_ v;
-            t = mkType.value {
+            t = mkType {
               name = "Pos";
               kernelType = H.int_;
               guard = v: decide v && v > 0;
@@ -216,7 +216,7 @@ let
         expr =
           let
             decide = v: fx.tc.elaborate.decide H.int_ v;
-            t = mkType.value {
+            t = mkType {
               name = "Pos";
               kernelType = H.int_;
               guard = v: decide v && v > 0;
@@ -228,7 +228,7 @@ let
         expr =
           let
             decide = v: fx.tc.elaborate.decide H.int_ v;
-            t = mkType.value {
+            t = mkType {
               name = "Pos";
               kernelType = H.int_;
               guard = v: decide v && v > 0;
@@ -240,7 +240,7 @@ let
         expr =
           let
             decide = v: fx.tc.elaborate.decide H.int_ v;
-            t = mkType.value {
+            t = mkType {
               name = "Pos";
               kernelType = H.int_;
               guard = v: decide v && v > 0;
@@ -250,31 +250,31 @@ let
       };
       # -- Prove --
       "prove-accepts-valid" = {
-        expr = (mkType.value { name = "Bool"; kernelType = H.bool; }).prove H.true_;
+        expr = (mkType { name = "Bool"; kernelType = H.bool; }).prove H.true_;
         expected = true;
       };
       "prove-rejects-wrong-type" = {
-        expr = (mkType.value { name = "Bool"; kernelType = H.bool; }).prove H.zero;
+        expr = (mkType { name = "Bool"; kernelType = H.bool; }).prove H.zero;
         expected = false;
       };
       # -- Validate --
       "auto-validate-returns-impure" = {
-        expr = ((mkType.value { name = "T"; kernelType = H.any; }).validate 42)._tag;
+        expr = ((mkType { name = "T"; kernelType = H.any; }).validate 42)._tag;
         expected = "Impure";
       };
       "auto-validate-effect-name" = {
-        expr = ((mkType.value { name = "T"; kernelType = H.any; }).validate 42).effect.name;
+        expr = ((mkType { name = "T"; kernelType = H.any; }).validate 42).effect.name;
         expected = "typeCheck";
       };
       "auto-validate-passes-type" = {
         expr =
-          let t = mkType.value { name = "MyT"; kernelType = H.any; };
+          let t = mkType { name = "MyT"; kernelType = H.any; };
           in (t.validate 1).effect.param.type.name;
         expected = "MyT";
       };
       "verify-overrides-default" = {
         expr =
-          let t = mkType.value {
+          let t = mkType {
             name = "Custom";
             kernelType = H.any;
             verify = _self: v: pure v;
@@ -287,14 +287,17 @@ let
 
   check = mk {
     doc = "Check whether a value inhabits a type. Returns bool.";
-    value = type: value: type.check value;
+    value = type: value:
+      if type ? check then type.check value
+      else if type ? value then check type.value value
+      else type value;
     tests = let H = fx.tc.hoas; in {
       "check-passes" = {
-        expr = check.value (mkType.value { name = "Any"; kernelType = H.any; }) 42;
+        expr = check (mkType { name = "Any"; kernelType = H.any; }) 42;
         expected = true;
       };
       "check-fails" = {
-        expr = check.value (mkType.value { name = "Void"; kernelType = H.void; }) 42;
+        expr = check (mkType { name = "Void"; kernelType = H.void; }) 42;
         expected = false;
       };
     };
@@ -308,7 +311,7 @@ let
       else builtins.throw "nix-effects type error: expected ${type.name}, got ${builtins.typeOf v}";
     tests = let H = fx.tc.hoas; in {
       "make-passes" = {
-        expr = make.value (mkType.value { name = "Any"; kernelType = H.any; }) 42;
+        expr = make (mkType { name = "Any"; kernelType = H.any; }) 42;
         expected = 42;
       };
     };
@@ -322,7 +325,7 @@ let
       is a runtime-only guard the kernel cannot express.
       Grounded in Freeman & Pfenning (1991) "Refinement Types for ML" and Rondon et al. (2008) "Liquid Types".
     '';
-    value = base: predicate: mkType.value {
+    value = base: predicate: mkType {
       name = "${base.name}[refined]";
       kernelType = base._kernel;
       guard = v: base.check v && predicate v;
@@ -332,17 +335,17 @@ let
       "refine-narrows" = {
         expr =
           let
-            int = mkType.value { name = "Int"; kernelType = H.int_; };
-            nat = refine.value int (x: x >= 0);
-          in check.value nat 5;
+            int = mkType { name = "Int"; kernelType = H.int_; };
+            nat = refine int (x: x >= 0);
+          in check nat 5;
         expected = true;
       };
       "refine-rejects" = {
         expr =
           let
-            int = mkType.value { name = "Int"; kernelType = H.int_; };
-            nat = refine.value int (x: x >= 0);
-          in check.value nat (-1);
+            int = mkType { name = "Int"; kernelType = H.int_; };
+            nat = refine int (x: x >= 0);
+          in check nat (-1);
         expected = false;
       };
     };
@@ -378,22 +381,22 @@ let
       "validate-returns-impure" = {
         expr =
           let
-            t = mkType.value { name = "Int"; kernelType = H.int_; };
-          in (validate.value t 42 "test")._tag;
+            t = mkType { name = "Int"; kernelType = H.int_; };
+          in (validate t 42 "test")._tag;
         expected = "Impure";
       };
       "validate-effect-name" = {
         expr =
           let
-            t = mkType.value { name = "Int"; kernelType = H.int_; };
-          in (validate.value t 42 "test").effect.name;
+            t = mkType { name = "Int"; kernelType = H.int_; };
+          in (validate t 42 "test").effect.name;
         expected = "typeCheck";
       };
       "validate-effect-has-type-and-context" = {
         expr =
           let
-            t = mkType.value { name = "Int"; kernelType = H.int_; };
-            comp = validate.value t 42 "test-ctx";
+            t = mkType { name = "Int"; kernelType = H.int_; };
+            comp = validate t 42 "test-ctx";
           in comp.effect.param.context;
         expected = "test-ctx";
       };

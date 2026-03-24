@@ -181,7 +181,7 @@ let
               queue = queue.singleton (value: { _tag = "Pure"; inherit value; });
             };
             comp = send' "double" 21;
-            result = handle.value {
+            result = handle {
               handlers.double = { param, state }: { resume = param * 2; inherit state; };
             } comp;
           in result.value;
@@ -191,7 +191,7 @@ let
         expr =
           let
             comp = { _tag = "Pure"; value = 21; };
-            result = handle.value {
+            result = handle {
               return = v: s: { value = v * 2; state = s; };
               handlers = {};
             } comp;
@@ -210,7 +210,7 @@ let
               if comp._tag == "Pure" then f comp.value
               else { _tag = "Impure"; inherit (comp) effect; queue = queue.snoc comp.queue f; };
             comp = kernelBind (send' "fail" "boom") (_: send' "get" null);
-            result = handle.value {
+            result = handle {
               handlers = {
                 fail = { param, state }: { abort = { error = param; }; inherit state; };
                 get = { param, state }: { resume = state; inherit state; };

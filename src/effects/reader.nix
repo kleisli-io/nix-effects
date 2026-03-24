@@ -41,7 +41,7 @@ let
     value = f: bind (send "ask" null) (env: pure (f env));
     tests = {
       "asks-is-impure" = {
-        expr = (asks.value (e: e.x))._tag;
+        expr = (asks (e: e.x))._tag;
         expected = "Impure";
       };
     };
@@ -64,7 +64,7 @@ let
     value = f: comp: bind (send "local" f) (_: comp);
     tests = {
       "local-is-impure" = {
-        expr = (local.value (e: e) (pure 42))._tag;
+        expr = (local (e: e) (pure 42))._tag;
         expected = "Impure";
       };
     };

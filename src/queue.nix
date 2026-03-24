@@ -25,7 +25,7 @@ let
     value = fn: { _tag = "FTCQueue"; _variant = "Leaf"; inherit fn; };
     tests = {
       "creates-leaf" = {
-        expr = (leaf.value (x: x))._variant;
+        expr = (leaf (x: x))._variant;
         expected = "Leaf";
       };
     };
@@ -36,7 +36,7 @@ let
     value = left: right: { _tag = "FTCQueue"; _variant = "Node"; inherit left right; };
     tests = {
       "creates-node" = {
-        expr = (node.value (leaf.value (x: x)) (leaf.value (x: x)))._variant;
+        expr = (node (leaf (x: x)) (leaf (x: x)))._variant;
         expected = "Node";
       };
     };
@@ -46,17 +46,17 @@ let
 
   singleton = mk {
     doc = "Create a queue with a single continuation. O(1).";
-    value = fn: leaf.value fn;
+    value = fn: leaf fn;
   };
 
   snoc = mk {
     doc = "Append a continuation to the right of the queue. O(1).";
-    value = q: fn: node.value q (leaf.value fn);
+    value = q: fn: node q (leaf fn);
   };
 
   append = mk {
     doc = "Concatenate two queues. O(1).";
-    value = q1: q2: node.value q1 q2;
+    value = q1: q2: node q1 q2;
   };
 
   # -- Deconstruction --
@@ -77,22 +77,22 @@ let
       else viewlGo q.left q.right;
     tests = {
       "viewl-singleton" = {
-        expr = (viewl.value (leaf.value (x: x + 1))).tail;
+        expr = (viewl (leaf (x: x + 1))).tail;
         expected = null;
       };
       "viewl-node-extracts-left" = {
         expr =
           let
-            q = node.value (leaf.value (x: x + 10)) (leaf.value (x: x + 20));
-            vl = viewl.value q;
+            q = node (leaf (x: x + 10)) (leaf (x: x + 20));
+            vl = viewl q;
           in vl.head 0;
         expected = 10;
       };
       "viewl-node-has-tail" = {
         expr =
           let
-            q = node.value (leaf.value (x: x + 10)) (leaf.value (x: x + 20));
-            vl = viewl.value q;
+            q = node (leaf (x: x + 10)) (leaf (x: x + 20));
+            vl = viewl q;
           in vl.tail != null;
         expected = true;
       };
@@ -107,7 +107,7 @@ let
         operator = state:
           if state._left._variant == "Leaf"
           then []
-          else [{ key = state.key + 1; _left = state._left.left; _right = node.value state._left.right state._right; }];
+          else [{ key = state.key + 1; _left = state._left.left; _right = node state._left.right state._right; }];
       };
       last = builtins.elemAt steps (builtins.length steps - 1);
     in { head = last._left.fn; tail = last._right; };
@@ -128,7 +128,7 @@ let
           startSet = [{ key = 0; _queue = q; _val = x; }];
           operator = state:
             let
-              vl = viewl.value state._queue;
+              vl = viewl state._queue;
               result = vl.head state._val;
             in
             if vl.tail != null && result._tag == "Pure"
@@ -136,7 +136,7 @@ let
             else [];
         };
         last = builtins.elemAt steps (builtins.length steps - 1);
-        vl = viewl.value last._queue;
+        vl = viewl last._queue;
         result = vl.head last._val;
       in
       if vl.tail == null
@@ -144,20 +144,20 @@ let
       else {
         _tag = "Impure";
         inherit (result) effect;
-        queue = append.value result.queue vl.tail;
+        queue = append result.queue vl.tail;
       };
     tests = {
       "qApp-singleton-pure" = {
-        expr = (qApp.value (leaf.value (x: { _tag = "Pure"; value = x + 1; })) 41).value;
+        expr = (qApp (leaf (x: { _tag = "Pure"; value = x + 1; })) 41).value;
         expected = 42;
       };
       "qApp-chains-pure" = {
         expr =
           let
             q = node.value
-              (leaf.value (x: { _tag = "Pure"; value = x + 10; }))
-              (leaf.value (x: { _tag = "Pure"; value = x * 2; }));
-          in (qApp.value q 1).value;
+              (leaf (x: { _tag = "Pure"; value = x + 10; }))
+              (leaf (x: { _tag = "Pure"; value = x * 2; }));
+          in (qApp q 1).value;
         expected = 22;  # (1 + 10) * 2
       };
       "qApp-deep-pure-10000" = {
@@ -165,20 +165,20 @@ let
           let
             n = 10000;
             q = builtins.foldl' (acc: _:
-              snoc.value acc (x: { _tag = "Pure"; value = x + 1; })
-            ) (leaf.value (x: { _tag = "Pure"; value = x + 1; })) (builtins.genList (_: null) (n - 1));
-          in (qApp.value q 0).value;
+              snoc acc (x: { _tag = "Pure"; value = x + 1; })
+            ) (leaf (x: { _tag = "Pure"; value = x + 1; })) (builtins.genList (_: null) (n - 1));
+          in (qApp q 0).value;
         expected = 10000;
       };
       "qApp-impure-after-pure-chain" = {
         expr =
           let
             pureQ = builtins.foldl' (acc: _:
-              snoc.value acc (x: { _tag = "Pure"; value = x + 1; })
-            ) (leaf.value (x: { _tag = "Pure"; value = x + 1; })) (builtins.genList (_: null) 99);
-            impureK = x: { _tag = "Impure"; effect = { tag = "test"; payload = x; }; queue = leaf.value (y: { _tag = "Pure"; value = y; }); };
-            q = snoc.value pureQ impureK;
-          in (qApp.value q 0).effect.payload;
+              snoc acc (x: { _tag = "Pure"; value = x + 1; })
+            ) (leaf (x: { _tag = "Pure"; value = x + 1; })) (builtins.genList (_: null) 99);
+            impureK = x: { _tag = "Impure"; effect = { tag = "test"; payload = x; }; queue = leaf (y: { _tag = "Pure"; value = y; }); };
+            q = snoc pureQ impureK;
+          in (qApp q 0).effect.payload;
         expected = 100;
       };
     };

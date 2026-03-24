@@ -56,19 +56,19 @@ let
     value = { resource, maxUses }: send "linearAcquire" { inherit resource maxUses; };
     tests = {
       "acquire-is-impure" = {
-        expr = (acquire.value { resource = "x"; maxUses = 1; })._tag;
+        expr = (acquire { resource = "x"; maxUses = 1; })._tag;
         expected = "Impure";
       };
       "acquire-effect-name" = {
-        expr = (acquire.value { resource = "x"; maxUses = 1; }).effect.name;
+        expr = (acquire { resource = "x"; maxUses = 1; }).effect.name;
         expected = "linearAcquire";
       };
       "acquire-carries-resource" = {
-        expr = (acquire.value { resource = "db"; maxUses = 2; }).effect.param.resource;
+        expr = (acquire { resource = "db"; maxUses = 2; }).effect.param.resource;
         expected = "db";
       };
       "acquire-carries-maxUses" = {
-        expr = (acquire.value { resource = "x"; maxUses = 3; }).effect.param.maxUses;
+        expr = (acquire { resource = "x"; maxUses = 3; }).effect.param.maxUses;
         expected = 3;
       };
     };
@@ -91,15 +91,15 @@ let
     value = token: send "linearConsume" { inherit token; };
     tests = {
       "consume-is-impure" = {
-        expr = (consume.value { _linear = true; id = 0; resource = "x"; })._tag;
+        expr = (consume { _linear = true; id = 0; resource = "x"; })._tag;
         expected = "Impure";
       };
       "consume-effect-name" = {
-        expr = (consume.value { _linear = true; id = 0; resource = "x"; }).effect.name;
+        expr = (consume { _linear = true; id = 0; resource = "x"; }).effect.name;
         expected = "linearConsume";
       };
       "consume-carries-token" = {
-        expr = (consume.value { _linear = true; id = 0; resource = "x"; }).effect.param.token._linear;
+        expr = (consume { _linear = true; id = 0; resource = "x"; }).effect.param.token._linear;
         expected = true;
       };
     };
@@ -120,11 +120,11 @@ let
     value = token: send "linearRelease" { inherit token; };
     tests = {
       "release-is-impure" = {
-        expr = (release.value { _linear = true; id = 0; resource = "x"; })._tag;
+        expr = (release { _linear = true; id = 0; resource = "x"; })._tag;
         expected = "Impure";
       };
       "release-effect-name" = {
-        expr = (release.value { _linear = true; id = 0; resource = "x"; }).effect.name;
+        expr = (release { _linear = true; id = 0; resource = "x"; }).effect.name;
         expected = "linearRelease";
       };
     };
@@ -145,7 +145,7 @@ let
     value = resource: send "linearAcquire" { inherit resource; maxUses = 1; };
     tests = {
       "acquireLinear-maxUses-is-1" = {
-        expr = (acquireLinear.value "x").effect.param.maxUses;
+        expr = (acquireLinear "x").effect.param.maxUses;
         expected = 1;
       };
     };
@@ -162,7 +162,7 @@ let
     value = resource: n: send "linearAcquire" { inherit resource; maxUses = n; };
     tests = {
       "acquireExact-maxUses" = {
-        expr = (acquireExact.value "x" 5).effect.param.maxUses;
+        expr = (acquireExact "x" 5).effect.param.maxUses;
         expected = 5;
       };
     };
@@ -179,7 +179,7 @@ let
     value = resource: send "linearAcquire" { inherit resource; maxUses = null; };
     tests = {
       "acquireUnlimited-maxUses-is-null" = {
-        expr = (acquireUnlimited.value "x").effect.param.maxUses;
+        expr = (acquireUnlimited "x").effect.param.maxUses;
         expected = null;
       };
     };
@@ -433,7 +433,7 @@ let
     tests = {
       "return-passes-clean-state" = {
         expr =
-          let r = return.value "ok" {
+          let r = return "ok" {
             nextId = 1;
             resources = {
               "0" = { resource = "x"; maxUses = 1; currentUses = 1; released = false; };
@@ -444,7 +444,7 @@ let
       };
       "return-catches-underuse" = {
         expr =
-          let r = return.value "ok" {
+          let r = return "ok" {
             nextId = 1;
             resources = {
               "0" = { resource = "leaked"; maxUses = 1; currentUses = 0; released = false; };
@@ -455,7 +455,7 @@ let
       };
       "return-skips-released" = {
         expr =
-          let r = return.value "ok" {
+          let r = return "ok" {
             nextId = 1;
             resources = {
               "0" = { resource = "dropped"; maxUses = 1; currentUses = 0; released = true; };
@@ -466,7 +466,7 @@ let
       };
       "return-skips-unlimited" = {
         expr =
-          let r = return.value "ok" {
+          let r = return "ok" {
             nextId = 1;
             resources = {
               "0" = { resource = "free"; maxUses = null; currentUses = 42; released = false; };
@@ -477,7 +477,7 @@ let
       };
       "return-preserves-original-on-error" = {
         expr =
-          let r = return.value "my-result" {
+          let r = return "my-result" {
             nextId = 1;
             resources = {
               "0" = { resource = "x"; maxUses = 1; currentUses = 0; released = false; };
@@ -547,100 +547,100 @@ let
       "run-linear-happy-path" = {
         expr =
           let
-            comp = bind (acquireLinear.value "secret") (token:
-              bind (consume.value token) (val:
+            comp = bind (acquireLinear "secret") (token:
+              bind (consume token) (val:
                 pure "got:${val}"));
-          in (run.value comp).value;
+          in (run comp).value;
         expected = "got:secret";
       };
       "run-linear-leak-detected" = {
         expr =
           let
-            comp = bind (acquireLinear.value "leaked") (_token:
+            comp = bind (acquireLinear "leaked") (_token:
               pure "forgot");
-          in (run.value comp).value._tag == "LinearityError"
-             && (run.value comp).value.error == "usage-mismatch";
+          in (run comp).value._tag == "LinearityError"
+             && (run comp).value.error == "usage-mismatch";
         expected = true;
       };
       "run-exceeded-bound-aborts" = {
         expr =
           let
-            comp = bind (acquireLinear.value "once") (token:
-              bind (consume.value token) (_:
-                bind (consume.value token) (_:
+            comp = bind (acquireLinear "once") (token:
+              bind (consume token) (_:
+                bind (consume token) (_:
                   pure "unreachable")));
-          in (run.value comp).value._tag == "LinearityError"
-             && (run.value comp).value.error == "exceeded-bound";
+          in (run comp).value._tag == "LinearityError"
+             && (run comp).value.error == "exceeded-bound";
         expected = true;
       };
       "run-affine-via-release" = {
         expr =
           let
-            comp = bind (acquireLinear.value "optional") (token:
-              bind (release.value token) (_:
+            comp = bind (acquireLinear "optional") (token:
+              bind (release token) (_:
                 pure "dropped"));
-          in (run.value comp).value;
+          in (run comp).value;
         expected = "dropped";
       };
       "run-graded-exact-2" = {
         expr =
           let
-            comp = bind (acquireExact.value "two-shot" 2) (token:
-              bind (consume.value token) (v1:
-                bind (consume.value token) (v2:
+            comp = bind (acquireExact "two-shot" 2) (token:
+              bind (consume token) (v1:
+                bind (consume token) (v2:
                   pure "${v1}+${v2}")));
-          in (run.value comp).value;
+          in (run comp).value;
         expected = "two-shot+two-shot";
       };
       "run-unlimited" = {
         expr =
           let
-            comp = bind (acquireUnlimited.value "free") (token:
+            comp = bind (acquireUnlimited "free") (token:
               builtins.foldl'
-                (acc: _: bind acc (_: consume.value token))
+                (acc: _: bind acc (_: consume token))
                 (pure null)
                 (lib.range 1 10));
-          in (run.value comp).value ? _tag;
+          in (run comp).value ? _tag;
         expected = false;  # No error tag
       };
       "run-mixed-resources" = {
         expr =
           let
             comp =
-              bind (acquireLinear.value "once") (t1:
-              bind (acquireExact.value "twice" 2) (t2:
-              bind (acquireUnlimited.value "many") (t3:
-              bind (consume.value t1) (_:
-              bind (consume.value t2) (_:
-              bind (consume.value t2) (_:
-              bind (consume.value t3) (_:
-              bind (consume.value t3) (_:
-              bind (consume.value t3) (_:
+              bind (acquireLinear "once") (t1:
+              bind (acquireExact "twice" 2) (t2:
+              bind (acquireUnlimited "many") (t3:
+              bind (consume t1) (_:
+              bind (consume t2) (_:
+              bind (consume t2) (_:
+              bind (consume t3) (_:
+              bind (consume t3) (_:
+              bind (consume t3) (_:
                 pure "all-correct")))))))));
-          in (run.value comp).value;
+          in (run comp).value;
         expected = "all-correct";
       };
       "run-consume-after-release-aborts" = {
         expr =
           let
-            comp = bind (acquireLinear.value "x") (token:
-              bind (release.value token) (_:
-                bind (consume.value token) (_:
+            comp = bind (acquireLinear "x") (token:
+              bind (release token) (_:
+                bind (consume token) (_:
                   pure "unreachable")));
-          in (run.value comp).value.error;
+          in (run comp).value.error;
         expected = "consume-after-release";
       };
       "run-deepSeq-100-pairs" = {
         expr =
           let
             mkPair = i:
-              bind (acquireLinear.value "r-${toString i}") (token:
-                consume.value token);
+              bind (acquireLinear "r-${toString i}") (token:
+                consume token);
             comp = builtins.foldl'
               (acc: i: bind acc (_: mkPair i))
               (pure null)
               (lib.range 0 99);
-          in (run.value comp).value ? _tag;
+          in (run comp).value ? _tag;
         expected = false;  # No error tag = all 100 pairs clean
       };
     };

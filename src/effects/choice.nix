@@ -28,11 +28,11 @@ let
     value = alternatives: send "choose" alternatives;
     tests = {
       "choose-is-impure" = {
-        expr = (choose.value [ 1 2 3 ])._tag;
+        expr = (choose [ 1 2 3 ])._tag;
         expected = "Impure";
       };
       "choose-effect-name" = {
-        expr = (choose.value [ 1 2 3 ]).effect.name;
+        expr = (choose [ 1 2 3 ]).effect.name;
         expected = "choose";
       };
     };
@@ -71,11 +71,11 @@ let
     value = cond: if cond then pure null else fail.value;
     tests = {
       "guard-true-is-pure" = {
-        expr = (guard.value true)._tag;
+        expr = (guard true)._tag;
         expected = "Pure";
       };
       "guard-false-is-impure" = {
-        expr = (guard.value false)._tag;
+        expr = (guard false)._tag;
         expected = "Impure";
       };
     };

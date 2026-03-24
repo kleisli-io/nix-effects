@@ -25,15 +25,15 @@ let
     value = message: send "error" { inherit message; context = ""; };
     tests = {
       "raise-is-impure" = {
-        expr = (raise.value "boom")._tag;
+        expr = (raise "boom")._tag;
         expected = "Impure";
       };
       "raise-effect-name" = {
-        expr = (raise.value "boom").effect.name;
+        expr = (raise "boom").effect.name;
         expected = "error";
       };
       "raise-carries-message" = {
-        expr = (raise.value "boom").effect.param.message;
+        expr = (raise "boom").effect.param.message;
         expected = "boom";
       };
     };
@@ -52,7 +52,7 @@ let
     value = context: message: send "error" { inherit message context; };
     tests = {
       "raiseWith-carries-context" = {
-        expr = (raiseWith.value "parser" "unexpected token").effect.param.context;
+        expr = (raiseWith "parser" "unexpected token").effect.param.context;
         expected = "parser";
       };
     };

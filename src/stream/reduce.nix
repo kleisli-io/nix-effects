@@ -18,7 +18,7 @@ let
     value = f: z: stream:
       bind stream (step:
         if step._tag == "Done" then pure z
-        else fold.value f (f z step.head) step.tail);
+        else fold f (f z step.head) step.tail);
   };
 
   toList = mk {
@@ -29,7 +29,7 @@ let
       toList : Computation (Step r a) -> Computation [a]
       ```
     '';
-    value = stream: fold.value (acc: x: acc ++ [ x ]) [] stream;
+    value = stream: fold (acc: x: acc ++ [ x ]) [] stream;
   };
 
   length = mk {
@@ -40,7 +40,7 @@ let
       length : Computation (Step r a) -> Computation int
       ```
     '';
-    value = stream: fold.value (n: _: n + 1) 0 stream;
+    value = stream: fold (n: _: n + 1) 0 stream;
   };
 
   sum = mk {
@@ -51,7 +51,7 @@ let
       sum : Computation (Step r number) -> Computation number
       ```
     '';
-    value = stream: fold.value (acc: x: acc + x) 0 stream;
+    value = stream: fold (acc: x: acc + x) 0 stream;
   };
 
   any = mk {
@@ -67,7 +67,7 @@ let
       bind stream (step:
         if step._tag == "Done" then pure false
         else if pred step.head then pure true
-        else any.value pred step.tail);
+        else any pred step.tail);
   };
 
   all = mk {
@@ -82,7 +82,7 @@ let
       bind stream (step:
         if step._tag == "Done" then pure true
         else if !(pred step.head) then pure false
-        else all.value pred step.tail);
+        else all pred step.tail);
   };
 
 in mk {

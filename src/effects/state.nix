@@ -49,11 +49,11 @@ let
     value = s: send "put" s;
     tests = {
       "put-is-impure" = {
-        expr = (put.value 42)._tag;
+        expr = (put 42)._tag;
         expected = "Impure";
       };
       "put-carries-value" = {
-        expr = (put.value 42).effect.param;
+        expr = (put 42).effect.param;
         expected = 42;
       };
     };
@@ -71,7 +71,7 @@ let
     value = f: send "modify" f;
     tests = {
       "modify-is-impure" = {
-        expr = (modify.value (x: x + 1))._tag;
+        expr = (modify (x: x + 1))._tag;
         expected = "Impure";
       };
     };
@@ -88,7 +88,7 @@ let
     value = f: bind (send "get" null) (s: pure (f s));
     tests = {
       "gets-is-impure" = {
-        expr = (gets.value (s: s.x))._tag;
+        expr = (gets (s: s.x))._tag;
         expected = "Impure";
       };
     };

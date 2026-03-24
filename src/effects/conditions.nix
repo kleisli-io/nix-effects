@@ -42,15 +42,15 @@ let
       send "condition" { inherit name data restarts; };
     tests = {
       "signal-is-impure" = {
-        expr = (signal.value "test" {} ["use-value" "abort"])._tag;
+        expr = (signal "test" {} ["use-value" "abort"])._tag;
         expected = "Impure";
       };
       "signal-carries-name" = {
-        expr = (signal.value "division-by-zero" { divisor = 0; } ["use-value" "abort"]).effect.param.name;
+        expr = (signal "division-by-zero" { divisor = 0; } ["use-value" "abort"]).effect.param.name;
         expected = "division-by-zero";
       };
       "signal-carries-restarts" = {
-        expr = builtins.length (signal.value "test" {} ["a" "b" "c"]).effect.param.restarts;
+        expr = builtins.length (signal "test" {} ["a" "b" "c"]).effect.param.restarts;
         expected = 3;
       };
     };
@@ -73,7 +73,7 @@ let
         else pure null);
     tests = {
       "warn-is-impure" = {
-        expr = (warn.value "deprecation" { feature = "old-api"; })._tag;
+        expr = (warn "deprecation" { feature = "old-api"; })._tag;
         expected = "Impure";
       };
     };
@@ -157,7 +157,7 @@ let
       "matches-condition" = {
         expr =
           let
-            h = withRestart.value "division-by-zero" "use-value" 0;
+            h = withRestart "division-by-zero" "use-value" 0;
             r = h.condition { param = { name = "division-by-zero"; data = {}; restarts = ["use-value"]; }; state = null; };
           in r.resume.restart;
         expected = "use-value";

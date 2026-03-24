@@ -11,12 +11,11 @@ rec {
   mk = { doc ? "", value, tests ? {} }: {
     _type = "nix-effects-api";
     inherit doc value tests;
-  };
+  } // (lib.optionalAttrs (lib.isFunction value) { __functor = _self: value; });
 
   # Recursively extract raw values, stripping mk wrappers.
   extractValue = x:
-    if x ? _type && x._type == "nix-effects-api"
-    then extractValue x.value
+    if x ? value && x._type or null == "nix-effects-api" then extractValue x.value
     else if builtins.isAttrs x && !(x ? _tag)
     then builtins.mapAttrs (_: extractValue) x
     else x;
@@ -50,7 +49,7 @@ rec {
   # When a mk wrapper's value is itself an attrset of mk-wrapped functions (module pattern),
   # the inner docs are merged in alongside this node's own doc/tests.
   extractDocs = x:
-    if x ? _type && x._type == "nix-effects-api"
+    if x ? value && x._type or null == "nix-effects-api"
     then
       { inherit (x) doc tests; } //
       (if builtins.isAttrs x.value && !(x.value ? _tag)

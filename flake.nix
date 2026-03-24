@@ -4,14 +4,17 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     nix-unit.url = "github:nix-community/nix-unit";
-    nix-unit.inputs.nixpkgs.follows = "nixpkgs";
+    nix-unit.inputs = {
+      nixpkgs.follows = "nixpkgs";
+      nix-github-actions.follows = "";
+      treefmt-nix.follows = "";
+    };
   };
 
   outputs = { self, nixpkgs, nix-unit, ... }:
     let
       nix-effects = import ./. { lib = nixpkgs.lib; };
-      forAllSystems = nixpkgs.lib.genAttrs
-        [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+      forAllSystems = nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed;
     in {
       lib = nix-effects;
 

@@ -33,21 +33,6 @@ let
       ) {} entries;
     in files // dirs;
 
-  # -- collectTests: inline test extraction from raw tree --
-  #
-  # Walk the raw mk-wrapped tree, applying api.extractTests to file results
-  # and recursing into directory attrsets. Produces flat test attrset with
-  # dotted prefixes: { "kernel.pure-bind-applies-f" = { expr; expected; }; ... }
-  collectTests = prefix: tree:
-    lib.foldlAttrs (acc: name: node:
-      let p = if prefix == "" then name else "${prefix}.${name}"; in
-      if node ? _type && node._type == "nix-effects-api"
-      then acc // api.extractTests p node
-      else if builtins.isAttrs node && !(node ? _tag)
-      then acc // collectTests p node
-      else acc
-    ) {} tree;
-
   # -- Library fixpoint via lib.fix --
   #
   # Single fixpoint producing both the raw mk-wrapped tree (for test extraction)
@@ -162,15 +147,20 @@ let
   };
 
   integrationTests = import ./tests { inherit lib fx; };
-  inlineTests = collectTests "" internals.raw;
+  inlineTests = api.extractTests internals.raw;
 
   # nix-unit compatible test attrset. nix-unit requires the "test" prefix on
   # test case attrs; non-prefixed attrs are recursed into as namespaces.
   # We use the module/directory structure as namespaces and prefix leaf tests.
-  prefixTests = lib.mapAttrs' (name: value: {
-    name = "test ${name}";
+  prefixTests = lib.mapAttrs' (name: value: 
+    if value ? expected then {
+    name = if lib.hasPrefix "test" name then name else "test-${name}";
     inherit value;
+  } else {
+    inherit name;
+    value = prefixTests value;
   });
+
   # Normalize integration tests: some are booleans, some are { expr; expected; }.
   # Wrap booleans as { expr; expected = true; }, pass through existing pairs.
   normalizeTest = value:

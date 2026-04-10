@@ -1,8 +1,8 @@
 # nix-effects
 
-A proof-checking kernel, algebraic effects, and dependent types, implemented in pure Nix.
+A freer-monad effect layer for pure Nix, with a dependent type checker built on top of it.
 
-nix-effects brings ideas from type theory and functional programming to the Nix ecosystem: a verified type-checking kernel with dependent types, an algebraic effect system for composable side effects, and stack-safe evaluation via trampolining.
+nix-effects provides composable, handler-driven effects via a freer monad with O(1) bind, a dependent type checker grounded in MLTT, and stack-safe evaluation via trampolining — all implemented entirely in pure Nix.
 
 ## Guide
 

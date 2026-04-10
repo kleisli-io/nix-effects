@@ -2,11 +2,11 @@
 
 Nix configurations are concrete at eval time. Every field, every value,
 every list element is known before anything builds. The nix-effects
-kernel exploits this: it normalizes both sides of an equation via NbE,
-and if they reduce to the same value, `Refl` proves them equal. No
-symbolic reasoning, no induction over unknowns — just computation on
-concrete data, checked by a type-theoretic kernel implemented in 1,300
-lines of pure Nix.
+dependent type checker exploits this: it normalizes both sides of an
+equation via NbE, and if they reduce to the same value, `Refl` proves
+them equal. No symbolic reasoning, no induction over unknowns — just
+computation on concrete data, checked through the freer-monad effect
+layer in 1,300 lines of pure Nix.
 
 This chapter builds proofs incrementally, from `0 + 0 = 0` through
 the J eliminator to verified extraction of plain Nix functions from

@@ -102,7 +102,7 @@ let fx = import ./path/to/nix-effects { lib = nixpkgs.lib; };
 in ...
 ```
 
-## Type system
+## Dependent types
 
 Every type is grounded in an MLTT type-checking kernel. The guard (`check`)
 is derived from the kernel's `decide` procedure. The verifier (`validate`)
@@ -390,8 +390,11 @@ closure-valued state may lose the thunk-breaking guarantee.
 ## Testing
 
 ```bash
-# Run all tests via nix-unit
+# Run all tests via nix-unit (flake)
 nix flake check
+
+# Run all tests via nix-unit (non-flake)
+nix-unit ./tests.nix
 
 # Evaluate test results directly
 nix eval --impure --expr \

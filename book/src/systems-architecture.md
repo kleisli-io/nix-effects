@@ -1,8 +1,10 @@
 # Systems Architecture
 
-nix-effects grounds all types in a small, trusted type-checking kernel
-— a Lean-light MLTT core running entirely at `nix eval` time, built on
-the effects infrastructure.
+nix-effects is a freer-monad effect layer with a dependent type checker
+on top, all running at `nix eval` time. The effect layer is the
+foundation — handlers, blame tracking, and error policy all flow through
+it. The type checker is a Lean-light MLTT core that uses the effect
+infrastructure for its own checking pipeline.
 
 The kernel is implemented in `src/tc/` (~2200 lines) and fully integrated.
 All types have kernel backing — `.check` is derived mechanically from

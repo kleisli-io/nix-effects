@@ -17,6 +17,7 @@ let
   verifiedFunctionTests = import ../examples/verified-functions.nix { inherit lib fx; };
   docsTests = import ./docs-test.nix { inherit lib fx; };
   pipelineTests = import ./pipeline-test.nix { inherit lib fx; };
+  scopeTests = import ./scope-test.nix { inherit lib fx; };
 
 in {
   inherit (trampolineTests) pureComputation singleEffect simpleCounter
@@ -25,7 +26,11 @@ in {
           statefulAccumulation earlyPure pureBindChain
           handleWithReturn adaptState adaptHandlersTest
           leftNestedBind
-          qAppPureChain viewlGoLeftNested;
+          qAppPureChain viewlGoLeftNested
+          effectRotationResumesInner
+          effectRotationSuspendsUnknown
+          effectRotationStackSafety
+          effectRotationNestedHandlers;
 
   inherit (typesTests) validPortTest vectorTest universeTest
           recordRefinementTest maybeTest depRecordTest
@@ -98,6 +103,11 @@ in {
           chooseFirstTest choiceFailTest
           choiceGuardTrueTest choiceGuardFalseTest choicePendingTest
           readerWriterComposedTest;
+
+  inherit (scopeTests) twoUsersTest scopeStateIsolation scopeEscapeEffects nestedScopes
+          scopeWithStatefulHandler scopeDoesNotCorruptUserState
+          dynamicHandlerFromEffect abortInsideScope threeUsersFanOut
+          scopeOverrideInNested;
 
   inherit (streamTests) fromListToListTest fromListEmptyTest
           rangeTest rangeEmptyTest replicateTest replicateZeroTest
@@ -172,5 +182,6 @@ in {
             && equalityProofTests.allPass
             && verifiedFunctionTests.allPass
             && docsTests.allPass
-            && pipelineTests.allPass;
+            && pipelineTests.allPass
+            && scopeTests.allPass;
 }

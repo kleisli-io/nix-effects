@@ -227,6 +227,87 @@ let
       } 0;
     in result.state == 1001;
 
+  # -- Test 17: selective handler rotation (Kyo-style) --
+  # Unhandled effects are rotated outward and resumed by outer handlers.
+  effectRotationResumesInner =
+    let
+      comp =
+        bind (send "outer" 3) (x:
+        bind (send "inc" x) (_:
+        pure "ok"));
+
+      rotated = fx.rotate {
+        handlers = {
+          inc = { param, state }: { resume = null; state = state + param; };
+        };
+        state = 0;
+      } comp;
+
+      result = handle {
+        handlers = {
+          outer = { param, state }: { resume = param * 2; inherit state; };
+        };
+      } rotated;
+    in result.value == { value = "ok"; state = 6; };
+
+  # -- Test 18: rotation leaves unknown effect suspended --
+  effectRotationSuspendsUnknown =
+    let
+      comp = send "unknown" 1;
+      rotated = fx.rotate {
+        handlers = {
+          inc = { param, state }: { resume = null; state = state + param; };
+        };
+        state = 0;
+      } comp;
+    in (!fx.isPure rotated) && rotated.effect.name == "unknown";
+
+  # -- Test: rotation stack safety — 10,000 handled effects --
+  # rotateInterpret recursively calls itself for each handled effect.
+  # Without trampolining, this blows the stack.
+  effectRotationStackSafety =
+    let
+      comp = buildChain "inc" 1 10000;
+      rotated = fx.rotate {
+        handlers = {
+          inc = { param, state }: { resume = null; state = state + param; };
+        };
+        state = 0;
+      } comp;
+      result = handle { handlers = {}; } rotated;
+    in result.value.state == 10000;
+
+  # -- Test 19: rotation supports nested selective handlers --
+  effectRotationNestedHandlers =
+    let
+      comp =
+        bind (send "outer" 5) (v:
+        bind (send "inner" v) (_:
+        pure "done"));
+
+      innerRotated = fx.rotate {
+        handlers = {
+          inner = { param, state }: { resume = null; state = state + param; };
+        };
+        state = 0;
+      } comp;
+
+      outerRotated = fx.rotate {
+        handlers = {
+          outer = { param, state }: { resume = param + 1; inherit state; };
+        };
+        state = null;
+      } innerRotated;
+
+      result = handle { handlers = {}; } outerRotated;
+    in result.value == {
+      value = {
+        value = "done";
+        state = 6;
+      };
+      state = null;
+    };
+
 in {
   inherit pureComputation singleEffect simpleCounter
           tenThousandOps hundredThousandOps
@@ -234,7 +315,11 @@ in {
           statefulAccumulation earlyPure pureBindChain
           handleWithReturn adaptState adaptHandlersTest
           leftNestedBind
-          qAppPureChain viewlGoLeftNested;
+          qAppPureChain viewlGoLeftNested
+          effectRotationResumesInner
+          effectRotationSuspendsUnknown
+          effectRotationStackSafety
+          effectRotationNestedHandlers;
 
   allPass = pureComputation && singleEffect && simpleCounter
             && tenThousandOps && hundredThousandOps
@@ -242,5 +327,9 @@ in {
             && statefulAccumulation && earlyPure && pureBindChain
             && handleWithReturn && adaptState && adaptHandlersTest
             && leftNestedBind
-            && qAppPureChain && viewlGoLeftNested;
+            && qAppPureChain && viewlGoLeftNested
+            && effectRotationResumesInner
+            && effectRotationSuspendsUnknown
+            && effectRotationStackSafety
+            && effectRotationNestedHandlers;
 }

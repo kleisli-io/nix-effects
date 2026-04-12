@@ -67,7 +67,7 @@ let
     inherit (kernel) queue;
 
     # Interpreter (trampoline)
-    inherit (trampoline) run handle;
+    inherit (trampoline) run handle rotate;
 
     # Handler composition (adapt)
     inherit (adaptMod) adapt adaptHandlers;
@@ -118,6 +118,7 @@ let
       acc = effects.acc;
       choice = effects.choice;
       linear = effects.linear;
+      scope = effects.scope;
     };
 
     # Streams (effectful lazy sequences)

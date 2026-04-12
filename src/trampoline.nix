@@ -24,7 +24,7 @@
 
 let
   queue = fx.queue;
-  inherit (fx.comp) pure impure isPure;
+  inherit (fx.comp) pure impure isPure isComp;
   inherit (api) mk;
 
   # -- Queue application --
@@ -73,6 +73,10 @@ let
 
   # -- Interpreter --
 
+  resumeWithQueue = q: value:
+    if q._variant == "Identity" then pure value
+    else applyQueue q value 0;
+
   interpret = { comp, handlers, initialState }:
     let
       steps = builtins.genericClosure {
@@ -101,17 +105,95 @@ let
               if result ? abort then
                 [{ key = k; _comp = pure result.abort; _state = newState; }]
               else if result ? resume then
-                let
-                  q = step._comp.queue;
-                  nextComp =
-                    if q._variant == "Identity" then pure result.resume
-                    else applyQueue q result.resume 0;
-                in [{ key = k; _comp = nextComp; _state = newState; }]
+                [{ key = k;
+                   _comp = resumeWithQueue step._comp.queue result.resume;
+                   _state = newState; }]
               else
                 throw "nix-effects: handler for '${eff.name}' must return { resume; state; } or { abort; state; }";
       };
       final = lib.last steps;
     in { value = final._comp.value; state = final._state; };
+
+  # -- Selective interpreter (handler rotation) --
+
+  effectRotateSlow = { comp, handlers, state, done }:
+    let
+      steps = builtins.genericClosure {
+        startSet = [{ key = 0; _comp = comp; _state = state; }];
+        operator = step:
+          if isPure step._comp then []
+          else
+            let eff = step._comp.effect; in
+            if handlers ? ${eff.name} then
+              let
+                result = handlers.${eff.name} {
+                  param = eff.param;
+                  state = step._state;
+                };
+                newState = if result ? state then result.state
+                  else throw "nix-effects: handler for '${eff.name}' must include 'state' in return value";
+                k = builtins.deepSeq newState (step.key + 1);
+              in
+                if result ? abort then
+                  [{ key = k; _comp = pure (done result.abort newState); _state = newState; }]
+                else if result ? resume then
+                  [{ key = k;
+                     _comp = resumeWithQueue step._comp.queue result.resume;
+                     _state = newState; }]
+                else
+                  throw "nix-effects: handler for '${eff.name}' must return { resume; state; } or { abort; state; }"
+            else [];
+      };
+      last = lib.last steps;
+    in
+      if isPure last._comp then pure (done last._comp.value last._state)
+      else
+        impure last._comp.effect (queue.singleton (value:
+          effectRotate {
+            comp = resumeWithQueue last._comp.queue value;
+            handlers = handlers;
+            state = last._state;
+            inherit done;
+          } 0));
+
+  effectRotate = { comp, handlers, state, done }: depth:
+    if isPure comp then pure (done comp.value state)
+    else
+      let
+        eff = comp.effect;
+      in
+      if handlers ? ${eff.name} then
+        let
+          result = handlers.${eff.name} {
+            param = eff.param;
+            inherit state;
+          };
+          newState = if result ? state then result.state
+            else throw "nix-effects: handler for '${eff.name}' must include 'state' in return value";
+        in
+          if result ? abort then
+            pure (done result.abort newState)
+          else if result ? resume then
+            if depth >= 500 then
+              effectRotateSlow {
+                comp = resumeWithQueue comp.queue result.resume;
+                inherit handlers done;
+                state = newState;
+              }
+            else
+              effectRotate {
+                comp = resumeWithQueue comp.queue result.resume;
+                inherit handlers done;
+                state = newState;
+              } (depth + 1)
+          else
+            throw "nix-effects: handler for '${eff.name}' must return { resume; state; } or { abort; state; }"
+      else
+        impure eff (queue.singleton (value:
+          effectRotate {
+            comp = resumeWithQueue comp.queue value;
+            inherit handlers state done;
+          } 0));
 
   run = mk {
     doc = ''
@@ -140,7 +222,7 @@ let
       Time: O(n) where n = number of effects in the computation.
     '';
     value = comp: handlers: initialState:
-      assert (builtins.isAttrs comp && comp ? _tag)
+      assert (isComp comp)
         || throw "nix-effects: run expects a computation (Pure or Impure), got ${builtins.typeOf comp}";
       interpret { inherit comp handlers initialState; };
   };
@@ -168,7 +250,7 @@ let
       handlers,
       state ? null,
     }: comp:
-      assert (builtins.isAttrs comp && comp ? _tag)
+      assert (isComp comp)
         || throw "nix-effects: handle expects a computation (Pure or Impure), got ${builtins.typeOf comp}";
       let r = interpret { inherit comp handlers; initialState = state; };
       in return r.value r.state;
@@ -217,9 +299,90 @@ let
     };
   };
 
+  rotate = mk {
+    doc = ''
+      Selectively handle known effects and rotate unknown effects outward.
+
+      ```
+      rotate : { return?, handlers, state? } -> Computation a -> Computation b
+      ```
+
+      If the current effect has a matching handler, the handler is applied.
+      If it does not match, the effect is re-suspended and its continuation
+      is wrapped so handling resumes after that effect is interpreted by an
+      outer handler.
+
+      This corresponds to the Kyo-style handler rotation law
+      from https://gist.github.com/vic/3a7f52974a28675dbaf40b34bec74787:
+
+      ```
+      handle(tag1, suspend(tag2, i, k), f) = suspend(tag2, i, x => handle(tag1, k(x), f))` for `tag1 != tag2
+      ```
+    '';
+    value = {
+      return ? (value: state: { inherit value state; }),
+      handlers,
+      state ? null,
+    }: comp:
+      assert (isComp comp)
+        || throw "nix-effects: rotate expects a computation (Pure or Impure), got ${builtins.typeOf comp}";
+      effectRotate {
+        inherit comp handlers state;
+        done = return;
+      } 0;
+    tests = {
+      "rotate-matches-handled-effect" = {
+        expr =
+          let
+            comp = fx.kernel.send "inc" 1;
+            rotated = rotate {
+              handlers = {
+                inc = { param, state }: { resume = null; state = state + param; };
+              };
+              state = 0;
+            } comp;
+            result = handle { handlers = {}; } rotated;
+          in result.value.state;
+        expected = 1;
+      };
+      "rotate-preserves-unhandled-effect" = {
+        expr =
+          let
+            comp = fx.kernel.send "outer" 7;
+            rotated = rotate {
+              handlers = {
+                inc = { param, state }: { resume = null; state = state + param; };
+              };
+              state = 0;
+            } comp;
+          in rotated.effect.name;
+        expected = "outer";
+      };
+      "rotate-handles-after-outer-resume" = {
+        expr =
+          let
+            comp = fx.kernel.bind (fx.kernel.send "outer" 7) (_:
+              fx.kernel.send "inc" 1);
+            rotated = rotate {
+              handlers = {
+                inc = { param, state }: { resume = null; state = state + param; };
+              };
+              state = 0;
+            } comp;
+            result = handle {
+              handlers = {
+                outer = { param, state }: { resume = param * 2; inherit state; };
+              };
+            } rotated;
+          in result.value.state;
+        expected = 1;
+      };
+    };
+  };
+
 in mk {
   doc = "Trampolined interpreter using builtins.genericClosure for O(1) stack depth.";
   value = {
-    inherit run handle;
+    inherit run handle rotate;
   };
 }

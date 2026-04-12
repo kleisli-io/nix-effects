@@ -3,7 +3,7 @@
 # Usage:
 #   let fx = import ./. { lib = nixpkgs.lib; };
 #   in fx.run (fx.send "get" null) { get = ...; } initialState
-{ lib, pkgs ? null, ... }:
+{ pkgs ? import ./nixpkgs.nix { }, lib ? pkgs.lib, ... }:
 
 let
   api = import ./src/api.nix { inherit lib; };

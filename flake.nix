@@ -2,7 +2,7 @@
   description = "A freer-monad effect layer for pure Nix, with a dependent type checker built on top of it";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs.url = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.xz";
     nix-unit.url = "github:nix-community/nix-unit";
     nix-unit.inputs = {
       nixpkgs.follows = "nixpkgs";

@@ -1,5 +1,5 @@
 help:
   just -l
 
-test:
-  nix-unit ./tests.nix
+test suite="all" *args:
+  nix-unit --expr 'let x = import ./tests.nix {}; in if "{{suite}}" == "all" then x else x.{{suite}}' {{args}}

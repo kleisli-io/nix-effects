@@ -14,13 +14,13 @@ directly here.
 ## Running tests
 
 ```bash
+# With just (requires nix-unit in PATH)
+just test              # Run all tests
+just test inline       # Run a specific suite
+
+# With nix-unit directly
+nix-unit ./tests.nix
+
 # With flake
 nix flake check
-
-# With nix-unit (faster, can target specific suites)
-nix-unit --flake .#tests.inline.tc.elaborate
-nix-unit --flake .#tests.integration
-
-# Without flake (requires nix-unit in PATH)
-nix-unit ./tests.nix
 ```

@@ -24,9 +24,10 @@ let
     '';
     value = name: base: predicate: mkType {
       inherit name;
-      kernelType = if base ? _kernel then base._kernel else H.any;
+      kernelType = base._kernel;
       guard = v: base.check v && predicate v;
       description = "${name} (refined from ${base.name})";
+      approximate = true;
     };
     tests = {
       "named-refinement-accepts" = {

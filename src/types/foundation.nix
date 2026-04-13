@@ -4,25 +4,30 @@
 # its kernel representation (kernelType). All type operations are derived:
 #
 #   _tag = "Type"
-#   name : String             — human-readable name
-#   _kernel : HoasType        — kernel representation (the type IS this)
-#   check : Value → Bool      — derived from decide(kernelType, value)
-#   kernelCheck : Value → Bool — same as check (for legacy callers)
-#   prove : HoasTerm → Bool   — kernel proof checking
-#   validate : Value → Comp   — effectful check (sends typeCheck effect)
-#   universe : Int             — derived from checkTypeLevel(kernelType)
-#   description : String      — documentation
+#   name : String              — human-readable name
+#   _kernel : HoasType         — kernel representation (when not approximate)
+#   _kernelExact : Bool        — true when kernel alone is sufficient for checking
+#   check : Value → Bool       — derived from kernel and/or guard (see below)
+#   kernelCheck : Value → Bool — kernel-only decision (when not approximate)
+#   prove : HoasTerm → Bool    — kernel proof checking (when not approximate)
+#   validate : Value → Comp    — effectful check (sends typeCheck effect)
+#   universe : Int              — derived from checkTypeLevel(kernelType)
+#   description : String       — documentation
 #
-# The kernel type IS the type. check is its decision procedure, derived
-# mechanically from the kernel via decide. No hand-written predicates.
-# Universe levels are computed, not declared. This is the "one system"
-# architecture — there is no separate contract system, no adequacy bridge,
-# no possibility of disagreement between check and kernel.
+# The relationship between the kernel type system (MLTT) and the contract
+# layer (guards) is a Galois connection. The kernel provides a sound
+# over-approximation: γ(α(T)) ⊇ T. The guard provides the residual
+# constraints the kernel cannot express. Check is their intersection.
 #
-# For refinement types, an optional `guard` adds a runtime predicate
-# on top of the kernel check: check = decide(kernelType, v) && guard(v).
-# The guard is NOT part of the kernel — it's a contract-level constraint
-# that the kernel can't express (e.g., x >= 0 for natural numbers).
+# Dual-mode check derivation based on `approximate` and `guard`:
+#   - No guard: check = kernelDecide (kernel is sufficient)
+#   - Guard + approximate: check = kernelDecide(v) ∧ guard(v) (conjunction —
+#     kernel catches structural errors, guard handles residual constraints)
+#   - Guard + not approximate: check = guard(v) (replacement — kernel type
+#     is precise but elaboration is incomplete, e.g. dependent Pi/Sigma)
+#
+# _kernelExact = !isApproximate && guard == null. True when the kernel alone
+# is sufficient for correct type checking — no guard residual needed.
 #
 # Known constraint: builtins.tryEval only evaluates to WHNF.
 # When catching handler throws, force .value on the result to trigger
@@ -55,9 +60,11 @@ let
       - `name` — Human-readable type name
       - `kernelType` — HOAS type tree (required — this IS the type)
       - `guard` — Optional runtime predicate for refinement types.
-        When provided, `.check = decide(kernelType, v) && guard(v)`.
-        The guard is NOT part of the kernel — it handles constraints
-        the kernel can't express (e.g., x >= 0 for Nat).
+        Dual-mode: when `approximate`, `.check = kernelDecide(v) && guard(v)`
+        (conjunction — kernel catches structural errors, guard adds residual).
+        When not approximate, `.check = guard(v)` (replacement — kernel type
+        is precise but elaboration incomplete, e.g. dependent Pi/Sigma).
+        The guard handles constraints the kernel can't express (e.g., x >= 0).
       - `verify` — Optional custom verifier (`self → value → Computation`).
         When null (default), `validate` is auto-derived by wrapping
         `check` in a `typeCheck` effect. Supply a custom `verify` for
@@ -84,15 +91,17 @@ let
         # The kernel's decision procedure
         kernelDecide = v: fx.tc.elaborate.decide effectiveKernelType v;
 
-        # .check: guard overrides decide when provided (for types where
-        # the nix-effects value representation can't be elaborated to kernel
-        # values — e.g., Record, Maybe, Variant, Universe). When null,
-        # check is purely derived from the kernel via decide.
-        # When kernelType is omitted (no kernel representation at all),
-        # guard is required — otherwise check would use decide(H.any, v)
-        # which accepts everything.
+        # .check: dual-mode derivation.
+        # No guard: check = kernelDecide (kernel is sufficient).
+        # Guard + approximate: conjunction — kernelDecide catches structural
+        #   errors, guard handles the residual (refinement predicates, etc.).
+        # Guard + not approximate: replacement — kernel type is precise but
+        #   elaboration is incomplete (dependent Pi/Sigma with explicit
+        #   kernelType). Guard provides the correct check.
         effectiveCheck =
-          if guard != null then guard
+          if guard != null then
+            if isApproximate then v: kernelDecide v && guard v
+            else guard
           else kernelDecide;
 
         # .universe: override if provided, otherwise computed from checkTypeLevel
@@ -105,24 +114,23 @@ let
                 (fx.tc.check.checkTypeLevel fx.tc.check.emptyCtx tm);
             in if result ? error then 0 else result.level;
 
-        # Kernel fields: only present when kernelType is precise (not approximate).
-        # When approximate (e.g., H.function_ for Pi, H.any for Sigma without
-        # explicit kernelType), these are suppressed so that:
-        #   - elaborateType can fall through to structural detection
-        #   - callers know kernel checking is not available
-        kernelFields =
-          if isApproximate then {}
-          else {
-            _kernel = effectiveKernelType;
-            kernelCheck = kernelDecide;
-            prove = term:
-              let result = builtins.tryEval (
-                !((fx.tc.hoas.checkHoas effectiveKernelType term) ? error));
-              in result.success && result.value;
-          };
+        # _kernel is always exposed as the best kernel approximation, even for
+        # approximate types. This lets constructors always build precise composed
+        # kernels from children. kernelCheck and prove are only available when
+        # the kernel is precise (not approximate) — they promise accuracy.
+        kernelFields = {
+          _kernel = effectiveKernelType;
+        } // (if isApproximate then {} else {
+          kernelCheck = kernelDecide;
+          prove = term:
+            let result = builtins.tryEval (
+              !((fx.tc.hoas.checkHoas effectiveKernelType term) ? error));
+            in result.success && result.value;
+        });
 
         self = {
           _tag = "Type";
+          _kernelExact = !isApproximate && guard == null;
           inherit name description;
           check = effectiveCheck;
           universe = effectiveUniverse;
@@ -245,8 +253,23 @@ let
               kernelType = H.int_;
               guard = v: decide v && v > 0;
             };
-          in t.kernelCheck (-1);  # kernel accepts (it's an int), guard would reject
+          in t.kernelCheck (-1);  # kernel accepts (it's an int), check would reject
         expected = true;
+      };
+      # -- _kernelExact --
+      "kernel-exact-when-no-guard" = {
+        expr = (mkType { name = "T"; kernelType = H.bool; })._kernelExact;
+        expected = true;
+      };
+      "not-kernel-exact-with-guard" = {
+        expr = (mkType { name = "Pos"; kernelType = H.int_;
+          guard = v: (fx.tc.elaborate.decide H.int_ v) && v > 0;
+        })._kernelExact;
+        expected = false;
+      };
+      "not-kernel-exact-when-approximate" = {
+        expr = (mkType { name = "T"; kernelType = null; })._kernelExact;
+        expected = false;
       };
       # -- Prove --
       "prove-accepts-valid" = {
@@ -320,9 +343,9 @@ let
   refine = mk {
     doc = ''
       Narrow a type with an additional predicate. Creates a refinement type
-      whose check = decide(kernelType, v) AND predicate(v).
-      The base type's kernelType provides the kernel backing; the predicate
-      is a runtime-only guard the kernel cannot express.
+      whose check = kernelDecide(v) ∧ guard(v) (conjunction, since approximate).
+      The base type's kernel provides structural checking; the guard handles
+      the refinement predicate the kernel cannot express.
       Grounded in Freeman & Pfenning (1991) "Refinement Types for ML" and Rondon et al. (2008) "Liquid Types".
     '';
     value = base: predicate: mkType {
@@ -330,6 +353,7 @@ let
       kernelType = base._kernel;
       guard = v: base.check v && predicate v;
       description = "${base.description} (refined)";
+      approximate = true;
     };
     tests = let H = fx.tc.hoas; in {
       "refine-narrows" = {

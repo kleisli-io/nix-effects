@@ -103,9 +103,7 @@ let
   inherit (fx.kernel) pure bind send;
   H = fx.tc.hoas;
 
-  # ===========================================================================
-  # PI TYPES (DEPENDENT FUNCTIONS)
-  # ===========================================================================
+  # -- PI TYPES (DEPENDENT FUNCTIONS) --
 
   Pi = mk {
     doc = ''
@@ -188,12 +186,12 @@ let
         # approximate so _kernel/kernelCheck/prove are suppressed, letting
         # elaborateType do structural auto-detection.
         approximate = kernelType == null;
-        # Guard: immediate first-order part of the higher-order contract.
-        # Soundly rejects non-functions. The deferred part (domain +
-        # codomain verification) is checked at elimination sites via
-        # .checkAt — standard Findler-Felleisen higher-order contract
-        # decomposition.
-        guard = builtins.isFunction;
+        # Guard: when kernelType is explicit (precise kernel, not approximate),
+        # guard provides the isFunction check as replacement semantics —
+        # elaboration is incomplete for dependent Pi values. When kernelType
+        # is omitted (approximate, H.function_), kernelDecide already checks
+        # isFunction so the guard would be redundant under conjunction.
+        guard = if kernelType != null then builtins.isFunction else null;
         universe = universe;
       } // {
         inherit domain codomain;
@@ -418,22 +416,19 @@ let
           in piT ? kernelCheck;
         expected = true;
       };
-      "pi-without-kernelType-no-kernel" = {
-        # Pi without explicit kernelType is approximate — _kernel suppressed
-        # so elaborateType can do structural auto-detection
+      "pi-without-kernelType-not-exact" = {
+        # Pi without explicit kernelType is approximate — not kernel-exact
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             piT = Pi { domain = IntT; codomain = n: if n > 0 then IntT else IntT; universe = 0; };
-          in piT ? _kernel;
+          in piT._kernelExact;
         expected = false;
       };
     };
   };
 
-  # ===========================================================================
-  # SIGMA TYPES (DEPENDENT PAIRS)
-  # ===========================================================================
+  # -- SIGMA TYPES (DEPENDENT PAIRS) --
 
   Sigma = mk {
     doc = ''
@@ -598,7 +593,7 @@ let
         pullback = f: g: Sigma {
           fst = mkType {
             name = "${fst.name}'";
-            kernelType = if fst ? _kernel then fst._kernel else H.any;
+            kernelType = fst._kernel;
             guard = v: fst.check (f v);
             universe = fst.universe;
           };
@@ -606,7 +601,7 @@ let
             let orig = snd (f x);
             in mkType {
               name = "${orig.name}'";
-              kernelType = if orig ? _kernel then orig._kernel else H.any;
+              kernelType = orig._kernel;
               guard = v: orig.check (g v);
               universe = orig.universe;
             };
@@ -797,15 +792,13 @@ let
               snd = n: mkType { name = "L${toString n}"; kernelType = H.any; guard = v: builtins.isList v && builtins.length v == n; };
               universe = 0;
             };
-          in sigT ? kernelCheck || sigT ? _kernel;
+          in sigT ? kernelCheck;
         expected = false;
       };
     };
   };
 
-  # ===========================================================================
-  # CERTIFIED VALUES (Σ WITH PROOF WITNESS)
-  # ===========================================================================
+  # -- CERTIFIED VALUES (Σ WITH PROOF WITNESS) --
   #
   # Certified(A, P) = Σ(v:A).{p : Bool | p ∧ P(v)}
   # A dependent pair of a value and a witness that a predicate holds.
@@ -980,9 +973,7 @@ let
     };
   };
 
-  # ===========================================================================
-  # VECTOR (LENGTH-INDEXED LIST — CANONICAL DEPENDENT CONTRACT EXAMPLE)
-  # ===========================================================================
+  # -- VECTOR (LENGTH-INDEXED LIST — CANONICAL DEPENDENT CONTRACT EXAMPLE) --
 
   # NatT — non-negative integer type used by Vector as domain
   NatT = mkType { name = "Nat"; kernelType = H.nat; };
@@ -1076,9 +1067,7 @@ let
     };
   };
 
-  # ===========================================================================
-  # DEPENDENT RECORD (N-ARY SIGMA ENCODING)
-  # ===========================================================================
+  # -- DEPENDENT RECORD (N-ARY SIGMA ENCODING) --
   #
   # An n-ary dependent record is isomorphic to nested Sigma:
   #   { a : A, b : B(a), c : C(a,b) }  ≅  Σ(a:A).Σ(b:B(a)).C(a,b)
@@ -1144,13 +1133,13 @@ let
                 if builtins.isFunction field.type
                 then field.type partial
                 else field.type;
-              # Kernel propagation: when all remaining fields are non-dependent,
-              # compute Sigma kernel type from field _kernel annotations.
+              # Kernel propagation: when all remaining fields are non-dependent
+              # and kernel-exact, compute Sigma kernel type from _kernel.
               sigmaKernelType =
                 if builtins.all (f: !(builtins.isFunction f.type)) remaining
-                   && fieldType ? _kernel then
+                   && (fieldType._kernelExact or false) then
                   let restType = buildSigma rest {};
-                  in if restType ? _kernel then
+                  in if restType._kernelExact or false then
                     H.sigma "x" fieldType._kernel (_: restType._kernel)
                   else null
                 else null;

@@ -161,7 +161,10 @@ PersonT.check { name = "Alice"; age = 30; }  # true
 
 `ListOf` sends per-element `typeCheck` effects with indexed context
 (`List[Int][0]`, `List[Int][1]`, ...) so handlers report exactly which
-element failed.
+element failed. `Record` sends per-field effects (`Record{age, name}.age`)
+and delegates to each field type's `.validate`, so nested Records and
+ListOf fields decompose recursively. `Variant` delegates to the active
+branch's `.validate`.
 
 ### Refinement types
 

@@ -66,7 +66,7 @@ let
   elaborateType = type:
     if !(builtins.isAttrs type) then
       throw "elaborateType: expected a type attrset"
-    else if type ? _kernel then type._kernel
+    else if type ? prove then type._kernel
     else if isPi type then
       if isConstantFamily type.codomain
       then H.forall "x" (elaborateType type.domain) (_: elaborateType (type.codomain _s1))
@@ -190,26 +190,31 @@ let
       let
         fields = hoasTy.fields;
         n = builtins.length fields;
+        # Safe field access: converts uncatchable missing-attribute error
+        # to catchable throw so that decide remains total for records.
+        fieldOf = v: name:
+          if v ? ${name} then v.${name}
+          else throw "elaborateValue: Record missing required field '${name}'";
       in
         if !(builtins.isAttrs value)
         then throw "elaborateValue: Record requires attrset, got ${builtins.typeOf value}"
         else if n == 0 then H.tt
         else if n == 1 then
           let f = builtins.head fields; in
-          elaborateValue f.type value.${f.name}
+          elaborateValue f.type (fieldOf value f.name)
         else
           # Build nested pairs right-to-left
           let
             buildPairs = remaining: v:
               if builtins.length remaining == 1 then
-                elaborateValue (builtins.head remaining).type v.${(builtins.head remaining).name}
+                elaborateValue (builtins.head remaining).type (fieldOf v (builtins.head remaining).name)
               else
                 let
                   f = builtins.head remaining;
                   rest = builtins.tail remaining;
                   sigTy = H.sigma f.name f.type (_: { _htag = "record"; fields = rest; });
                 in H.pair
-                  (elaborateValue f.type v.${f.name})
+                  (elaborateValue f.type (fieldOf v f.name))
                   (buildPairs rest v)
                   sigTy;
           in buildPairs fields value
@@ -694,7 +699,7 @@ in mk {
                  universe = let a = fstType.universe; b = sndType.universe;
                             in if a >= b then a else b; };
   in {
-    # ===== Type elaboration: _kernel dispatch =====
+    # -- Type elaboration: _kernel dispatch --
 
     "elab-type-bool" = {
       expr = (elaborateType BoolT)._htag;
@@ -733,7 +738,7 @@ in mk {
       expected = "U";
     };
 
-    # ===== Type elaboration: structural auto-detection =====
+    # -- Type elaboration: structural auto-detection --
 
     # Structural: non-dependent Pi auto-detected
     "elab-type-auto-pi" = {
@@ -767,7 +772,7 @@ in mk {
       expected = false;
     };
 
-    # ===== Value elaboration =====
+    # -- Value elaboration --
 
     "elab-val-true" = {
       expr = (H.elab (elaborateValue H.bool true)).tag;
@@ -815,7 +820,7 @@ in mk {
       expected = "pair";
     };
 
-    # ===== Decision procedure: positive =====
+    # -- Decision procedure: positive --
 
     "decide-bool-true" = {
       expr = decide H.bool true;
@@ -858,7 +863,7 @@ in mk {
       expected = true;
     };
 
-    # ===== Decision procedure: negative =====
+    # -- Decision procedure: negative --
 
     "decide-bool-rejects-int" = {
       expr = decide H.bool 42;
@@ -885,6 +890,25 @@ in mk {
       expected = false;
     };
 
+    # -- Decision procedure: record totality --
+
+    "decide-record-rejects-missing-field" = {
+      expr = decide (H.record [{ name = "n"; type = H.int_; }]) { x = 1; };
+      expected = false;
+    };
+    "decide-record-rejects-non-attrset" = {
+      expr = decide (H.record [{ name = "n"; type = H.int_; }]) 42;
+      expected = false;
+    };
+    "decide-record-rejects-partial-fields" = {
+      expr = decide (H.record [{ name = "a"; type = H.int_; } { name = "b"; type = H.bool; }]) { a = 1; };
+      expected = false;
+    };
+    "decide-record-accepts-complete" = {
+      expr = decide (H.record [{ name = "a"; type = H.int_; } { name = "b"; type = H.bool; }]) { a = 1; b = true; };
+      expected = true;
+    };
+
     # Stack safety: decide on large list (buildList + HOAS elab both trampolined)
     # Note: eval/check still recurse on cons chains, limiting full-pipeline depth.
     # The HOAS layer itself handles 5000+ (see hoas.nix elab-cons-5000 test).
@@ -900,7 +924,7 @@ in mk {
       expected = false;
     };
 
-    # ===== Regression: decide(T,v) == T.check(v) =====
+    # -- Regression: decide(T,v) == T.check(v) --
 
     "regression-bool-true" = {
       expr = (decideType BoolT true) == (BoolT.check true);
@@ -959,7 +983,7 @@ in mk {
       expected = true;
     };
 
-    # ===== Primitive type elaboration: name-based auto-detection =====
+    # -- Primitive type elaboration: name-based auto-detection --
 
     "elab-type-auto-string" = {
       expr = (elaborateType FP.String)._htag;
@@ -990,7 +1014,7 @@ in mk {
       expected = "any";
     };
 
-    # ===== Value elaboration: primitives =====
+    # -- Value elaboration: primitives --
 
     "elab-val-string" = {
       expr = (H.elab (elaborateValue H.string "hello")).tag;
@@ -1025,7 +1049,7 @@ in mk {
       expected = "any-lit";
     };
 
-    # ===== Decision procedure: primitive positives =====
+    # -- Decision procedure: primitive positives --
 
     "decide-string-hello" = {
       expr = decide H.string "hello";
@@ -1068,7 +1092,7 @@ in mk {
       expected = true;
     };
 
-    # ===== Decision procedure: primitive negatives =====
+    # -- Decision procedure: primitive negatives --
 
     "decide-string-rejects-int" = {
       expr = decide H.string 42;
@@ -1091,7 +1115,7 @@ in mk {
       expected = false;
     };
 
-    # ===== Extraction: roundtrip tests =====
+    # -- Extraction: roundtrip tests --
     # Roundtrip: extract(T, eval(elab(elaborateValue(T, v)))) == v
 
     "extract-nat-0" = {
@@ -1158,7 +1182,7 @@ in mk {
       expected = true;
     };
 
-    # ===== Extraction: Pi (verified function) =====
+    # -- Extraction: Pi (verified function) --
 
     "extract-pi-identity" = {
       # Identity function: λ(x:Nat).x → extract → call with 5
@@ -1181,7 +1205,7 @@ in mk {
       expected = 0;
     };
 
-    # ===== verifyAndExtract pipeline =====
+    # -- verifyAndExtract pipeline --
 
     "verify-extract-nat" = {
       expr = verifyAndExtract H.nat (H.natLit 7);
@@ -1206,7 +1230,7 @@ in mk {
       expected = false;
     };
 
-    # ===== Extraction: stack safety =====
+    # -- Extraction: stack safety --
 
     "extract-list-5000" = {
       # Stack safety: extract a 5000-element list (booleans for O(1) per element)
@@ -1218,7 +1242,7 @@ in mk {
       expected = 5000;
     };
 
-    # ===== Extraction: opaque types throw =====
+    # -- Extraction: opaque types throw --
 
     "extract-attrs-throws" = {
       expr = (builtins.tryEval (extract H.attrs (E.eval [] (H.elab (elaborateValue H.attrs { x = 1; }))))).success;

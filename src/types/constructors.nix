@@ -1,8 +1,10 @@
 # nix-effects type constructors
 #
 # Higher-kinded type constructors that build compound types from simpler ones.
-# All types require kernelType. When sub-types lack kernel backing (_kernel),
-# kernelType = H.any with a guard fallback for the real check.
+# Guard and approximate decisions use _kernelExact: when all children are
+# kernel-exact, the constructor builds a precise kernel and omits the guard.
+# When any child is not kernel-exact, the constructor uses H.any + guard
+# and marks itself approximate so conjunction applies (see foundation.nix).
 { fx, api, ... }:
 
 let
@@ -20,19 +22,46 @@ let
     value = schema:
       let
         sortedNames = builtins.sort builtins.lessThan (builtins.attrNames schema);
-        allHaveKernel = builtins.all (f: schema.${f} ? _kernel) sortedNames;
+        allExact = builtins.all (f: schema.${f}._kernelExact) sortedNames;
         hoasFields = map (f: { name = f; type = schema.${f}._kernel; }) sortedNames;
-        kernelType = if allHaveKernel && sortedNames != []
+        kernelType = if sortedNames != []
           then H.record hoasFields
           else H.any;
-        guard = v:
-          builtins.isAttrs v
-          && builtins.all (field:
-            v ? ${field} && (schema.${field}).check v.${field}
-          ) sortedNames;
+        guard = if allExact && sortedNames != []
+          then null
+          else v:
+            builtins.isAttrs v
+            && builtins.all (field:
+              v ? ${field} && (schema.${field}).check v.${field}
+            ) sortedNames;
       in mkType {
         name = "Record{${builtins.concatStringsSep ", " sortedNames}}";
         inherit kernelType guard;
+        approximate = !(allExact && sortedNames != []);
+        # Per-field effectful verify for blame tracking. Delegates to each
+        # field type's .validate for recursive decomposition — a nested
+        # Record or ListOf field produces deep per-component effects.
+        verify = self: v:
+          if !(builtins.isAttrs v) then
+            send "typeCheck" { type = self; context = self.name; value = v; }
+          else
+            let
+              n = builtins.length sortedNames;
+              # Build chain right-to-left so effects fire in field-name order
+              checkAll = builtins.foldl'
+                (acc: i:
+                  let field = builtins.elemAt sortedNames i; in
+                  if !(v ? ${field}) then
+                    bind (send "typeCheck" {
+                      type = schema.${field};
+                      context = "${self.name}.${field}";
+                      value = null;
+                    }) (_: acc)
+                  else
+                    bind (schema.${field}.validate v.${field}) (_: acc))
+                (pure v)
+                (builtins.genList (i: n - 1 - i) n);
+            in if n == 0 then pure v else checkAll;
       };
     tests = let
       FP = fx.types.primitives;
@@ -80,6 +109,101 @@ let
         expr = (Record { n = FP.Int; b = FP.Bool; }) ? kernelCheck;
         expected = true;
       };
+      "exact-record-is-kernel-exact" = {
+        expr = (Record { n = FP.Int; b = FP.Bool; })._kernelExact;
+        expected = true;
+      };
+      # -- Per-field blame tracking --
+      "verify-per-field-blame" = {
+        expr =
+          let
+            PersonT = Record { n = FP.Int; s = FP.String; };
+            result = fx.trampoline.handle {
+              handlers = fx.effects.typecheck.collecting;
+              state = [];
+            } (PersonT.validate { n = "wrong"; s = 42; });
+          in builtins.length result.state;
+        expected = 2;
+      };
+      "verify-missing-field-blame" = {
+        expr =
+          let
+            PersonT = Record { n = FP.Int; };
+            result = fx.trampoline.handle {
+              handlers = fx.effects.typecheck.collecting;
+              state = [];
+            } (PersonT.validate {});
+          in builtins.length result.state;
+        expected = 1;
+      };
+      "verify-nested-decomposition" = {
+        expr =
+          let
+            Inner = Record { x = FP.Int; };
+            Outer = Record { inner = Inner; };
+            result = fx.trampoline.handle {
+              handlers = fx.effects.typecheck.collecting;
+              state = [];
+            } (Outer.validate { inner = { x = "bad"; }; });
+          in builtins.length result.state;
+        expected = 1;
+      };
+      # -- Composition soundness --
+      "deep-maybe-record-listof-refined" = {
+        expr =
+          let
+            Pos = fx.types.refinement.refined "Pos" FP.Int (x: x > 0);
+            PersonT = Record { scores = ListOf Pos; name = FP.String; };
+          in (Maybe PersonT).check { scores = [(-1)]; name = "x"; };
+        expected = false;
+      };
+      "kernel-exact-propagation" = {
+        expr =
+          let T = Maybe (Record { items = ListOf (Either FP.Int FP.Bool); });
+          in T._kernelExact;
+        expected = true;
+      };
+      "refined-kills-kernel-exact" = {
+        expr =
+          let
+            Pos = fx.types.refinement.refined "Pos" FP.Int (x: x > 0);
+            T = Maybe (Record { items = ListOf (Either Pos FP.Bool); });
+          in T._kernelExact;
+        expected = false;
+      };
+      "chained-refinement-soundness" = {
+        expr =
+          let
+            Pos = fx.types.foundation.refine FP.Int (x: x > 0);
+            PosEven = fx.types.foundation.refine Pos (x: builtins.bitAnd x 1 == 0);
+          in (Maybe PosEven).check (-2);
+        expected = false;
+      };
+      "deep-blame-nested-record" = {
+        expr =
+          let
+            Inner = Record { c = FP.Int; };
+            Outer = Record { a = Record { b = Inner; }; };
+            result = fx.trampoline.handle {
+              handlers = fx.effects.typecheck.collecting;
+              state = [];
+            } (Outer.validate { a = { b = { c = "wrong"; }; }; });
+          in builtins.length result.state;
+        expected = 1;
+      };
+      # -- Adequacy: kernel-exact types have check == kernelCheck --
+      "adequacy-record" = {
+        expr =
+          let T = Record { n = FP.Int; b = FP.Bool; };
+          in T.check { n = 1; b = true; } == T.kernelCheck { n = 1; b = true; };
+        expected = true;
+      };
+      "adequacy-record-negative" = {
+        expr =
+          let T = Record { n = FP.Int; b = FP.Bool; };
+          in T.check { n = "x"; b = true; } == T.kernelCheck { n = "x"; b = true; };
+        expected = true;
+      };
     };
   };
 
@@ -94,16 +218,14 @@ let
     '';
     value = elemType:
       let
-        hasKernel = elemType ? _kernel;
-        kernelType = if hasKernel then H.listOf elemType._kernel else H.any;
-        # Always guard with element-level .check: refined types (and any type
-        # with a guard) have .check ≠ .kernelCheck, so kernel decide on
-        # listOf(elemKernel) would miss the refinement predicate.
-        # .kernelCheck (via kernelType) remains pure kernel for formal paths.
-        guard = v: builtins.isList v && builtins.all elemType.check v;
+        isExact = elemType._kernelExact;
+        kernelType = H.listOf elemType._kernel;
+        guard = if isExact then null
+          else v: builtins.isList v && builtins.all elemType.check v;
       in mkType {
         name = "List[${elemType.name}]";
         inherit kernelType guard;
+        approximate = !isExact;
         # Per-element effectful verify for blame tracking.
         verify = self: v:
           if !(builtins.isList v) then
@@ -161,14 +283,14 @@ let
     doc = "Option type. Maybe Type accepts null or a value of Type.";
     value = innerType:
       let
-        hasKernel = innerType ? _kernel;
-        kernelType = if hasKernel then H.maybe innerType._kernel else H.any;
-        guard =
-          if hasKernel then null
+        isExact = innerType._kernelExact;
+        kernelType = H.maybe innerType._kernel;
+        guard = if isExact then null
           else v: v == null || innerType.check v;
       in mkType {
         name = "Maybe[${innerType.name}]";
         inherit kernelType guard;
+        approximate = !isExact;
       };
     tests = let FP = fx.types.primitives; in {
       "accepts-null" = {
@@ -187,6 +309,31 @@ let
         expr = (Maybe FP.Int) ? kernelCheck;
         expected = true;
       };
+      # -- Soundness: refined types through Maybe --
+      "soundness-maybe-refined-rejects" = {
+        expr =
+          let Nat = fx.types.refinement.refined "Nat" FP.Int (x: x >= 0);
+          in (Maybe Nat).check (-1);
+        expected = false;
+      };
+      "soundness-maybe-refined-accepts-null" = {
+        expr =
+          let Nat = fx.types.refinement.refined "Nat" FP.Int (x: x >= 0);
+          in (Maybe Nat).check null;
+        expected = true;
+      };
+      "soundness-maybe-refined-accepts-valid" = {
+        expr =
+          let Nat = fx.types.refinement.refined "Nat" FP.Int (x: x >= 0);
+          in (Maybe Nat).check 5;
+        expected = true;
+      };
+      "refined-not-kernel-exact" = {
+        expr =
+          let Nat = fx.types.refinement.refined "Nat" FP.Int (x: x >= 0);
+          in Nat._kernelExact;
+        expected = false;
+      };
     };
   };
 
@@ -197,12 +344,9 @@ let
     '';
     value = leftType: rightType:
       let
-        hasKernel = leftType ? _kernel && rightType ? _kernel;
-        kernelType = if hasKernel
-          then H.sum leftType._kernel rightType._kernel
-          else H.any;
-        guard =
-          if hasKernel then null
+        isExact = leftType._kernelExact && rightType._kernelExact;
+        kernelType = H.sum leftType._kernel rightType._kernel;
+        guard = if isExact then null
           else v:
             builtins.isAttrs v
             && v ? _tag && v ? value
@@ -211,6 +355,7 @@ let
       in mkType {
         name = "Either[${leftType.name}, ${rightType.name}]";
         inherit kernelType guard;
+        approximate = !isExact;
       };
     tests = let FP = fx.types.primitives; in {
       "accepts-left" = {
@@ -254,19 +399,29 @@ let
     value = schema:
       let
         sortedTags = builtins.sort builtins.lessThan (builtins.attrNames schema);
-        allHaveKernel = builtins.all (t: schema.${t} ? _kernel) sortedTags;
+        allExact = builtins.all (t: schema.${t}._kernelExact) sortedTags;
         hoasBranches = map (t: { tag = t; type = schema.${t}._kernel; }) sortedTags;
-        kernelType = if allHaveKernel && sortedTags != []
+        kernelType = if sortedTags != []
           then H.variant hoasBranches
           else H.any;
-        guard = v:
-          builtins.isAttrs v
-          && v ? _tag && v ? value
-          && schema ? ${v._tag}
-          && (schema.${v._tag}).check v.value;
+        guard = if allExact && sortedTags != []
+          then null
+          else v:
+            builtins.isAttrs v
+            && v ? _tag && v ? value
+            && schema ? ${v._tag}
+            && (schema.${v._tag}).check v.value;
       in mkType {
         name = "Variant{${builtins.concatStringsSep " | " sortedTags}}";
         inherit kernelType guard;
+        approximate = !(allExact && sortedTags != []);
+        # Per-branch verify: only the active branch needs validation.
+        # Delegates to the branch type's .validate for recursive decomposition.
+        verify = self: v:
+          if !(builtins.isAttrs v && v ? _tag && v ? value && schema ? ${v._tag}) then
+            send "typeCheck" { type = self; context = self.name; value = v; }
+          else
+            schema.${v._tag}.validate v.value;
       };
     tests = let FP = fx.types.primitives; in {
       "accepts-valid-variant" = {
@@ -291,6 +446,18 @@ let
       "has-kernelCheck" = {
         expr = (Variant { a = FP.Int; b = FP.Bool; }) ? kernelCheck;
         expected = true;
+      };
+      # -- Per-branch blame tracking --
+      "verify-variant-active-branch" = {
+        expr =
+          let
+            Shape = Variant { circle = FP.Float; rect = FP.Attrs; };
+            result = fx.trampoline.handle {
+              handlers = fx.effects.typecheck.collecting;
+              state = [];
+            } (Shape.validate { _tag = "circle"; value = "not-float"; });
+          in builtins.length result.state;
+        expected = 1;
       };
     };
   };

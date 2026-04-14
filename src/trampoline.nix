@@ -77,6 +77,22 @@ let
     if q._variant == "Identity" then pure value
     else applyQueue q value 0;
 
+  # Resume with a value or computation. If the resume is a computation,
+  # splice its effects before the continuation queue. This enables
+  # effectful handlers: handlers that return computations to be handled
+  # before the continuation runs.
+  resumeCompOrValue = q: r:
+    if isComp r then
+      if isPure r then
+        resumeWithQueue q r.value
+      else
+        # Impure: append original continuation queue to computation's queue.
+        # The computation's effects run first; when it reaches Pure,
+        # the original continuation picks up the result.
+        impure r.effect (queue.append r.queue q)
+    else
+      resumeWithQueue q r;
+
   interpret = { comp, handlers, initialState }:
     let
       steps = builtins.genericClosure {
@@ -106,7 +122,7 @@ let
                 [{ key = k; _comp = pure result.abort; _state = newState; }]
               else if result ? resume then
                 [{ key = k;
-                   _comp = resumeWithQueue step._comp.queue result.resume;
+                   _comp = resumeCompOrValue step._comp.queue result.resume;
                    _state = newState; }]
               else
                 throw "nix-effects: handler for '${eff.name}' must return { resume; state; } or { abort; state; }";
@@ -176,13 +192,13 @@ let
           else if result ? resume then
             if depth >= 500 then
               effectRotateSlow {
-                comp = resumeWithQueue comp.queue result.resume;
+                comp = resumeCompOrValue comp.queue result.resume;
                 inherit handlers done;
                 state = newState;
               }
             else
               effectRotate {
-                comp = resumeWithQueue comp.queue result.resume;
+                comp = resumeCompOrValue comp.queue result.resume;
                 inherit handlers done;
                 state = newState;
               } (depth + 1)
@@ -296,6 +312,80 @@ let
           in result.value;
         expected = { error = "boom"; };
       };
+      "effectful-resume-runs-sub-computation" = {
+        expr =
+          let
+            send' = fx.kernel.send;
+            bind' = fx.kernel.bind;
+            comp = send' "outer" null;
+            result = handle {
+              handlers = {
+                "outer" = { param, state }: {
+                  resume = bind' (send' "inner" 10) (x: pure (x * 2));
+                  inherit state;
+                };
+                "inner" = { param, state }: {
+                  resume = param + 1;
+                  inherit state;
+                };
+              };
+            } comp;
+          in result.value;
+        expected = 22;
+      };
+      "effectful-resume-threads-state" = {
+        expr =
+          let
+            send' = fx.kernel.send;
+            bind' = fx.kernel.bind;
+            comp = send' "resolve" null;
+            result = handle {
+              handlers = {
+                "resolve" = { param, state }: {
+                  resume = bind' (send' "count" null) (_: send' "count" null);
+                  state = state // { resolved = true; };
+                };
+                "count" = { param, state }: {
+                  resume = null;
+                  state = state // { n = (state.n or 0) + 1; };
+                };
+              };
+              state = {};
+            } comp;
+          in { n = result.state.n; resolved = result.state.resolved; };
+        expected = { n = 2; resolved = true; };
+      };
+      "effectful-resume-with-continuation" = {
+        expr =
+          let
+            send' = fx.kernel.send;
+            bind' = fx.kernel.bind;
+            comp = bind' (send' "fetch" null) (x: pure (x + 100));
+            result = handle {
+              handlers = {
+                "fetch" = { param, state }: {
+                  resume = bind' (send' "db" null) (row: pure row.value);
+                  inherit state;
+                };
+                "db" = { param, state }: {
+                  resume = { value = 42; };
+                  inherit state;
+                };
+              };
+            } comp;
+          in result.value;
+        expected = 142;
+      };
+      "plain-resume-unchanged" = {
+        expr =
+          let
+            comp = fx.kernel.send "x" 5;
+            result = handle {
+              handlers.x = { param, state }: { resume = param + 1; inherit state; };
+            } comp;
+          in result.value;
+        expected = 6;
+      };
     };
   };
 
@@ -376,6 +466,28 @@ let
             } rotated;
           in result.value.state;
         expected = 1;
+      };
+      "effectful-resume-in-rotate" = {
+        expr =
+          let
+            send' = fx.kernel.send;
+            bind' = fx.kernel.bind;
+            comp = send' "a" null;
+            rotated = rotate {
+              handlers = {
+                "a" = { param, state }: {
+                  resume = bind' (send' "b" 5) (x: pure (x + 1));
+                  inherit state;
+                };
+                "b" = { param, state }: {
+                  resume = param * 2;
+                  inherit state;
+                };
+              };
+            } comp;
+            result = handle { handlers = {}; } rotated;
+          in result.value.value;
+        expected = 11;
       };
     };
   };

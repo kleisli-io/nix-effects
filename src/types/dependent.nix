@@ -186,12 +186,11 @@ let
         # approximate so _kernel/kernelCheck/prove are suppressed, letting
         # elaborateType do structural auto-detection.
         approximate = kernelType == null;
-        # Guard: when kernelType is explicit (precise kernel, not approximate),
-        # guard provides the isFunction check as replacement semantics —
-        # elaboration is incomplete for dependent Pi values. When kernelType
-        # is omitted (approximate, H.function_), kernelDecide already checks
-        # isFunction so the guard would be redundant under conjunction.
-        guard = if kernelType != null then builtins.isFunction else null;
+        # Guard: null for all Pi types. When kernelType is explicit, the
+        # opaque lambda check (domain match + isFunction) strictly subsumes
+        # the old isFunction guard. When kernelType is omitted (approximate,
+        # H.function_), kernelDecide checks isFunction via elaboration.
+        guard = null;
         universe = universe;
       } // {
         inherit domain codomain;
@@ -416,13 +415,13 @@ let
           in piT ? kernelCheck;
         expected = true;
       };
-      "pi-without-kernelType-not-exact" = {
-        # Pi without explicit kernelType is approximate — not kernel-exact
+      "pi-without-kernelType-not-precise" = {
+        # Pi without explicit kernelType is approximate — not kernel-precise
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             piT = Pi { domain = IntT; codomain = n: if n > 0 then IntT else IntT; universe = 0; };
-          in piT._kernelExact;
+          in piT._kernelPrecise;
         expected = false;
       };
     };
@@ -1137,9 +1136,9 @@ let
               # and kernel-exact, compute Sigma kernel type from _kernel.
               sigmaKernelType =
                 if builtins.all (f: !(builtins.isFunction f.type)) remaining
-                   && (fieldType._kernelExact or false) then
+                   && (fieldType._kernelPrecise or false) then
                   let restType = buildSigma rest {};
-                  in if restType._kernelExact or false then
+                  in if restType._kernelPrecise or false then
                     H.sigma "x" fieldType._kernel (_: restType._kernel)
                   else null
                 else null;
@@ -1301,6 +1300,40 @@ let
             ];
           in recT ? _kernel && recT ? kernelCheck;
         expected = true;
+      };
+      "deprec-refined-field-has-precise-kernel" = {
+        # DepRecord with refined (precise but guarded) fields gets precise
+        # kernel via _kernelPrecise — was impossible under _kernelExact
+        expr =
+          let
+            Pos = fx.types.foundation.refine
+              (mkType { name = "Int"; kernelType = H.int_; })
+              (x: x > 0);
+            BoolT = mkType { name = "Bool"; kernelType = H.bool; };
+            recT = DepRecord [
+              { name = "n"; type = Pos; }
+              { name = "b"; type = BoolT; }
+            ];
+          in recT ? _kernel && recT ? kernelCheck;
+        expected = true;
+      };
+      "deprec-dependent-field-still-approximate" = {
+        # Dependent fields bail out of kernel propagation (preserved)
+        expr =
+          let
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
+            recT = DepRecord [
+              { name = "n"; type = IntT; }
+              { name = "items"; type = (self:
+                mkType {
+                  name = "L";
+                  kernelType = H.any;
+                  guard = v: builtins.isList v && builtins.length v == self.n;
+                });
+              }
+            ];
+          in recT ? kernelCheck;
+        expected = false;
       };
     };
   };

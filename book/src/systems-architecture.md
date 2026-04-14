@@ -121,7 +121,7 @@ Terms are Nix attrsets. Each has a `tag` field for the constructor:
 { tag = "lam"; name = "x"; domain = ...; body = ...; }     # λ abstraction
 { tag = "app"; fn = ...; arg = ...; }         # application
 { tag = "sigma"; name = "x"; fst = ...; snd = ...; }       # Σ type
-{ tag = "pair"; fst = ...; snd = ...; type = ...; }         # pair
+{ tag = "pair"; fst = ...; snd = ...; }                      # pair
 { tag = "fst"; pair = ...; }                  # first projection
 { tag = "snd"; pair = ...; }                  # second projection
 { tag = "nat"; }                              # ℕ

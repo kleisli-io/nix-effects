@@ -28,7 +28,7 @@ let
     else if t == "VSigma" then
       T.mkSigma v.name (quote d v.fst)
         (quote (d + 1) (E.instantiate v.closure (V.freshVar d)))
-    else if t == "VPair" then T.mkPair (quote d v.fst) (quote d v.snd) T.mkUnit
+    else if t == "VPair" then T.mkPair (quote d v.fst) (quote d v.snd)
     else if t == "VNat" then T.mkNat
     else if t == "VZero" then T.mkZero
     # VSucc — trampolined for deep naturals (S^5000+)
@@ -92,6 +92,7 @@ let
     else if t == "VPathLit" then T.mkPathLit
     else if t == "VFnLit" then T.mkFnLit
     else if t == "VAnyLit" then T.mkAnyLit
+    else if t == "VOpaqueLam" then T.mkOpaqueLam v._fnBox (quote d v.piTy)
     else if t == "VNe" then quoteSp d (T.mkVar (lvl2Ix d v.level)) v.spine
     else throw "tc: quote unknown tag '${t}'";
 
@@ -294,7 +295,7 @@ in mk {
       expected = "zero";
     };
     "nf-fst-pair" = {
-      expr = (nf [] (T.mkFst (T.mkPair T.mkZero T.mkTrue T.mkNat))).tag;
+      expr = (nf [] (T.mkFst (T.mkPair T.mkZero T.mkTrue))).tag;
       expected = "zero";
     };
 

@@ -75,7 +75,7 @@ let
   tt = { _htag = "tt"; };
   nil = elem: { _htag = "nil"; inherit elem; };
   cons = elem: head: tail: { _htag = "cons"; inherit elem head tail; };
-  pair = fst: snd: ann: { _htag = "pair"; inherit fst snd ann; };
+  pair = fst: snd: { _htag = "pair"; inherit fst snd; };
   inl = left: right: term: { _htag = "inl"; inherit left right term; };
   inr = left: right: term: { _htag = "inr"; inherit left right term; };
   refl = { _htag = "refl"; };
@@ -87,6 +87,7 @@ let
   fnLit = { _htag = "fn-lit"; };
   anyLit = { _htag = "any-lit"; };
   strEq = lhs: rhs: { _htag = "str-eq"; inherit lhs rhs; };
+  opaqueLam = nixFn: piHoas: { _htag = "opaque-lam"; _fnBox = { _fn = nixFn; }; inherit nixFn piHoas; };
   absurd = type: term: { _htag = "absurd"; inherit type term; };
   ann = term: type: { _htag = "ann"; inherit term type; };
   app = fn: arg: { _htag = "app"; inherit fn arg; };
@@ -255,11 +256,13 @@ let
         T.mkCons (elaborate depth node.elem) (elaborate depth node.head) acc
       ) (elaborate depth base) (builtins.genList (x: x) n)
     else if t == "pair" then
-      T.mkPair (elaborate depth h.fst) (elaborate depth h.snd) (elaborate depth h.ann)
+      T.mkPair (elaborate depth h.fst) (elaborate depth h.snd)
     else if t == "inl" then
       T.mkInl (elaborate depth h.left) (elaborate depth h.right) (elaborate depth h.term)
     else if t == "inr" then
       T.mkInr (elaborate depth h.left) (elaborate depth h.right) (elaborate depth h.term)
+    else if t == "opaque-lam" then
+      T.mkOpaqueLam h._fnBox (elaborate depth h.piHoas)
     else if t == "str-eq" then
       T.mkStrEq (elaborate depth h.lhs) (elaborate depth h.rhs)
     else if t == "absurd" then
@@ -387,7 +390,7 @@ in mk {
     # Terms
     inherit zero succ true_ false_ tt nil cons pair inl inr refl
       stringLit intLit floatLit attrsLit pathLit fnLit anyLit
-      strEq absurd ann app fst_ snd_;
+      opaqueLam strEq absurd ann app fst_ snd_;
     # Eliminators
     inherit ind boolElim listElim sumElim j;
     # Elaboration
@@ -458,15 +461,15 @@ in mk {
     "elab-tt" = { expr = (elab tt).tag; expected = "tt"; };
     "elab-nil" = { expr = (elab (nil nat)).tag; expected = "nil"; };
     "elab-cons" = { expr = (elab (cons nat zero (nil nat))).tag; expected = "cons"; };
-    "elab-pair" = { expr = (elab (pair zero true_ nat)).tag; expected = "pair"; };
+    "elab-pair" = { expr = (elab (pair zero true_)).tag; expected = "pair"; };
     "elab-inl" = { expr = (elab (inl nat bool zero)).tag; expected = "inl"; };
     "elab-inr" = { expr = (elab (inr nat bool true_)).tag; expected = "inr"; };
     "elab-refl" = { expr = (elab refl).tag; expected = "refl"; };
     "elab-ann" = { expr = (elab (ann zero nat)).tag; expected = "ann"; };
     "elab-app" = { expr = (elab (app (lam "x" nat (x: x)) zero)).tag; expected = "app"; };
     "elab-absurd" = { expr = (elab (absurd nat (lam "x" void (x: x)))).tag; expected = "absurd"; };
-    "elab-fst" = { expr = (elab (fst_ (pair zero true_ (sigma "x" nat (_: bool))))).tag; expected = "fst"; };
-    "elab-snd" = { expr = (elab (snd_ (pair zero true_ (sigma "x" nat (_: bool))))).tag; expected = "snd"; };
+    "elab-fst" = { expr = (elab (fst_ (pair zero true_))).tag; expected = "fst"; };
+    "elab-snd" = { expr = (elab (snd_ (pair zero true_))).tag; expected = "snd"; };
 
     # -- Error path: non-serializable value doesn't crash toJSON --
     "elab-error-non-serializable" = {
@@ -598,7 +601,7 @@ in mk {
 
     # pair(0, true) : Σ(x:Nat).Bool
     "check-pair" = {
-      expr = (checkHoas (sigma "x" nat (_: bool)) (pair zero true_ (sigma "x" nat (_: bool)))).tag;
+      expr = (checkHoas (sigma "x" nat (_: bool)) (pair zero true_)).tag;
       expected = "pair";
     };
 
@@ -660,7 +663,7 @@ in mk {
     "theorem-dep-pair" = {
       expr = let
         ty = sigma "x" nat (x: eq nat x zero);
-        tm = pair zero refl (sigma "x" nat (x: eq nat x zero));
+        tm = pair zero refl;
       in (checkHoas ty tm).tag;
       expected = "pair";
     };
@@ -769,6 +772,87 @@ in mk {
     "check-any-lit" = {
       expr = (checkHoas any anyLit).tag;
       expected = "any-lit";
+    };
+
+    # ===== Opaque lambda: trust boundary for Pi =====
+
+    "elab-opaque-lam" = {
+      expr = (elab (opaqueLam (x: x) (forall "x" nat (_: nat)))).tag;
+      expected = "opaque-lam";
+    };
+
+    # Opaque lambda checks at matching Pi type
+    "opaque-lam-checks-at-pi" = {
+      expr = let
+        piTy = forall "x" nat (_: nat);
+      in (checkHoas piTy (opaqueLam (x: x) piTy)).tag;
+      expected = "opaque-lam";
+    };
+
+    # Opaque lambda rejects domain mismatch
+    "opaque-lam-rejects-domain-mismatch" = {
+      expr = let
+        targetPi = forall "x" nat (_: nat);
+        annotPi = forall "x" bool (_: nat);
+      in (checkHoas targetPi (opaqueLam (x: x) annotPi)) ? error;
+      expected = true;
+    };
+
+    # Opaque lambda rejects non-Pi target type
+    "opaque-lam-rejects-non-pi" = {
+      expr = (checkHoas nat (opaqueLam (x: x) (forall "x" nat (_: nat)))) ? error;
+      expected = true;
+    };
+
+    # Opaque lambda infers Pi type from annotation
+    "opaque-lam-infers-pi-type" = {
+      expr = let
+        piTy = forall "x" nat (_: nat);
+        result = inferHoas (ann (opaqueLam (x: x) piTy) piTy);
+      in result.type.tag;
+      expected = "VPi";
+    };
+
+    # Opaque lambda quote roundtrip: eval → quote → eval = same structure
+    "opaque-lam-quote-roundtrip" = {
+      expr = let
+        H = { inherit nat forall opaqueLam elab; };
+        piTy = H.forall "x" H.nat (_: H.nat);
+        tm = H.elab (H.opaqueLam (x: x) piTy);
+        Q' = fx.tc.quote;
+      in Q'.nf [] (Q'.nf [] tm) == Q'.nf [] tm;
+      expected = true;
+    };
+
+    # Conv: same Nix function → conv-equal
+    "opaque-lam-conv-reflexive" = {
+      expr = let
+        f = x: x;
+        piTy = forall "x" nat (_: nat);
+        tm1 = elab (opaqueLam f piTy);
+        tm2 = elab (opaqueLam f piTy);
+        E' = fx.tc.eval;
+        C' = fx.tc.conv;
+        v1 = E'.eval [] tm1;
+        v2 = E'.eval [] tm2;
+      in C'.conv 0 v1 v2;
+      expected = true;
+    };
+
+    # Conv: different Nix functions → not conv-equal
+    "opaque-lam-conv-distinct" = {
+      expr = let
+        f = x: x;
+        g = x: succ x;
+        piTy = forall "x" nat (_: nat);
+        tm1 = elab (opaqueLam f piTy);
+        tm2 = elab (opaqueLam g piTy);
+        E' = fx.tc.eval;
+        C' = fx.tc.conv;
+        v1 = E'.eval [] tm1;
+        v2 = E'.eval [] tm2;
+      in C'.conv 0 v1 v2;
+      expected = false;
     };
   };
 }

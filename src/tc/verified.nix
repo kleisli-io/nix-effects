@@ -166,6 +166,18 @@ let
   # v.verify type impl → Nix value (type-checked and extracted)
   verify = Elab.verifyAndExtract;
 
+  # -- Verified callable --
+  # v.verifiedFn piType bodyHoas → callable attrset with kernel-verified body.
+  # The returned value is callable as a Nix function (via __functor) and
+  # carries _hoasImpl so elaborateValue's Pi case uses it for full body
+  # verification instead of wrapping in an opaque lambda trust boundary.
+  verifiedFn = piHoas: bodyHoas:
+    let nixFn = Elab.verifyAndExtract piHoas bodyHoas;
+    in builtins.seq nixFn {
+      __functor = _self: nixFn;
+      _hoasImpl = bodyHoas;
+    };
+
 in mk {
   doc = ''
     # fx.tc.verified — Verified Implementation Combinators
@@ -223,6 +235,8 @@ in mk {
     ## Pipeline
 
     - `verify : Hoas → Hoas → NixValue` — type-check + eval + extract
+    - `verifiedFn : Hoas → Hoas → VerifiedValue` — callable value with
+      `_hoasImpl` for full kernel body verification in parent types
   '';
   value = {
     # Literals
@@ -243,7 +257,7 @@ in mk {
     # String
     inherit strEq strElem;
     # Pipeline
-    inherit verify;
+    inherit verify verifiedFn;
   };
   tests = let
     # Type shorthands
@@ -307,14 +321,14 @@ in mk {
 
     # Pair: (0, true) : Σ(x:Nat).Bool
     "v-pair-check" = {
-      expr = (H.checkHoas SigT (pair (nat 0) true_ SigT)).tag;
+      expr = (H.checkHoas SigT (pair (nat 0) true_)).tag;
       expected = "pair";
     };
 
     # Fst: fst((0, true)) evaluates to 0
     "v-fst-eval" = {
       expr = let
-        p = pair (nat 0) true_ SigT;
+        p = pair (nat 0) true_;
         val = E.eval [] (H.elab (fst p));
       in Elab.extract NatT val;
       expected = 0;
@@ -323,7 +337,7 @@ in mk {
     # Snd: snd((0, true)) evaluates to true
     "v-snd-eval" = {
       expr = let
-        p = pair (nat 0) true_ SigT;
+        p = pair (nat 0) true_;
         val = E.eval [] (H.elab (snd p));
       in Elab.extract BoolT val;
       expected = true;
@@ -560,6 +574,58 @@ in mk {
           (fn "r" recTy (r: field recTy "x" r));
       in getX { x = 42; };
       expected = 42;
+    };
+
+    # ===== verifiedFn: callable with _hoasImpl protocol =====
+
+    "verified-fn-is-callable" = {
+      expr = let
+        f = verifiedFn (H.forall "x" NatT (_: NatT)) (fn "x" NatT (x: H.succ x));
+      in f 5;
+      expected = 6;
+    };
+    "verified-fn-has-hoasImpl" = {
+      expr = let
+        f = verifiedFn (H.forall "x" NatT (_: NatT)) (fn "x" NatT (x: H.succ x));
+      in f ? _hoasImpl;
+      expected = true;
+    };
+    "verified-fn-kernel-checks" = {
+      # elaborateValue Pi uses _hoasImpl for full body verification
+      expr = let
+        piTy = H.forall "x" NatT (_: NatT);
+        f = verifiedFn piTy (fn "x" NatT (x: H.succ x));
+      in Elab.decide piTy f;
+      expected = true;
+    };
+    "verified-fn-body-rejects" = {
+      # Kernel catches body type error at construction time
+      expr = let
+        piTy = H.forall "x" NatT (_: NatT);
+        # Body returns Bool instead of Nat
+        result = builtins.tryEval (verifiedFn piTy (fn "x" NatT (_: true_)));
+      in result.success;
+      expected = false;
+    };
+    "verified-fn-roundtrip" = {
+      # elaborate → check → eval → extract = same function behavior
+      expr = let
+        piTy = H.forall "x" NatT (_: NatT);
+        f = verifiedFn piTy (fn "x" NatT (x: H.succ x));
+        hoasVal = Elab.elaborateValue piTy f;
+        val = fx.tc.eval.eval [] (H.elab hoasVal);
+        extracted = Elab.extract piTy val;
+      in extracted 5;
+      expected = 6;
+    };
+    "verified-vs-opaque-same-domain-check" = {
+      # Both verified and opaque reject domain mismatch
+      expr = let
+        natToNat = H.forall "x" NatT (_: NatT);
+        boolToNat = H.forall "x" BoolT (_: NatT);
+        f = verifiedFn natToNat (fn "x" NatT (x: H.succ x));
+      in Elab.decide boolToNat f;
+      expected = false;
     };
   };
 }

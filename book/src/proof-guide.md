@@ -83,7 +83,7 @@ in {
   # "There exists x : Nat such that x = 0" — witnessed by (0, Refl)
   witness = let
     ty = sigma "x" nat (x: eq nat x zero);
-    tm = pair zero refl ty;
+    tm = pair zero refl;
   in (checkHoas ty tm).tag == "pair";
   # → true
 }
@@ -103,7 +103,7 @@ witnessAdd = let
     H.ind (H.lam "_" nat (_: nat)) n
       (H.lam "k" nat (_: H.lam "ih" nat (ih: H.succ ih))) m;
   ty = sigma "x" nat (x: eq nat (add (H.natLit 3) (H.natLit 5)) x);
-  tm = pair (H.natLit 8) refl ty;
+  tm = pair (H.natLit 8) refl;
 in (checkHoas ty tm).tag == "pair";
 ```
 

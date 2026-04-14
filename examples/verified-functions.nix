@@ -233,7 +233,7 @@ in rec {
   pairFstResult = v.verify H.nat
     (let
       sigTy = H.sigma "x" H.nat (_: H.bool);
-      p = H.ann (v.pair (v.nat 42) v.true_ sigTy) sigTy;
+      p = H.ann (v.pair (v.nat 42) v.true_) sigTy;
     in v.fst p);
 
   pairFstCorrect = pairFstResult == 42;
@@ -241,7 +241,7 @@ in rec {
   pairSndResult = v.verify H.bool
     (let
       sigTy = H.sigma "x" H.nat (_: H.bool);
-      p = H.ann (v.pair (v.nat 42) v.true_ sigTy) sigTy;
+      p = H.ann (v.pair (v.nat 42) v.true_) sigTy;
     in v.snd p);
 
   pairSndCorrect = pairSndResult == true;

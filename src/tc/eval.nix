@@ -271,6 +271,9 @@ let
     else if t == "fn-lit" then vFnLit
     else if t == "any-lit" then vAnyLit
 
+    # Opaque lambda: axiomatized value — not callable in kernel
+    else if t == "opaque-lam" then val.vOpaqueLam tm._fnBox (ev tm.piTy)
+
     else throw "tc: eval unknown tag '${t}'";
 
   # -- Public API (default fuel) --
@@ -367,13 +370,13 @@ in mk {
 
     # -- Pairs --
     "eval-sigma" = { expr = (eval [] (T.mkSigma "x" T.mkNat T.mkBool)).tag; expected = "VSigma"; };
-    "eval-pair" = { expr = (eval [] (T.mkPair T.mkZero T.mkTrue T.mkNat)).tag; expected = "VPair"; };
+    "eval-pair" = { expr = (eval [] (T.mkPair T.mkZero T.mkTrue)).tag; expected = "VPair"; };
     "eval-fst" = {
-      expr = (eval [] (T.mkFst (T.mkPair T.mkZero T.mkTrue T.mkNat))).tag;
+      expr = (eval [] (T.mkFst (T.mkPair T.mkZero T.mkTrue))).tag;
       expected = "VZero";
     };
     "eval-snd" = {
-      expr = (eval [] (T.mkSnd (T.mkPair T.mkZero T.mkTrue T.mkNat))).tag;
+      expr = (eval [] (T.mkSnd (T.mkPair T.mkZero T.mkTrue))).tag;
       expected = "VTrue";
     };
     "eval-fst-stuck" = {

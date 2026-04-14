@@ -1,10 +1,10 @@
 # nix-effects type constructors
 #
 # Higher-kinded type constructors that build compound types from simpler ones.
-# Guard and approximate decisions use _kernelExact: when all children are
-# kernel-exact, the constructor builds a precise kernel and omits the guard.
-# When any child is not kernel-exact, the constructor uses H.any + guard
-# and marks itself approximate so conjunction applies (see foundation.nix).
+# Guard and approximate decisions use orthogonal flags: _kernelPrecise
+# (kernel faithfully represents structure) drives the approximate flag,
+# _kernelSufficient (kernel alone decides membership) drives guard presence.
+# Kernel building always uses children's _kernel regardless of flags.
 { fx, api, ... }:
 
 let
@@ -22,12 +22,13 @@ let
     value = schema:
       let
         sortedNames = builtins.sort builtins.lessThan (builtins.attrNames schema);
-        allExact = builtins.all (f: schema.${f}._kernelExact) sortedNames;
+        allPrecise = builtins.all (f: schema.${f}._kernelPrecise) sortedNames;
+        allSufficient = builtins.all (f: schema.${f}._kernelSufficient) sortedNames;
         hoasFields = map (f: { name = f; type = schema.${f}._kernel; }) sortedNames;
         kernelType = if sortedNames != []
           then H.record hoasFields
           else H.any;
-        guard = if allExact && sortedNames != []
+        guard = if allSufficient && sortedNames != []
           then null
           else v:
             builtins.isAttrs v
@@ -37,7 +38,7 @@ let
       in mkType {
         name = "Record{${builtins.concatStringsSep ", " sortedNames}}";
         inherit kernelType guard;
-        approximate = !(allExact && sortedNames != []);
+        approximate = !(allPrecise && sortedNames != []);
         # Per-field effectful verify for blame tracking. Delegates to each
         # field type's .validate for recursive decomposition — a nested
         # Record or ListOf field produces deep per-component effects.
@@ -109,8 +110,8 @@ let
         expr = (Record { n = FP.Int; b = FP.Bool; }) ? kernelCheck;
         expected = true;
       };
-      "exact-record-is-kernel-exact" = {
-        expr = (Record { n = FP.Int; b = FP.Bool; })._kernelExact;
+      "exact-record-is-kernel-sufficient" = {
+        expr = (Record { n = FP.Int; b = FP.Bool; })._kernelSufficient;
         expected = true;
       };
       # -- Per-field blame tracking --
@@ -157,19 +158,34 @@ let
           in (Maybe PersonT).check { scores = [(-1)]; name = "x"; };
         expected = false;
       };
-      "kernel-exact-propagation" = {
+      "kernel-sufficient-propagation" = {
         expr =
           let T = Maybe (Record { items = ListOf (Either FP.Int FP.Bool); });
-          in T._kernelExact;
+          in T._kernelSufficient;
         expected = true;
       };
-      "refined-kills-kernel-exact" = {
+      "refined-preserves-kernel-precise" = {
         expr =
           let
             Pos = fx.types.refinement.refined "Pos" FP.Int (x: x > 0);
             T = Maybe (Record { items = ListOf (Either Pos FP.Bool); });
-          in T._kernelExact;
+          in T._kernelPrecise;
+        expected = true;
+      };
+      "refined-kills-kernel-sufficient" = {
+        expr =
+          let
+            Pos = fx.types.refinement.refined "Pos" FP.Int (x: x > 0);
+            T = Maybe (Record { items = ListOf (Either Pos FP.Bool); });
+          in T._kernelSufficient;
         expected = false;
+      };
+      "record-with-refined-field-has-kernelCheck" = {
+        expr =
+          let
+            Pos = fx.types.refinement.refined "Pos" FP.Int (x: x > 0);
+          in (Record { n = Pos; b = FP.Bool; }) ? kernelCheck;
+        expected = true;
       };
       "chained-refinement-soundness" = {
         expr =
@@ -218,14 +234,15 @@ let
     '';
     value = elemType:
       let
-        isExact = elemType._kernelExact;
+        isPrecise = elemType._kernelPrecise;
+        isSufficient = elemType._kernelSufficient;
         kernelType = H.listOf elemType._kernel;
-        guard = if isExact then null
+        guard = if isSufficient then null
           else v: builtins.isList v && builtins.all elemType.check v;
       in mkType {
         name = "List[${elemType.name}]";
         inherit kernelType guard;
-        approximate = !isExact;
+        approximate = !isPrecise;
         # Per-element effectful verify for blame tracking.
         verify = self: v:
           if !(builtins.isList v) then
@@ -283,14 +300,15 @@ let
     doc = "Option type. Maybe Type accepts null or a value of Type.";
     value = innerType:
       let
-        isExact = innerType._kernelExact;
+        isPrecise = innerType._kernelPrecise;
+        isSufficient = innerType._kernelSufficient;
         kernelType = H.maybe innerType._kernel;
-        guard = if isExact then null
+        guard = if isSufficient then null
           else v: v == null || innerType.check v;
       in mkType {
         name = "Maybe[${innerType.name}]";
         inherit kernelType guard;
-        approximate = !isExact;
+        approximate = !isPrecise;
       };
     tests = let FP = fx.types.primitives; in {
       "accepts-null" = {
@@ -328,10 +346,10 @@ let
           in (Maybe Nat).check 5;
         expected = true;
       };
-      "refined-not-kernel-exact" = {
+      "refined-not-kernel-sufficient" = {
         expr =
           let Nat = fx.types.refinement.refined "Nat" FP.Int (x: x >= 0);
-          in Nat._kernelExact;
+          in Nat._kernelSufficient;
         expected = false;
       };
     };
@@ -344,9 +362,10 @@ let
     '';
     value = leftType: rightType:
       let
-        isExact = leftType._kernelExact && rightType._kernelExact;
+        allPrecise = leftType._kernelPrecise && rightType._kernelPrecise;
+        allSufficient = leftType._kernelSufficient && rightType._kernelSufficient;
         kernelType = H.sum leftType._kernel rightType._kernel;
-        guard = if isExact then null
+        guard = if allSufficient then null
           else v:
             builtins.isAttrs v
             && v ? _tag && v ? value
@@ -355,7 +374,7 @@ let
       in mkType {
         name = "Either[${leftType.name}, ${rightType.name}]";
         inherit kernelType guard;
-        approximate = !isExact;
+        approximate = !allPrecise;
       };
     tests = let FP = fx.types.primitives; in {
       "accepts-left" = {
@@ -399,12 +418,13 @@ let
     value = schema:
       let
         sortedTags = builtins.sort builtins.lessThan (builtins.attrNames schema);
-        allExact = builtins.all (t: schema.${t}._kernelExact) sortedTags;
+        allPrecise = builtins.all (t: schema.${t}._kernelPrecise) sortedTags;
+        allSufficient = builtins.all (t: schema.${t}._kernelSufficient) sortedTags;
         hoasBranches = map (t: { tag = t; type = schema.${t}._kernel; }) sortedTags;
         kernelType = if sortedTags != []
           then H.variant hoasBranches
           else H.any;
-        guard = if allExact && sortedTags != []
+        guard = if allSufficient && sortedTags != []
           then null
           else v:
             builtins.isAttrs v
@@ -414,7 +434,7 @@ let
       in mkType {
         name = "Variant{${builtins.concatStringsSep " | " sortedTags}}";
         inherit kernelType guard;
-        approximate = !(allExact && sortedTags != []);
+        approximate = !(allPrecise && sortedTags != []);
         # Per-branch verify: only the active branch needs validation.
         # Delegates to the branch type's .validate for recursive decomposition.
         verify = self: v:

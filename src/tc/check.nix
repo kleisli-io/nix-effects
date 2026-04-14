@@ -95,7 +95,7 @@ let
       bind (check ctx tm.fst fstTy) (a':
         let bTy = E.instantiate ty.closure (E.eval ctx.env a'); in
         bind (check ctx tm.snd bTy) (b':
-          pure (T.mkPair a' b' (Q.quote ctx.depth ty))))
+          pure (T.mkPair a' b')))
 
     # Zero checked against Nat
     else if t == "zero" && ty.tag == "VNat" then pure T.mkZero
@@ -189,6 +189,18 @@ let
     else if t == "path-lit" && ty.tag == "VPath" then pure T.mkPathLit
     else if t == "fn-lit" && ty.tag == "VFunction" then pure T.mkFnLit
     else if t == "any-lit" && ty.tag == "VAny" then pure T.mkAnyLit
+
+    # Opaque lambda checked against Pi: verify domain conv-equality
+    else if t == "opaque-lam" && ty.tag == "VPi" then
+      bind (checkType ctx tm.piTy) (piTyTm:
+        let piTyVal = E.eval ctx.env piTyTm; in
+        if piTyVal.tag != "VPi" then
+          typeError "opaque-lam annotation must be Pi"
+            (Q.quote ctx.depth ty) (Q.quote ctx.depth piTyVal) tm
+        else if !(C.conv ctx.depth piTyVal.domain ty.domain) then
+          typeError "opaque-lam domain mismatch"
+            (Q.quote ctx.depth ty.domain) (Q.quote ctx.depth piTyVal.domain) tm
+        else pure (T.mkOpaqueLam tm._fnBox piTyTm))
 
     # Sub rule: fall through to synthesis (§7.4 Sub)
     else
@@ -407,6 +419,15 @@ let
     else if t == "fn-lit" then pure { term = T.mkFnLit; type = V.vFunction; }
     else if t == "any-lit" then pure { term = T.mkAnyLit; type = V.vAny; }
 
+    # Opaque lambda: infer Pi type from annotation
+    else if t == "opaque-lam" then
+      bind (checkType ctx tm.piTy) (piTyTm:
+        let piTyVal = E.eval ctx.env piTyTm; in
+        if piTyVal.tag != "VPi" then
+          typeError "opaque-lam annotation must be Pi"
+            { tag = "pi"; } (Q.quote ctx.depth piTyVal) tm
+        else pure { term = T.mkOpaqueLam tm._fnBox piTyTm; type = piTyVal; })
+
     # StrEq: both args must be String, result is Bool
     else if t == "str-eq" then
       bind (check ctx tm.lhs V.vString) (lhsTm:
@@ -542,8 +563,7 @@ in mk {
   tests = let
     inherit (V) vNat vZero vSucc vBool vPi vSigma
       vList vUnit vVoid vSum vEq vU mkClosure
-      vString vInt vFloat vAttrs vPath vFunction vAny
-      vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit;
+      vString vInt vFloat vAttrs vPath vFunction vAny;
 
     # Shorthand
     ctx0 = emptyCtx;
@@ -595,7 +615,7 @@ in mk {
 
     # Pair(Zero, True) : Σ(x:Nat).Bool
     "check-pair" = {
-      expr = (checkTm ctx0 (T.mkPair T.mkZero T.mkTrue T.mkUnit)
+      expr = (checkTm ctx0 (T.mkPair T.mkZero T.mkTrue)
         (vSigma "x" vNat (mkClosure [] T.mkBool))).tag;
       expected = "pair";
     };
@@ -680,7 +700,7 @@ in mk {
     # Fst: fst (pair(0, true) : Σ(x:Nat).Bool)
     "infer-fst" = {
       expr = let
-        p = T.mkAnn (T.mkPair T.mkZero T.mkTrue T.mkUnit)
+        p = T.mkAnn (T.mkPair T.mkZero T.mkTrue)
           (T.mkSigma "x" T.mkNat T.mkBool);
       in (inferTm ctx0 (T.mkFst p)).type.tag;
       expected = "VNat";
@@ -689,7 +709,7 @@ in mk {
     # Snd
     "infer-snd" = {
       expr = let
-        p = T.mkAnn (T.mkPair T.mkZero T.mkTrue T.mkUnit)
+        p = T.mkAnn (T.mkPair T.mkZero T.mkTrue)
           (T.mkSigma "x" T.mkNat T.mkBool);
       in (inferTm ctx0 (T.mkSnd p)).type.tag;
       expected = "VBool";
@@ -703,9 +723,55 @@ in mk {
         sndBody = T.mkBoolElim motive T.mkNat T.mkBool (T.mkVar 0);
         sigTy = T.mkSigma "b" T.mkBool sndBody;
         # Pair: (True, Zero) — snd type is BoolElim(..., True) = Nat
-        pair = T.mkAnn (T.mkPair T.mkTrue T.mkZero T.mkUnit) sigTy;
+        pair = T.mkAnn (T.mkPair T.mkTrue T.mkZero) sigTy;
       in (inferTm ctx0 (T.mkSnd pair)).type.tag;
       expected = "VNat";
+    };
+
+    # Pair synthesis via Ann wrapper
+    "infer-pair-via-ann" = {
+      expr = let
+        sigTy = T.mkSigma "x" T.mkNat T.mkBool;
+        p = T.mkAnn (T.mkPair T.mkZero T.mkTrue) sigTy;
+      in (inferTm ctx0 p).type.tag;
+      expected = "VSigma";
+    };
+
+    # Fst/Snd on Ann-wrapped pair
+    "infer-fst-ann-pair" = {
+      expr = let
+        sigTy = T.mkSigma "x" T.mkNat T.mkBool;
+        p = T.mkAnn (T.mkPair T.mkZero T.mkTrue) sigTy;
+      in (inferTm ctx0 (T.mkFst p)).type.tag;
+      expected = "VNat";
+    };
+    "infer-snd-ann-pair" = {
+      expr = let
+        sigTy = T.mkSigma "x" T.mkNat T.mkBool;
+        p = T.mkAnn (T.mkPair T.mkZero T.mkTrue) sigTy;
+      in (inferTm ctx0 (T.mkSnd p)).type.tag;
+      expected = "VBool";
+    };
+
+    # Dependent pair via Ann: (True, Zero) : Σ(b:Bool). BoolElim(λ_.U0, Nat, Bool, b)
+    "infer-pair-dependent" = {
+      expr = let
+        motive = T.mkLam "b" T.mkBool (T.mkU 0);
+        sndBody = T.mkBoolElim motive T.mkNat T.mkBool (T.mkVar 0);
+        sigTy = T.mkSigma "b" T.mkBool sndBody;
+        p = T.mkAnn (T.mkPair T.mkTrue T.mkZero) sigTy;
+      in (inferTm ctx0 (T.mkSnd p)).type.tag;
+      expected = "VNat";
+    };
+
+    # Bare pairs cannot be inferred (introduction forms check, not synthesize)
+    "reject-pair-infer-bare" = {
+      expr = (inferTm ctx0 (T.mkPair T.mkZero T.mkTrue)) ? error;
+      expected = true;
+    };
+    "reject-pair-infer-bare-msg" = {
+      expr = (inferTm ctx0 (T.mkPair T.mkZero T.mkTrue)).msg;
+      expected = "cannot infer type";
     };
 
     # Let binding: let x:Nat = 0 in x  checked against Nat
@@ -832,12 +898,12 @@ in mk {
 
     # Pair snd type mismatch — Pair(0, 0) : Σ(x:Nat).Bool rejects (snd is Nat, expected Bool)
     "reject-pair-snd-mismatch" = {
-      expr = (checkTm ctx0 (T.mkPair T.mkZero T.mkZero T.mkUnit)
+      expr = (checkTm ctx0 (T.mkPair T.mkZero T.mkZero)
         (vSigma "x" vNat (mkClosure [] T.mkBool))) ? error;
       expected = true;
     };
     "reject-pair-snd-mismatch-msg" = {
-      expr = (checkTm ctx0 (T.mkPair T.mkZero T.mkZero T.mkUnit)
+      expr = (checkTm ctx0 (T.mkPair T.mkZero T.mkZero)
         (vSigma "x" vNat (mkClosure [] T.mkBool))).msg;
       expected = "cannot infer type";
     };
@@ -1115,8 +1181,8 @@ in mk {
       expected = true;
     };
     "roundtrip-pair" = {
-      expr = Q.nf [] (Q.nf [] (T.mkPair T.mkZero T.mkTrue T.mkNat))
-        == Q.nf [] (T.mkPair T.mkZero T.mkTrue T.mkNat);
+      expr = Q.nf [] (Q.nf [] (T.mkPair T.mkZero T.mkTrue))
+        == Q.nf [] (T.mkPair T.mkZero T.mkTrue);
       expected = true;
     };
     "roundtrip-nil" = {

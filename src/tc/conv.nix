@@ -103,6 +103,10 @@ let
     else if t1 == "VEq" && t2 == "VEq" then
       conv d v1.type v2.type && conv d v1.lhs v2.lhs && conv d v1.rhs v2.rhs
 
+    # Opaque lambda: identity on _fnBox (Nix attrset thunk identity) + structural piTy
+    else if t1 == "VOpaqueLam" && t2 == "VOpaqueLam" then
+      v1._fnBox == v2._fnBox && conv d v1.piTy v2.piTy
+
     # §6.4 Neutrals — same head variable and convertible spines
     else if t1 == "VNe" && t2 == "VNe" then
       v1.level == v2.level && convSp d v1.spine v2.spine

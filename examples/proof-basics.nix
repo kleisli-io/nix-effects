@@ -100,21 +100,21 @@ in rec {
   witnessZero =
     let
       ty = sigma "x" nat (x: eq nat x zero);
-      tm = pair zero refl ty;
+      tm = pair zero refl;
     in (checkHoas ty tm).tag == "pair";
 
   # (8, Refl) : Σ(x:Nat). 3+5 = x
   witnessAddResult =
     let
       ty = sigma "x" nat (x: eq nat (add (natLit 3) (natLit 5)) x);
-      tm = pair (natLit 8) refl ty;
+      tm = pair (natLit 8) refl;
     in (checkHoas ty tm).tag == "pair";
 
   # (true, Refl) : Σ(b:Bool). not(not(b)) = b
   witnessDoubleNeg =
     let
       ty = sigma "b" bool (b: eq bool (not_ (not_ b)) b);
-      tm = pair true_ refl ty;
+      tm = pair true_ refl;
     in (checkHoas ty tm).tag == "pair";
 
 

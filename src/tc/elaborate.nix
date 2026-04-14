@@ -19,7 +19,7 @@
 #   2. Structural fields (Pi: domain/codomain, Sigma: fstType/sndFamily)
 #   3. Name convention (Bool, Nat, Unit, Null, String, Int, Float, ...)
 #
-# elaborateValue uses sentinel tests for non-dependent Pi/Sigma detection.
+# elaborateValue uses HOAS substitution for dependent Sigma (body(â)).
 # extract uses kernel type value threading (no sentinel tests).
 #
 # Spec reference: kernel-mvp-research.md §3
@@ -141,6 +141,12 @@ let
 
     else if t == "any" then H.anyLit
 
+    else if t == "U" then
+      # Universe types: a type-as-value in U(n) elaborates to its kernel
+      # representation. The kernel's checkTypeLevel verifies the level.
+      if builtins.isAttrs value && value ? _kernel then value._kernel
+      else throw "elaborateValue: U requires a Type with _kernel"
+
     else if t == "list" then
       if !(builtins.isList value)
       then throw "elaborateValue: List requires a list"
@@ -167,22 +173,15 @@ let
       then throw "elaborateValue: Sigma requires { fst; snd; }"
       else
         let
-          # Guard: dependent sigma (body uses its argument) cannot be elaborated
-          # from a plain Nix value — the second type depends on the first value's
-          # HOAS representation, which we can't reconstruct here. Use explicit
-          # _kernel annotation on the type for dependent sigma elaboration.
-          _hs1 = { _htag = "nat"; _sentinel = 1; };
-          _hs2 = { _htag = "nat"; _sentinel = 2; };
-          r1 = builtins.tryEval (hoasTy.body _hs1);
-          r2 = builtins.tryEval (hoasTy.body _hs2);
-          sndTy =
-            if r1.success && r2.success && H.elab r1.value == H.elab r2.value
-            then r1.value
-            else throw "elaborateValue: dependent Sigma requires explicit _kernel annotation";
+          # HOAS substitution: elaborate fst, pass to body for dependent snd type.
+          # For non-dependent bodies, body ignores its argument — identical result.
+          # For dependent bodies, body(â) computes the correct snd type via
+          # meta-level function application (HOAS-level substitution).
+          fstHoas = elaborateValue hoasTy.fst value.fst;
+          sndTy = hoasTy.body fstHoas;
         in H.pair
-          (elaborateValue hoasTy.fst value.fst)
+          fstHoas
           (elaborateValue sndTy value.snd)
-          hoasTy
 
     # -- Compound types (record, maybe, variant) --
 
@@ -215,8 +214,7 @@ let
                   sigTy = H.sigma f.name f.type (_: { _htag = "record"; fields = rest; });
                 in H.pair
                   (elaborateValue f.type (fieldOf v f.name))
-                  (buildPairs rest v)
-                  sigTy;
+                  (buildPairs rest v);
           in buildPairs fields value
 
     else if t == "maybe" then
@@ -246,6 +244,14 @@ let
                 then H.inl b1.type restTy (elaborateValue b1.type v.value)
                 else H.inr b1.type restTy (inject rest v);
         in inject branches value
+
+    else if t == "pi" then
+      # Verified-first dispatch: if value carries _hoasImpl (from verified
+      # combinators), use it for full kernel body verification. Otherwise,
+      # wrap the raw Nix function in an opaque lambda (trust boundary).
+      if builtins.isAttrs value && value ? _hoasImpl then value._hoasImpl
+      else if builtins.isFunction value then H.opaqueLam value hoasTy
+      else throw "elaborateValue: Pi type expects function, got ${builtins.typeOf value}"
 
     else throw "elaborateValue: unsupported type tag '${t}'";
 
@@ -319,6 +325,10 @@ let
 
     else if t == "any" then []
 
+    else if t == "U" then
+      if builtins.isAttrs value && value ? _kernel then []
+      else [{ inherit path; msg = "expected Type with _kernel"; }]
+
     # -- List: validate every element with indexed path --
 
     else if t == "list" then
@@ -341,23 +351,24 @@ let
       else if value._tag == "Right" then validateValue "${path}.Right" hoasTy.right value.value
       else [{ inherit path; msg = "_tag must be \"Left\" or \"Right\", got \"${value._tag}\""; }]
 
-    # -- Sigma: non-dependent only (same sentinel test as elaborateValue) --
+    # -- Sigma: HOAS substitution for dependent snd type --
 
     else if t == "sigma" then
       if !(builtins.isAttrs value && value ? fst && value ? snd)
       then [{ inherit path; msg = "expected { fst; snd; }"; }]
       else
         let
-          _hs1 = { _htag = "nat"; _sentinel = 1; };
-          _hs2 = { _htag = "nat"; _sentinel = 2; };
-          r1 = builtins.tryEval (hoasTy.body _hs1);
-          r2 = builtins.tryEval (hoasTy.body _hs2);
+          fstErrors = validateValue "${path}.fst" hoasTy.fst value.fst;
+          # Attempt fst elaboration for HOAS substitution into body.
+          # If fst elaboration fails, report fst errors only — computing
+          # snd type requires a valid fst HOAS term.
+          fstElab = builtins.tryEval (elaborateValue hoasTy.fst value.fst);
         in
-        if !(r1.success && r2.success && H.elab r1.value == H.elab r2.value)
-        then [{ inherit path; msg = "dependent Sigma requires explicit _kernel annotation"; }]
+        if !fstElab.success then fstErrors
         else
-          (validateValue "${path}.fst" hoasTy.fst value.fst)
-          ++ (validateValue "${path}.snd" r1.value value.snd)
+          let sndTy = hoasTy.body fstElab.value;
+          in fstErrors
+             ++ (validateValue "${path}.snd" sndTy value.snd)
 
     # -- Compound types (record, maybe, variant) --
 
@@ -386,6 +397,10 @@ let
         if matching == []
         then [{ inherit path; msg = "unknown variant tag \"${value._tag}\"; expected one of: ${builtins.concatStringsSep ", " (map (b: "\"${b.tag}\"") branches)}"; }]
         else validateValue "${path}.${value._tag}" (builtins.head matching).type value.value
+
+    else if t == "pi" then
+      if (builtins.isAttrs value && value ? _hoasImpl) || builtins.isFunction value then []
+      else [{ inherit path; msg = "expected function, got ${builtins.typeOf value}"; }]
 
     else [{ inherit path; msg = "unsupported type tag '${t}'"; }];
 
@@ -560,14 +575,17 @@ let
       in extractBranch branches tyVal val
 
     else if t == "pi" then
-      # Extract a verified function.
+      # Opaque lambda: return the original Nix function directly.
+      # No kernel extraction needed — the function was carried opaquely.
+      if val.tag == "VOpaqueLam" then val.nixFn
+      # Verified lambda: extract via kernel pipeline.
       # Returns a Nix function that:
       #   1. Elaborates its argument to HOAS → kernel value
       #   2. Applies the VLam closure
       #   3. Extracts the result back to a Nix value
       # Codomain type is computed per-invocation from the type's closure,
       # supporting both dependent and non-dependent Pi.
-      let domainTy = hoasTy.domain; in
+      else let domainTy = hoasTy.domain; in
         nixArg:
           let
             hoasArg = elaborateValue domainTy nixArg;
@@ -918,10 +936,185 @@ in mk {
       expected = true;
     };
 
-    # Dependent sigma cleanly rejected (tryEval catches the throw)
+    # Dependent sigma: body produces "eq" which elaborateValue can't handle
     "decide-dep-sigma-rejected" = {
       expr = decide (H.sigma "x" H.nat (x: H.eq H.nat x H.zero)) { fst = 0; snd = null; };
       expected = false;
+    };
+
+    # -- HOAS substitution: dependent Sigma via body(fstHoas) --
+
+    # Non-dependent Sigma: HOAS substitution produces same result as before
+    "elab-dep-sigma-non-dep-baseline" = {
+      expr = let
+        ty = H.sigma "x" H.nat (_: H.bool);
+        val = { fst = 0; snd = true; };
+      in (H.elab (elaborateValue ty val)).tag;
+      expected = "pair";
+    };
+
+    # Dependent Sigma whose body produces an elaboratable type
+    "elab-dep-sigma-snd-type-correct" = {
+      expr = let
+        # Sigma(x: Bool). if x then Nat else Bool
+        # body(true_) = Nat, so snd = 42 should elaborate as Nat
+        ty = H.sigma "x" H.bool (x:
+          let t = (H.elab x).tag; in
+          if t == "true" then H.nat
+          else if t == "false" then H.bool
+          else H.nat);
+        val = { fst = true; snd = 42; };
+      in (H.elab (elaborateValue ty val)).tag;
+      expected = "pair";
+    };
+
+    # Dependent Sigma kernel-checks: elaborated pair passes checkHoas
+    "elab-dep-sigma-kernel-checks" = {
+      expr = let
+        ty = H.sigma "x" H.bool (x:
+          let t = (H.elab x).tag; in
+          if t == "true" then H.nat
+          else if t == "false" then H.bool
+          else H.nat);
+        val = { fst = true; snd = 42; };
+        hoasVal = elaborateValue ty val;
+        checked = H.checkHoas ty hoasVal;
+      in !(checked ? error);
+      expected = true;
+    };
+
+    # Dependent Sigma roundtrip: elaborate -> check -> eval -> extract = original
+    "elab-dep-sigma-roundtrip" = {
+      expr = let
+        ty = H.sigma "x" H.nat (_: H.bool);
+        val = { fst = 5; snd = true; };
+      in extract ty (E.eval [] (H.elab (elaborateValue ty val)));
+      expected = { fst = 5; snd = true; };
+    };
+
+    # Dependent Sigma: wrong snd type rejected via substituted body
+    "elab-dep-sigma-snd-mismatch" = {
+      expr = let
+        ty = H.sigma "x" H.bool (x:
+          let t = (H.elab x).tag; in
+          if t == "true" then H.nat
+          else H.bool);
+        # fst=true means snd should be Nat, but we pass a bool
+        val = { fst = true; snd = false; };
+      in decide ty val;
+      expected = false;
+    };
+
+    # validateValue: dependent Sigma validates correctly
+    "validate-dep-sigma-valid" = {
+      expr = let
+        ty = H.sigma "x" H.bool (x:
+          let t = (H.elab x).tag; in
+          if t == "true" then H.nat
+          else H.bool);
+        val = { fst = true; snd = 42; };
+      in validateValue "$" ty val;
+      expected = [];
+    };
+
+    # validateValue: dependent Sigma reports snd errors
+    "validate-dep-sigma-snd-error" = {
+      expr = let
+        ty = H.sigma "x" H.bool (x:
+          let t = (H.elab x).tag; in
+          if t == "true" then H.nat
+          else H.bool);
+        # fst=true → snd should be Nat, but we pass a string
+        val = { fst = true; snd = "wrong"; };
+        errors = validateValue "$" ty val;
+      in builtins.length errors > 0;
+      expected = true;
+    };
+
+    # -- Pi opaque elaboration: function values at Pi types --
+
+    # Raw Nix function at Pi type → opaque lambda
+    "elab-pi-opaque-lambda" = {
+      expr = let
+        ty = H.forall "x" H.nat (_: H.bool);
+        hoasVal = elaborateValue ty (x: x > 0);
+      in (H.elab hoasVal).tag;
+      expected = "opaque-lam";
+    };
+
+    # Verified value with _hoasImpl → uses HOAS term directly
+    "elab-pi-verified-uses-hoasImpl" = {
+      expr = let
+        ty = H.forall "x" H.nat (_: H.nat);
+        verified = { _hoasImpl = H.lam "x" H.nat (x: x); __functor = self: x: x; };
+        hoasVal = elaborateValue ty verified;
+      in (H.elab hoasVal).tag;
+      expected = "lam";
+    };
+
+    # Opaque lambda at Pi type → kernel check passes (domain matches)
+    "elab-pi-domain-check" = {
+      expr = let
+        ty = H.forall "x" H.nat (_: H.bool);
+        hoasVal = elaborateValue ty (x: x > 0);
+        checked = H.checkHoas ty hoasVal;
+      in !(checked ? error);
+      expected = true;
+    };
+
+    # Function at wrong Pi domain → kernel check fails
+    "elab-pi-domain-mismatch" = {
+      expr = let
+        ty = H.forall "x" H.nat (_: H.bool);
+        wrongTy = H.forall "x" H.bool (_: H.bool);
+        hoasVal = elaborateValue wrongTy (x: x);
+        # Check against nat-domain Pi, but elaborated against bool-domain Pi
+        checked = H.checkHoas ty hoasVal;
+      in checked ? error;
+      expected = true;
+    };
+
+    # Non-function value at Pi type → throws
+    "elab-pi-non-function-rejects" = {
+      expr = (builtins.tryEval (elaborateValue (H.forall "x" H.nat (_: H.nat)) 42)).success;
+      expected = false;
+    };
+
+    # Opaque Pi roundtrip: elaborate → check → eval → extract = original function
+    "extract-opaque-pi-roundtrip" = {
+      expr = let
+        ty = H.forall "x" H.nat (_: H.nat);
+        f = x: x + 1;
+        hoasVal = elaborateValue ty f;
+        checked = H.checkHoas ty hoasVal;
+        val = E.eval [] (H.elab hoasVal);
+        extracted = extract ty val;
+      in extracted 5;
+      expected = 6;
+    };
+
+    # decide returns true for valid Pi function
+    "decide-pi-with-kernel-accepts" = {
+      expr = decide (H.forall "x" H.nat (_: H.bool)) (x: x > 0);
+      expected = true;
+    };
+
+    # decide rejects non-function at Pi type
+    "decide-pi-rejects-non-function" = {
+      expr = decide (H.forall "x" H.nat (_: H.nat)) 42;
+      expected = false;
+    };
+
+    # validateValue: Pi accepts function
+    "validate-pi-accepts-function" = {
+      expr = validateValue "$" (H.forall "x" H.nat (_: H.nat)) (x: x + 1);
+      expected = [];
+    };
+
+    # validateValue: Pi rejects non-function
+    "validate-pi-rejects-non-function" = {
+      expr = builtins.length (validateValue "$" (H.forall "x" H.nat (_: H.nat)) 42) > 0;
+      expected = true;
     };
 
     # -- Regression: decide(T,v) == T.check(v) --
@@ -1175,7 +1368,7 @@ in mk {
     "extract-sigma-pi-snd" = {
       expr = let
         ty = H.sigma "x" H.nat (_: H.forall "y" H.nat (_: H.bool));
-        hoasVal = H.pair (H.ann H.zero H.nat) (H.lam "y" H.nat (_: H.true_)) ty;
+        hoasVal = H.pair (H.ann H.zero H.nat) (H.lam "y" H.nat (_: H.true_));
         val = E.eval [] (H.elab hoasVal);
         result = extract ty val;
       in (result.snd 0);
@@ -1251,6 +1444,112 @@ in mk {
     "extract-fn-throws" = {
       expr = (builtins.tryEval (extract H.function_ (E.eval [] (H.elab (elaborateValue H.function_ (x: x)))))).success;
       expected = false;
+    };
+
+    # -- Cross-cutting integration tests --
+    # Compound types mixing polarity, refinement, and dependent fields.
+    # Each verifies that conjunction (kernelDecide ∧ guard) runs both paths.
+
+    # Record(Pi, Sigma(refined)): mixed polarity compound type
+    "integration-record-pi-sigma-refined" = {
+      expr = let
+        refined = fx.types.refinement.refined;
+        PosInt = refined "PosInt" IntT (x: builtins.isInt x && x > 0);
+        schema = {
+          transform = FD.Pi { domain = IntT; codomain = _: IntT; universe = 0; };
+          pair = FD.Sigma { fst = PosInt; snd = _: BoolT; universe = 0; };
+        };
+        RT = FC.Record schema;
+        good = { transform = x: x + 1; pair = { fst = 5; snd = true; }; };
+        badPair = { transform = x: x + 1; pair = { fst = -1; snd = true; }; };
+        badFn = { transform = 42; pair = { fst = 5; snd = true; }; };
+      in RT.check good && !(RT.check badPair) && !(RT.check badFn);
+      expected = true;
+    };
+
+    # Record(Pi, Sigma(refined)): diagnose shows conjunction
+    "integration-record-pi-sigma-diagnose" = {
+      expr = let
+        refined = fx.types.refinement.refined;
+        PosInt = refined "PosInt" IntT (x: builtins.isInt x && x > 0);
+        schema = {
+          transform = FD.Pi { domain = IntT; codomain = _: IntT; universe = 0; };
+          pair = FD.Sigma { fst = PosInt; snd = _: BoolT; universe = 0; };
+        };
+        RT = FC.Record schema;
+        d = RT.diagnose { transform = x: x + 1; pair = { fst = 5; snd = true; }; };
+      in d.kernel && d.agreement;
+      expected = true;
+    };
+
+    # Maybe(DepRecord(dependent ListOf)): nested dependent conjunction
+    "integration-maybe-deprecord-listof" = {
+      expr = let
+        mkType = fx.types.foundation.mkType;
+        SizedList = FD.DepRecord [
+          { name = "n"; type = IntT; }
+          { name = "items"; type = self:
+              mkType {
+                name = "List[n=${toString self.n}]";
+                kernelType = H.any;
+                guard = v: builtins.isList v && builtins.length v == self.n;
+              };
+          }
+        ];
+        MT = FC.Maybe SizedList;
+      in MT.check null
+         && MT.check { fst = 3; snd = [1 2 3]; }
+         && !(MT.check { fst = 3; snd = [1 2]; })
+         && !(MT.check "not-a-pair");
+      expected = true;
+    };
+
+    # ListOf(Pi): list of opaque Pi functions, kernel checks domain
+    "integration-listof-pi" = {
+      expr = let
+        FnType = FD.Pi { domain = IntT; codomain = _: BoolT; universe = 0; };
+        LT = FC.ListOf FnType;
+        good = [ (x: x > 0) (x: x == 0) ];
+        bad = [ (x: x > 0) 42 ];
+      in LT.check good && !(LT.check bad) && LT.check [];
+      expected = true;
+    };
+
+    # ListOf(Pi): kernel rejects non-function in list
+    "integration-listof-pi-rejects-non-fn" = {
+      expr = let
+        FnType = FD.Pi { domain = IntT; codomain = _: BoolT; universe = 0; };
+        LT = FC.ListOf FnType;
+        d = LT.diagnose [ 42 ];
+      in d.kernel == false;
+      expected = true;
+    };
+
+    # Either(Sigma, Pi): sum of positive and negative types
+    "integration-either-sigma-pi" = {
+      expr = let
+        SigT = FD.Sigma { fst = IntT; snd = _: BoolT; universe = 0; };
+        PiT = FD.Pi { domain = IntT; codomain = _: IntT; universe = 0; };
+        ET = FC.Either SigT PiT;
+        goodLeft = { _tag = "Left"; value = { fst = 42; snd = true; }; };
+        goodRight = { _tag = "Right"; value = x: x + 1; };
+        badLeft = { _tag = "Left"; value = { fst = "bad"; snd = true; }; };
+        badRight = { _tag = "Right"; value = 42; };
+      in ET.check goodLeft && ET.check goodRight
+         && !(ET.check badLeft) && !(ET.check badRight);
+      expected = true;
+    };
+
+    # Either(Sigma, Pi): diagnose shows conjunction on both branches
+    "integration-either-sigma-pi-diagnose" = {
+      expr = let
+        SigT = FD.Sigma { fst = IntT; snd = _: BoolT; universe = 0; };
+        PiT = FD.Pi { domain = IntT; codomain = _: IntT; universe = 0; };
+        ET = FC.Either SigT PiT;
+        dLeft = ET.diagnose { _tag = "Left"; value = { fst = 42; snd = true; }; };
+        dRight = ET.diagnose { _tag = "Right"; value = x: x + 1; };
+      in dLeft.kernel && dLeft.agreement && dRight.kernel && dRight.agreement;
+      expected = true;
     };
   };
 }

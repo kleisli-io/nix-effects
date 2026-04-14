@@ -198,6 +198,40 @@ Type_2  # Type of Type_1
 level Int               # 0
 ```
 
+## Apps
+
+Standalone applications built on the library, in `apps/`:
+
+### Category theory (`apps/category-theory/`)
+
+A formally verified category theory library where every theorem is
+type-checked at Nix eval time. If evaluation completes, the proofs are correct.
+
+- **Proof combinators**: `sym`, `trans`, `cong` derived from J elimination
+- **Arithmetic**: `add` with 7 verified properties — left/right identity,
+  successor, associativity, right-successor, and commutativity
+- **Algebraic structures**: `Monoid` and `Category` encoded as dependent sigma
+  types, with `(Nat, +, 0)` as a verified instance of both
+- **Functor**: doubling endofunctor with identity and composition preservation
+  proved via a 5-step equational rewriting chain
+
+```nix
+let
+  fx = import ./. {};
+  cat = import ./apps/category-theory { inherit fx; };
+in {
+  cat.tests.allPass;          # true — all 15 proofs verified + 3 computation tests
+  cat.api.add 3 5;            # 8 — extracted Nix function
+  cat.api.sym;                # callable: Eq(A,a,b) → Eq(A,b,a)
+  cat.api.double 4;           # 8
+}
+```
+
+### Benchmarks (`apps/interp/`, `apps/build-sim/`)
+
+Expression interpreter and dependency graph evaluator for benchmarking the
+effect layer at scale. Run with `nix run .#bench` / `nix run .#bench-compare`.
+
 ## Effects
 
 An effectful computation is a freer monad value: a tree of effects with

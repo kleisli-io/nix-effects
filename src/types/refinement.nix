@@ -27,7 +27,6 @@ let
       kernelType = base._kernel;
       guard = v: base.check v && predicate v;
       description = "${name} (refined from ${base.name})";
-      approximate = true;
     };
     tests = {
       "named-refinement-accepts" = {

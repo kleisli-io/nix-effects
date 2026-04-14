@@ -25,7 +25,7 @@ let
 
   # -- Pairs --
   mkSigma = name: fst: snd: { tag = "sigma"; inherit name fst snd; };
-  mkPair = fst: snd: ann: { tag = "pair"; inherit fst snd ann; };
+  mkPair = fst: snd: { tag = "pair"; inherit fst snd; };
   mkFst = pair: { tag = "fst"; inherit pair; };
   mkSnd = pair: { tag = "snd"; inherit pair; };
 
@@ -95,6 +95,14 @@ let
   mkFnLit = { tag = "fn-lit"; };
   mkAnyLit = { tag = "any-lit"; };
 
+  # Opaque lambda: trust boundary for negative types (Pi).
+  # Carries a Nix function opaquely — the kernel never inspects or applies it.
+  # fnBox is a { _fn = nixFn; } attrset created once at the HOAS level and
+  # propagated as-is through eval/quote/check. Nix attrset == uses thunk
+  # identity for function-valued fields, so preserving the same fnBox object
+  # ensures conv reflexivity. Direct function == always returns false.
+  mkOpaqueLam = fnBox: piTy: { tag = "opaque-lam"; _fnBox = fnBox; inherit piTy; };
+
 in mk {
   doc = ''
     # fx.tc.term — Core Term Constructors (Tm)
@@ -124,7 +132,7 @@ in mk {
 
     ### Pairs (§2.3)
     - `mkSigma : String → Tm → Tm → Tm` — dependent pair type `Σ(name : fst). snd`
-    - `mkPair : Tm → Tm → Tm → Tm` — pair constructor `(fst, snd) : ann`
+    - `mkPair : Tm → Tm → Tm` — pair constructor `(fst, snd)`
     - `mkFst : Tm → Tm` — first projection
     - `mkSnd : Tm → Tm` — second projection
 
@@ -159,6 +167,7 @@ in mk {
     inherit mkString mkInt mkFloat mkAttrs mkPath mkFunction mkAny;
     inherit mkStrEq;
     inherit mkStringLit mkIntLit mkFloatLit mkAttrsLit mkPathLit mkFnLit mkAnyLit;
+    inherit mkOpaqueLam;
   };
   tests = {
     "var-tag" = { expr = (mkVar 0).tag; expected = "var"; };
@@ -167,7 +176,7 @@ in mk {
     "lam-tag" = { expr = (mkLam "x" mkNat (mkVar 0)).tag; expected = "lam"; };
     "app-tag" = { expr = (mkApp (mkVar 0) mkZero).tag; expected = "app"; };
     "sigma-tag" = { expr = (mkSigma "x" mkNat mkBool).tag; expected = "sigma"; };
-    "pair-tag" = { expr = (mkPair mkZero mkTrue mkNat).tag; expected = "pair"; };
+    "pair-tag" = { expr = (mkPair mkZero mkTrue).tag; expected = "pair"; };
     "fst-tag" = { expr = (mkFst (mkVar 0)).tag; expected = "fst"; };
     "snd-tag" = { expr = (mkSnd (mkVar 0)).tag; expected = "snd"; };
     "nat-tag" = { expr = mkNat.tag; expected = "nat"; };
@@ -218,5 +227,8 @@ in mk {
     "path-lit-tag" = { expr = mkPathLit.tag; expected = "path-lit"; };
     "fn-lit-tag" = { expr = mkFnLit.tag; expected = "fn-lit"; };
     "any-lit-tag" = { expr = mkAnyLit.tag; expected = "any-lit"; };
+    "opaque-lam-tag" = { expr = (mkOpaqueLam { _fn = (x: x); } mkNat).tag; expected = "opaque-lam"; };
+    "opaque-lam-piTy" = { expr = (mkOpaqueLam { _fn = (x: x); } mkNat).piTy.tag; expected = "nat"; };
+    "opaque-lam-fnBox" = { expr = (mkOpaqueLam { _fn = (x: x); } mkNat)._fnBox ? _fn; expected = true; };
   };
 }

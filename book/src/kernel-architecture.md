@@ -162,7 +162,7 @@ H.true_
 H.false_
 
 # Pairs
-H.pair fst snd sigmaType
+H.pair fst snd
 
 # Projections
 H.fst_ p

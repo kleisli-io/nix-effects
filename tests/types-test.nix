@@ -747,16 +747,19 @@ let
       # Result is null sentinel (f was never applied)
       && result.value == null;
 
-  # -- Test 50: Universe trust boundary — typeAt guards missing universe --
+  # -- Test 50: Universe trust boundary — typeAt guards missing fields --
   universeTrustBoundary =
     let
       fakeNoUniverse = { _tag = "Type"; name = "fake"; check = _: true; };
-      fakeWithUniverse = { _tag = "Type"; name = "fake"; check = _: true; universe = 0; };
+      fakeNoKernel = { _tag = "Type"; name = "fake"; check = _: true; universe = 0; };
+      wellFormed = { _tag = "Type"; name = "fake"; check = _: true; universe = 0; _kernel = H.nat; };
     in
-      # Missing universe → rejected by v?universe guard in typeAt
+      # Missing universe → rejected by guard
       !(types.check types.Type_0 fakeNoUniverse)
-      # With universe → accepted (universe is explicit/trusted)
-      && types.check types.Type_0 fakeWithUniverse;
+      # Missing _kernel → rejected by kernel (can't elaborate for U)
+      && !(types.check types.Type_0 fakeNoKernel)
+      # Well-formed fake type → accepted (kernel verifies level, guard verifies universe)
+      && types.check types.Type_0 wellFormed;
 
   # -- Test 51: ListOf validate is effectful (per-element) --
   listOfValidateIsEffectful =

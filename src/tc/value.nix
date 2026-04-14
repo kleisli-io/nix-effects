@@ -79,6 +79,12 @@ let
   vFnLit = { tag = "VFnLit"; };
   vAnyLit = { tag = "VAnyLit"; };
 
+  # Opaque lambda value: axiomatized trust boundary for Pi.
+  # fnBox is the { _fn = nixFn; } wrapper propagated from the HOAS level —
+  # never reconstructed, preserving thunk identity for conv.
+  # nixFn derived from fnBox for extractInner access. piTy is the evaluated VPi.
+  vOpaqueLam = fnBox: piTy: { tag = "VOpaqueLam"; _fnBox = fnBox; nixFn = fnBox._fn; inherit piTy; };
+
   # -- Neutrals (stuck computations) --
   # A neutral is a variable (identified by level) applied to a spine of eliminators.
   vNe = level: spine: { tag = "VNe"; inherit level spine; };
@@ -161,6 +167,7 @@ in mk {
     inherit vU;
     inherit vString vInt vFloat vAttrs vPath vFunction vAny;
     inherit vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit;
+    inherit vOpaqueLam;
     inherit vNe freshVar;
     inherit eApp eFst eSnd eNatElim eBoolElim eListElim eAbsurd eSumElim eJ eStrEq;
   };
@@ -217,6 +224,10 @@ in mk {
     "vpathlit-tag" = { expr = vPathLit.tag; expected = "VPathLit"; };
     "vfnlit-tag" = { expr = vFnLit.tag; expected = "VFnLit"; };
     "vanylit-tag" = { expr = vAnyLit.tag; expected = "VAnyLit"; };
+    "vopaquelam-tag" = { expr = (vOpaqueLam { _fn = (x: x); } vNat).tag; expected = "VOpaqueLam"; };
+    "vopaquelam-piTy" = { expr = (vOpaqueLam { _fn = (x: x); } vNat).piTy.tag; expected = "VNat"; };
+    "vopaquelam-nixFn" = { expr = builtins.isFunction (vOpaqueLam { _fn = (x: x); } vNat).nixFn; expected = true; };
+    "vopaquelam-fnBox" = { expr = (vOpaqueLam { _fn = (x: x); } vNat)._fnBox ? _fn; expected = true; };
 
     # Neutrals
     "vne-tag" = { expr = (vNe 0 []).tag; expected = "VNe"; };

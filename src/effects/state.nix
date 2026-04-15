@@ -59,6 +59,36 @@ let
     };
   };
 
+
+  update = mk {
+    doc = ''
+      Apply a computation to the current state. Returns a Computation that,
+      when handled, updates the state and returns value.
+
+      ```
+      update : (s -> Computation { state, value }) -> Computation value
+      ```
+    '';
+    value = f:
+      bind get.value (state: bind (f state) ({ state, value }: bind (put.value state) (_: pure value)));
+    tests = {
+      "update-is-impure" = {
+        expr = fx.comp.isPure (update (x: pure {
+          value = x + 1;
+          state = 99;
+        }));
+        expected = false;
+      };
+      "update-reads-and-updates" = {
+        expr = 
+          fx.trampoline.handle { handlers = handler.value; state = 11; } 
+            (update (s: pure { state = s * 2; value = s * 3; }));
+        expected.state = 22;
+        expected.value = 33;
+      };
+    };
+  };
+
   modify = mk {
     doc = ''
       Apply a function to the current state. Returns a Computation that,
@@ -131,6 +161,6 @@ let
 in mk {
   doc = "Mutable state effect: get/put/modify with standard handler.";
   value = {
-    inherit get put modify gets handler;
+    inherit get put modify update gets handler;
   };
 }

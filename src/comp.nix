@@ -90,6 +90,25 @@ let
     };
   };
 
+  isComp = mk {
+    doc = "Test whether a value is a computation.";
+    value = comp: (comp._tag or null == "Pure") || (comp._tag or null == "Impure");
+    tests = {
+      "pure-returns-true" = {
+        expr = isComp (pure 1);
+        expected = true;
+      };
+      "impure-returns-true" = {
+        expr = isComp (impure { name = "x"; param = null; } null);
+        expected = true;
+      };
+      "empty-returns-false" = {
+        expr = isComp { };
+        expected = false;
+      };
+    };
+  };
+
   isPure = mk {
     doc = "Test whether a computation is Pure. For hot-path conditionals where match would allocate.";
     value = comp: comp._tag == "Pure";
@@ -107,5 +126,5 @@ let
 
 in mk {
   doc = "Computation ADT: introduction and elimination forms for Pure | Impure.";
-  value = { inherit pure impure match isPure; };
+  value = { inherit pure impure match isPure isComp; };
 }

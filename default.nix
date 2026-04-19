@@ -181,6 +181,7 @@ let
       choice = effects.choice;
       linear = effects.linear;
       scope = effects.scope;
+      hasHandler = effects.hasHandler;
     };
 
     # Streams (effectful lazy sequences)

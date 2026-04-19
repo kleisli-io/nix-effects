@@ -106,12 +106,17 @@ let
           else
             let
               eff = step._comp.effect;
-              handler = handlers.${eff.name} or
-                (throw "nix-effects: unhandled effect '${eff.name}'");
-              result = handler {
-                param = eff.param;
-                state = step._state;
-              };
+              handler = localHandler handlers eff;
+              result = 
+                if handler == null 
+                then 
+                  if eff.name == "has-handler"
+                  then { resume = false; state = step._state; }
+                  else throw "nix-effects: unhandled effect '${eff.name}'"
+                else handler {
+                  param = eff.param;
+                  state = step._state;
+                };
               newState = if result ? state then result.state
                 else throw "nix-effects: handler for '${eff.name}' must include 'state' in return value";
               # deepSeq newState in key: genericClosure forces key for dedup,
@@ -132,6 +137,14 @@ let
 
   # -- Selective interpreter (handler rotation) --
 
+  localHandler = handlers: eff:
+    if eff.name == "has-handler" then
+      if handlers ? ${eff.param}
+      then { param, state }: { inherit state; resume = true; }
+      else null # causes has-handler to rotate up
+    else
+      handlers.${eff.name} or null;
+
   effectRotateSlow = { comp, handlers, state, done }:
     let
       steps = builtins.genericClosure {
@@ -139,10 +152,12 @@ let
         operator = step:
           if isPure step._comp then []
           else
-            let eff = step._comp.effect; in
-            if handlers ? ${eff.name} then
+            let
+              eff = step._comp.effect;
+              handler = localHandler handlers eff;
+            in if handler != null then
               let
-                result = handlers.${eff.name} {
+                result = handler {
                   param = eff.param;
                   state = step._state;
                 };
@@ -177,10 +192,10 @@ let
     else
       let
         eff = comp.effect;
-      in
-      if handlers ? ${eff.name} then
+        handler = localHandler handlers eff;
+      in if handler != null then
         let
-          result = handlers.${eff.name} {
+          result = handler {
             param = eff.param;
             inherit state;
           };

@@ -168,6 +168,73 @@ let
     expected = { outer = "outer"; inner = "inner"; };
   };
 
+  # Deep handler semantics: when an effect rotates outward and the outer
+  # handler returns an effectful resume (a computation), the resume's
+  # effects should be caught by the inner scope's handlers first.
+  deepHandlerEffectfulResume = {
+    expr =
+      let
+        # Computation sends "B" (not in inner scope — rotates outward)
+        comp = bind (send "B" null) (x: pure x);
+
+        # Inner scope handles "A"
+        scoped = scope.run {
+          handlers.A = { param, state }: { resume = 42; inherit state; };
+        } comp;
+
+        # Outer handler for "B" returns effectful resume that sends "A"
+        result = handle {
+          handlers.B = { param, state }: {
+            resume = send "A" null;
+            inherit state;
+          };
+        } scoped;
+      in result.value;
+    # Deep: "A" caught by inner scope → 42
+    # Shallow: "A" handled at outer level → unhandled effect error
+    expected = 42;
+  };
+
+  # Deep handler semantics with chained effectful resume:
+  # outer handler returns bind (send "A" ...) (x: pure (x + 1))
+  # "A" should be caught by inner scope, then continuation runs
+  deepHandlerChainedResume = {
+    expr =
+      let
+        comp = bind (send "B" null) (x: pure x);
+        scoped = scope.run {
+          handlers.A = { param, state }: { resume = 100; inherit state; };
+        } comp;
+        result = handle {
+          handlers.B = { param, state }: {
+            resume = bind (send "A" null) (x: pure (x + 1));
+            inherit state;
+          };
+        } scoped;
+      in result.value;
+    expected = 101;
+  };
+
+  # Deep handler semantics with stateful inner scope:
+  # verify inner scope state is threaded correctly through effectful resume
+  deepHandlerStatefulInner = {
+    expr =
+      let
+        comp = bind (send "B" null) (x: pure x);
+        scoped = scope.runWith {
+          handlers.A = { param, state }: { resume = state; state = state + 1; };
+          state = 0;
+        } comp;
+        result = handle {
+          handlers.B = { param, state }: {
+            resume = bind (send "A" null) (_: send "A" null);
+            inherit state;
+          };
+        } scoped;
+      in result.value;
+    expected = { value = 1; state = 2; };
+  };
+
   allPass = twoUsersTest.expr == twoUsersTest.expected
     && scopeStateIsolation.expr == scopeStateIsolation.expected
     && scopeEscapeEffects.expr == scopeEscapeEffects.expected
@@ -177,11 +244,17 @@ let
     && dynamicHandlerFromEffect.expr == dynamicHandlerFromEffect.expected
     && abortInsideScope.expr == abortInsideScope.expected
     && threeUsersFanOut.expr == threeUsersFanOut.expected
-    && scopeOverrideInNested.expr == scopeOverrideInNested.expected;
+    && scopeOverrideInNested.expr == scopeOverrideInNested.expected
+    && deepHandlerEffectfulResume.expr == deepHandlerEffectfulResume.expected
+    && deepHandlerChainedResume.expr == deepHandlerChainedResume.expected
+    && deepHandlerStatefulInner.expr == deepHandlerStatefulInner.expected;
 
 in {
   inherit twoUsersTest scopeStateIsolation scopeEscapeEffects nestedScopes
           scopeWithStatefulHandler scopeDoesNotCorruptUserState
           dynamicHandlerFromEffect abortInsideScope threeUsersFanOut
-          scopeOverrideInNested allPass;
+          scopeOverrideInNested
+          deepHandlerEffectfulResume deepHandlerChainedResume
+          deepHandlerStatefulInner
+          allPass;
 }

@@ -108,7 +108,9 @@ in {
   inherit (scopeTests) twoUsersTest scopeStateIsolation scopeEscapeEffects nestedScopes
           scopeWithStatefulHandler scopeDoesNotCorruptUserState
           dynamicHandlerFromEffect abortInsideScope threeUsersFanOut
-          scopeOverrideInNested;
+          scopeOverrideInNested
+          deepHandlerEffectfulResume deepHandlerChainedResume
+          deepHandlerStatefulInner;
 
   inherit (streamTests) fromListToListTest fromListEmptyTest
           rangeTest rangeEmptyTest replicateTest replicateZeroTest

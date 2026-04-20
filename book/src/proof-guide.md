@@ -132,12 +132,12 @@ let
 in {
   # if true then 42 else 0 = 42
   trueCase = let
-    result = boolElim (H.lam "_" bool (_: nat)) (H.natLit 42) zero H.true_;
+    result = boolElim 0 (H.lam "_" bool (_: nat)) (H.natLit 42) zero H.true_;
   in (checkHoas (eq nat result (H.natLit 42)) refl).tag == "refl";
 
   # if false then 42 else 0 = 0
   falseCase = let
-    result = boolElim (H.lam "_" bool (_: nat)) (H.natLit 42) zero H.false_;
+    result = boolElim 0 (H.lam "_" bool (_: nat)) (H.natLit 42) zero H.false_;
   in (checkHoas (eq nat result zero) refl).tag == "refl";
 }
 ```

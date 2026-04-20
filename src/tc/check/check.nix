@@ -7,16 +7,21 @@
 # matched, using `conv` to compare the inferred type against the
 # expected one (sub rule, with cumulativity for universes).
 #
-# `checkMotive` enforces that a motive has type `domTy → U(k)` for some
-# `k`, enabling large elimination. Lambda motives extend the context
-# with `domTy` and `checkType` on the body; non-lambda motives infer a
-# type and validate the shape.
+# `checkMotive` enforces that a motive has type `D_1 → … → D_n → U(k)`
+# for some `k`, enabling large elimination. The domain chain is a
+# `{ head : Val; tail : Val → Chain } | null` sequence so each layer
+# may depend on the previous binder's value (required by `desc-ind`,
+# whose motive is `(i:I) → μ D i → U(k)`). 1-argument callers use the
+# `singleton` helper. Lambda motives extend the context with the
+# current layer's domain and recurse; non-lambda motives infer a
+# Π-chain matching the expected domains and validate the innermost
+# codomain is a universe.
 #
 # The Succ and Cons branches trampoline over `builtins.genericClosure`
 # to handle deep chains without stack pressure (§11.3). The `desc-con`
 # branch peels homogeneous recursive-data chains along their single
-# recursive position when `linearProfile` of the outer description's
-# false-branch exposes a list of field types.
+# recursive position when the outer description is a plus-coproduct
+# `A ⊕ B` with exactly one linear-recursive summand.
 { self, fx, ... }:
 
 let
@@ -35,26 +40,51 @@ let
     send "typeError" { inherit msg expected got term; };
 in {
   scope = {
-    checkMotive = ctx: motTm: domTy:
-      if motTm.tag == "lam" then
-        let ctx' = self.extend ctx motTm.name domTy;
-        in bind (self.checkType ctx' motTm.body) (bodyTm:
-          pure (T.mkLam motTm.name (Q.quote ctx.depth domTy) bodyTm))
+    # Build a 1-layer non-dependent domain chain from a single domain Val.
+    singleton = dom: { head = dom; tail = _: null; };
+
+    checkMotive = ctx: motTm: chain:
+      if chain == null then
+        # Innermost body: must inhabit some universe. `checkType` accepts
+        # any universe level (via `checkTypeLevel`'s fallback), supporting
+        # large elimination.
+        self.checkType ctx motTm
+      else if motTm.tag == "lam" then
+        let
+          dom = chain.head;
+          ctx' = self.extend ctx motTm.name dom;
+          # Fresh variable at the old depth is the level the just-bound
+          # variable occupies in ctx'. Threading it into `chain.tail`
+          # lets the next layer's domain reference the outer binder.
+          freshV = V.freshVar ctx.depth;
+          restChain = chain.tail freshV;
+        in bind (self.checkMotive ctx' motTm.body restChain) (bodyTm:
+          pure (T.mkLam motTm.name (Q.quote ctx.depth dom) bodyTm))
       else
+        # Non-lambda motive: infer a Π-chain matching the expected
+        # domains, then validate the innermost codomain is a universe.
+        # `d` tracks the effective depth as successive Π-closures are
+        # peeked — each fresh variable occupies a new level.
         bind (self.infer ctx motTm) (result:
-          let rTy = result.type; in
-          if rTy.tag != "VPi"
-          then typeError "eliminator motive must be a function"
-            { tag = "pi"; } (Q.quote ctx.depth rTy) motTm
-          else if !(C.conv ctx.depth rTy.domain domTy)
-          then typeError "eliminator motive domain mismatch"
-            (Q.quote ctx.depth domTy) (Q.quote ctx.depth rTy.domain) motTm
-          else
-            let codVal = E.instantiate rTy.closure (V.freshVar ctx.depth); in
-            if codVal.tag != "VU"
-            then typeError "eliminator motive must return a type"
-              { tag = "U"; } (Q.quote ctx.depth codVal) motTm
-            else pure result.term);
+          let
+            go = rTy: ch: d:
+              if ch == null then
+                if rTy.tag == "VU"
+                then pure result.term
+                else typeError "eliminator motive must return a type"
+                  { tag = "U"; } (Q.quote d rTy) motTm
+              else if rTy.tag != "VPi"
+              then typeError "eliminator motive must be a function"
+                { tag = "pi"; } (Q.quote d rTy) motTm
+              else if !(C.conv d rTy.domain ch.head)
+              then typeError "eliminator motive domain mismatch"
+                (Q.quote d ch.head) (Q.quote d rTy.domain) motTm
+              else
+                let
+                  freshV = V.freshVar d;
+                  codVal = E.instantiate rTy.closure freshV;
+                in go codVal (ch.tail freshV) (d + 1);
+          in go result.type chain ctx.depth);
 
     check = ctx: tm: ty:
       let t = tm.tag; in
@@ -207,20 +237,35 @@ in {
             bind (self.check ctx tm.D (V.vDesc ty.I)) (dTm:
               pure (T.mkDescPi sTm fTm dTm))))
 
-      # desc-con checked against Mu — trampolined for deep recursive data
-      # (5000+). Peels a homogeneous desc-con chain along its single
-      # recursive position. The outer D's false-branch shape drives
-      # decomposition: iff `linearProfile subFalse` is a list of n data-
-      # field types, each layer's payload is
-      # `pair false (pair f_1 (… (pair REC tt) …))` with n heads and a
-      # rec tail. Non-linear shapes (tree, mutual recursion) fall through
-      # to per-layer checking.
+      # desc-plus checked against Desc I — both summands share the same
+      # index type. Mirrors the desc-ret/arg/rec/pi CHECK rules so that
+      # `plus A B` is accepted by the bidirectional kernel whenever A or
+      # B carries a check-only leaf (e.g. `retI tt` where `tt` has no
+      # infer rule). Without this rule the check-mode path falls through
+      # to subsumption + infer, and infer on `plus` recursively requires
+      # `A` to be inferable, which fails for ret-only summands.
+      else if t == "desc-plus" && ty.tag == "VDesc" then
+        bind (self.check ctx tm.A (V.vDesc ty.I)) (aTm:
+          bind (self.check ctx tm.B (V.vDesc ty.I)) (bTm:
+            pure (T.mkDescPlus aTm bTm)))
+
+      # desc-con checked against Mu — trampolined for deep recursive
+      # data (5000+). Peels a homogeneous desc-con chain along its
+      # single recursive position when D = plus A B with exactly one
+      # of A, B linear-recursive (descArg-chain ending in
+      # `descRec descRet`). Payload shape per layer is
+      # `inl/inr lTy rTy (pair f_0 … (pair REC refl))` — n data fields,
+      # the recursive tail, and a refl witness. lTy/rTy are invariant
+      # across layers and captured from the first peel.
+      #
+      # Non-linear shapes (tree, mutual recursion, multi-recursive
+      # ctors, non-plus D) fall through to per-layer checking.
       #
       # Each layer carries its own target index `i : I` via the 3-arg
       # `mkDescCon D i d`. The trampoline checks `layer.i : I` and
-      # conv-matches against the expected index (ty.i at the top of the
-      # chain, the rec position's `j` at successors). The payload type
-      # at each layer is `interp I D μD layer.i`.
+      # conv-matches against the expected index (ty.i at the top of
+      # the chain, the rec position's `j` at successors). The payload
+      # type at each layer is `interp I D μD layer.i`.
       else if t == "desc-con" && ty.tag == "VMu" then
         let iTyVal = ty.I;
         in bind (self.check ctx tm.D (V.vDesc iTyVal)) (dTm:
@@ -238,31 +283,40 @@ in {
               (Q.quote ctx.depth ty.i) (Q.quote ctx.depth topIVal) tm
             else
               let
-                subFalse =
-                  if ty.D.tag != "VDescArg" then null
-                  else E.instantiate ty.D.T V.vFalse;
-                profile = if subFalse == null then null else E.linearProfile subFalse;
-                nFields = if profile == null then 0 else builtins.length profile;
+                classify =
+                  if ty.D.tag != "VDescPlus" then null
+                  else
+                    let pA = E.linearProfile ty.D.A;
+                        pB = E.linearProfile ty.D.B;
+                    in if pA != null && pB == null then { profile = pA; side = "inl"; }
+                       else if pB != null && pA == null then { profile = pB; side = "inr"; }
+                       else null;
+                profile = if classify == null then [] else classify.profile;
+                nFields = builtins.length profile;
                 sameD = d2Tm:
                   if d2Tm == tm.D then true
                   else C.conv ctx.depth (E.eval ctx.env d2Tm) dVal;
+                collectPairs = inner:
+                  let
+                    collect = k: p: acc:
+                      if k == nFields then
+                        if p.tag != "pair" then null
+                        else if p.snd.tag != "refl" then null
+                        else if p.fst.tag != "desc-con" then null
+                        else { heads = acc; tail = p.fst; }
+                      else
+                        if p.tag != "pair" then null
+                        else collect (k + 1) p.snd (acc ++ [p.fst]);
+                  in collect 0 inner [];
                 walkPayload = payload:
-                  if payload.tag != "pair" then null
-                  else if payload.fst.tag != "false" then null
+                  if classify == null then null
+                  else if payload.tag != classify.side then null
                   else
-                    let
-                      collect = k: p: acc:
-                        if k == nFields then
-                          if p.tag != "pair" then null
-                          else if p.snd.tag != "refl" then null
-                          else if p.fst.tag != "desc-con" then null
-                          else { heads = acc; tail = p.fst; }
-                        else
-                          if p.tag != "pair" then null
-                          else collect (k + 1) p.snd (acc ++ [p.fst]);
-                    in collect 0 payload.snd [];
+                    let inner = collectPairs payload.term; in
+                    if inner == null then null
+                    else inner // { lTm = payload.left; rTm = payload.right; };
                 peel = node:
-                  if profile == null then null
+                  if classify == null then null
                   else if node.tag != "desc-con" then null
                   else if !(sameD node.D) then null
                   else walkPayload node.d;
@@ -275,6 +329,11 @@ in {
                 };
                 n = builtins.length chain - 1;
                 base = (builtins.elemAt chain n).val;
+                topPeel = if n >= 1 then peel tm else null;
+                wrapPayload = innerTm:
+                  if classify.side == "inl"
+                  then T.mkInl topPeel.lTm topPeel.rTm innerTm
+                  else T.mkInr topPeel.lTm topPeel.rTm innerTm;
               in bind (self.check ctx base.i iTyVal) (baseITm:
                 let baseIVal = E.eval ctx.env baseITm;
                     interpTyBase = E.interp iTyVal ty.D muDFunc baseIVal;
@@ -305,7 +364,7 @@ in {
                       bind (self.check ctx layer.i iTyVal) (layerITm:
                         bind (checkHeads tasks []) (hTms:
                           pure (T.mkDescCon dTm layerITm
-                            (T.mkPair T.mkFalse
+                            (wrapPayload
                               (buildInner hTms (T.mkPair acc T.mkRefl)))))))
                   ) (pure baseTm) (builtins.genList (x: x) n)))))
 

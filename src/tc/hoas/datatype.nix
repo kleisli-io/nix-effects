@@ -53,12 +53,16 @@ in {
     # spineDesc descs : Hoas Desc
     # Combine per-constructor descriptions into a single description.
     # Uniform recursion: the singleton case IS the leaf (no outer tag);
-    # n>=2 produces a right-associated Bool tag spine. Unrolls to the
-    # familiar shapes — n=2 reduces to `descArg bool (b: boolElim _ D1 D2 b)`,
-    # the same Bool-fold the prelude descriptions use directly.
+    # n>=2 produces a right-associated plus-spine `plus D_0 (plus D_1
+    # (... D_{n-1}))`. `interp (plus A B) X i` reduces STRUCTURALLY to
+    # kernel `Sum (⟦A⟧ X i) (⟦B⟧ X i)` — no bool-tag dispatch, no
+    # commuting-conv obligation on `interp ∘ bool-elim`. Matches the
+    # plus-based shape used by the prelude descriptions (`natDesc` /
+    # `listDesc` / `sumDesc` / `boolDesc` at `hoas/desc.nix` and
+    # `hoas/combinators.nix`).
     spineDesc = descs:
       let
-        inherit (self) descArg bool boolElim lam desc spineDesc;
+        inherit (self) plus spineDesc;
         n = builtins.length descs;
       in
       if n == 0 then throw "datatype: n=0 rejected (use H.void)"
@@ -67,8 +71,7 @@ in {
         let
           D1 = builtins.elemAt descs 0;
           rest = builtins.tail descs;
-        in descArg bool (b:
-          boolElim (lam "_" bool (_: desc)) D1 (spineDesc rest) b);
+        in plus D1 (spineDesc rest);
 
     # payloadTuple xs : Hoas
     # Build a right-nested pair from an ordered list of HOAS terms.
@@ -81,24 +84,49 @@ in {
       if xs == [] then refl
       else pair (builtins.head xs) (payloadTuple (builtins.tail xs));
 
-    # encodeTag t n payload : Hoas
-    # Wrap `payload` with the (n-1)-deep Bool tag prefix that commits at
-    # position t (0-based) out of n total. Mirrors spineDesc structurally:
-    # at every level a `false_` bit descends into the rest-spine, and the
-    # commit at position t is `pair true_ payload`. n=1 has no prefix.
-    encodeTag = t: n: payload:
-      let inherit (self) pair true_ false_ encodeTag; in
+    # encodeTag dOuter descsHoas t payload : Hoas
+    # Wrap `payload` with the (n-1)-deep plus-coproduct prefix committing
+    # at position t (0-based) out of n total. Mirrors spineDesc
+    # structurally: at every layer the L/R type arguments are the interps
+    # of the current summand and the plus-tree of the remaining summands
+    # respectively, under the muFam `λ_:⊤. μ ⊤ dOuter tt`. `inlPrim L R`
+    # at position t=0; otherwise `inrPrim L R (encodeTag ... (t-1)
+    # (rest) payload)`. n=1 has no prefix. `descsHoas` must have length
+    # >= 1; the singleton case returns `payload` directly.
+    encodeTag = dOuter: descsHoas: t: payload:
+      let
+        inherit (self) plus inlPrim inrPrim interpHoas
+                        unitPrim ttPrim muI lam encodeTag;
+        n = builtins.length descsHoas;
+        muFam = lam "_i" unitPrim (_: muI unitPrim dOuter ttPrim);
+        # Plus-spine of summands starting at index k. Requires
+        # `n - k >= 1`.
+        spineAfter = k:
+          let remaining = n - k; in
+          if remaining == 1 then builtins.elemAt descsHoas k
+          else plus (builtins.elemAt descsHoas k) (spineAfter (k + 1));
+        interpAt = dH: interpHoas unitPrim dH muFam ttPrim;
+      in
       if n == 1 then payload
-      else if t == 0 then pair true_ payload
-      else pair false_ (encodeTag (t - 1) (n - 1) payload);
+      else
+        let
+          lTy = interpAt (builtins.elemAt descsHoas 0);
+          rTy = interpAt (spineAfter 1);
+          rest = builtins.tail descsHoas;
+        in
+        if t == 0 then inlPrim lTy rTy payload
+        else inrPrim lTy rTy
+               (encodeTag dOuter rest (t - 1) payload);
 
     # Build a monomorphic DataSpec from a non-empty list of ConSpecs.
     datatype = name: consList:
       let
         inherit (self)
-          u desc forall lam let_ mu app ann fst_ snd_ pair true_ false_ tt unit bool
+          u desc forall lam let_ mu app ann fst_ snd_ pair
+          ttPrim unitPrim
+          plus sumPrim inlPrim inrPrim sumElimPrim
           eq refl j
-          descCon descInd boolElim interpHoas allHoas
+          descCon descInd interpHoas allHoas
           conDesc spineDesc payloadTuple encodeTag;
 
         n = builtins.length consList;
@@ -123,14 +151,14 @@ in {
         # where the bare canonical forms are accepted by the existing check
         # rules.
         D = ann (spineDesc conDescs) desc;
-        T = mu D tt;
+        T = mu D ttPrim;
 
         # Index-family machinery for the indexed `descInd`. The datatype
-        # macro lives at the I=⊤ slice: `muFam _ = μ D tt`, and the
+        # macro lives at the I=⊤ slice: `muFam _ = μ D ttPrim`, and the
         # wrapped motive `Pp i x = P x` (β-reducing via conv on the user
         # motive `P : T → U`).
-        muFam = lam "_i" unit (iArg: mu D iArg);
-        ppTy = forall "i" unit (iArg: forall "_" (mu D iArg) (_: u 0));
+        muFam = lam "_i" unitPrim (iArg: mu D iArg);
+        ppTy = forall "i" unitPrim (iArg: forall "_" (mu D iArg) (_: u 0));
 
         # Type of field f, given `prev` (markers for earlier data/dataD
         # fields). data/dataD bind a description-level variable visible to
@@ -177,12 +205,13 @@ in {
         # surface.
         mkCtor = i: c:
           if c.fields == []
-          then descCon D tt (encodeTag i n (payloadTuple []))
+          then descCon D ttPrim (encodeTag D conDescs i (payloadTuple []))
           else
             let
               bareGo = remaining: prev: collected:
                 if remaining == [] then
-                  descCon D tt (encodeTag i n (payloadTuple collected))
+                  descCon D ttPrim
+                    (encodeTag D conDescs i (payloadTuple collected))
                 else
                   let f = builtins.head remaining;
                       rest = builtins.tail remaining;
@@ -197,6 +226,10 @@ in {
               ctorIndex = i;
               nCtors = n;
               dHoas = D;
+              # Per-constructor HOAS descriptions — consumed by
+              # `elaborate`'s flatten path to precompute the per-layer
+              # L/R interp Tms of the `inlPrim` / `inrPrim` wrapping.
+              inherit conDescs;
               nFields = builtins.length c.fields;
               fields = c.fields;
               inherit fallback;
@@ -296,26 +329,26 @@ in {
         # dispatchStep Pp iArg ctx descs steps cons payload payloadIH : Hoas
         # Walks the per-constructor descriptions in declaration order,
         # threading an outer-context wrapper `ctx` that reconstitutes the
-        # full payload at each level (used in the boolElim motive so conv
+        # full payload at each level (used in the sumElim motive so conv
         # discharges Pp iArg (descCon D iArg (ctx ...)) ≡ P (C_i ...) via
         # Pp-β + Σ-η + ⊤-η + J-transport on the leaf Eq witness). Pp is
         # the indexed motive wrapper `λi λx. P x` — applying `Pp iArg`
         # β-reduces to the user motive `P` at any typed `x`.
         # n=1 (leaf) wraps the user step in J-transport over the leaf Eq
-        # witness; n>=2 emits a boolElim that commits to constructor i on
-        # `true_` (also J-transported) and descends into the rest-spine
-        # on `false_`.
+        # witness; n>=2 emits a sumElim that commits to constructor i on
+        # `inl` (J-transported) and descends into the rest-spine on
+        # `inr`.
         #
         # J-transport (jTransportLeaf payloadCtx c r userApplied):
-        # The user step `s` produces `userApplied : app Pp tt (descCon D tt
+        # The user step `s` produces `userApplied : app Pp ttPrim (descCon D ttPrim
         # (payloadCtx (pair f_0 (... (pair f_{k-1} refl)))))` where each
         # f_i = fst(snd^i r) and the leaf is the macro-inserted `refl`.
         # The expected type is `app Pp iArg (descCon D iArg (payloadCtx
         # (pair f_0 (... (pair f_{k-1} snd^k r)))))` — same modulo the
-        # iArg position and the leaf Eq witness `snd^k r : Eq ⊤ tt iArg`.
+        # iArg position and the leaf Eq witness `snd^k r : Eq ⊤ ttPrim iArg`.
         # MLTT without K cannot conv `VRefl ≡ VNe(eq)`; J is the sanctioned
         # transport. Motive `M(y,e) = app Pp y (descCon D y (payloadCtx
-        # (pair f_0 (... (pair f_{k-1} e)))))`; base `M(tt, refl) ≡
+        # (pair f_0 (... (pair f_{k-1} e)))))`; base `M(ttPrim, refl) ≡
         # userApplied`; result `M(iArg, snd^k r)` matches the expected type.
         # k=0 corner: r ITSELF is the Eq witness and `payloadCtx e` is the
         # full payload at the leaf.
@@ -343,11 +376,11 @@ in {
                       if i == k then e
                       else pair (projAt i r) (go (i + 1));
                   in go 0;
-                motive = lam "y" unit (y:
-                         lam "e" (eq unit tt y) (e:
+                motive = lam "y" unitPrim (y:
+                         lam "e" (eq unitPrim ttPrim y) (e:
                            app (app Pp y)
                                (descCon D y (payloadCtx (buildPayload e)))));
-              in j unit tt motive userApplied iArg eLeaf;
+              in j unitPrim ttPrim motive userApplied iArg eLeaf;
           in
           if n' == 1 then
             let
@@ -364,23 +397,28 @@ in {
               restS = builtins.tail steps;
               restC = builtins.tail cons;
               restSpine = spineDesc restD;
-              subDescAt = b:
-                boolElim (lam "_" bool (_: desc)) D1 restSpine b;
-              motive = lam "b" bool (b:
-                forall "r" (interpHoas unit (subDescAt b) muFam iArg) (r:
-                forall "rih" (allHoas unit D (subDescAt b) Pp iArg r) (_:
-                  app (app Pp iArg) (descCon D iArg (ctx (pair b r))))));
-              onTrue = lam "r" (interpHoas unit D1 muFam iArg) (r:
-                       lam "rih" (allHoas unit D D1 Pp iArg r) (rih:
-                         jTransportLeaf (local: ctx (pair true_ local)) c1 r
-                           (buildStepApply s1 c1 r rih)));
-              ctx' = local: ctx (pair false_ local);
-              onFalse = lam "r" (interpHoas unit restSpine muFam iArg) (r:
-                        lam "rih" (allHoas unit D restSpine Pp iArg r) (rih:
-                          dispatchStep Pp iArg ctx' restD restS restC r rih));
-            in app (app
-                 (boolElim motive onTrue onFalse (fst_ payload))
-                 (snd_ payload))
+              # Interp types of the two summands at the current iArg:
+              # the outer plus's interp reduces to `Sum lInterp rInterp`
+              # (kernel Sum), and `payload : Sum lInterp rInterp` is
+              # dispatched via `sumElimPrim`.
+              lInterp = interpHoas unitPrim D1 muFam iArg;
+              rInterp = interpHoas unitPrim restSpine muFam iArg;
+              # Sum-elim motive: each summand inhabits this Pp-target
+              # rebuilt through `ctx (inlPrim/inrPrim …)`.
+              sumMot = lam "s" (sumPrim lInterp rInterp) (s:
+                forall "rih" (allHoas unitPrim D (plus D1 restSpine) Pp iArg s) (_:
+                  app (app Pp iArg) (descCon D iArg (ctx s))));
+              onInl = lam "r" lInterp (r:
+                      lam "rih" (allHoas unitPrim D D1 Pp iArg r) (rih:
+                        jTransportLeaf
+                          (local: ctx (inlPrim lInterp rInterp local))
+                          c1 r
+                          (buildStepApply s1 c1 r rih)));
+              ctx' = local: ctx (inrPrim lInterp rInterp local);
+              onInr = lam "r" rInterp (r:
+                      lam "rih" (allHoas unitPrim D restSpine Pp iArg r) (rih:
+                        dispatchStep Pp iArg ctx' restD restS restC r rih));
+            in app (sumElimPrim lInterp rInterp sumMot onInl onInr payload)
                  payloadIH;
 
         # Generic eliminator. The closed term is wrapped in `ann` against
@@ -425,13 +463,13 @@ in {
           buildLamCascade (steps:
             lam "scrut" T (scrut:
               let_ "Pp" ppTy
-                (lam "i" unit (_: lam "x" (mu D tt) (x: app P x))) (Pp:
+                (lam "i" unitPrim (_: lam "x" (mu D ttPrim) (x: app P x))) (Pp:
                 descInd D Pp
-                  (lam "i" unit (iArg:
-                   lam "d" (interpHoas unit D muFam iArg) (d:
-                   lam "ih" (allHoas unit D D Pp iArg d) (ih:
+                  (lam "i" unitPrim (iArg:
+                   lam "d" (interpHoas unitPrim D muFam iArg) (d:
+                   lam "ih" (allHoas unitPrim D D Pp iArg d) (ih:
                      dispatchStep Pp iArg (x: x) conDescs steps consList d ih))))
-                  tt
+                  ttPrim
                   scrut)))
             P);
 

@@ -83,8 +83,67 @@ let
     else if t == "VDescArg" then T.mkDescArg (quote d v.S) (quote (d + 1) (E.instantiate v.T (V.freshVar d)))
     else if t == "VDescRec" then T.mkDescRec (quote d v.j) (quote d v.D)
     else if t == "VDescPi" then T.mkDescPi (quote d v.S) (quote d v.f) (quote d v.D)
+    else if t == "VDescPlus" then T.mkDescPlus (quote d v.A) (quote d v.B)
     else if t == "VMu" then T.mkMu (quote d v.I) (quote d v.D) (quote d v.i)
-    else if t == "VDescCon" then T.mkDescCon (quote d v.D) (quote d v.i) (quote d v.d)
+    # VDescCon — trampolined for deep recursive chains (5000+ cons/succ layers).
+    # Mirrors the eval/check desc-con trampoline at the quote layer: peels a
+    # linear-recursive chain whose outer D = VDescPlus A B and whose "recursive"
+    # summand B has linearProfile [{S_1}..{S_n}] (n ≥ 0 data heads then rec tail).
+    # Each peeled layer has payload VInr left right (VPair h_1 (...(VPair rec VRefl))).
+    # Non-linear shapes (nil leaves, non-plus D, tree recursion) return null and
+    # fall through to the single-layer recursive quote at baseTm below.
+    else if t == "VDescCon" then
+      let
+        peel = node:
+          if node.tag != "VDescCon" then null
+          else if node.D.tag != "VDescPlus" then null
+          else if node.d.tag != "VInr" then null
+          else
+            let
+              profile = E.linearProfile node.D.B;
+              nFields = if profile == null then 0 else builtins.length profile;
+              collect = k: p: acc:
+                if k == nFields then
+                  if p.tag != "VPair" then null
+                  else if p.snd.tag != "VRefl" then null
+                  else if p.fst.tag != "VDescCon" then null
+                  else { heads = acc; tail = p.fst; }
+                else if p.tag != "VPair" then null
+                else collect (k + 1) p.snd (acc ++ [ p.fst ]);
+            in if profile == null then null
+               else collect 0 node.d.val [];
+        chain = builtins.genericClosure {
+          startSet = [{ key = 0; val = v; }];
+          operator = item:
+            let peeled = peel item.val; in
+            if peeled == null then []
+            else [{ key = item.key + 1; val = peeled.tail; }];
+        };
+        n = builtins.length chain - 1;
+        base = (builtins.elemAt chain n).val;
+        baseTm = T.mkDescCon (quote d base.D) (quote d base.i) (quote d base.d);
+      in if n == 0 then baseTm
+         else
+           let
+             # All layers share D and the VInr wrapper's left/right type args
+             # (they are interp-of-D.{A,B} which depends only on D, shared
+             # across layers). Quote once; reuse in the fold.
+             outerD   = quote d v.D;
+             leftTm   = quote d v.d.left;
+             rightTm  = quote d v.d.right;
+           in builtins.foldl' (acc: k:
+                let
+                  layer = (builtins.elemAt chain (n - 1 - k)).val;
+                  peeled = peel layer;
+                  headTms = map (h: quote d h) peeled.heads;
+                  buildInner = hs: tail:
+                    if hs == [] then tail
+                    else T.mkPair (builtins.head hs)
+                                  (buildInner (builtins.tail hs) tail);
+                in T.mkDescCon outerD (quote d layer.i)
+                     (T.mkInr leftTm rightTm
+                       (buildInner headTms (T.mkPair acc T.mkRefl)))
+              ) baseTm (builtins.genList (x: x) n)
     else if t == "VU" then T.mkU v.level
     else if t == "VString" then T.mkString
     else if t == "VInt" then T.mkInt
@@ -132,7 +191,8 @@ let
       T.mkDescInd (quote d elim.D) (quote d elim.motive) (quote d elim.step) (quote d elim.i) head
     else if t == "EDescElim" then
       T.mkDescElim (quote d elim.motive) (quote d elim.onRet)
-        (quote d elim.onArg) (quote d elim.onRec) (quote d elim.onPi) head
+        (quote d elim.onArg) (quote d elim.onRec) (quote d elim.onPi)
+        (quote d elim.onPlus) head
     else throw "tc: quoteElim unknown tag '${t}'";
 
   # Normalize: eval then quote
@@ -312,7 +372,7 @@ in mk {
       expected = "desc-ind";
     };
     "quote-ne-desc-elim" = {
-      expr = (quote 1 (V.vNe 0 [ (V.eDescElim V.vNat V.vZero V.vZero V.vZero V.vZero) ])).tag;
+      expr = (quote 1 (V.vNe 0 [ (V.eDescElim V.vNat V.vZero V.vZero V.vZero V.vZero V.vZero) ])).tag;
       expected = "desc-elim";
     };
 
@@ -434,6 +494,34 @@ in mk {
         deep = builtins.foldl' (acc: _: V.vSucc acc) V.vZero (builtins.genList (x: x) 5000);
       in (quote 0 deep).tag;
       expected = "succ";
+    };
+    # Exercises the VDescCon trampoline on a 5000-deep plus-encoded list cons
+    # chain. Outer D is VDescPlus whose B summand matches linearProfile [{S=Nat}];
+    # each layer's payload is VInr L R (VPair head (VPair rec VRefl)). The
+    # placeholder left/right type args only need to roundtrip structurally —
+    # soundness is covered by the eval/check desc-con trampoline tests.
+    "quote-descCon-5000" = {
+      expr = let
+        unit = V.vUnit;
+        tt = V.vTt;
+        listDescVal = V.vDescPlus
+          (V.vDescRet tt)
+          (V.vDescArg V.vNat
+            (V.mkClosure [ ] (T.mkDescRec T.mkTt (T.mkDescRet T.mkTt))));
+        leftTy  = V.vEq unit tt tt;
+        rightTy = V.vU 0;
+        nilLayer = V.vDescCon listDescVal tt
+          (V.vInl leftTy rightTy V.vRefl);
+        consLayer = head_: tail_:
+          V.vDescCon listDescVal tt
+            (V.vInr leftTy rightTy
+              (V.vPair head_ (V.vPair tail_ V.vRefl)));
+        deep = builtins.foldl'
+          (acc: _: consLayer V.vZero acc)
+          nilLayer
+          (builtins.genList (x: x) 5000);
+      in (quote 0 deep).tag;
+      expected = "desc-con";
     };
 
     # -- C5: Under-binder quotation --

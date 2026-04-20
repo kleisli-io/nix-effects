@@ -40,26 +40,34 @@ let
         inherit kernelType guard;
         approximate = !(allPrecise && sortedNames != []);
         # Per-field effectful verify for blame tracking. Delegates to each
-        # field type's .validate for recursive decomposition — a nested
-        # Record or ListOf field produces deep per-component effects.
-        verify = self: v:
+        # field type's .validateAt for recursive decomposition — a nested
+        # Record or ListOf field produces deep per-component effects with
+        # the field name appended to the structural path.
+        verify = self: path: v:
           if !(builtins.isAttrs v) then
-            send "typeCheck" { type = self; context = self.name; value = v; }
+            send "typeCheck" {
+              type = self; context = self.name; value = v; inherit path;
+            }
           else
             let
               n = builtins.length sortedNames;
               # Build chain right-to-left so effects fire in field-name order
               checkAll = builtins.foldl'
                 (acc: i:
-                  let field = builtins.elemAt sortedNames i; in
+                  let
+                    field = builtins.elemAt sortedNames i;
+                    childPath = path ++ [ field ];
+                  in
                   if !(v ? ${field}) then
                     bind (send "typeCheck" {
                       type = schema.${field};
                       context = "${self.name}.${field}";
                       value = null;
+                      path = childPath;
                     }) (_: acc)
                   else
-                    bind (schema.${field}.validate v.${field}) (_: acc))
+                    bind (schema.${field}.validateAt childPath v.${field})
+                      (_: acc))
                 (pure v)
                 (builtins.genList (i: n - 1 - i) n);
             in if n == 0 then pure v else checkAll;
@@ -207,6 +215,41 @@ let
           in builtins.length result.state;
         expected = 1;
       };
+      "deep-blame-nested-record-path" = {
+        expr =
+          let
+            Inner = Record { c = FP.Int; };
+            Outer = Record { a = Record { b = Inner; }; };
+            result = fx.trampoline.handle {
+              handlers = fx.effects.typecheck.collecting;
+              state = [];
+            } (Outer.validate { a = { b = { c = "wrong"; }; }; });
+          in (builtins.head result.state).path;
+        expected = [ "a" "b" "c" ];
+      };
+      "verify-per-field-blame-paths" = {
+        expr =
+          let
+            PersonT = Record { n = FP.Int; s = FP.String; };
+            result = fx.trampoline.handle {
+              handlers = fx.effects.typecheck.collecting;
+              state = [];
+            } (PersonT.validate { n = "wrong"; s = 42; });
+          in map (e: e.path) result.state;
+        # Field order is sorted (n, s)
+        expected = [ [ "n" ] [ "s" ] ];
+      };
+      "verify-missing-field-has-path" = {
+        expr =
+          let
+            PersonT = Record { n = FP.Int; };
+            result = fx.trampoline.handle {
+              handlers = fx.effects.typecheck.collecting;
+              state = [];
+            } (PersonT.validate {});
+          in (builtins.head result.state).path;
+        expected = [ "n" ];
+      };
       # -- Adequacy: kernel-exact types have check == kernelCheck --
       "adequacy-record" = {
         expr =
@@ -243,21 +286,23 @@ let
         name = "List[${elemType.name}]";
         inherit kernelType guard;
         approximate = !isPrecise;
-        # Per-element effectful verify for blame tracking.
-        verify = self: v:
+        # Per-element effectful verify for blame tracking. Delegates to
+        # elemType.validateAt so record elements decompose into
+        # per-field effects (not just a coarse "element invalid" blame).
+        verify = self: path: v:
           if !(builtins.isList v) then
-            send "typeCheck" { type = self; context = self.name; value = v; }
+            send "typeCheck" {
+              type = self; context = self.name; value = v; inherit path;
+            }
           else
             let
               n = builtins.length v;
               # Build chain right-to-left so effects execute in index order (0, 1, 2, ...)
               checkAll = builtins.foldl'
                 (acc: i:
-                  bind (send "typeCheck" {
-                    type = elemType;
-                    context = "${self.name}[${toString i}]";
-                    value = builtins.elemAt v i;
-                  }) (_: acc))
+                  let childPath = path ++ [ "[${toString i}]" ]; in
+                  bind (elemType.validateAt childPath (builtins.elemAt v i))
+                    (_: acc))
                 (pure v)
                 (builtins.genList (i: n - 1 - i) n);
             in if n == 0 then pure v else checkAll;
@@ -292,6 +337,36 @@ let
       "kernelCheck-rejects-bad-elem" = {
         expr = (ListOf FP.Bool).kernelCheck [42];
         expected = false;
+      };
+      # -- Per-element blame with paths --
+      "listof-primitive-blames-by-index" = {
+        expr =
+          let
+            intList = ListOf FP.Int;
+            result = fx.trampoline.handle {
+              handlers = fx.effects.typecheck.collecting;
+              state = [];
+            } (intList.validate [ 1 "two" 3 "four" ]);
+          in map (e: e.path) result.state;
+        expected = [ [ "[1]" ] [ "[3]" ] ];
+      };
+      "listof-record-decomposes-into-per-field-blame" = {
+        expr =
+          let
+            Iface = Record { name = FP.String; mtu = FP.Int; };
+            ifaces = ListOf Iface;
+            result = fx.trampoline.handle {
+              handlers = fx.effects.typecheck.collecting;
+              state = [];
+            } (ifaces.validate [
+              { name = "eth0"; mtu = 1500; }
+              { name = 42; mtu = "bad"; }
+            ]);
+          in map (e: e.path) result.state;
+        # Element 1 has two bad fields; they appear in sorted field order
+        # (mtu, name). Element 0 passes cleanly. This is Gap 2 — previously
+        # the failing element blamed as a whole, not per field.
+        expected = [ [ "[1]" "mtu" ] [ "[1]" "name" ] ];
       };
     };
   };
@@ -436,12 +511,15 @@ let
         inherit kernelType guard;
         approximate = !(allPrecise && sortedTags != []);
         # Per-branch verify: only the active branch needs validation.
-        # Delegates to the branch type's .validate for recursive decomposition.
-        verify = self: v:
+        # Delegates to the branch type's .validateAt for recursive
+        # decomposition, with the tag appended to the path.
+        verify = self: path: v:
           if !(builtins.isAttrs v && v ? _tag && v ? value && schema ? ${v._tag}) then
-            send "typeCheck" { type = self; context = self.name; value = v; }
+            send "typeCheck" {
+              type = self; context = self.name; value = v; inherit path;
+            }
           else
-            schema.${v._tag}.validate v.value;
+            schema.${v._tag}.validateAt (path ++ [ v._tag ]) v.value;
       };
     tests = let FP = fx.types.primitives; in {
       "accepts-valid-variant" = {
@@ -478,6 +556,17 @@ let
             } (Shape.validate { _tag = "circle"; value = "not-float"; });
           in builtins.length result.state;
         expected = 1;
+      };
+      "verify-variant-active-branch-path" = {
+        expr =
+          let
+            Shape = Variant { circle = FP.Float; rect = FP.Attrs; };
+            result = fx.trampoline.handle {
+              handlers = fx.effects.typecheck.collecting;
+              state = [];
+            } (Shape.validate { _tag = "circle"; value = "not-float"; });
+          in (builtins.head result.state).path;
+        expected = [ "circle" ];
       };
     };
   };

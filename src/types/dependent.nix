@@ -528,15 +528,17 @@ let
         # The .validate → .check pattern: validate produces deep effects
         # (per-element errors for collecting handler), then .check (pure,
         # memoized by Nix) gives the boolean for short-circuit.
-        verify = self: v:
+        verify = self: path: v:
           if !(builtins.isAttrs v && v ? fst && v ? snd)
-          then send "typeCheck" { type = self; context = "Σ (${name})"; value = v; }
+          then send "typeCheck" {
+            type = self; context = "Σ (${name})"; value = v; inherit path;
+          }
           else
-            bind (fst.validate v.fst) (_:
+            bind (fst.validateAt (path ++ [ "fst" ]) v.fst) (_:
               if fst.check v.fst == false then pure v
               else
                 let sndType = snd v.fst;
-                in bind (sndType.validate v.snd) (_:
+                in bind (sndType.validateAt (path ++ [ "snd" ]) v.snd) (_:
                   pure v));
       } // {
         fstType = fst;

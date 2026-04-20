@@ -70,7 +70,7 @@ in {
             pure { term = T.mkSnd pResult.term; type = bTy; })
 
       else if t == "nat-elim" then
-        bind (self.checkMotive ctx tm.motive V.vNat) (pTm:
+        bind (self.checkMotive ctx tm.motive (self.singleton V.vNat)) (pTm:
           let pVal = E.eval ctx.env pTm; in
           bind (self.check ctx tm.base (E.vApp pVal V.vZero)) (zTm:
             let
@@ -91,7 +91,7 @@ in {
                 pure { term = T.mkNatElim pTm zTm sTm nTm; type = retTy; }))))
 
       else if t == "bool-elim" then
-        bind (self.checkMotive ctx tm.motive V.vBool) (pTm:
+        bind (self.checkMotive ctx tm.motive (self.singleton V.vBool)) (pTm:
           let pVal = E.eval ctx.env pTm; in
           bind (self.check ctx tm.onTrue (E.vApp pVal V.vTrue)) (tTm:
             bind (self.check ctx tm.onFalse (E.vApp pVal V.vFalse)) (fTm:
@@ -102,7 +102,7 @@ in {
       else if t == "list-elim" then
         bind (self.checkType ctx tm.elem) (aRaw:
           let aVal = E.eval ctx.env aRaw;
-          in bind (self.checkMotive ctx tm.motive (V.vList aVal)) (pTm:
+          in bind (self.checkMotive ctx tm.motive (self.singleton (V.vList aVal))) (pTm:
             let pVal = E.eval ctx.env pTm; in
             bind (self.check ctx tm.nil (E.vApp pVal (V.vNil aVal))) (nTm:
               let
@@ -133,7 +133,7 @@ in {
           let aVal = E.eval ctx.env aRaw; in
           bind (self.checkType ctx tm.right) (bRaw:
             let bVal = E.eval ctx.env bRaw;
-            in bind (self.checkMotive ctx tm.motive (V.vSum aVal bVal)) (pTm:
+            in bind (self.checkMotive ctx tm.motive (self.singleton (V.vSum aVal bVal))) (pTm:
               let pVal = E.eval ctx.env pTm;
                   # l : Π(x:A). P(inl x)
                   # De Bruijn: closure binds x at depth+1. Var(0) = x.
@@ -161,7 +161,7 @@ in {
                 checkJMotive =
                   if tm.motive.tag == "lam" then
                     let ctx' = self.extend ctx tm.motive.name aVal;
-                    in bind (self.checkMotive ctx' tm.motive.body (eqDomTy ctx.depth)) (innerTm:
+                    in bind (self.checkMotive ctx' tm.motive.body (self.singleton (eqDomTy ctx.depth))) (innerTm:
                       pure (T.mkLam tm.motive.name (Q.quote ctx.depth aVal) innerTm))
                   else
                     bind (self.infer ctx tm.motive) (result:
@@ -265,6 +265,20 @@ in {
                 pure { term = T.mkDescPi sTm fResult.term dTm;
                        type = V.vDesc iVal; })))
 
+      # desc-plus A B — `plus A B : Desc I`. Infer A to determine I, then
+      # check B against the same Desc I. Both summands share an index type.
+      else if t == "desc-plus" then
+        bind (self.infer ctx tm.A) (aResult:
+          let aTy = aResult.type; in
+          if aTy.tag != "VDesc"
+          then typeError "desc-plus: A must have type Desc I"
+            { tag = "desc"; } (Q.quote ctx.depth aTy) tm.A
+          else
+            let iVal = aTy.I; in
+            bind (self.check ctx tm.B (V.vDesc iVal)) (bTm:
+              pure { term = T.mkDescPlus aResult.term bTm;
+                     type = V.vDesc iVal; }))
+
       # desc-con D i d — `con : μ D i` packing payload d at index i.
       else if t == "desc-con" then
         bind (self.infer ctx tm.D) (dResult:
@@ -301,7 +315,7 @@ in {
             let
               iTyVal = sTy.I;
               iTyTm = Q.quote ctx.depth iTyVal;
-            in bind (self.checkMotive ctx tm.motive (V.vDesc iTyVal)) (pTm:
+            in bind (self.checkMotive ctx tm.motive (self.singleton (V.vDesc iTyVal))) (pTm:
               let
                 pVal = E.eval ctx.env pTm;
                 pQ1 = Q.quote (ctx.depth + 1) pVal;
@@ -331,13 +345,20 @@ in {
                       (T.mkPi "ih" (T.mkApp pQ3 (T.mkVar 0))
                         (T.mkApp pQ4
                           (T.mkDescPi (T.mkVar 3) (T.mkVar 2) (T.mkVar 1)))))));
-              in bind (self.check ctx tm.onRet prTy) (prTm:
+                  # pq : Π(A:Desc I). Π(B:Desc I). P A → P B → P (plus A B)
+                pqTy = V.vPi "A" (V.vDesc iTyVal) (V.mkClosure ctx.env
+                  (T.mkPi "B" (T.mkDesc iTyTm)
+                    (T.mkPi "ihA" (T.mkApp pQ2 (T.mkVar 1))
+                      (T.mkPi "ihB" (T.mkApp pQ3 (T.mkVar 1))
+                        (T.mkApp pQ4 (T.mkDescPlus (T.mkVar 3) (T.mkVar 2)))))));
+            in bind (self.check ctx tm.onRet prTy) (prTm:
                 bind (self.check ctx tm.onArg paTy) (paTm:
                   bind (self.check ctx tm.onRec peTy) (peTm:
                     bind (self.check ctx tm.onPi ppTy) (ppTm:
-                      let retTy = E.vApp pVal (E.eval ctx.env sResult.term); in
-                      pure { term = T.mkDescElim pTm prTm paTm peTm ppTm sResult.term;
-                             type = retTy; }))))))
+                      bind (self.check ctx tm.onPlus pqTy) (pqTm:
+                        let retTy = E.vApp pVal (E.eval ctx.env sResult.term); in
+                        pure { term = T.mkDescElim pTm prTm paTm peTm ppTm pqTm sResult.term;
+                               type = retTy; })))))))
 
       else if t == "desc-ind" then
         bind (self.infer ctx tm.D) (dResult:
@@ -348,15 +369,22 @@ in {
           else
             let
               iTyVal = dTy.I;
-              iTyTm1 = Q.quote (ctx.depth + 1) iTyVal;
               dTm = dResult.term;
               dVal = E.eval ctx.env dTm;
               # motive : (i:I) → μ I D i → U(k)
-              motiveTy = V.vPi "i" iTyVal (V.mkClosure ctx.env
-                (T.mkPi "_"
-                  (T.mkMu iTyTm1 (Q.quote (ctx.depth + 1) dVal) (T.mkVar 0))
-                  (T.mkU 0)));
-            in bind (self.check ctx tm.motive motiveTy) (pTm:
+              # 2-layer dependent chain: the inner domain `μ D i` depends
+              # on the outer binder `i : I`. `checkMotive` walks both
+              # lam layers and checks the innermost codomain as a type
+              # at any universe level, matching the large-elim treatment
+              # of the other eliminator rules.
+              chain = {
+                head = iTyVal;
+                tail = iVal: {
+                  head = V.vMu iTyVal dVal iVal;
+                  tail = _xVal: null;
+                };
+              };
+            in bind (self.checkMotive ctx tm.motive chain) (pTm:
               let
                 pVal = E.eval ctx.env pTm;
                 # step : Π(i:I). Π(d : ⟦D⟧(μ D) i). All D P i d → P i (con i d)
@@ -398,11 +426,12 @@ in {
               { tag = "pi"; } (Q.quote ctx.depth piTyVal) tm
           else pure { term = T.mkOpaqueLam tm._fnBox piTyTm; type = piTyVal; })
 
-      # StrEq: both args must be String, result is Bool.
+      # StrEq: both args must be String, result is Bool (plus-encoded).
       else if t == "str-eq" then
         bind (self.check ctx tm.lhs V.vString) (lhsTm:
           bind (self.check ctx tm.rhs V.vString) (rhsTm:
-            pure { term = T.mkStrEq lhsTm rhsTm; type = V.vBool; }))
+            let boolVal = V.vMu V.vUnit (V.vDescPlus (V.vDescRet V.vTt) (V.vDescRet V.vTt)) V.vTt;
+            in pure { term = T.mkStrEq lhsTm rhsTm; type = boolVal; }))
 
       else if t == "pi" || t == "sigma" || t == "list" || t == "sum" || t == "eq" || t == "mu" then
         bind (self.checkTypeLevel ctx tm) (r:

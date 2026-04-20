@@ -67,11 +67,14 @@ let
         When present, `.check = kernelDecide(v) && guard(v)` (conjunction —
         kernel catches structural errors, guard handles residual constraints).
         The guard handles constraints the kernel can't express (e.g., x >= 0).
-      - `verify` — Optional custom verifier (`self → value → Computation`).
+      - `verify` — Optional custom verifier (`self → path → value → Computation`).
+        `path` is a list of string segments describing the structural
+        descent from the validation root (e.g. `["a" "b" "c"]` for a
+        nested field, `["[0]" "mtu"]` for a list element's field).
         When null (default), `validate` is auto-derived by wrapping
         `check` in a `typeCheck` effect. Supply a custom `verify` for
-        types that decompose checking (e.g. Sigma sends separate effects
-        for `fst` and `snd` for blame tracking).
+        types that decompose checking (e.g. Record sends separate
+        effects per field for blame tracking).
       - `description` — Documentation string (default = `name`)
       - `universe` — Optional universe level override. When null (default),
         computed from `checkTypeLevel(kernelType)`. Use when the kernelType
@@ -134,9 +137,16 @@ let
           inherit name description;
           check = effectiveCheck;
           universe = effectiveUniverse;
-          validate =
+          # validateAt path v — effectful check with accumulated path for
+          # deep blame. validate v is the 1-arg convenience that starts
+          # from an empty path. Constructors (Record, ListOf, Variant)
+          # thread path through their recursive validateAt calls.
+          validateAt =
             if verify != null then verify self
-            else v: send "typeCheck" { type = self; context = name; value = v; };
+            else path: v: send "typeCheck" {
+              type = self; context = name; value = v; inherit path;
+            };
+          validate = v: self.validateAt [] v;
           diagnose = v: {
             kernel = kernelDecide v;
             guard = if guard != null then guard v else null;
@@ -353,10 +363,20 @@ let
           let t = mkType {
             name = "Custom";
             kernelType = H.any;
-            verify = _self: v: pure v;
+            verify = _self: _path: v: pure v;
           };
           in fx.comp.isPure (t.validate 42);
         expected = true;
+      };
+      "auto-validate-carries-empty-path" = {
+        expr = ((mkType { name = "T"; kernelType = H.any; }).validate 42).effect.param.path;
+        expected = [];
+      };
+      "validate-at-threads-path" = {
+        expr =
+          let t = mkType { name = "T"; kernelType = H.any; };
+          in (t.validateAt [ "a" "b" ] 42).effect.param.path;
+        expected = [ "a" "b" ];
       };
     };
   };
@@ -452,7 +472,7 @@ let
       ```
     '';
     value = type: v: context:
-      send "typeCheck" { inherit type context; value = v; };
+      send "typeCheck" { inherit type context; value = v; path = []; };
     tests = let H = fx.tc.hoas; in {
       "validate-returns-impure" = {
         expr =

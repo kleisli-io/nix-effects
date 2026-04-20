@@ -19,8 +19,11 @@ let
     opaqueLam absurd ann app fst_ snd_
     ind boolElim listElim sumElim
     desc mu descRet descArg descRec descPi descCon descElim
-    descI muI retI recI piI
+    descI muI retI recI piI plusI plus
     interpHoas allHoas natDesc listDesc sumDesc
+    fin fzero fsuc finElim absurdFin0
+    natCaseU natPredCase vec vnil vcons vecElim vhead vtail
+    eqDesc eqDT reflDT eqToEqDT eqDTToEq eqIsoFwd eqIsoBwd
     field recField piFieldD con datatype datatypeP
     elab checkHoas inferHoas natLit;
 in {
@@ -30,9 +33,9 @@ in {
 
     # -- Type combinators --
     "elab-nat" = { expr = (elab nat).tag; expected = "mu"; };
-    "elab-bool" = { expr = (elab bool).tag; expected = "bool"; };
+    "elab-bool" = { expr = (elab bool).tag; expected = "mu"; };
     "elab-unit" = { expr = (elab unit).tag; expected = "unit"; };
-    "elab-void" = { expr = (elab void).tag; expected = "void"; };
+    "elab-void" = { expr = (elab void).tag; expected = "app"; };
     "elab-U0" = { expr = (elab (u 0)).tag; expected = "U"; };
     "elab-U0-level" = { expr = (elab (u 0)).level; expected = 0; };
     "elab-list" = { expr = (elab (listOf nat)).tag; expected = "app"; };
@@ -83,35 +86,34 @@ in {
     # -- Non-binding terms --
     "elab-zero" = { expr = (elab zero).tag; expected = "desc-con"; };
     "elab-succ" = { expr = (elab (succ zero)).tag; expected = "desc-con"; };
-    "elab-true" = { expr = (elab true_).tag; expected = "true"; };
-    "elab-false" = { expr = (elab false_).tag; expected = "false"; };
+    "elab-true" = { expr = (elab true_).tag; expected = "desc-con"; };
+    "elab-false" = { expr = (elab false_).tag; expected = "desc-con"; };
     "elab-tt" = { expr = (elab tt).tag; expected = "tt"; };
-    # nil elaborates to desc-con with inner tag "true" selecting the
-    # nil-constructor branch; cons elaborates to desc-con with inner tag
-    # "false".
+    # nil/cons elaborate to desc-con whose payload is `inl …`/`inr …`,
+    # selecting the nil vs cons summand of listDesc's plus-coproduct.
     "elab-nil" = {
-      expr = let t = elab (nil nat); in "${t.tag}/${t.d.fst.tag}";
-      expected = "desc-con/true";
+      expr = let t = elab (nil nat); in "${t.tag}/${t.d.tag}";
+      expected = "desc-con/inl";
     };
     "elab-cons" = {
-      expr = let t = elab (cons nat zero (nil nat)); in "${t.tag}/${t.d.fst.tag}";
-      expected = "desc-con/false";
+      expr = let t = elab (cons nat zero (nil nat)); in "${t.tag}/${t.d.tag}";
+      expected = "desc-con/inr";
     };
     "elab-pair" = { expr = (elab (pair zero true_)).tag; expected = "pair"; };
-    # inl/inr elaborate to desc-con with inner tag "true"/"false"
-    # selecting the inl/inr constructor branch of sumDesc.
+    # inl/inr elaborate to desc-con whose payload is `inl …`/`inr …`,
+    # selecting the left vs right summand of sumDesc's plus-coproduct.
     "elab-inl" = {
-      expr = let t = elab (inl nat bool zero); in "${t.tag}/${t.d.fst.tag}";
-      expected = "desc-con/true";
+      expr = let t = elab (inl nat bool zero); in "${t.tag}/${t.d.tag}";
+      expected = "desc-con/inl";
     };
     "elab-inr" = {
-      expr = let t = elab (inr nat bool true_); in "${t.tag}/${t.d.fst.tag}";
-      expected = "desc-con/false";
+      expr = let t = elab (inr nat bool true_); in "${t.tag}/${t.d.tag}";
+      expected = "desc-con/inr";
     };
     "elab-refl" = { expr = (elab refl).tag; expected = "refl"; };
     "elab-ann" = { expr = (elab (ann zero nat)).tag; expected = "ann"; };
     "elab-app" = { expr = (elab (app (lam "x" nat (x: x)) zero)).tag; expected = "app"; };
-    "elab-absurd" = { expr = (elab (absurd nat (lam "x" void (x: x)))).tag; expected = "absurd"; };
+    "elab-absurd" = { expr = (elab (absurd nat (lam "x" void (x: x)))).tag; expected = "app"; };
     "elab-fst" = { expr = (elab (fst_ (pair zero true_))).tag; expected = "fst"; };
     "elab-snd" = { expr = (elab (snd_ (pair zero true_))).tag; expected = "snd"; };
 
@@ -139,8 +141,8 @@ in {
       expected = "let";
     };
     "elab-bool-elim" = {
-      expr = (elab (boolElim (lam "b" bool (_: nat)) zero (succ zero) true_)).tag;
-      expected = "bool-elim";
+      expr = (elab (boolElim 0 (lam "b" bool (_: nat)) zero (succ zero) true_)).tag;
+      expected = "let";
     };
 
     # -- Nested binding: de Bruijn indices correct --
@@ -205,22 +207,22 @@ in {
 
     # ===== Kernel integration: type-check elaborated terms =====
 
-    # Zero : Nat  (elaborates to desc-con natDesc (pair true tt))
+    # Zero : Nat — descCon natDesc (inl …)
     "check-zero" = {
-      expr = let t = checkHoas nat zero; in "${t.tag}/${t.d.fst.tag}";
-      expected = "desc-con/true";
+      expr = let t = checkHoas nat zero; in "${t.tag}/${t.d.tag}";
+      expected = "desc-con/inl";
     };
 
-    # S(S(0)) : Nat  (outer layer is desc-con with tag=false; inner is s(0))
+    # S(S(0)) : Nat — outer desc-con has payload `inr …`; inner is s(0).
     "check-succ2" = {
-      expr = let t = checkHoas nat (succ (succ zero)); in "${t.tag}/${t.d.fst.tag}";
-      expected = "desc-con/false";
+      expr = let t = checkHoas nat (succ (succ zero)); in "${t.tag}/${t.d.tag}";
+      expected = "desc-con/inr";
     };
 
     # True : Bool
     "check-true" = {
       expr = (checkHoas bool true_).tag;
-      expected = "true";
+      expected = "desc-con";
     };
 
     # () : Unit
@@ -229,23 +231,23 @@ in {
       expected = "tt";
     };
 
-    # nil Nat : List Nat  (desc-con (listDesc nat) (pair true tt))
+    # nil Nat : List Nat — descCon (listDesc nat) (inl …)
     "check-nil" = {
-      expr = let t = checkHoas (listOf nat) (nil nat); in "${t.tag}/${t.d.fst.tag}";
-      expected = "desc-con/true";
+      expr = let t = checkHoas (listOf nat) (nil nat); in "${t.tag}/${t.d.tag}";
+      expected = "desc-con/inl";
     };
 
-    # cons Nat 0 (nil Nat) : List Nat  (desc-con (listDesc nat) (pair false ...))
+    # cons Nat 0 (nil Nat) : List Nat — descCon (listDesc nat) (inr …)
     "check-cons" = {
-      expr = let t = checkHoas (listOf nat) (cons nat zero (nil nat)); in "${t.tag}/${t.d.fst.tag}";
-      expected = "desc-con/false";
+      expr = let t = checkHoas (listOf nat) (cons nat zero (nil nat)); in "${t.tag}/${t.d.tag}";
+      expected = "desc-con/inr";
     };
 
-    # inl Nat Bool 0 : Sum Nat Bool  (desc-con (sumDesc nat bool) (pair true ...))
+    # inl Nat Bool 0 : Sum Nat Bool — descCon (sumDesc nat bool) (inl …)
     "check-inl" = {
       expr = let t = checkHoas (sum nat bool) (inl nat bool zero); in
-        "${t.tag}/${t.d.fst.tag}";
-      expected = "desc-con/true";
+        "${t.tag}/${t.d.tag}";
+      expected = "desc-con/inl";
     };
 
     # pair(0, true) : Σ(x:Nat).Bool
@@ -323,7 +325,7 @@ in {
     # `nat` is `mu natDesc`, so the inferred value tag is "VMu".
     "theorem-bool-elim" = {
       expr = let
-        tm = boolElim (lam "b" bool (_: nat)) zero (succ zero) true_;
+        tm = boolElim 0 (lam "b" bool (_: nat)) zero (succ zero) true_;
       in (inferHoas (ann tm nat)).type.tag;
       expected = "VMu";
     };
@@ -408,7 +410,7 @@ in {
       expr = let
         wDesc = A: B: descArg A (a: descPi (B a) descRet);
         wBool = wDesc bool (a:
-                  boolElim (lam "_" bool (_: u 0)) unit void a);
+                  boolElim 1 (lam "_" bool (_: u 0)) unit void a);
       in (checkHoas (u 0) (mu wBool tt)).tag;
       expected = "mu";
     };
@@ -624,9 +626,64 @@ in {
         # no infer rule under the bidirectional discipline. The outer `ann
         # _ desc` routes synthesis through CHECK against `Desc ⊤`, where
         # `check.nix`'s desc-ret rule accepts bare canonical forms.
-        tm = descElim motive onRet onArg onRec onPi (ann descRet desc);
+        onPlus = lam "A" desc (_:
+                 lam "B" desc (_:
+                 lam "ihA" (forall "_" (u 0) (_: u 0)) (_:
+                 lam "ihB" (forall "_" (u 0) (_: u 0)) (_:
+                 lam "X" (u 0) (X':
+                   sigma "_" X' (_: X'))))));
+        tm = descElim motive onRet onArg onRec onPi onPlus (ann descRet desc);
       in (inferHoas tm).type.tag;
       expected = "VPi";
+    };
+
+    # Motive body at universe level 1 is accepted for both `desc-ind` and
+    # `desc-elim`. `checkMotive` descends the n-lam prefix and validates
+    # the innermost codomain via `checkType`, which accepts any universe
+    # level — the large-elim invariant across both description
+    # eliminators.
+
+    # desc-ind: motive `(i:⊤) → μD i → U(0)` has `u 0 : U(1)` at its
+    # innermost body. D = descRet (one constructor), step produces `nat`
+    # at each case (nat : U(0), inhabiting the motive's U(0)-value codomain).
+    "descInd-u1-motive-checks" = {
+      expr = let
+        D = ann descRet desc;
+        tm = self.descInd D
+          (lam "i" unit (_: lam "_" (mu D tt) (_: u 0)))
+          (lam "i" unit (iV:
+            lam "d" (eq unit tt iV) (_:
+              lam "_" unit (_: nat))))
+          tt
+          (descCon D tt refl);
+      in (checkHoas (u 1) tm).tag;
+      expected = "desc-ind";
+    };
+
+    # desc-elim: motive `(D':Desc ⊤) → U(0)` with body `u 0 : U(1)` at the
+    # innermost position. Exercises the universe-polymorphic path
+    # documented at `check/infer.nix:289-294`.
+    "descElim-u1-motive-checks" = {
+      expr = let
+        motive = lam "_" desc (_: u 0);
+        onRet  = lam "j" unit (_: nat);
+        onArg  = lam "S" (u 0) (_:
+                 lam "T" (forall "_" (u 0) (_: desc)) (_:
+                 lam "ih" (forall "s" (u 0) (_: u 0)) (_: nat)));
+        onRec  = lam "j" unit (_:
+                 lam "D" desc (_:
+                 lam "ih" (u 0) (_: nat)));
+        onPi   = lam "S" (u 0) (_:
+                 lam "f" (forall "_" (u 0) (_: unit)) (_:
+                 lam "D" desc (_:
+                 lam "ih" (u 0) (_: nat))));
+        onPlus = lam "A" desc (_:
+                 lam "B" desc (_:
+                 lam "ihA" (u 0) (_:
+                 lam "ihB" (u 0) (_: nat))));
+        tm = descElim motive onRet onArg onRec onPi onPlus (ann descRet desc);
+      in (inferHoas tm).type.tag;
+      expected = "VU";
     };
 
     # interpHoas ≡ interpF — compare nf of HOAS-elaborated term against
@@ -771,7 +828,7 @@ in {
     "indexed-desc-pi-at-nat-dependent-f" = {
       expr = let
         fAnn = ann (lam "b" bool (b:
-                 boolElim (lam "_" bool (_: nat))
+                 boolElim 0 (lam "_" bool (_: nat))
                           (natLit 2) (natLit 3) b))
                    (forall "_" bool (_: nat));
         D = piI bool fAnn (retI (natLit 4));
@@ -975,12 +1032,12 @@ in {
       };
     };
     # D = ann (descArg bool (b: boolElim _ descRet descRet b)) desc — the
-    # ann-wrapper routes D through CHECK; `.term` is the raw spine. Two
-    # zero-field cons produce a Bool-fold, same shape as natDesc but with
-    # both arms degenerate (descRet) instead of asymmetric.
+    # Two zero-field ctors produce a plus-coproduct spineDesc with both
+    # summands degenerate to descRet. ann-wrapper routes D through CHECK;
+    # `.term` is the raw spine.
     "datatype-bool-D-elab" = {
       expr = (elab (datatype "Bool" [ (con "true" []) (con "false" []) ]).D).term.tag;
-      expected = "desc-arg";
+      expected = "desc-plus";
     };
     "datatype-bool-T-elab" = {
       expr = (elab (datatype "Bool" [ (con "true" []) (con "false" []) ]).T).tag;
@@ -994,35 +1051,30 @@ in {
       expr = (elab (datatype "Bool" [ (con "true" []) (con "false" []) ]).false).tag;
       expected = "desc-con";
     };
-    # Macro D matches the canonical bool-fold structure: descArg over
-    # the `bool` kernel primitive, with a boolElim body selecting
-    # descRet for both arms. Compared against a hand-written equivalent
-    # via nf to absorb α-renaming.
+    # Macro D matches the canonical bool-fold structure: plus of two
+    # descRet summands. Compared against a hand-written equivalent via
+    # nf to absorb α-renaming.
     "datatype-bool-D-matches-handwritten" = {
       expr = let
         macroD = (datatype "Bool" [ (con "true" []) (con "false" []) ]).D;
-        handD = descArg bool (b:
-          boolElim (lam "_" bool (_: desc)) descRet descRet b);
+        handD = plus descRet descRet;
       in Q.nf [] (elab macroD) == Q.nf [] (elab handD);
       expected = true;
     };
+    # True constructor's payload commits the 0th (inl) summand of the
+    # plus tree, with witness refl : Eq ⊤ tt tt at the ret-leaf.
     "datatype-bool-true-payload-shape" = {
-      # encodeTag 0 2 refl = pair true_ refl — verified via nf against a
-      # hand-written descCon emission with the same payload. The ret-leaf
-      # terminator is refl : Eq ⊤ tt tt.
       expr = let
         B = datatype "Bool" [ (con "true" []) (con "false" []) ];
-        handTrue = descCon B.D tt (pair true_ refl);
-      in Q.nf [] (elab B.true) == Q.nf [] (elab handTrue);
-      expected = true;
+      in (elab B.true).d.tag;
+      expected = "inl";
     };
+    # False constructor commits the 1st (inr) summand.
     "datatype-bool-false-payload-shape" = {
-      # encodeTag 1 2 refl = pair false_ (encodeTag 0 1 refl) = pair false_ refl
       expr = let
         B = datatype "Bool" [ (con "true" []) (con "false" []) ];
-        handFalse = descCon B.D tt (pair false_ refl);
-      in Q.nf [] (elab B.false) == Q.nf [] (elab handFalse);
-      expected = true;
+      in (elab B.false).d.tag;
+      expected = "inr";
     };
     "datatype-bool-T-check-U0" = {
       expr = (checkHoas (u 0) (datatype "Bool" [ (con "true" []) (con "false" []) ]).T).tag;
@@ -1176,18 +1228,16 @@ in {
       ]; in (checkHoas (u 0) N.T).tag;
       expected = "mu";
     };
-    # Constructor zero: descCon D tt (pair true_ refl) — same payload shape
-    # as the prelude `zero` HOAS combinator, just over the macro-built
-    # D. The ret-leaf terminator is refl : Eq ⊤ tt tt.
+    # Zero commits the 0th (inl) summand of the plus tree; the ret-leaf
+    # witness is refl : Eq ⊤ tt tt.
     "datatype-nat-zero-payload" = {
       expr = let
         N = datatype "Nat" [
           (con "zero" [])
           (con "succ" [ (recField "pred") ])
         ];
-        handZero = descCon N.D tt (pair true_ refl);
-      in Q.nf [] (elab N.zero) == Q.nf [] (elab handZero);
-      expected = true;
+      in (elab N.zero).d.tag;
+      expected = "inl";
     };
     "datatype-nat-zero-checks" = {
       expr = let N = datatype "Nat" [
@@ -1212,9 +1262,8 @@ in {
       ]; in (inferHoas N.succ).type.tag;
       expected = "VPi";
     };
-    # Applied succ: descCon D tt (pair false_ (pair pred refl)). After nf,
-    # the ann wrapper and the lam β-reduce away, leaving the descCon
-    # term. The ret-leaf terminator is refl : Eq ⊤ tt tt.
+    # Applied succ commits the 1st (inr) summand, carrying the pred
+    # recursive argument paired with the ret-leaf refl witness.
     "datatype-nat-succ-applied-payload" = {
       expr = let
         N = datatype "Nat" [
@@ -1222,9 +1271,8 @@ in {
           (con "succ" [ (recField "pred") ])
         ];
         macroSucc = app N.succ N.zero;
-        handSucc = descCon N.D tt (pair false_ (pair N.zero refl));
-      in Q.nf [] (elab macroSucc) == Q.nf [] (elab handSucc);
-      expected = true;
+      in (Q.nf [] (elab macroSucc)).d.tag;
+      expected = "inr";
     };
     # Saturated macro-ctor application flattens at elab time to a flat
     # `desc-con` Tm (shared-dTm chain of length 1). The kernel checks
@@ -1895,7 +1943,7 @@ in {
             (con "sup" [ (field "s" S) (piFieldD "f" (prev: app P prev.s)) ])
           ]);
         boolP = lam "s" bool (s:
-                  boolElim (lam "_" bool (_: u 0)) unit void s);
+                  boolElim 1 (lam "_" bool (_: u 0)) unit void s);
         macroD = app (app W.D bool) boolP;
         manualD = descArg bool (s:
                     descPi (app boolP s) descRet);
@@ -1913,7 +1961,7 @@ in {
             (con "sup" [ (field "s" S) (piFieldD "f" (prev: app P prev.s)) ])
           ]);
         boolP = lam "s" bool (s:
-                  boolElim (lam "_" bool (_: u 0)) unit void s);
+                  boolElim 1 (lam "_" bool (_: u 0)) unit void s);
         Tw = app (app W.T bool) boolP;
         result = checkHoas (u 0) Tw;
       in !(result ? error);
@@ -1933,7 +1981,7 @@ in {
             (con "sup" [ (field "s" S) (piFieldD "f" (prev: app P prev.s)) ])
           ]);
         boolP = lam "s" bool (s:
-                  boolElim (lam "_" bool (_: u 0)) unit void s);
+                  boolElim 1 (lam "_" bool (_: u 0)) unit void s);
       in (inferHoas (app (app W.sup bool) boolP)).type.tag;
       expected = "VPi";
     };
@@ -1951,13 +1999,264 @@ in {
             (con "sup" [ (field "s" S) (piFieldD "f" (prev: app P prev.s)) ])
           ]);
         boolP = lam "s" bool (s:
-                  boolElim (lam "_" bool (_: u 0)) unit void s);
+                  boolElim 1 (lam "_" bool (_: u 0)) unit void s);
         Tw = app (app W.T bool) boolP;
         vacuous = lam "x" void (x: absurd Tw x);
         sup0 = app (app (app (app W.sup bool) boolP) false_) vacuous;
         result = checkHoas Tw sup0;
       in !(result ? error);
       expected = true;
+    };
+
+    # ===== Fin prelude =====
+    # `Fin : Nat → U` is indexed over Nat. Two constructors: `fzero m : Fin (succ m)`
+    # and `fsuc m k : Fin (succ m)` with `k : Fin m`. `Fin 0` is vacuous — the
+    # ret-leaf obligation `Eq Nat (succ m) 0` is uninhabited — and `absurdFin0`
+    # discharges the empty-case via no-confusion on Nat.
+
+    "fin-as-type-checks" = {
+      # fin : Nat → U. Applied to a concrete Nat, we get a type at U(0).
+      expr = let
+        ty = app fin (succ (succ zero));
+      in (checkHoas (u 0) ty).tag;
+      expected = "app";
+    };
+
+    "fin0-as-type-checks" = {
+      # Fin 0 is a valid type (just uninhabited).
+      expr = (checkHoas (u 0) (app fin zero)).tag;
+      expected = "app";
+    };
+
+    "fzero-at-fin1-checks" = {
+      # fzero zero : Fin (succ zero) = Fin 1.
+      expr = (checkHoas (app fin (succ zero)) (fzero zero)).tag;
+      expected = "desc-con";
+    };
+
+    "fzero-at-fin2-checks" = {
+      # fzero (succ zero) : Fin 2.
+      expr = (checkHoas (app fin (succ (succ zero))) (fzero (succ zero))).tag;
+      expected = "desc-con";
+    };
+
+    "fsuc-at-fin2-checks" = {
+      # fsuc 1 (fzero 0) : Fin 2.
+      expr = let
+        two = succ (succ zero);
+        oneN = succ zero;
+      in (checkHoas (app fin two) (fsuc oneN (fzero zero))).tag;
+      expected = "desc-con";
+    };
+
+    # β-reduction on `finElim P Pz Ps 2 (fzero 1)` — collapses to `Pz 1`.
+    # Motive is constant: P n k = nat. Pz m = zero. Ps m k ih = succ ih.
+    # Expected NF: `zero` (which nf's to `descCon natDesc tt (pair true_ refl)`).
+    "finElim-beta-on-fzero" = {
+      expr = let
+        two = succ (succ zero);
+        oneN = succ zero;
+        P    = lam "n" nat (n: lam "_k" (app fin n) (_: nat));
+        Pz   = lam "m" nat (_: zero);
+        Ps   = lam "m" nat (m: lam "_k" (app fin m) (_: lam "ih" nat (ih: succ ih)));
+        elimmed = finElim P Pz Ps two (fzero oneN);
+      in Q.nf [] (elab elimmed) == Q.nf [] (elab zero);
+      expected = true;
+    };
+
+    # β-reduction on `finElim P Pz Ps 2 (fsuc 1 (fzero 0))`:
+    #   → Ps 1 (fzero 0) (finElim P Pz Ps 1 (fzero 0))
+    #   → Ps 1 (fzero 0) (Pz 0)
+    #   → Ps 1 (fzero 0) zero
+    #   → succ zero.
+    "finElim-beta-on-fsuc" = {
+      expr = let
+        two = succ (succ zero);
+        oneN = succ zero;
+        P    = lam "n" nat (n: lam "_k" (app fin n) (_: nat));
+        Pz   = lam "m" nat (_: zero);
+        Ps   = lam "m" nat (m: lam "_k" (app fin m) (_: lam "ih" nat (ih: succ ih)));
+        elimmed = finElim P Pz Ps two (fsuc oneN (fzero zero));
+      in Q.nf [] (elab elimmed) == Q.nf [] (elab (succ zero));
+      expected = true;
+    };
+
+    # `absurdFin0` type-checks at any target type, when applied to a Fin 0
+    # inhabitant. Fin 0 has no canonical inhabitant; we supply a neutral via
+    # a lam-binder so checkHoas can type-check the elimination.
+    "absurdFin0-checks-at-constant-target" = {
+      expr = let
+        tm = lam "x" (app fin zero) (x: absurdFin0 nat x);
+      in (checkHoas (forall "_" (app fin zero) (_: nat)) tm).tag;
+      expected = "lam";
+    };
+
+    # ===== Vec prelude =====
+    # `Vec A : Nat → U` is the indexed list family. Two constructors:
+    # `vnil A : Vec A 0` (ret-leaf witness at zero) and
+    # `vcons A m x xs : Vec A (succ m)` with `x : A`, `xs : Vec A m`.
+    # `vhead A n (vcons A n x xs) ≡ x` — vnil case is unreachable via the
+    # `natCaseU unit A` motive (unit at n=0, A at n=succ _).
+
+    "vec-as-type-checks" = {
+      # vec nat 2 : U(0).
+      expr = (checkHoas (u 0) (app (vec nat) (succ (succ zero)))).tag;
+      expected = "app";
+    };
+
+    "vec0-as-type-checks" = {
+      # vec nat 0 is a valid type (with vnil as sole inhabitant).
+      expr = (checkHoas (u 0) (app (vec nat) zero)).tag;
+      expected = "app";
+    };
+
+    "vnil-at-vec0-checks" = {
+      # vnil nat : vec nat 0.
+      expr = (checkHoas (app (vec nat) zero) (vnil nat)).tag;
+      expected = "desc-con";
+    };
+
+    "vcons-at-vec1-checks" = {
+      # vcons nat 0 zero (vnil nat) : vec nat 1.
+      expr = let
+        oneN = succ zero;
+      in (checkHoas (app (vec nat) oneN) (vcons nat zero zero (vnil nat))).tag;
+      expected = "desc-con";
+    };
+
+    # β-reduction on `vecElim P Pn Pc 0 (vnil A)` — collapses to `Pn`.
+    # Motive P n xs = nat (constant). Pn = zero. Pc m x xs ih = succ ih.
+    # Expected nf: zero.
+    "vecElim-beta-on-vnil" = {
+      expr = let
+        P   = lam "n" nat (n: lam "_xs" (app (vec nat) n) (_: nat));
+        Pn  = zero;
+        Pc  = lam "m" nat (_m: lam "_x" nat (_: lam "_xs" (app (vec nat) _m) (_:
+                lam "ih" nat (ih: succ ih))));
+        elimmed = vecElim nat P Pn Pc zero (vnil nat);
+      in Q.nf [] (elab elimmed) == Q.nf [] (elab zero);
+      expected = true;
+    };
+
+    # β-reduction on `vecElim P Pn Pc 1 (vcons A 0 zero (vnil A))`:
+    #   → Pc 0 zero (vnil A) (vecElim P Pn Pc 0 (vnil A))
+    #   → Pc 0 zero (vnil A) Pn
+    #   → succ Pn = succ zero.
+    "vecElim-beta-on-vcons" = {
+      expr = let
+        oneN = succ zero;
+        P   = lam "n" nat (n: lam "_xs" (app (vec nat) n) (_: nat));
+        Pn  = zero;
+        Pc  = lam "m" nat (_m: lam "_x" nat (_: lam "_xs" (app (vec nat) _m) (_:
+                lam "ih" nat (ih: succ ih))));
+        vs  = vcons nat zero zero (vnil nat);
+        elimmed = vecElim nat P Pn Pc oneN vs;
+      in Q.nf [] (elab elimmed) == Q.nf [] (elab (succ zero));
+      expected = true;
+    };
+
+    # `vhead A n (vcons A n x xs) ≡ x`.
+    # At A = nat, n = 0, x = zero, xs = vnil nat:
+    #   vhead nat 0 (vcons nat 0 zero (vnil nat)) ≡ zero.
+    "vhead-beta-on-vcons" = {
+      expr = let
+        vs = vcons nat zero zero (vnil nat);
+        hd = app (app (vhead nat) zero) vs;
+      in Q.nf [] (elab hd) == Q.nf [] (elab zero);
+      expected = true;
+    };
+
+    # `vtail A n (vcons A n x xs) ≡ xs`.
+    # At A = nat, n = 0, x = zero, xs = vnil nat:
+    #   vtail nat 0 (vcons nat 0 zero (vnil nat)) ≡ vnil nat.
+    "vtail-beta-on-vcons" = {
+      expr = let
+        vs = vcons nat zero zero (vnil nat);
+        tl = app (app (vtail nat) zero) vs;
+      in Q.nf [] (elab tl) == Q.nf [] (elab (vnil nat));
+      expected = true;
+    };
+
+    # ===== Eq-as-description =====
+    # `eqDT A a b = μ A (retI a) b` expresses propositional equality
+    # as a single-constructor indexed inductive family; `reflDT` is
+    # the canonical witness at the diagonal. `eqToEqDT` / `eqDTToEq`
+    # form an iso with the primitive Eq, and `eqIsoFwd` / `eqIsoBwd`
+    # prove the iso identity as HOAS terms.
+
+    "eqDesc-at-nat-zero-checks" = {
+      # eqDesc nat zero : Desc nat.
+      expr = (checkHoas (descI nat) (eqDesc nat zero)).tag;
+      expected = "desc-ret";
+    };
+
+    "eqDT-at-refl-checks" = {
+      # eqDT nat zero zero : U(0).
+      expr = (checkHoas (u 0) (eqDT nat zero zero)).tag;
+      expected = "mu";
+    };
+
+    "reflDT-at-zero-checks" = {
+      # reflDT nat zero : eqDT nat zero zero.
+      expr = (checkHoas (eqDT nat zero zero) (reflDT nat zero)).tag;
+      expected = "desc-con";
+    };
+
+    "eqToEqDT-at-refl-checks" = {
+      # eqToEqDT nat 0 0 refl : eqDT nat 0 0.
+      expr = (checkHoas (eqDT nat zero zero)
+                        (eqToEqDT nat zero zero refl)).tag;
+      expected = "j";
+    };
+
+    "eqDTToEq-at-reflDT-checks" = {
+      # eqDTToEq nat 0 0 (reflDT nat 0) : eq nat 0 0.
+      expr = (checkHoas (eq nat zero zero)
+                        (eqDTToEq nat zero zero (reflDT nat zero))).tag;
+      expected = "desc-ind";
+    };
+
+    # nf-roundtrip at the refl case: `eqDTToEq (eqToEqDT refl) ≡ refl`.
+    # J on refl fires to reflDT = descCon eD 0 refl; descInd on that
+    # descCon fires to the payload `refl`.
+    "eq-iso-fwd-at-refl-nf" = {
+      expr = let
+        t = eqDTToEq nat zero zero (eqToEqDT nat zero zero refl);
+      in Q.nf [] (elab t) == Q.nf [] (elab refl);
+      expected = true;
+    };
+
+    # nf-roundtrip at the reflDT case: `eqToEqDT (eqDTToEq reflDT) ≡ reflDT`.
+    # descInd on descCon fires to payload `refl`; J on refl fires to reflDT.
+    "eq-iso-bwd-at-reflDT-nf" = {
+      expr = let
+        t = eqToEqDT nat zero zero (eqDTToEq nat zero zero (reflDT nat zero));
+      in Q.nf [] (elab t) == Q.nf [] (elab (reflDT nat zero));
+      expected = true;
+    };
+
+    # Iso proofs type-check at their claimed propositions. These are
+    # the `to ∘ from ≡ id` / `from ∘ to ≡ id` acceptance witnesses.
+    "eq-iso-fwd-checks" = {
+      # eqIsoFwd nat 0 0 : Π(e : eq nat 0 0). eq (eq nat 0 0) (...) e.
+      expr = let
+        ty = forall "e" (eq nat zero zero) (e:
+               eq (eq nat zero zero)
+                  (eqDTToEq nat zero zero (eqToEqDT nat zero zero e))
+                  e);
+      in (checkHoas ty (eqIsoFwd nat zero zero)).tag;
+      expected = "lam";
+    };
+
+    "eq-iso-bwd-checks" = {
+      # eqIsoBwd nat 0 0 : Π(x : eqDT nat 0 0). eq (eqDT nat 0 0) (...) x.
+      expr = let
+        ty = forall "x" (eqDT nat zero zero) (x:
+               eq (eqDT nat zero zero)
+                  (eqToEqDT nat zero zero (eqDTToEq nat zero zero x))
+                  x);
+      in (checkHoas ty (eqIsoBwd nat zero zero)).tag;
+      expected = "lam";
     };
   };
 }

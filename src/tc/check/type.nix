@@ -73,17 +73,41 @@ in {
         bind (self.check ctx tm.I (V.vU 0)) (iTm:
           pure { term = T.mkDesc iTm; level = 1; })
       else if t == "mu" then
-        # `μ D i : U(0)` where `D : Desc I`, `i : I`. I is read off D's
-        # inferred type so the user doesn't have to spell it out.
-        bind (self.infer ctx tm.D) (dResult:
-          let dTy = dResult.type; in
-          if dTy.tag != "VDesc"
-          then typeError "mu: D must have type Desc I"
-            { tag = "desc"; } (Q.quote ctx.depth dTy) tm.D
-          else
-            bind (self.check ctx tm.i dTy.I) (iTm:
-              pure { term = T.mkMu (Q.quote ctx.depth dTy.I) dResult.term iTm;
-                     level = 0; }))
+        # `μ I D i : U(0)` where `I : U(0)`, `D : Desc I`, `i : I`. The
+        # Tm carries I explicitly (`T.mkMu I D i`), so the rule checks
+        # I directly rather than recovering it from `infer tm.D`. This
+        # routes D through `check.nix`'s desc-ret/-arg/-rec/-pi CHECK
+        # rules, which accept check-only canonical leaves (`tt`, `refl`,
+        # `pair`) at index positions — a bare `retI ttPrim` is a
+        # well-formed `Desc unit` but non-inferable, because the kernel
+        # has no `tt` infer rule. Removing the redundant `infer tm.D`
+        # here eliminates the cascade to the catch-all at
+        # `infer.nix:418`.
+        bind (self.check ctx tm.I (V.vU 0)) (iTyTm:
+          let iTyVal = E.eval ctx.env iTyTm; in
+          bind (self.check ctx tm.D (V.vDesc iTyVal)) (dTm:
+            bind (self.check ctx tm.i iTyVal) (iTm:
+              pure { term = T.mkMu iTyTm dTm iTm; level = 0; })))
+      else if t == "let" then
+        # `let x : A = v in body` as a type: A a type, v : A, body a type
+        # in the extended context. The level is the body's level, since
+        # `let` is resolved by substitution (the body is evaluated under
+        # `env` prefixed by `vVal`). Routing `let` through CHECK keeps
+        # `body` eligible for the check-only leaves (`tt`, `refl`, and
+        # eliminators like `desc-ind` whose scrutinee uses canonical
+        # leaves) that are accepted only under a known target type.
+        bind (self.checkType ctx tm.type) (aTm:
+          let aVal = E.eval ctx.env aTm; in
+          bind (self.check ctx tm.val aVal) (vTm:
+            let
+              vVal = E.eval ctx.env vTm;
+              ctx' = {
+                env = [ vVal ] ++ ctx.env;
+                types = [ aVal ] ++ ctx.types;
+                depth = ctx.depth + 1;
+              };
+            in bind (self.checkTypeLevel ctx' tm.body) (r:
+              pure { term = T.mkLet tm.name aTm vTm r.term; level = r.level; })))
       # Fallback: infer and check it's a universe, extract level.
       else
         bind (self.infer ctx tm) (result:

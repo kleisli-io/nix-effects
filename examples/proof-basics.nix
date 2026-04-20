@@ -34,7 +34,7 @@ let
 
   # not(b) = BoolElim(λ_.Bool, false, true, b)
   not_ = b:
-    boolElim (lam "_" bool (_: bool)) false_ true_ b;
+    boolElim 0 (lam "_" bool (_: bool)) false_ true_ b;
 
   # length(xs) = ListElim(Nat, λ_.Nat, 0, λh.λt.λih.S(ih), xs)
   length = xs:
@@ -144,13 +144,13 @@ in rec {
   # if true then 42 else 0 = 42
   boolElimTrue =
     let
-      result = boolElim (lam "_" bool (_: nat)) (natLit 42) zero true_;
+      result = boolElim 0 (lam "_" bool (_: nat)) (natLit 42) zero true_;
     in (checkHoas (eq nat result (natLit 42)) refl).tag == "refl";
 
   # if false then 42 else 0 = 0
   boolElimFalse =
     let
-      result = boolElim (lam "_" bool (_: nat)) (natLit 42) zero false_;
+      result = boolElim 0 (lam "_" bool (_: nat)) (natLit 42) zero false_;
     in (checkHoas (eq nat result zero) refl).tag == "refl";
 
 
@@ -199,7 +199,7 @@ in rec {
       scrut = inr nat bool true_;
       result = sumElim nat bool (lam "_" (sum nat bool) (_: nat))
         (lam "n" nat (n: n))
-        (lam "b" bool (b: boolElim (lam "_" bool (_: nat)) (natLit 1) zero b))
+        (lam "b" bool (b: boolElim 0 (lam "_" bool (_: nat)) (natLit 1) zero b))
         scrut;
     in (checkHoas (eq nat result (natLit 1)) refl).tag == "refl";
 

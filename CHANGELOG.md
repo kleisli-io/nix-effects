@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Type validation threads a structural `path` through the `typeCheck` effect, so the collecting handler now reports deep blame as a list of descent segments rather than a single opaque type name. `Record`, `ListOf`, `Variant`, and `Sigma` recurse via a new `validateAt path v` alongside the existing `validate v`; the 1-arg API is unchanged, and `ListOf` now delegates to `elemType.validateAt` so record elements decompose into per-field effects instead of blaming as a whole.
+
+### Added
+
+- **Path-threaded `typeCheck` effect** — the effect param grows a `path : [String]` field. Collecting-handler state grows `{ path }`; logging-handler state grows `{ path }`. Strict handler's throw message renders `path` when non-empty, falls back to `context` otherwise
+- **`Type.validateAt path v`** — public method on every type for effectful validation with an explicit path prefix. `validate v` is the 1-arg convenience that delegates to `validateAt []`. Constructors (`Record`, `ListOf`, `Variant`, `Sigma`) thread path by appending one segment per recursion (field name, `"[i]"` for list elements, variant tag, `"fst"`/`"snd"` for `Sigma`)
+- **`verify` callback contract** — custom verifiers now take `self: path: v: Computation`. Previously `self: v: Computation`
+
+### Fixed
+
+- **`ListOf` element decomposition.** `ListOf.verify` previously sent a flat `typeCheck` effect with the element type and a synthetic `"List[T][i]"` context string, bypassing per-element decomposition. For record elements this flattened per-field blame to a single "whole element invalid" effect. Fixed by delegating to `elemType.validateAt (path ++ ["[${i}]"]) elem`, so a list of records now emits one effect per (element, field) pair
+- **Deep blame path loss in `Record`.** `Record.verify`'s present-field branch called `field.validate v.field` without threading context, so a three-level nested record with a bad leaf reported only the leaf type name — no structural descent. Fixed by threading `path ++ [field]` through `validateAt`
+
 ## [0.9.0] - 2026-04-18
 
 Descriptions become indexed. `Desc` and `μ` previously classified only `⊤`-indexed datatypes; they now take an arbitrary index type `I`, so `μ D : I → U` picks out a family of types rather than a single type. This is the machinery needed for length-indexed vectors, `Fin n`, propositional equality-as-a-description, and anything else that carries a value at the type level. The old unindexed combinators (`desc`, `mu`, `descRet`, `descRec`, `descPi`) remain as `⊤`-slice aliases, so the datatype macro and every downstream consumer — `Nat`, `List`, `Sum`, the category-theory library — keep working unchanged. A latent de Bruijn off-by-one in the value-level description eliminator is fixed en route.

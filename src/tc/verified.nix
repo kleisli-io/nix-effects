@@ -57,7 +57,7 @@ let
   # v.if_ resultTy scrut { then_; else_; }
   # Bool elimination with constant motive.
   if_ = resultTy: scrut: { then_, else_ }:
-    H.boolElim (H.lam "_" H.bool (_: resultTy)) then_ else_ scrut;
+    H.boolElim 0 (H.lam "_" H.bool (_: resultTy)) then_ else_ scrut;
 
   # v.match resultTy scrut { zero; succ = k: ih: body; }
   # Nat elimination with constant motive.
@@ -121,7 +121,7 @@ let
       (H.nil elemTy)
       (H.lam "h" elemTy (h: H.lam "_" (H.listOf elemTy) (_:
         H.lam "ih" (H.listOf elemTy) (ih:
-          H.boolElim (H.lam "_" H.bool (_: H.listOf elemTy))
+          H.boolElim 0 (H.lam "_" H.bool (_: H.listOf elemTy))
             (H.cons elemTy h ih) ih (H.app predAnn h)))))
       list;
 
@@ -275,8 +275,8 @@ in mk {
     # ===== Literal constructors type-check =====
 
     "v-nat-5" = {
-      expr = let t = H.checkHoas NatT (nat 5); in "${t.tag}/${t.d.fst.tag}";
-      expected = "desc-con/false";
+      expr = let t = H.checkHoas NatT (nat 5); in "${t.tag}/${t.d.tag}";
+      expected = "desc-con/inr";
     };
     "v-str-hello" = {
       expr = (H.checkHoas StringT (str "hello")).tag;
@@ -292,11 +292,11 @@ in mk {
     };
     "v-true" = {
       expr = (H.checkHoas BoolT true_).tag;
-      expected = "true";
+      expected = "desc-con";
     };
     "v-false" = {
       expr = (H.checkHoas BoolT false_).tag;
-      expected = "false";
+      expected = "desc-con";
     };
     "v-null" = {
       expr = (H.checkHoas UnitT null_).tag;

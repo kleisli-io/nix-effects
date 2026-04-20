@@ -129,6 +129,8 @@ let
       conv d v1.j v2.j && conv d v1.D v2.D
     else if t1 == "VDescPi" && t2 == "VDescPi" then
       conv d v1.S v2.S && conv d v1.f v2.f && conv d v1.D v2.D
+    else if t1 == "VDescPlus" && t2 == "VDescPlus" then
+      conv d v1.A v2.A && conv d v1.B v2.B
     else if t1 == "VMu" && t2 == "VMu" then
       conv d v1.I v2.I && conv d v1.D v2.D && conv d v1.i v2.i
     else if t1 == "VDescCon" && t2 == "VDescCon" then
@@ -184,7 +186,7 @@ let
     else if t1 == "EDescElim" then
       conv d e1.motive e2.motive && conv d e1.onRet e2.onRet
       && conv d e1.onArg e2.onArg && conv d e1.onRec e2.onRec
-      && conv d e1.onPi e2.onPi
+      && conv d e1.onPi e2.onPi && conv d e1.onPlus e2.onPlus
     else false;
 
 in mk {
@@ -614,14 +616,14 @@ in mk {
     };
     "conv-ne-desc-elim" = {
       expr = conv 1
-        (vNe 0 [ (V.eDescElim vNat vZero vZero vZero vZero) ])
-        (vNe 0 [ (V.eDescElim vNat vZero vZero vZero vZero) ]);
+        (vNe 0 [ (V.eDescElim vNat vZero vZero vZero vZero vZero) ])
+        (vNe 0 [ (V.eDescElim vNat vZero vZero vZero vZero vZero) ]);
       expected = true;
     };
     "conv-ne-desc-elim-diff" = {
       expr = conv 1
-        (vNe 0 [ (V.eDescElim vNat vZero vZero vZero vZero) ])
-        (vNe 0 [ (V.eDescElim vBool vZero vZero vZero vZero) ]);
+        (vNe 0 [ (V.eDescElim vNat vZero vZero vZero vZero vZero) ])
+        (vNe 0 [ (V.eDescElim vBool vZero vZero vZero vZero vZero) ]);
       expected = false;
     };
 

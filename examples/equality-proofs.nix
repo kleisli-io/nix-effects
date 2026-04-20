@@ -193,7 +193,7 @@ in rec {
   # true ↦ Nat, false ↦ Bool. Transport zero : P(true) along Eq(Bool, true, true).
   transportConcrete =
     let
-      motiveP = b: boolElim (lam "_" bool (_: u 0)) nat bool b;
+      motiveP = b: boolElim 1 (lam "_" bool (_: u 0)) nat bool b;
       proofTm = j bool true_
         (lam "y" bool (y: lam "_" (eq bool true_ y) (_: motiveP y)))
         zero  # zero : Nat = P(true)

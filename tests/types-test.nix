@@ -777,14 +777,14 @@ let
         handlers.typeCheck = { param, state }:
           if param.type.check param.value
           then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [{ inherit (param) context; }]; };
+          else { resume = false; state = state ++ [{ inherit (param) path; }]; };
         state = [];
       } (listT.validate [1 "bad" 3 "worse"]);
     in
-      # Two errors: indices 1 and 3
+      # Two errors: indices 1 and 3 — path carries the structural descent.
       builtins.length result.state == 2
-      && (builtins.elemAt result.state 0).context == "List[Int][1]"
-      && (builtins.elemAt result.state 1).context == "List[Int][3]";
+      && (builtins.elemAt result.state 0).path == [ "[1]" ]
+      && (builtins.elemAt result.state 1).path == [ "[3]" ];
 
   # -- Test 53: ListOf empty list validate returns pure --
   listOfEmptyValidatePure =
@@ -846,13 +846,13 @@ let
         handlers.typeCheck = { param, state }:
           if param.type.check param.value
           then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [param.context]; };
+          else { resume = false; state = state ++ [param.path]; };
         state = [];
       } (sigT.validate { fst = [1 "bad" 3]; snd = "hello"; });
     in
       # Per-element blame: only index 1 fails, fst ListOf fails overall → snd short-circuited
       builtins.length result.state == 1
-      && builtins.head result.state == "List[Int][1]";
+      && builtins.head result.state == [ "fst" "[1]" ];
 
   # -- Test 57: DepRecord with dependent ListOf — per-element blame through nested Sigma --
   depRecordDeepBlame =
@@ -870,13 +870,15 @@ let
         handlers.typeCheck = { param, state }:
           if param.type.check param.value
           then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [param.context]; };
+          else { resume = false; state = state ++ [param.path]; };
         state = [];
       } (recT.validate packed);
     in
-      # Bool passes (no error), ListOf Int decomposes: index 1 fails
+      # Bool passes (no error), ListOf Int decomposes: index 1 fails.
+      # DepRecord is a Sigma-of-Sigma chain, so the path picks up a
+      # structural tag for the nested position before entering the list.
       builtins.length result.state == 1
-      && builtins.head result.state == "List[Int][1]";
+      && lib.last (builtins.head result.state) == "[1]";
 
   # -- Test 58: Adequacy holds for Sigma with compound sub-types --
   sigmaDeepAdequacy =
@@ -913,16 +915,16 @@ let
       mixedResult = fx.handle {
         handlers.typeCheck = { param, state }:
           if param.type.check param.value
-          then { resume = true; state = state ++ [param.context]; }
-          else { resume = false; state = state ++ [param.context]; };
+          then { resume = true; state = state ++ [param.path]; }
+          else { resume = false; state = state ++ [param.path]; };
         state = [];
       } (sigT.validate { fst = [1 "bad"]; snd = null; });
     in
       nonListResult.state == false
       # Deep effects: both list elements checked, snd never reached
       && builtins.length mixedResult.state == 2
-      && builtins.elemAt mixedResult.state 0 == "List[Int][0]"
-      && builtins.elemAt mixedResult.state 1 == "List[Int][1]";
+      && builtins.elemAt mixedResult.state 0 == [ "fst" "[0]" ]
+      && builtins.elemAt mixedResult.state 1 == [ "fst" "[1]" ];
 
   # -- Test 60: pairE with compound types gets per-element blame --
   pairEDeepBlame =
@@ -936,14 +938,16 @@ let
         handlers.typeCheck = { param, state }:
           if param.type.check param.value
           then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [param.context]; };
+          else { resume = false; state = state ++ [param.path]; };
         state = [];
       } (sigT.pairE [1 "bad" 3] "hello");
       goodResult = allPassHandle (sigT.pairE [1 2 3] "hello");
     in
-      # Bad fst: per-element blame flows through pairE, snd short-circuited
+      # Bad fst: per-element blame flows through pairE, snd short-circuited.
+      # pairE calls fst.validate (1-arg → empty path root), so the ListOf
+      # element index is the full path.
       builtins.length badResult.state == 1
-      && builtins.head badResult.state == "List[Int][1]"
+      && builtins.head badResult.state == [ "[1]" ]
       # Good: all pass, adequacy holds
       && goodResult.state == true;
 
@@ -960,14 +964,16 @@ let
         handlers.typeCheck = { param, state }:
           if param.type.check param.value
           then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [param.context]; };
+          else { resume = false; state = state ++ [param.path]; };
         state = [];
       } (CertifiedList.certifyE [1 "bad" 3]);
     in
-      # Per-element blame from ListOf flows through certifyE
-      # Base fails at index 1 → short-circuit, predicate never evaluated
+      # Per-element blame from ListOf flows through certifyE.
+      # Base fails at index 1 → short-circuit, predicate never evaluated.
+      # certifyE delegates to base.validate (1-arg), so the ListOf element
+      # index is the full path.
       builtins.length result.state == 1
-      && builtins.head result.state == "List[Int][1]";
+      && builtins.head result.state == [ "[1]" ];
 
   # -- Test 62: Cross-type parametric adequacy --
   # check and allPassHandle agree across multiple type constructors and values

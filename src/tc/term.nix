@@ -77,12 +77,13 @@ let
   mkDescArg = S: T: { tag = "desc-arg"; inherit S T; };
   mkDescRec = j: D: { tag = "desc-rec"; inherit j D; };
   mkDescPi = S: f: D: { tag = "desc-pi"; inherit S f D; };
+  mkDescPlus = A: B: { tag = "desc-plus"; inherit A B; };
   mkMu = I: D: i: { tag = "mu"; inherit I D i; };
   mkDescCon = D: i: d: { tag = "desc-con"; inherit D i d; };
   mkDescInd = D: motive: step: i: scrut:
     { tag = "desc-ind"; inherit D motive step i scrut; };
-  mkDescElim = motive: onRet: onArg: onRec: onPi: scrut:
-    { tag = "desc-elim"; inherit motive onRet onArg onRec onPi scrut; };
+  mkDescElim = motive: onRet: onArg: onRec: onPi: onPlus: scrut:
+    { tag = "desc-elim"; inherit motive onRet onArg onRec onPi onPlus scrut; };
 
   # -- Universes --
   mkU = level: { tag = "U"; inherit level; };
@@ -176,7 +177,7 @@ in mk {
     inherit mkVoid mkAbsurd;
     inherit mkSum mkInl mkInr mkSumElim;
     inherit mkEq mkRefl mkJ;
-    inherit mkDesc mkDescRet mkDescArg mkDescRec mkDescPi mkMu mkDescCon mkDescInd mkDescElim;
+    inherit mkDesc mkDescRet mkDescArg mkDescRec mkDescPi mkDescPlus mkMu mkDescCon mkDescInd mkDescElim;
     inherit mkU;
     inherit mkString mkInt mkFloat mkAttrs mkPath mkFunction mkAny;
     inherit mkStrEq;
@@ -296,11 +297,23 @@ in mk {
       expected = "tt";
     };
     "desc-elim-tag" = {
-      expr = (mkDescElim (mkVar 0) (mkVar 1) (mkVar 2) (mkVar 3) (mkVar 4) (mkDescRet mkTt)).tag;
+      expr = (mkDescElim (mkVar 0) (mkVar 1) (mkVar 2) (mkVar 3) (mkVar 4) (mkVar 5) (mkDescRet mkTt)).tag;
       expected = "desc-elim";
     };
     "desc-elim-scrut" = {
-      expr = (mkDescElim (mkVar 0) (mkVar 1) (mkVar 2) (mkVar 3) (mkVar 4) (mkDescRet mkTt)).scrut.tag;
+      expr = (mkDescElim (mkVar 0) (mkVar 1) (mkVar 2) (mkVar 3) (mkVar 4) (mkVar 5) (mkDescRet mkTt)).scrut.tag;
+      expected = "desc-ret";
+    };
+    "desc-plus-tag" = {
+      expr = (mkDescPlus (mkDescRet mkTt) (mkDescRet mkTt)).tag;
+      expected = "desc-plus";
+    };
+    "desc-plus-A" = {
+      expr = (mkDescPlus (mkDescRet mkTt) (mkDescRet mkTt)).A.tag;
+      expected = "desc-ret";
+    };
+    "desc-plus-B" = {
+      expr = (mkDescPlus (mkDescRet mkTt) (mkDescRet mkTt)).B.tag;
       expected = "desc-ret";
     };
   };

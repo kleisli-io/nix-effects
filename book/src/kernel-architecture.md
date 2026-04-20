@@ -187,8 +187,8 @@ H.ann term type
 # Natural number induction
 H.ind motive base step scrut
 
-# Boolean elimination
-H.boolElim motive onTrue onFalse scrut
+# Boolean elimination (k : Level is the motive's universe level)
+H.boolElim k motive onTrue onFalse scrut
 
 # List elimination
 H.listElim elemType motive onNil onCons scrut
@@ -604,7 +604,7 @@ let
       (H.lam "k" nat (_: H.lam "ih" nat (ih: H.succ ih))) m;
 
   not_ = b:
-    H.boolElim (H.lam "_" bool (_: bool)) H.false_ H.true_ b;
+    H.boolElim 0 (H.lam "_" bool (_: bool)) H.false_ H.true_ b;
 in {
   # Prove: 3 + 5 = 8
   # The kernel normalizes add(3,5) via NatElim, arrives at 8,

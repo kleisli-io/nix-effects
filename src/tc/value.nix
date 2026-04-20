@@ -64,6 +64,7 @@ let
   vDescArg = S: T: { tag = "VDescArg"; inherit S T; };       # T is a closure S → Desc I
   vDescRec = j: D: { tag = "VDescRec"; inherit j D; };       # j : I (index of recursive child)
   vDescPi = S: f: D: { tag = "VDescPi"; inherit S f D; };    # f : S → I (index of each child), stored as Val
+  vDescPlus = A: B: { tag = "VDescPlus"; inherit A B; };     # A, B : Desc I — first-class binary coproduct
   vMu = I: D: i: { tag = "VMu"; inherit I D i; };            # μ D i — the type at index i : I
   vDescCon = D: i: d: { tag = "VDescCon"; inherit D i d; };  # target index i carried alongside payload
 
@@ -117,8 +118,8 @@ let
   eStrEq = arg: { tag = "EStrEq"; inherit arg; };
   eDescInd = D: motive: step: i:
     { tag = "EDescInd"; inherit D motive step i; };
-  eDescElim = motive: onRet: onArg: onRec: onPi:
-    { tag = "EDescElim"; inherit motive onRet onArg onRec onPi; };
+  eDescElim = motive: onRet: onArg: onRec: onPi: onPlus:
+    { tag = "EDescElim"; inherit motive onRet onArg onRec onPi onPlus; };
 
 in mk {
   doc = ''
@@ -177,7 +178,7 @@ in mk {
     inherit vVoid;
     inherit vSum vInl vInr;
     inherit vEq vRefl;
-    inherit vDesc vDescRet vDescArg vDescRec vDescPi vMu vDescCon;
+    inherit vDesc vDescRet vDescArg vDescRec vDescPi vDescPlus vMu vDescCon;
     inherit vU;
     inherit vString vInt vFloat vAttrs vPath vFunction vAny;
     inherit vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit;
@@ -308,6 +309,9 @@ in mk {
     };
     "edescind-tag" = { expr = (eDescInd (vDescRet vTt) vNat vZero vTt).tag; expected = "EDescInd"; };
     "edescind-i" = { expr = (eDescInd (vDescRet vTt) vNat vZero vTt).i.tag; expected = "VTt"; };
-    "edescelim-tag" = { expr = (eDescElim vNat vZero vZero vZero vZero).tag; expected = "EDescElim"; };
+    "edescelim-tag" = { expr = (eDescElim vNat vZero vZero vZero vZero vZero).tag; expected = "EDescElim"; };
+    "vdescplus-tag" = { expr = (vDescPlus (vDescRet vTt) (vDescRet vTt)).tag; expected = "VDescPlus"; };
+    "vdescplus-A" = { expr = (vDescPlus (vDescRet vTt) (vDescRet vTt)).A.tag; expected = "VDescRet"; };
+    "vdescplus-B" = { expr = (vDescPlus (vDescRet vTt) (vDescRet vTt)).B.tag; expected = "VDescRet"; };
   };
 }

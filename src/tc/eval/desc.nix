@@ -25,8 +25,8 @@
 let
   term = fx.tc.term;
   val = fx.tc.value;
-  inherit (val) mkClosure vLam vMu vDesc vU vTt vPair vNe
-    vDescRet vDescArg vDescRec vDescPi vBool vNat vUnit vRefl
+  inherit (val) mkClosure vLam vDesc vU vTt vPair vNe
+    vDescRet vDescArg vDescRec vDescPi vBool vUnit vRefl
     eDescInd eDescElim;
 
   # Closed Tms (no free vars) with `I` as the outermost lambda binder.
@@ -102,6 +102,20 @@ let
                     (term.mkApp (term.mkApp (term.mkVar 3) (term.mkVar 2))
                                 (term.mkVar 1)))))))));
 
+  # interpOnPlus : λI. λ(A:Desc I). λ(B:Desc I). λ(ihA:(I→U)→I→U). λ(ihB:(I→U)→I→U).
+  #                λ(X:I→U). λ(i:I). Sum (ihA X i) (ihB X i)
+  interpOnPlusTm_closed =
+    term.mkLam "I" (term.mkU 0)
+      (term.mkLam "A" (term.mkDesc (term.mkVar 0))
+        (term.mkLam "B" (term.mkDesc (term.mkVar 1))
+          (term.mkLam "ihA" (term.mkU 0)
+            (term.mkLam "ihB" (term.mkU 0)
+              (term.mkLam "X" (term.mkPi "_" (term.mkVar 4) (term.mkU 0))
+                (term.mkLam "i" (term.mkVar 5)
+                  (term.mkSum
+                    (term.mkApp (term.mkApp (term.mkVar 3) (term.mkVar 1)) (term.mkVar 0))
+                    (term.mkApp (term.mkApp (term.mkVar 2) (term.mkVar 1)) (term.mkVar 0)))))))));
+
 in {
   scope = {
     # vDescInd — generic eliminator for description-based indexed inductives.
@@ -135,15 +149,17 @@ in {
         in self.vAppF f (self.vAppF f (self.vAppF f step i) d) evResult
       else throw "tc: vDescInd on non-mu (tag=${scrut.tag})";
 
-    # vDescElim — induction principle for Desc I (4 cases: ret, arg, rec, pi).
+    # vDescElim — induction principle for Desc I (5 cases: ret, arg, rec, pi, plus).
     # On-case arg counts under indexing:
-    #   onRet : (j:I) → motive (ret j)                             -- 1 arg
-    #   onArg : (S:U) → (T:S→Desc I) → (ih:(s:S)→motive(T s))      -- 3 args
-    #           → motive (arg S T)
-    #   onRec : (j:I) → (D:Desc I) → (ih:motive D) → motive (rec j D) -- 3 args
-    #   onPi  : (S:U) → (f:S→I) → (D:Desc I) → (ih:motive D)         -- 4 args
-    #           → motive (pi S f D)
-    vDescElimF = fuel: motive: onRet: onArg: onRec: onPi: scrut:
+    #   onRet  : (j:I) → motive (ret j)                             -- 1 arg
+    #   onArg  : (S:U) → (T:S→Desc I) → (ih:(s:S)→motive(T s))      -- 3 args
+    #            → motive (arg S T)
+    #   onRec  : (j:I) → (D:Desc I) → (ih:motive D) → motive (rec j D) -- 3 args
+    #   onPi   : (S:U) → (f:S→I) → (D:Desc I) → (ih:motive D)         -- 4 args
+    #            → motive (pi S f D)
+    #   onPlus : (A:Desc I) → (B:Desc I) → (ihA:motive A) → (ihB:motive B) -- 4 args
+    #            → motive (plus A B)
+    vDescElimF = fuel: motive: onRet: onArg: onRec: onPi: onPlus: scrut:
       if fuel <= 0 then throw "normalization budget exceeded"
       else let f = fuel - 1; in
 
@@ -155,13 +171,13 @@ in {
           S = scrut.S;
           Tcl = scrut.T;
           tLam = vLam "_" S Tcl;
-          # Higher-order IH: λ(s:S). descElim motive onRet onArg onRec onPi (T s)
-          # Closure env: [tLam, motive, onRet, onArg, onRec, onPi]
-          # Under s: env = [s, tLam, motive, onRet, onArg, onRec, onPi].
-          # s=0, tLam=1, motive=2, onRet=3, onArg=4, onRec=5, onPi=6.
-          ihClosure = mkClosure [ tLam motive onRet onArg onRec onPi ]
+          # Higher-order IH: λ(s:S). descElim motive onRet onArg onRec onPi onPlus (T s)
+          # Closure env: [tLam, motive, onRet, onArg, onRec, onPi, onPlus]
+          # Under s: env = [s, tLam, motive, onRet, onArg, onRec, onPi, onPlus].
+          # s=0, tLam=1, motive=2, onRet=3, onArg=4, onRec=5, onPi=6, onPlus=7.
+          ihClosure = mkClosure [ tLam motive onRet onArg onRec onPi onPlus ]
             (term.mkDescElim (term.mkVar 2) (term.mkVar 3) (term.mkVar 4)
-                             (term.mkVar 5) (term.mkVar 6)
+                             (term.mkVar 5) (term.mkVar 6) (term.mkVar 7)
                              (term.mkApp (term.mkVar 1) (term.mkVar 0)));
           ihLam = vLam "_" S ihClosure;
         in
@@ -171,7 +187,7 @@ in {
         let
           j = scrut.j;
           D = scrut.D;
-          ihVal = self.vDescElimF f motive onRet onArg onRec onPi D;
+          ihVal = self.vDescElimF f motive onRet onArg onRec onPi onPlus D;
         in self.vAppF f (self.vAppF f (self.vAppF f onRec j) D) ihVal
 
       else if scrut.tag == "VDescPi" then
@@ -179,13 +195,23 @@ in {
           S = scrut.S;
           fIdx = scrut.f;
           D = scrut.D;
-          ihVal = self.vDescElimF f motive onRet onArg onRec onPi D;
+          ihVal = self.vDescElimF f motive onRet onArg onRec onPi onPlus D;
         in self.vAppF f
              (self.vAppF f (self.vAppF f (self.vAppF f onPi S) fIdx) D)
              ihVal
 
+      else if scrut.tag == "VDescPlus" then
+        let
+          A = scrut.A;
+          B = scrut.B;
+          ihA = self.vDescElimF f motive onRet onArg onRec onPi onPlus A;
+          ihB = self.vDescElimF f motive onRet onArg onRec onPi onPlus B;
+        in self.vAppF f
+             (self.vAppF f (self.vAppF f (self.vAppF f onPlus A) B) ihA)
+             ihB
+
       else if scrut.tag == "VNe" then
-        vNe scrut.level (scrut.spine ++ [ (eDescElim motive onRet onArg onRec onPi) ])
+        vNe scrut.level (scrut.spine ++ [ (eDescElim motive onRet onArg onRec onPi onPlus) ])
 
       else throw "tc: vDescElim on non-desc (tag=${scrut.tag})";
 
@@ -251,12 +277,30 @@ in {
                   (term.mkApp (term.mkApp (term.mkVar 3) (term.mkVar 2))
                               (term.mkVar 1)))))))));
 
+    # interpOnPlus I : λ(A:Desc I). λ(B:Desc I). λ(ihA:(I→U)→I→U). λ(ihB:(I→U)→I→U).
+    #                  λ(X:I→U). λ(i:I). Sum (ihA X i) (ihB X i)
+    #
+    # Closure env [I_val]. Under A: [A, I]. Under B: [B, A, I]. Under ihA:
+    # [ihA, B, A, I]. Under ihB: [ihB, ihA, B, A, I]. Under X: [X, ihB, ihA,
+    # B, A, I]. Under i: [i, X, ihB, ihA, B, A, I]. At i-body: i=0, X=1,
+    # ihB=2, ihA=3, B=4, A=5, I=6.
+    interpOnPlus = I_val: vLam "A" (vDesc I_val) (mkClosure [ I_val ]
+      (term.mkLam "B" (term.mkDesc (term.mkVar 1))
+        (term.mkLam "ihA" (term.mkU 0)
+          (term.mkLam "ihB" (term.mkU 0)
+            (term.mkLam "X" (term.mkPi "_" (term.mkVar 4) (term.mkU 0))
+              (term.mkLam "i" (term.mkVar 5)
+                (term.mkSum
+                  (term.mkApp (term.mkApp (term.mkVar 3) (term.mkVar 1)) (term.mkVar 0))
+                  (term.mkApp (term.mkApp (term.mkVar 2) (term.mkVar 1)) (term.mkVar 0)))))))));
+
     # interpF fuel I D X i — interpretation of description D at family X,
     # at target index i. D : Desc I, X : I → U, i : I; result : U.
     interpF = fuel: I_val: D: X: i:
       let result = self.vDescElimF fuel (self.interpMotive I_val)
                      (self.interpOnRet I_val) (self.interpOnArg I_val)
-                     (self.interpOnRec I_val) (self.interpOnPi I_val) D;
+                     (self.interpOnRec I_val) (self.interpOnPi I_val)
+                     (self.interpOnPlus I_val) D;
       in self.vAppF fuel (self.vAppF fuel result X) i;
 
     # Term-level counterparts of interpMotive / interpOn*. Closed Tms
@@ -271,6 +315,7 @@ in {
     interpOnArgTm  = I_tm: term.mkApp interpOnArgTm_closed  I_tm;
     interpOnRecTm  = I_tm: term.mkApp interpOnRecTm_closed  I_tm;
     interpOnPiTm   = I_tm: term.mkApp interpOnPiTm_closed   I_tm;
+    interpOnPlusTm = I_tm: term.mkApp interpOnPlusTm_closed I_tm;
 
     # interpTm I_tm D_tm X_tm i_tm : a kernel term that evaluates to
     # `interp I D X i` (applied to explicit arguments).
@@ -278,7 +323,7 @@ in {
       term.mkApp (term.mkApp
         (term.mkDescElim (self.interpMotiveTm I_tm) (self.interpOnRetTm I_tm)
           (self.interpOnArgTm I_tm) (self.interpOnRecTm I_tm)
-          (self.interpOnPiTm I_tm)
+          (self.interpOnPiTm I_tm) (self.interpOnPlusTm I_tm)
           D_tm)
         X_tm) i_tm;
 
@@ -359,10 +404,46 @@ in {
                                             (term.mkVar 2))
                                 (term.mkSnd (term.mkVar 1)))))))))));
 
+    # allOnPlus I D' : λA λB λihA λihB λP λi λd.
+    #   sumElim (interp A muFam i) (interp B muFam i)
+    #           (λ_. U) (λa. ihA P i a) (λb. ihB P i b) d
+    #
+    # Closure env [D' I_val]. At d-body: d=0, i=1, P=2, ihB=3, ihA=4,
+    # B=5, A=6, D'=7, I=8. The sum-elim left/right carry proper interp
+    # types so that on neutral d the ESumElim frame conv-equals the
+    # frame produced by HOAS allHoas.onPlus (hoas/desc.nix:192-201).
+    # muFamTm = λ_i. μ I D' _i (under the lambda: I=9, D'=8, _i=0).
+    allOnPlus = I_val: D':
+      let
+        # At d-body level: I=Var8, D'=Var7, A=Var6, B=Var5, i=Var1
+        allMuFamTm = term.mkLam "_i" (term.mkVar 8)
+          (term.mkMu (term.mkVar 9) (term.mkVar 8) (term.mkVar 0));
+        allLInterpTm = self.interpTm (term.mkVar 8) (term.mkVar 6) allMuFamTm (term.mkVar 1);
+        allRInterpTm = self.interpTm (term.mkVar 8) (term.mkVar 5) allMuFamTm (term.mkVar 1);
+      in vLam "A" (vDesc I_val) (mkClosure [ D' I_val ]
+      (term.mkLam "B" (term.mkU 0)
+        (term.mkLam "ihA" (term.mkU 0)
+          (term.mkLam "ihB" (term.mkU 0)
+            (term.mkLam "P" (term.mkU 0)
+              (term.mkLam "i" (term.mkVar 6)
+                (term.mkLam "d" (term.mkU 0)
+                  (term.mkSumElim
+                    allLInterpTm
+                    allRInterpTm
+                    (term.mkLam "_" (term.mkU 0) (term.mkU 0))
+                    (term.mkLam "a" (term.mkU 0)
+                      (term.mkApp (term.mkApp (term.mkApp
+                        (term.mkVar 5) (term.mkVar 3)) (term.mkVar 2)) (term.mkVar 0)))
+                    (term.mkLam "b" (term.mkU 0)
+                      (term.mkApp (term.mkApp (term.mkApp
+                        (term.mkVar 4) (term.mkVar 3)) (term.mkVar 2)) (term.mkVar 0)))
+                    (term.mkVar 0)))))))));
+
     allTyF = fuel: I_val: D': D: P: i: d:
       let result = self.vDescElimF fuel (self.mkAllMotive I_val D')
                      (self.allOnRet I_val) (self.allOnArg I_val)
-                     (self.allOnRec I_val) (self.allOnPi I_val) D;
+                     (self.allOnRec I_val) (self.allOnPi I_val)
+                     (self.allOnPlus I_val D') D;
       in self.vAppF fuel
            (self.vAppF fuel (self.vAppF fuel result P) i) d;
 
@@ -479,10 +560,45 @@ in {
                           (term.mkVar 1))
                         (term.mkSnd (term.mkVar 0))))))))))));
 
+    # evOnPlus I D' : λA λB λihEA λihEB λP λih λi λd.
+    #   sumElim (interp A muFam i) (interp B muFam i)
+    #           (λ_. U) (λa. ihEA P ih i a) (λb. ihEB P ih i b) d
+    #
+    # Closure env [D' I_val]. At d-body: d=0, i=1, ih=2, P=3, ihEB=4,
+    # ihEA=5, B=6, A=7, D'=8, I=9. Proper interp types in the sum-elim
+    # frame, matching allOnPlus's convention.
+    evOnPlus = I_val: D':
+      let
+        # At d-body level: I=Var9, D'=Var8, A=Var7, B=Var6, i=Var1
+        evMuFamTm = term.mkLam "_i" (term.mkVar 9)
+          (term.mkMu (term.mkVar 10) (term.mkVar 9) (term.mkVar 0));
+        evLInterpTm = self.interpTm (term.mkVar 9) (term.mkVar 7) evMuFamTm (term.mkVar 1);
+        evRInterpTm = self.interpTm (term.mkVar 9) (term.mkVar 6) evMuFamTm (term.mkVar 1);
+      in vLam "A" (vDesc I_val) (mkClosure [ D' I_val ]
+      (term.mkLam "B" (term.mkU 0)
+        (term.mkLam "ihEA" (term.mkU 0)
+          (term.mkLam "ihEB" (term.mkU 0)
+            (term.mkLam "P" (term.mkU 0)
+              (term.mkLam "ih" (term.mkU 0)
+                (term.mkLam "i" (term.mkVar 7)
+                  (term.mkLam "d" (term.mkU 0)
+                    (term.mkSumElim
+                      evLInterpTm
+                      evRInterpTm
+                      (term.mkLam "_" (term.mkU 0) (term.mkU 0))
+                      (term.mkLam "a" (term.mkU 0)
+                        (term.mkApp (term.mkApp (term.mkApp (term.mkApp
+                          (term.mkVar 6) (term.mkVar 4)) (term.mkVar 3)) (term.mkVar 2)) (term.mkVar 0)))
+                      (term.mkLam "b" (term.mkU 0)
+                        (term.mkApp (term.mkApp (term.mkApp (term.mkApp
+                          (term.mkVar 5) (term.mkVar 4)) (term.mkVar 3)) (term.mkVar 2)) (term.mkVar 0)))
+                      (term.mkVar 0))))))))));
+
     everywhereF = fuel: I_val: D': D: P: ih: i: d:
       let result = self.vDescElimF fuel (self.mkEvMotive I_val D')
                      (self.evOnRet I_val) (self.evOnArg I_val)
-                     (self.evOnRec I_val) (self.evOnPi I_val) D;
+                     (self.evOnRec I_val) (self.evOnPi I_val)
+                     (self.evOnPlus I_val D') D;
       in self.vAppF fuel
            (self.vAppF fuel
              (self.vAppF fuel (self.vAppF fuel result P) ih) i) d;
@@ -499,8 +615,6 @@ in {
   tests = let
     # Build a trivial family X : Unit → U₀ that returns Nat for any index.
     X_nat = vLam "_" vUnit (mkClosure [] term.mkNat);
-    # Slightly more informative X : Unit → U₀ returning Bool.
-    X_bool = vLam "_" vUnit (mkClosure [] term.mkBool);
     # A ret-tt description: Desc Unit
     Dret = vDescRet vTt;
   in {

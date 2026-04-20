@@ -1006,8 +1006,9 @@ in {
 
     "infer-desc-elim-ret" = {
       # Indexed on-cases: onRet (1 binder j:I), onArg (3: S T ih), onRec (3: j D ih),
-      # onPi (4: S f D ih). Each body returns a U-typed term for large elim.
-      # scrut is ann-wrapped so I is recoverable in infer mode.
+      # onPi (4: S f D ih), onPlus (4: A B ihA ihB). Each body returns a
+      # U-typed term for large elim. scrut is ann-wrapped so I is recoverable
+      # in infer mode.
       expr = (inferTm ctx0 (T.mkDescElim
         (T.mkLam "_" (T.mkDesc T.mkUnit) (T.mkU 0))
         (T.mkLam "j" T.mkUnit T.mkUnit)
@@ -1020,6 +1021,8 @@ in {
           (T.mkPi "_" (T.mkVar 0) T.mkUnit)
           (T.mkLam "D" (T.mkDesc T.mkUnit)
             (T.mkLam "ih" (T.mkU 0) T.mkUnit))))
+        (T.mkLam "A" (T.mkDesc T.mkUnit) (T.mkLam "B" (T.mkDesc T.mkUnit)
+          (T.mkLam "ihA" (T.mkU 0) (T.mkLam "ihB" (T.mkU 0) T.mkUnit))))
         (T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkUnit)))).type.tag;
       expected = "VU";
     };

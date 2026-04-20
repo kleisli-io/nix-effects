@@ -35,13 +35,53 @@ let
     then peelAppSpine node.fn ([ node.arg ] ++ args)
     else { head = node; inherit args; };
 
-  # Tm-level tag encoding: wrap `payloadTm` with the ctor's bool-tag
-  # prefix committing at index i out of n constructors. Structurally
-  # mirrors the HOAS `encodeTag` but operates on elaborated terms.
-  encodeTagTm = i: n: payloadTm:
+  # Tm-level tag encoding via the first-class plus coproduct. Wraps
+  # `payloadTm` with (n-1)-deep nested `mkInl L R …` / `mkInr L R …`
+  # committing at position i out of n total. Mirrors the HOAS
+  # `encodeTag` but operates on elaborated terms. `lTms`/`rTms` are
+  # parallel lists of layer-k L/R type Tms — `lTms[k]` = interp of
+  # summand k, `rTms[k]` = interp of the plus-tree of summands
+  # k+1..n-1. For n=1 there is no prefix. Both lists must have length
+  # >= 1 (caller guarantees via `n >= 2`).
+  encodeTagTm = lTms: rTms: i: n: payloadTm:
     if n == 1 then payloadTm
-    else if i == 0 then T.mkPair T.mkTrue payloadTm
-    else T.mkPair T.mkFalse (encodeTagTm (i - 1) (n - 1) payloadTm);
+    else
+      let lTm = builtins.elemAt lTms 0;
+          rTm = builtins.elemAt rTms 0;
+      in
+      if i == 0 then T.mkInl lTm rTm payloadTm
+      else T.mkInr lTm rTm
+             (encodeTagTm
+                (_listDrop 1 lTms) (_listDrop 1 rTms)
+                (i - 1) (n - 1) payloadTm);
+
+  # Build per-layer L/R interp Tm lists for a plus-spine of n summands.
+  # Given the outer mu's description HOAS `dHoasOuter` and the
+  # per-summand HOAS descriptions `descsHoas`, elaborates
+  #   lTms[k] = interp (descsHoas[k]) muFam tt
+  #   rTms[k] = interp (spineAfter (k+1)) muFam tt     (k in 0..n-2)
+  # where `muFam = λ_:⊤. μ ⊤ dHoasOuter tt`. Used by the datatype-macro
+  # flatten path and by the direct scalar paths (zero/succ/nil/cons/
+  # inl/inr) to synthesize the `inlPrim L R …` / `inrPrim L R …`
+  # wrapping at each tag-encoding layer. n must be >= 1.
+  buildTagInterpTms = depth: dHoasOuter: descsHoas:
+    let
+      n = builtins.length descsHoas;
+      muFam = self.lam "_i" self.unitPrim (_:
+        self.muI self.unitPrim dHoasOuter self.ttPrim);
+      # Plus-spine of summands k..n-1. Requires remaining >= 1.
+      spineAfter = k:
+        let remaining = n - k; in
+        if remaining == 1 then builtins.elemAt descsHoas k
+        else self.plus (builtins.elemAt descsHoas k) (spineAfter (k + 1));
+      interpTm = dHoas:
+        elaborate depth
+          (self.interpHoas self.unitPrim dHoas muFam self.ttPrim);
+    in {
+      lTms = builtins.genList (k: interpTm (builtins.elemAt descsHoas k)) n;
+      rTms = builtins.genList (k: interpTm (spineAfter (k + 1)))
+               (if n >= 2 then n - 1 else 0);
+    };
 
   # Classify a field list into a chain-flatten profile, or null if
   # neither shape applies.
@@ -145,6 +185,13 @@ let
       dTm = elaborate depth mono.dHoas;
       ctorIdx = mono.ctorIndex;
       nCtors = mono.nCtors;
+      # Precompute per-layer L/R interp Tms for the plus-coproduct tag
+      # encoding. Shared across recursive-chain layers (the ctor
+      # structure is identical at every layer).
+      tags =
+        if nCtors >= 2
+        then buildTagInterpTms depth mono.dHoas mono.conDescs
+        else { lTms = []; rTms = []; };
     in
     if shape.kind == "saturated" then
       # No recursion: build one payload from the data field Tms.
@@ -159,7 +206,8 @@ let
             in T.mkPair d acc)
           T.mkRefl
           (builtins.genList (x: x) nFields);
-      in T.mkDescCon dTm T.mkTt (encodeTagTm ctorIdx nCtors payload)
+      in T.mkDescCon dTm T.mkTt
+           (encodeTagTm tags.lTms tags.rTms ctorIdx nCtors payload)
     else
       let
         recArg = builtins.elemAt fieldArgs (nFields - 1);
@@ -222,7 +270,8 @@ let
                 in T.mkPair f acc)
               innerMost
               (builtins.genList (x: x) (builtins.length nonRecTms));
-          in T.mkDescCon dTm T.mkTt (encodeTagTm ctorIdx nCtors payloadInner);
+          in T.mkDescCon dTm T.mkTt
+               (encodeTagTm tags.lTms tags.rTms ctorIdx nCtors payloadInner);
       in
       # Fold inward-to-outward: step idx=0 wraps baseTm with the
       # innermost layer's non-rec args, step idx=1 with the next layer
@@ -276,6 +325,19 @@ let
     else if t == "list" then T.mkMu T.mkUnit (elaborate depth (self.listDesc h.elem)) T.mkTt
     # `sum l r` is the description-based fixpoint `mu (sumDesc l r) tt`.
     else if t == "sum" then T.mkMu T.mkUnit (elaborate depth (self.sumDesc h.left h.right)) T.mkTt
+    # Kernel-primitive `sum-prim`/`inl-prim`/`inr-prim` — used by
+    # `interpHoas`/`allHoas` for `plus`'s interpretation, matching
+    # `eval/desc.nix`'s kernel `Sum` output token-for-token so conv between
+    # HOAS-side and value-side `interp` values succeeds on plus descriptions.
+    else if t == "sum-prim" then T.mkSum (elaborate depth h.L) (elaborate depth h.R)
+    else if t == "inl-prim" then
+      T.mkInl (elaborate depth h.L) (elaborate depth h.R) (elaborate depth h.term)
+    else if t == "inr-prim" then
+      T.mkInr (elaborate depth h.L) (elaborate depth h.R) (elaborate depth h.term)
+    else if t == "sum-elim-prim" then
+      T.mkSumElim (elaborate depth h.left) (elaborate depth h.right)
+        (elaborate depth h.motive) (elaborate depth h.onLeft)
+        (elaborate depth h.onRight) (elaborate depth h.scrut)
     else if t == "eq" then
       T.mkEq (elaborate depth h.type) (elaborate depth h.lhs) (elaborate depth h.rhs)
 
@@ -351,15 +413,21 @@ let
       ) baseElab (builtins.genList (x: x) n)
 
     # -- Non-binding terms --
-    # `zero` = `descCon natDesc tt (pair true_ refl)` — tag true selects
-    # the zero-constructor branch of natDesc; ret-leaf payload inhabits
-    # Eq ⊤ tt tt via refl.
+    # `zero` = `descCon natDesc tt (inlPrim L R refl)` — the plus-based
+    # natDesc's `inl` summand is `descRet`, whose interp at I=⊤ is the
+    # leaf-equality `Eq ⊤ tt tt` (refl witnesses the reflexive base).
+    # L/R are closed interps: L = Eq ⊤ tt tt, R = Σ (μnat tt) (_: Eq ⊤ tt tt).
     else if t == "zero" then
-      T.mkDescCon self.natDescTm T.mkTt (T.mkPair T.mkTrue T.mkRefl)
-    # `succ n` = `descCon natDesc tt (pair false_ (pair n refl))` — tag
-    # false selects the succ-constructor branch, payload is the recursive
-    # arg paired with the ret-leaf refl. Trampolined for deep naturals
-    # (5000+).
+      let
+        tags = buildTagInterpTms depth self.natDesc
+                 [ self.descRet (self.descRec self.descRet) ];
+      in
+      T.mkDescCon self.natDescTm T.mkTt
+        (encodeTagTm tags.lTms tags.rTms 0 2 T.mkRefl)
+    # `succ n` = `descCon natDesc tt (inrPrim L R (pair n refl))` — the
+    # plus-based natDesc's `inr` summand is `descRec descRet`, whose
+    # interp is `Σ (μnat tt) (_: Eq ⊤ tt tt)`. Trampolined for deep
+    # naturals (5000+) with shared lTms/rTms across layers.
     else if t == "succ" then
       let
         chain = builtins.genericClosure {
@@ -371,8 +439,12 @@ let
         };
         n = builtins.length chain - 1;
         base = (builtins.elemAt chain n).val;
+        tags = buildTagInterpTms depth self.natDesc
+                 [ self.descRet (self.descRec self.descRet) ];
       in builtins.foldl' (acc: _:
-        T.mkDescCon self.natDescTm T.mkTt (T.mkPair T.mkFalse (T.mkPair acc T.mkRefl))
+        T.mkDescCon self.natDescTm T.mkTt
+          (encodeTagTm tags.lTms tags.rTms 1 2
+             (T.mkPair acc T.mkRefl))
       ) (elaborate depth base) (builtins.genList (x: x) n)
     else if t == "true" then T.mkTrue
     else if t == "false" then T.mkFalse
@@ -385,21 +457,24 @@ let
     else if t == "path-lit" then T.mkPathLit
     else if t == "fn-lit" then T.mkFnLit
     else if t == "any-lit" then T.mkAnyLit
-    # `nil elem` = `descCon (listDesc elem) tt (pair true refl)` — tag
-    # true selects the nil-constructor branch; ret-leaf payload is refl
-    # inhabiting Eq ⊤ tt tt.
+    # `nil elem` = `descCon (listDesc elem) tt (inlPrim L R refl)` — the
+    # plus-based `listDesc elem`'s `inl` summand is `descRet`; L = Eq ⊤ tt tt,
+    # R = Σ elem (_: Σ (μlist tt) (_: Eq ⊤ tt tt)).
     else if t == "nil" then
-      T.mkDescCon (elaborate depth (self.listDesc h.elem))
-        T.mkTt (T.mkPair T.mkTrue T.mkRefl)
-    # `cons elem head tail` = `descCon (listDesc elem)
-    #   (pair false (pair head (pair tail tt)))`. Trampolined for deep
+      let
+        dHoas = self.listDesc h.elem;
+        tags = buildTagInterpTms depth dHoas
+                 [ self.descRet
+                   (self.descArg h.elem (_: self.descRec self.descRet)) ];
+      in
+      T.mkDescCon (elaborate depth dHoas) T.mkTt
+        (encodeTagTm tags.lTms tags.rTms 0 2 T.mkRefl)
+    # `cons elem head tail` = `descCon (listDesc elem) tt
+    #   (inrPrim L R (pair head (pair tail refl)))`. Trampolined for deep
     # lists (5000+ elements). The outer `listDesc elem` is elaborated
-    # ONCE for the chain and the resulting D is shared across all
-    # emitted desc-cons; the check/eval desc-con trampolines use
-    # reference identity on D to peel homogeneous chains. The chain peel
-    # stops at the first tail that is not a `cons` HOAS node (typically
-    # `nil`, which elaborates via its own branch); that base is
-    # elaborated recursively with the outer depth.
+    # ONCE for the chain; lTms/rTms are computed ONCE and shared across
+    # all emitted desc-cons. The check/eval desc-con trampolines use
+    # reference identity on D to peel homogeneous chains.
     else if t == "cons" then
       let
         chain = builtins.genericClosure {
@@ -411,29 +486,46 @@ let
         };
         n = builtins.length chain - 1;
         base = (builtins.elemAt chain n).val;
-        # All layers share the outer element type. Elaborate listDesc once.
-        dTm = elaborate depth (self.listDesc h.elem);
+        dHoas = self.listDesc h.elem;
+        dTm = elaborate depth dHoas;
+        tags = buildTagInterpTms depth dHoas
+                 [ self.descRet
+                   (self.descArg h.elem (_: self.descRec self.descRet)) ];
       in builtins.foldl' (acc: i:
         let node = (builtins.elemAt chain (n - 1 - i)).val; in
         T.mkDescCon dTm T.mkTt
-          (T.mkPair T.mkFalse
-            (T.mkPair (elaborate depth node.head)
-              (T.mkPair acc T.mkRefl)))
+          (encodeTagTm tags.lTms tags.rTms 1 2
+             (T.mkPair (elaborate depth node.head)
+               (T.mkPair acc T.mkRefl)))
       ) (elaborate depth base) (builtins.genList (x: x) n)
     else if t == "pair" then
       T.mkPair (elaborate depth h.fst) (elaborate depth h.snd)
-    # `inl l r a` = `descCon (sumDesc l r) tt (pair true (pair a refl))` —
-    # tag true selects the inl-constructor branch; ret-leaf payload is
-    # refl inhabiting Eq ⊤ tt tt.
+    # `inl l r a` = `descCon (sumDesc l r) tt (inlPrim L R (pair a refl))` —
+    # the plus-based `sumDesc l r`'s summands are both
+    # `descArg _ (_: descRet)`, so each summand's interp is
+    # `Σ arm (_: Eq ⊤ tt tt)`.
     else if t == "inl" then
-      T.mkDescCon (elaborate depth (self.sumDesc h.left h.right))
-        T.mkTt (T.mkPair T.mkTrue (T.mkPair (elaborate depth h.term) T.mkRefl))
-    # `inr l r b` = `descCon (sumDesc l r) tt (pair false (pair b refl))` —
-    # tag false selects the inr-constructor branch; ret-leaf payload is
-    # refl inhabiting Eq ⊤ tt tt.
+      let
+        dHoas = self.sumDesc h.left h.right;
+        tags = buildTagInterpTms depth dHoas
+                 [ (self.descArg h.left  (_: self.descRet))
+                   (self.descArg h.right (_: self.descRet)) ];
+      in
+      T.mkDescCon (elaborate depth dHoas) T.mkTt
+        (encodeTagTm tags.lTms tags.rTms 0 2
+           (T.mkPair (elaborate depth h.term) T.mkRefl))
+    # `inr l r b` = `descCon (sumDesc l r) tt (inrPrim L R (pair b refl))` —
+    # mirror of `inl`.
     else if t == "inr" then
-      T.mkDescCon (elaborate depth (self.sumDesc h.left h.right))
-        T.mkTt (T.mkPair T.mkFalse (T.mkPair (elaborate depth h.term) T.mkRefl))
+      let
+        dHoas = self.sumDesc h.left h.right;
+        tags = buildTagInterpTms depth dHoas
+                 [ (self.descArg h.left  (_: self.descRet))
+                   (self.descArg h.right (_: self.descRet)) ];
+      in
+      T.mkDescCon (elaborate depth dHoas) T.mkTt
+        (encodeTagTm tags.lTms tags.rTms 1 2
+           (T.mkPair (elaborate depth h.term) T.mkRefl))
     else if t == "opaque-lam" then
       T.mkOpaqueLam h._fnBox (elaborate depth h.piHoas)
     else if t == "str-eq" then
@@ -467,6 +559,8 @@ let
       T.mkDescRec (elaborate depth h.j) (elaborate depth h.D)
     else if t == "desc-pi" then
       T.mkDescPi (elaborate depth h.S) (elaborate depth h.f) (elaborate depth h.D)
+    else if t == "desc-plus" then
+      T.mkDescPlus (elaborate depth h.A) (elaborate depth h.B)
     else if t == "mu" then
       T.mkMu (elaborate depth h.I) (elaborate depth h.D) (elaborate depth h.i)
     else if t == "desc-con" then
@@ -477,16 +571,21 @@ let
     else if t == "desc-elim" then
       T.mkDescElim (elaborate depth h.motive) (elaborate depth h.onRet)
         (elaborate depth h.onArg) (elaborate depth h.onRec)
-        (elaborate depth h.onPi) (elaborate depth h.scrut)
+        (elaborate depth h.onPi) (elaborate depth h.onPlus) (elaborate depth h.scrut)
 
     # -- Eliminators --
-    # `boolElim` is the only user-facing HOAS eliminator with its own tag:
+    # `boolElim` is a user-facing HOAS eliminator with its own tag:
     # kernel `bool-elim` is used internally by descriptions and adapters
     # and so stays reachable via this path. Nat/List/Sum eliminators route
     # through the macro-generated `NatDT.elim` / `ListDT.elim` / `SumDT.elim`
     # (see hoas/datatype.nix's dispatchStep), which produce `descInd`
-    # spines directly; no dedicated `nat-elim`/`list-elim`/`sum-elim` HOAS
-    # tag is emitted.
+    # spines directly; no dedicated `nat-elim` / `list-elim` / `sum-elim`
+    # HOAS tag is emitted. The kernel `nat-elim` primitive type-checks
+    # its scrutinee against `V.vNat`, which HOAS `nat = NatDT.T = μ NatDT.D tt`
+    # never produces — a bridging HOAS tag would be structurally unusable.
+    # User-level motive-universe escape hatches (e.g. `natDisc`'s `Nat → U(0)`
+    # requiring motive at universe 1) go via `descInd` directly on the
+    # macro's `D` (see combinators.nix:natDisc).
     else if t == "bool-elim" then
       T.mkBoolElim (elaborate depth h.motive) (elaborate depth h.onTrue)
         (elaborate depth h.onFalse) (elaborate depth h.scrut)

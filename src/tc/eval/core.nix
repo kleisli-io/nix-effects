@@ -21,7 +21,7 @@ let
     vLam vPi vSigma vPair vNat vZero vSucc
     vBool vTrue vFalse vList vNil vCons
     vUnit vTt vVoid vSum vInl vInr vEq vRefl vU vNe
-    vDesc vDescRet vDescArg vDescRec vDescPi vMu vDescCon
+    vDesc vDescRet vDescArg vDescRec vDescPi vDescPlus vMu vDescCon
     vString vInt vFloat vAttrs vPath vFunction vAny
     vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit
     eApp eFst eSnd eNatElim eBoolElim eListElim eAbsurd eSumElim eJ eStrEq;
@@ -84,11 +84,17 @@ in {
       else throw "tc: vBoolElim on non-bool (tag=${scrut.tag})";
 
     # vStrEq — string equality primitive.
-    # Both VStringLit → VTrue/VFalse. Neutral arg → extend its spine.
+    # Both VStringLit → plus-encoded VDescCon true/false. Neutral → spine.
     # StrEq is symmetric, so we canonicalize neutral-first for the spine.
     vStrEq = lhs: rhs:
+      let
+        boolDescV = vDescPlus (vDescRet vTt) (vDescRet vTt);
+        eqTtV = vEq vUnit vTt vTt;
+        vBoolTrue = vDescCon boolDescV vTt (vInl eqTtV eqTtV vRefl);
+        vBoolFalse = vDescCon boolDescV vTt (vInr eqTtV eqTtV vRefl);
+      in
       if lhs.tag == "VStringLit" && rhs.tag == "VStringLit" then
-        if lhs.value == rhs.value then vTrue else vFalse
+        if lhs.value == rhs.value then vBoolTrue else vBoolFalse
       else if lhs.tag == "VNe" then
         vNe lhs.level (lhs.spine ++ [ (eStrEq rhs) ])
       else if rhs.tag == "VNe" then
@@ -244,56 +250,78 @@ in {
       else if t == "desc-arg" then vDescArg (ev tm.S) (mkClosure env tm.T)
       else if t == "desc-rec" then vDescRec (ev tm.j) (ev tm.D)
       else if t == "desc-pi" then vDescPi (ev tm.S) (ev tm.f) (ev tm.D)
+      else if t == "desc-plus" then vDescPlus (ev tm.A) (ev tm.B)
       else if t == "mu" then vMu (ev tm.I) (ev tm.D) (ev tm.i)
       # desc-con — trampolined for deep recursive chains (5000+).
-      # Peels a homogeneous desc-con chain along its recursive position.
-      # The outer D's false-branch shape drives decomposition: iff
-      # `linearProfile subFalse` is a list of n data-field types, each
-      # layer's payload is `pair false (pair f_1 (... (pair REC tt) ...))`
-      # with n heads and a rec tail. Non-linear shapes (tree, mutual
-      # recursion) fall through to per-layer evaluation.
+      # Peels a homogeneous desc-con chain along its single recursive
+      # position when D = plus A B with exactly one of A, B linear-
+      # recursive (a descArg-chain ending in `descRec descRet`). The
+      # recursive summand drives the chain; its injection side picks
+      # the payload tag (`inl` when A is recursive, `inr` when B is).
       #
-      # D-sharing across layers: fast path is structural equality of the
-      # D subterm (holds when elaborate emits a shared dTm per chain, and
-      # when β-reducing macro-generated constructors under a shared param
-      # env); fallback is conv-equality of the evaluated D against the
-      # outer dVal.
+      # Payload at each layer is `inl/inr lTy rTy (pair f_0 … (pair REC refl))`
+      # — n data fields, the recursive tail, and a refl witness for
+      # the ret-leaf equality. lTy/rTy are invariant across layers (D
+      # is shared) and reused from the first peel.
+      #
+      # Non-linear shapes (tree, mutual recursion, multi-recursive
+      # ctors, non-plus D) fall through to per-layer evaluation.
+      #
+      # D-sharing across layers: fast path is structural equality of
+      # the D subterm (holds when elaborate emits a shared dTm per
+      # chain, and when β-reducing macro-generated constructors under
+      # a shared param env); fallback is conv-equality of the evaluated
+      # D against the outer dVal.
       else if t == "desc-con" then
         let
           dVal = ev tm.D;
-          subFalse =
-            if dVal.tag != "VDescArg" then null
-            else self.instantiateF f dVal.T vFalse;
-          profile = if subFalse == null then null else self.linearProfileF f subFalse;
-          nFields = if profile == null then 0 else builtins.length profile;
+          # Classify plus D. null declines the trampoline; otherwise
+          # returns the linear profile and which side (`inl`/`inr`)
+          # carries the recursive summand.
+          classify =
+            if dVal.tag != "VDescPlus" then null
+            else
+              let pA = self.linearProfileF f dVal.A;
+                  pB = self.linearProfileF f dVal.B;
+              in if pA != null && pB == null then { profile = pA; side = "inl"; }
+                 else if pB != null && pA == null then { profile = pB; side = "inr"; }
+                 else null;
+          profile = if classify == null then [] else classify.profile;
+          nFields = builtins.length profile;
           depth = builtins.length env;
           sameD = d2Tm:
             if d2Tm == tm.D then true
             else fx.tc.conv.conv depth (self.evalF f env d2Tm) dVal;
+          # Walk n data-field pairs terminated by `pair REC refl`.
+          collectPairs = inner:
+            let
+              collect = i: p: acc:
+                if i == nFields then
+                  if p.tag != "pair" then null
+                  else if p.snd.tag != "refl" then null
+                  else if p.fst.tag != "desc-con" then null
+                  else { heads = acc; tail = p.fst; }
+                else
+                  if p.tag != "pair" then null
+                  else collect (i + 1) p.snd (acc ++ [p.fst]);
+            in collect 0 inner [];
           walkPayload = payload:
-            if payload.tag != "pair" then null
-            else if payload.fst.tag != "false" then null
+            if classify == null then null
+            else if payload.tag != classify.side then null
             else
-              let
-                collect = i: p: acc:
-                  if i == nFields then
-                    if p.tag != "pair" then null
-                    else if p.snd.tag != "tt" then null
-                    else if p.fst.tag != "desc-con" then null
-                    else { heads = acc; tail = p.fst; }
-                  else
-                    if p.tag != "pair" then null
-                    else collect (i + 1) p.snd (acc ++ [p.fst]);
-              in collect 0 payload.snd [];
+              let inner = collectPairs payload.term; in
+              if inner == null then null
+              else inner // { lTm = payload.left; rTm = payload.right; };
           peel = node:
-            if profile == null then null
+            if classify == null then null
             else if node.tag != "desc-con" then null
             else if !(sameD node.D) then null
             else walkPayload node.d;
           # Integer key is sufficient for dedup. `peel` is O(1) field
           # inspection into the already-concrete `tm`; no deferred work
-          # accumulates on `val`, so the trampoline.nix deepSeq defense is
-          # unnecessary and would add O(N²) cost through repeated traversal.
+          # accumulates on `val`, so the trampoline.nix deepSeq defense
+          # is unnecessary and would add O(N²) cost through repeated
+          # traversal.
           chain = builtins.genericClosure {
             startSet = [{ key = 0; val = tm; }];
             operator = item:
@@ -303,11 +331,20 @@ in {
           };
           n = builtins.length chain - 1;
           base = (builtins.elemAt chain n).val;
+          topPeel = if n >= 1 then peel tm else null;
+          lVal = if topPeel == null then null else self.evalF (f - n) env topPeel.lTm;
+          rVal = if topPeel == null then null else self.evalF (f - n) env topPeel.rTm;
         in if n > f then throw "normalization budget exceeded"
         else let
           baseVal = vDescCon dVal
             (self.evalF (f - n) env base.i)
             (self.evalF (f - n) env base.d);
+          buildInner = hs: innerTail:
+            if hs == [] then innerTail
+            else vPair (builtins.head hs) (buildInner (builtins.tail hs) innerTail);
+          wrapPayload = innerVal:
+            if classify.side == "inl" then vInl lVal rVal innerVal
+            else vInr lVal rVal innerVal;
         in builtins.foldl' (acc: i:
           let
             layer = (builtins.elemAt chain (n - 1 - i)).val;
@@ -315,17 +352,14 @@ in {
             heads = peeled.heads;
             headVals = map (h: self.evalF (f - n + i) env h) heads;
             iLayerVal = self.evalF (f - n + i) env layer.i;
-            buildInner = hs: innerTail:
-              if hs == [] then innerTail
-              else vPair (builtins.head hs) (buildInner (builtins.tail hs) innerTail);
           in vDescCon dVal iLayerVal
-               (vPair vFalse (buildInner headVals (vPair acc vTt)))
+               (wrapPayload (buildInner headVals (vPair acc vRefl)))
         ) baseVal (builtins.genList (x: x) n)
       else if t == "desc-ind" then
         self.vDescIndF f (ev tm.D) (ev tm.motive) (ev tm.step) (ev tm.i) (ev tm.scrut)
       else if t == "desc-elim" then
         self.vDescElimF f (ev tm.motive) (ev tm.onRet) (ev tm.onArg)
-          (ev tm.onRec) (ev tm.onPi) (ev tm.scrut)
+          (ev tm.onRec) (ev tm.onPi) (ev tm.onPlus) (ev tm.scrut)
 
       else if t == "U" then vU tm.level
 
@@ -651,14 +685,14 @@ in {
       expr = (eval [] (T.mkDescElim
         (T.mkLam "_" (T.mkDesc T.mkUnit) (T.mkU 0))
         (T.mkLam "_" T.mkUnit T.mkUnit)
-        T.mkUnit T.mkUnit T.mkUnit
+        T.mkUnit T.mkUnit T.mkUnit T.mkUnit
         (T.mkDescRet T.mkTt))).tag;
       expected = "VUnit";
     };
     "eval-desc-elim-stuck" = {
       # descElim on a neutral scrutinee produces VNe with EDescElim frame
       expr = (eval [ (freshVar 0) ] (T.mkDescElim
-        T.mkUnit T.mkUnit T.mkUnit T.mkUnit T.mkUnit (T.mkVar 0))).tag;
+        T.mkUnit T.mkUnit T.mkUnit T.mkUnit T.mkUnit T.mkUnit (T.mkVar 0))).tag;
       expected = "VNe";
     };
 

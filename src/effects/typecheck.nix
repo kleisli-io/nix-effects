@@ -3,10 +3,14 @@
 # Bridges the type system with the effect system.
 # Type validation sends typeCheck effects; these handlers interpret them.
 #
-# The typeCheck effect carries: { type, context, value }
+# The typeCheck effect carries: { type, context, value, path }
 #   type    — a nix-effects type (has .name, .check)
-#   context — string describing where in the type structure (e.g. "Π domain")
+#   context — string describing the local type structure (e.g. "Π domain")
 #   value   — the value being checked
+#   path    — list of string segments giving the structural descent from
+#             the validation root (e.g. [ "a" "b" "c" ] or [ "[0]" "mtu" ]).
+#             Empty for top-level validate v; accumulated by Record/ListOf/
+#             Variant as they recurse via validateAt.
 #
 # Three standard strategies, following the algebraic effects paradigm:
 # same computation, different handler, different behavior.
@@ -19,6 +23,13 @@
 
 let
   inherit (api) mk;
+
+  # Render the blame location: prefer path (structural descent from root)
+  # when non-empty, otherwise fall back to context (local type name).
+  blameLocation = param:
+    let path = param.path or []; in
+    if path == [] then param.context
+    else builtins.concatStringsSep "." path;
 
   strict = mk {
     doc = ''
@@ -33,7 +44,7 @@ let
         if param.type.check param.value
         then { resume = true; inherit state; }
         else builtins.throw
-          "Type error in ${param.context}: expected ${param.type.name}, got ${builtins.typeOf param.value}";
+          "Type error at ${blameLocation param}: expected ${param.type.name}, got ${builtins.typeOf param.value}";
     };
   };
 
@@ -42,7 +53,7 @@ let
       Collecting typeCheck handler: accumulates errors in state.
       Resumes with `true` on success, `false` on failure (computation continues).
 
-      State shape: list of `{ context, typeName, actual, message }`
+      State shape: list of `{ context, typeName, actual, message, path }`
       Initial state: `[]`
     '';
     value = {
@@ -55,7 +66,8 @@ let
             context = param.context;
             typeName = param.type.name;
             actual = builtins.typeOf param.value;
-            message = "Expected ${param.type.name}, got ${builtins.typeOf param.value}";
+            path = param.path or [];
+            message = "Expected ${param.type.name} at ${blameLocation param}, got ${builtins.typeOf param.value}";
           }];
         };
     };
@@ -64,7 +76,10 @@ let
         expr =
           let
             IntT = { name = "Int"; check = builtins.isInt; };
-            r = collecting.value.typeCheck { param = { type = IntT; context = "test"; value = 42; }; state = []; };
+            r = collecting.value.typeCheck {
+              param = { type = IntT; context = "test"; value = 42; path = []; };
+              state = [];
+            };
           in r.resume;
         expected = true;
       };
@@ -72,9 +87,23 @@ let
         expr =
           let
             IntT = { name = "Int"; check = builtins.isInt; };
-            r = collecting.value.typeCheck { param = { type = IntT; context = "test"; value = "nope"; }; state = []; };
+            r = collecting.value.typeCheck {
+              param = { type = IntT; context = "test"; value = "nope"; path = []; };
+              state = [];
+            };
           in builtins.length r.state;
         expected = 1;
+      };
+      "carries-path-in-state" = {
+        expr =
+          let
+            IntT = { name = "Int"; check = builtins.isInt; };
+            r = collecting.value.typeCheck {
+              param = { type = IntT; context = "Int"; value = "nope"; path = [ "a" "b" "c" ]; };
+              state = [];
+            };
+          in (builtins.head r.state).path;
+        expected = [ "a" "b" "c" ];
       };
     };
   };
@@ -84,7 +113,7 @@ let
       Logging typeCheck handler: records every check (pass or fail) in state.
       Always resumes with the actual check result (boolean).
 
-      State shape: list of `{ context, typeName, passed }`
+      State shape: list of `{ context, typeName, passed, path }`
       Initial state: `[]`
     '';
     value = {
@@ -95,6 +124,7 @@ let
           state = state ++ [{
             context = param.context;
             typeName = param.type.name;
+            path = param.path or [];
             inherit passed;
           }];
         };
@@ -104,7 +134,10 @@ let
         expr =
           let
             IntT = { name = "Int"; check = builtins.isInt; };
-            r = logging.value.typeCheck { param = { type = IntT; context = "test"; value = 42; }; state = []; };
+            r = logging.value.typeCheck {
+              param = { type = IntT; context = "test"; value = 42; path = []; };
+              state = [];
+            };
           in (builtins.head r.state).passed;
         expected = true;
       };
@@ -112,7 +145,10 @@ let
         expr =
           let
             IntT = { name = "Int"; check = builtins.isInt; };
-            r = logging.value.typeCheck { param = { type = IntT; context = "test"; value = "no"; }; state = []; };
+            r = logging.value.typeCheck {
+              param = { type = IntT; context = "test"; value = "no"; path = []; };
+              state = [];
+            };
           in (builtins.head r.state).passed;
         expected = false;
       };

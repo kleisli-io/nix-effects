@@ -248,40 +248,57 @@ in {
         else if builtins.isFunction value then H.opaqueLam value hoasTy
         else throw "elaborateValue: Pi type expects function, got ${builtins.typeOf value}"
 
-      # μ-form types — covers `H.nat` (monomorphic, `_htag="mu"` with
-      # `_dtypeMeta`) and any raw `mu D` construction whose description
-      # reifies into one of the three prelude shapes. Detects shape by
-      # instantiating the description's bool-tag body and delegates to the
-      # corresponding "nat"/"list"/"sum" branches (which carry the
-      # Nix-level encoders). Element types for list/sum shapes are
-      # recovered via `reifyType` — the lossy fallback when no HOAS
-      # surface is available. The primary path for `H.listOf`/`H.sum` is
-      # the app-branch below, which preserves parameter HOAS directly.
+      # μ-form types — covers `H.nat` / `H.bool` / `H.unit` (all
+      # `_htag = "mu"` μ-forms defined in `H`) and any raw `mu D`
+      # construction whose description reifies into one of the five
+      # recognised prelude shapes (bool, unit, nat, list, sum). Under
+      # the plus-coproduct encoding, n>=2 ctor datatypes are plus-trees;
+      # detection inspects `D.A` / `D.B` directly (no bool-tag
+      # instantiation). Element types for list/sum shapes are recovered
+      # via `reifyType` — the lossy fallback when no HOAS surface is
+      # available. The primary path for `H.listOf` / `H.sum` is the
+      # app-branch below, which preserves parameter HOAS directly.
       else if t == "mu" then
         let
           tyVal = E.eval [] (H.elab hoasTy);
           D = tyVal.D;
         in
-        if D.tag != "VDescArg" || D.S.tag != "VBool"
+        # Unit shape: a bare retI-only description (`unitDesc = retI
+        # ttPrim`). Route to the scalar "unit" branch — `null ↔ H.tt`.
+        if D.tag == "VDescRet"
+        then self.elaborateValue { _htag = "unit"; } value
+        else if D.tag != "VDescPlus"
         then throw "elaborateValue: unsupported μ-shape (D.tag=${D.tag})"
         else
-          let
-            subT = E.instantiate D.T V.vTrue;
-            subF = E.instantiate D.T V.vFalse;
-          in
-          if subT.tag == "VDescRet" && subF.tag == "VDescRec"
+          let A = D.A; B = D.B; in
+          # Bool shape: plus of two retI leaves. Route to scalar "bool".
+          if A.tag == "VDescRet" && A.j.tag == "VTt"
+             && B.tag == "VDescRet" && B.j.tag == "VTt"
+          then self.elaborateValue { _htag = "bool"; } value
+          # Nat shape: plus descRet (descRec descRet).
+          else if A.tag == "VDescRet"
+               && B.tag == "VDescRec" && B.D.tag == "VDescRet"
           then self.elaborateValue { _htag = "nat"; } value
-          else if subT.tag == "VDescRet" && subF.tag == "VDescArg"
+          # List shape: plus descRet (descArg elem (_: descRec descRet)).
+          else if A.tag == "VDescRet"
+               && B.tag == "VDescArg"
+               && (let body = E.instantiate B.T V.vTt; in
+                   body.tag == "VDescRec" && body.D.tag == "VDescRet")
           then self.elaborateValue
-                 { _htag = "list"; elem = self.reifyType subF.S; }
+                 { _htag = "list"; elem = self.reifyType B.S; }
                  value
-          else if subT.tag == "VDescArg" && subF.tag == "VDescArg"
+          # Sum shape: plus (descArg l (_: descRet)) (descArg r (_: descRet)).
+          else if A.tag == "VDescArg"
+               && B.tag == "VDescArg"
+               && (let bA = E.instantiate A.T V.vTt;
+                       bB = E.instantiate B.T V.vTt; in
+                   bA.tag == "VDescRet" && bB.tag == "VDescRet")
           then self.elaborateValue
                  { _htag = "sum";
-                   left = self.reifyType subT.S;
-                   right = self.reifyType subF.S; }
+                   left = self.reifyType A.S;
+                   right = self.reifyType B.S; }
                  value
-          else throw "elaborateValue: unsupported μ-shape (subT=${subT.tag}, subF=${subF.tag})"
+          else throw "elaborateValue: unsupported μ-shape (A=${A.tag}, B=${B.tag})"
 
       # App-spine types — `app^k head A1 … Ak` where `head` is a polyField
       # carrying `_dtypeMeta` (e.g. `ListDT.T`/`SumDT.T` from `H.listOf`/
@@ -472,34 +489,44 @@ in {
         if (builtins.isAttrs value && value ? _hoasImpl) || builtins.isFunction value then []
         else [{ inherit path; msg = "expected function, got ${builtins.typeOf value}"; }]
 
-      # μ-form types — mirror the elaborateValue "mu" branch: detect prelude
-      # shape via kernel-description instantiation and delegate to the
-      # corresponding nat/list/sum branch.
+      # μ-form types — mirror the elaborateValue "mu" branch: detect
+      # prelude shape via kernel-description inspection and delegate
+      # to the corresponding bool/unit/nat/list/sum branch.
       else if t == "mu" then
         let
           tyVal = E.eval [] (H.elab hoasTy);
           D = tyVal.D;
         in
-        if D.tag != "VDescArg" || D.S.tag != "VBool"
+        if D.tag == "VDescRet"
+        then self.validateValue path { _htag = "unit"; } value
+        else if D.tag != "VDescPlus"
         then [{ inherit path; msg = "unsupported μ-shape (D.tag=${D.tag})"; }]
         else
-          let
-            subT = E.instantiate D.T V.vTrue;
-            subF = E.instantiate D.T V.vFalse;
-          in
-          if subT.tag == "VDescRet" && subF.tag == "VDescRec"
+          let A = D.A; B = D.B; in
+          if A.tag == "VDescRet" && A.j.tag == "VTt"
+             && B.tag == "VDescRet" && B.j.tag == "VTt"
+          then self.validateValue path { _htag = "bool"; } value
+          else if A.tag == "VDescRet"
+               && B.tag == "VDescRec" && B.D.tag == "VDescRet"
           then self.validateValue path { _htag = "nat"; } value
-          else if subT.tag == "VDescRet" && subF.tag == "VDescArg"
+          else if A.tag == "VDescRet"
+               && B.tag == "VDescArg"
+               && (let body = E.instantiate B.T V.vTt; in
+                   body.tag == "VDescRec" && body.D.tag == "VDescRet")
           then self.validateValue path
-                 { _htag = "list"; elem = self.reifyType subF.S; }
+                 { _htag = "list"; elem = self.reifyType B.S; }
                  value
-          else if subT.tag == "VDescArg" && subF.tag == "VDescArg"
+          else if A.tag == "VDescArg"
+               && B.tag == "VDescArg"
+               && (let bA = E.instantiate A.T V.vTt;
+                       bB = E.instantiate B.T V.vTt; in
+                   bA.tag == "VDescRet" && bB.tag == "VDescRet")
           then self.validateValue path
                  { _htag = "sum";
-                   left = self.reifyType subT.S;
-                   right = self.reifyType subF.S; }
+                   left = self.reifyType A.S;
+                   right = self.reifyType B.S; }
                  value
-          else [{ inherit path; msg = "unsupported μ-shape (subT=${subT.tag}, subF=${subF.tag})"; }]
+          else [{ inherit path; msg = "unsupported μ-shape (A=${A.tag}, B=${B.tag})"; }]
 
       # App-spine types — mirror of elaborateValue's "app" branch. Peel the
       # spine to the polyField head, read `_dtypeMeta.cons` for shape
@@ -606,7 +633,7 @@ in {
 
     "elab-type-bool" = {
       expr = (elaborateType BoolT)._htag;
-      expected = "bool";
+      expected = "mu";
     };
     "elab-type-int" = {
       expr = (elaborateType IntT)._htag;
@@ -686,41 +713,41 @@ in {
 
     "elab-val-true" = {
       expr = (H.elab (elaborateValue H.bool true)).tag;
-      expected = "true";
+      expected = "desc-con";
     };
     "elab-val-false" = {
       expr = (H.elab (elaborateValue H.bool false)).tag;
-      expected = "false";
+      expected = "desc-con";
     };
     "elab-val-zero" = {
-      expr = let e = H.elab (elaborateValue H.nat 0); in "${e.tag}/${e.d.fst.tag}";
-      expected = "desc-con/true";
+      expr = let e = H.elab (elaborateValue H.nat 0); in "${e.tag}/${e.d.tag}";
+      expected = "desc-con/inl";
     };
     "elab-val-nat-3" = {
-      expr = let e = H.elab (elaborateValue H.nat 3); in "${e.tag}/${e.d.fst.tag}";
-      expected = "desc-con/false";
+      expr = let e = H.elab (elaborateValue H.nat 3); in "${e.tag}/${e.d.tag}";
+      expected = "desc-con/inr";
     };
     "elab-val-unit" = {
       expr = (H.elab (elaborateValue H.unit null)).tag;
       expected = "tt";
     };
     "elab-val-nil" = {
-      expr = let t = H.elab (elaborateValue (H.listOf H.nat) []); in "${t.tag}/${t.d.fst.tag}";
-      expected = "desc-con/true";
+      expr = let t = H.elab (elaborateValue (H.listOf H.nat) []); in "${t.tag}/${t.d.tag}";
+      expected = "desc-con/inl";
     };
     "elab-val-cons" = {
-      expr = let t = H.elab (elaborateValue (H.listOf H.nat) [0 1]); in "${t.tag}/${t.d.fst.tag}";
-      expected = "desc-con/false";
+      expr = let t = H.elab (elaborateValue (H.listOf H.nat) [0 1]); in "${t.tag}/${t.d.tag}";
+      expected = "desc-con/inr";
     };
     "elab-val-inl" = {
       expr = let t = H.elab (elaborateValue (H.sum H.nat H.bool) { _tag = "Left"; value = 0; }); in
-        "${t.tag}/${t.d.fst.tag}";
-      expected = "desc-con/true";
+        "${t.tag}/${t.d.tag}";
+      expected = "desc-con/inl";
     };
     "elab-val-inr" = {
       expr = let t = H.elab (elaborateValue (H.sum H.nat H.bool) { _tag = "Right"; value = true; }); in
-        "${t.tag}/${t.d.fst.tag}";
-      expected = "desc-con/false";
+        "${t.tag}/${t.d.tag}";
+      expected = "desc-con/inr";
     };
     "elab-val-pair" = {
       expr = (H.elab (elaborateValue (H.sigma "x" H.nat (_: H.bool)) { fst = 0; snd = true; })).tag;
@@ -952,9 +979,10 @@ in {
     "elab-dep-sigma-snd-mismatch" = {
       expr = let
         ty = H.sigma "x" H.bool (x:
-          let t = (H.elab x).tag; in
-          if t == "true" then H.nat
-          else H.bool);
+          let e = H.elab x;
+              dt = if e.tag == "desc-con" && e ? d then e.d.tag else null;
+          in if dt == "inl" then H.nat
+             else H.bool);
         # fst=true means snd should be Nat, but we pass a bool
         val = { fst = true; snd = false; };
       in decide ty val;
@@ -965,9 +993,10 @@ in {
     "validate-dep-sigma-valid" = {
       expr = let
         ty = H.sigma "x" H.bool (x:
-          let t = (H.elab x).tag; in
-          if t == "true" then H.nat
-          else H.bool);
+          let e = H.elab x;
+              dt = if e.tag == "desc-con" && e ? d then e.d.tag else null;
+          in if dt == "inl" then H.nat
+             else H.bool);
         val = { fst = true; snd = 42; };
       in validateValue "$" ty val;
       expected = [];
@@ -977,9 +1006,10 @@ in {
     "validate-dep-sigma-snd-error" = {
       expr = let
         ty = H.sigma "x" H.bool (x:
-          let t = (H.elab x).tag; in
-          if t == "true" then H.nat
-          else H.bool);
+          let e = H.elab x;
+              dt = if e.tag == "desc-con" && e ? d then e.d.tag else null;
+          in if dt == "inl" then H.nat
+             else H.bool);
         # fst=true → snd should be Nat, but we pass a string
         val = { fst = true; snd = "wrong"; };
         errors = validateValue "$" ty val;

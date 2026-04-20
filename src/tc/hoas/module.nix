@@ -55,7 +55,7 @@ api.mk {
     ## Eliminators
 
     - `ind` — NatElim(motive, base, step, scrut)
-    - `boolElim` — BoolElim(motive, onTrue, onFalse, scrut)
+    - `boolElim` — (k : Level) → (Q : bool → U(k)) → Q true_ → Q false_ → (b : bool) → Q b
     - `listElim` — ListElim(elem, motive, onNil, onCons, scrut)
     - `sumElim` — SumElim(left, right, motive, onLeft, onRight, scrut)
     - `j` — J(type, lhs, motive, base, rhs, eq)
@@ -98,6 +98,19 @@ api.mk {
                    descRet descArg descRec descPi descCon descInd descElim;
     # Description-level helpers and prelude descriptions
     inherit (self) interpHoas allHoas natDesc listDesc sumDesc natDescTm;
+    # Fin prelude — indexed family `Fin : Nat → U` with vacuous base at
+    # `Fin 0` (discharged via `absurdFin0`).
+    inherit (self) finDesc fin fzero fsuc finElim absurdFin0;
+    # Vec prelude — indexed family `Vec A : Nat → U`. `vhead` / `vtail`
+    # extract head / tail of a non-empty vector via `natCaseU`- /
+    # `natPredCase`-motives over `vecElim`. `natPredCase` dispatches the
+    # succ-case result type on the payload's predecessor field via
+    # `sumElimPrim` on the plus-summand.
+    inherit (self) natCaseU natPredCase vecDesc vec vnil vcons vecElim vhead vtail;
+    # Eq-as-description — the kernel-primitive `Eq` derived as an
+    # inductive family over a single retI-only description.
+    # `eqIsoFwd` / `eqIsoBwd` prove the iso with the primitive.
+    inherit (self) eqDesc eqDT reflDT eqToEqDT eqDTToEq eqIsoFwd eqIsoBwd;
     # Datatype macro
     inherit (self) field fieldD recField piField piFieldD con datatype datatypeP;
     # Elaboration

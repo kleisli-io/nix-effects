@@ -21,11 +21,21 @@ let
       toComp = name:
         let value = attrs.${name}; in
         if isComp value
-        then { inherit name value; }
-        else { inherit name; value = send name value; };
+        then { inherit name; comp = value; optional = false; }
+        else { inherit name; comp = send name value; optional = value == true; };
     in
     builtins.foldl'
-    (prev: curr: bind prev (acc: bind curr.value (result: pure (acc // { ${curr.name} = result; }))))
+    (prev: curr:
+      bind prev (acc:
+        if curr.optional then
+          # Optional arg: probe handler first, skip if absent (Nix default kicks in)
+          bind (send "has-handler" curr.name) (available:
+            if available then bind curr.comp (result: pure (acc // { ${curr.name} = result; }))
+            else pure acc
+          )
+        else
+          bind curr.comp (result: pure (acc // { ${curr.name} = result; }))
+      ))
     (pure {})
     (map toComp names);
 
@@ -38,6 +48,9 @@ let
     ```
 
     Values that are non-effects become send params: `send "foo" 99`.
+    Values of `true` (from `lib.functionArgs` optional args) are probed
+    via has-handler first — if no handler exists, the key is omitted
+    from the result so the Nix function's default kicks in.
 
     Result has same attr-keys with corresponding effect result.
 
@@ -103,8 +116,12 @@ let
     ```
 
     The function sees bar as the result of `pure 22` and `foo` as the
-    result of `send "foo" false` -- false comes directly from using 
+    result of `send "foo" false` -- false comes directly from using
     `lib.functionArgs f`, the handler can know if "foo" is optional in f.
+
+    Optional args (those with defaults in the Nix function) are probed
+    via has-handler before sending. If no handler exists, the arg is
+    skipped and the Nix default kicks in.
 
     This works by using `bindAttrs` on the intersection of function args
     and attrs.
@@ -127,6 +144,26 @@ let
          } null;
         in result.value;
         expected = 22;
+      };
+      optional-arg-skipped-when-no-handler = {
+        expr = let
+          eff = bindComp { } ({ x, y ? 99 }: pure (x + y));
+          result = fx.trampoline.run eff {
+            x = { param, state }: { resume = 1; inherit state; };
+            # no handler for y — optional, so Nix default (99) is used
+          } null;
+        in result.value;
+        expected = 100;
+      };
+      optional-arg-resolved-when-handler-exists = {
+        expr = let
+          eff = bindComp { } ({ x, y ? 99 }: pure (x + y));
+          result = fx.trampoline.run eff {
+            x = { param, state }: { resume = 1; inherit state; };
+            y = { param, state }: { resume = 2; inherit state; };
+          } null;
+        in result.value;
+        expected = 3;
       };
     };
   };
@@ -162,6 +199,25 @@ let
          } null;
         in result.value;
         expected = 22;
+      };
+      optional-arg-skipped-when-no-handler = {
+        expr = let
+          eff = bindFn { } ({ x, y ? 99 }: x + y);
+          result = fx.trampoline.run eff {
+            x = { param, state }: { resume = 1; inherit state; };
+          } null;
+        in result.value;
+        expected = 100;
+      };
+      optional-arg-resolved-when-handler-exists = {
+        expr = let
+          eff = bindFn { } ({ x, y ? 99 }: x + y);
+          result = fx.trampoline.run eff {
+            x = { param, state }: { resume = 1; inherit state; };
+            y = { param, state }: { resume = 2; inherit state; };
+          } null;
+        in result.value;
+        expected = 3;
       };
     };
   };

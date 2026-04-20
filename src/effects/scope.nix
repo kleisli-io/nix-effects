@@ -180,6 +180,36 @@ let
           in result.value;
         expected = 42;
       };
+      # Deep semantics through bind chains: scope.provide inside a handler
+      # resume that is wrapped in fx.bind. The bind chain causes queue.append
+      # which must preserve __rawResume for deep handler routing.
+      "provide-deep-through-bind-chain" = {
+        expr =
+          let
+            # Outer handler for "work" resumes with a bind chain containing scope.provide.
+            # Inner scope shadows "probe" at root. "emit" rotates out, root handler
+            # resumes with "probe" — must route back through inner scope.
+            body = send "work" null;
+            result = handle {
+              handlers = {
+                probe = { state, ... }: { resume = "root"; inherit state; };
+                emit = { param, state }: {
+                  resume = send "probe" null;
+                  inherit state;
+                };
+                work = { param, state }: {
+                  # bind chain wraps scope.provide — exercises queue.append path
+                  resume = bind (pure null) (_:
+                    provide {
+                      probe = { state, ... }: { resume = "inner"; inherit state; };
+                    } (send "emit" null));
+                  inherit state;
+                };
+              };
+            } body;
+          in result.value;
+        expected = "inner";
+      };
     };
   };
 

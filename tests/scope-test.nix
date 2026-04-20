@@ -235,6 +235,66 @@ let
     expected = { value = 1; state = 2; };
   };
 
+  provideHostUser = {
+    expr =
+      let
+        comp = bind getUser (u:
+          bind getHost (h:
+            pure "${u}@${h}"));
+        result = handle { handlers = hostHandler; }
+          (scope.provide {
+            user = { state, ... }: { resume = "alice"; inherit state; };
+          } comp);
+      in result.value;
+    expected = "alice@myhost";
+  };
+
+  provideWithOuterState = {
+    expr =
+      let
+        comp = bind (send "count" null) (_:
+          bind getHost (h:
+            bind (send "count" null) (_:
+              pure h)));
+        result = handle {
+          handlers = hostHandler // {
+            count = { param, state }: {
+              resume = null;
+              state = state // { n = (state.n or 0) + 1; };
+            };
+          };
+          state = {};
+        } (scope.provide {
+          user = { state, ... }: { resume = "tux"; inherit state; };
+        } comp);
+      in { host = result.value; n = result.state.n; };
+    expected = { host = "myhost"; n = 2; };
+  };
+
+  valHostUser = {
+    expr =
+      let
+        comp = bind getUser (u:
+          bind getHost (h:
+            pure "${u}@${h}"));
+        result = handle { handlers = {}; }
+          (scope.val { host = "igloo"; user = "tux"; } comp);
+      in result.value;
+    expected = "tux@igloo";
+  };
+
+  valTwoUsers = {
+    expr =
+      let
+        comp =
+          bind (scope.val { user = "alice"; } greet) (a:
+          bind (scope.val { user = "bob"; } greet) (b:
+            pure { alice = a; bob = b; }));
+        result = handle { handlers = hostHandler; } comp;
+      in result.value;
+    expected = { alice = "alice@myhost"; bob = "bob@myhost"; };
+  };
+
   allPass = twoUsersTest.expr == twoUsersTest.expected
     && scopeStateIsolation.expr == scopeStateIsolation.expected
     && scopeEscapeEffects.expr == scopeEscapeEffects.expected
@@ -247,7 +307,11 @@ let
     && scopeOverrideInNested.expr == scopeOverrideInNested.expected
     && deepHandlerEffectfulResume.expr == deepHandlerEffectfulResume.expected
     && deepHandlerChainedResume.expr == deepHandlerChainedResume.expected
-    && deepHandlerStatefulInner.expr == deepHandlerStatefulInner.expected;
+    && deepHandlerStatefulInner.expr == deepHandlerStatefulInner.expected
+    && provideHostUser.expr == provideHostUser.expected
+    && provideWithOuterState.expr == provideWithOuterState.expected
+    && valHostUser.expr == valHostUser.expected
+    && valTwoUsers.expr == valTwoUsers.expected;
 
 in {
   inherit twoUsersTest scopeStateIsolation scopeEscapeEffects nestedScopes
@@ -256,5 +320,6 @@ in {
           scopeOverrideInNested
           deepHandlerEffectfulResume deepHandlerChainedResume
           deepHandlerStatefulInner
+          provideHostUser provideWithOuterState valHostUser valTwoUsers
           allPass;
 }

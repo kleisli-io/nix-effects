@@ -112,7 +112,10 @@ api.mk {
     # `eqIsoFwd` / `eqIsoBwd` prove the iso with the primitive.
     inherit (self) eqDesc eqDT reflDT eqToEqDT eqDTToEq eqIsoFwd eqIsoBwd;
     # Datatype macro
-    inherit (self) field fieldD recField piField piFieldD con datatype datatypeP;
+    inherit (self)
+      field fieldD recField recFieldAt piField piFieldD
+      con conI
+      datatype datatypeI datatypeP datatypePI;
     # Elaboration
     inherit (self) elaborate elab;
     # Convenience

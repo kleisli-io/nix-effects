@@ -24,7 +24,7 @@ let
     fin fzero fsuc finElim absurdFin0
     natCaseU natPredCase vec vnil vcons vecElim vhead vtail
     eqDesc eqDT reflDT eqToEqDT eqDTToEq eqIsoFwd eqIsoBwd
-    field recField piFieldD con datatype datatypeP
+    field recField piFieldD con datatype datatypeP unitPrim
     elab checkHoas inferHoas natLit;
 in {
   scope = {};
@@ -938,6 +938,8 @@ in {
       expr = (datatype "Unit" [ (con "tt" []) ])._dtypeMeta;
       expected = {
         name = "Unit";
+        indexed = false;
+        indexTy = unitPrim;
         cons = [{ name = "tt"; fields = []; }];
       };
     };
@@ -1025,6 +1027,8 @@ in {
       expr = (datatype "Bool" [ (con "true" []) (con "false" []) ])._dtypeMeta;
       expected = {
         name = "Bool";
+        indexed = false;
+        indexTy = unitPrim;
         cons = [
           { name = "true";  fields = []; }
           { name = "false"; fields = []; }
@@ -1198,9 +1202,11 @@ in {
       ])._dtypeMeta;
       expected = {
         name = "Nat";
+        indexed = false;
+        indexTy = unitPrim;
         cons = [
           { name = "zero"; fields = []; }
-          { name = "succ"; fields = [ { name = "pred"; kind = "rec"; } ]; }
+          { name = "succ"; fields = [ { name = "pred"; kind = "recAt"; } ]; }
         ];
       };
     };
@@ -1904,7 +1910,7 @@ in {
     # The single ctor `sup` carries one data field (s : S) and one
     # dependent pi field (f : (P s) → W S P), exercising piFieldD's
     # `prev`-threaded type construction. chainShapeOk requires
-    # last.kind == "rec"; sup's last field is "piD", so the
+    # last.kind == "recAt"; sup's last field is "piD", so the
     # chain-flattener declines and the regular ann-lam cascade handles
     # every application.
     "datatype-w-spec-name" = {
@@ -2005,6 +2011,165 @@ in {
         sup0 = app (app (app (app W.sup bool) boolP) false_) vacuous;
         result = checkHoas Tw sup0;
       in !(result ? error);
+      expected = true;
+    };
+
+    # ===== datatypeI / datatypePI regressions =====
+    # The macro's output should nf-equal the hand-written prelude
+    # definitions for Fin (monomorphic indexed), Vec (parametric
+    # indexed), and Eq (parametric indexed with parameter-dependent
+    # index type). Comparison uses `Q.nf` on closed forms — for fields
+    # that are Nix-level functions (constructors, elim), the test
+    # closes them by wrapping in `lam` over fresh markers so both sides
+    # sit under the same de Bruijn environment.
+
+    "datatypeI-fin-D-matches-finDesc" = {
+      expr = let
+        FinDT = self.datatypeI "Fin" self.nat [
+          (self.conI "fzero" [ (self.field "m" self.nat) ]
+            (p: self.succ p.m))
+          (self.conI "fsuc"  [ (self.field "m" self.nat)
+                               (self.recFieldAt "k" (p: p.m)) ]
+            (p: self.succ p.m))
+        ];
+      in Q.nf [] (elab FinDT.D) == Q.nf [] (elab self.finDesc);
+      expected = true;
+    };
+
+    # `FinDT.T` is an `ann`-lam family-as-function: the macro's binder
+    # is named `"i"` (abstract index position), the hand-written `self.fin`
+    # names it `"n"`. `Q.nf` preserves lam binder names (quote.nix:25-27
+    # propagates `VLam.name`), so a direct Tm-tree comparison diverges on
+    # an α-equivalent choice. Applying both sides to a fresh marker
+    # β-reduces the binder out of the nf — the semantics is compared by
+    # application, matching the pattern used by `datatypePI-eq-T-matches-eqDT`.
+    "datatypeI-fin-T-matches-fin" = {
+      expr = let
+        FinDT = self.datatypeI "Fin" self.nat [
+          (self.conI "fzero" [ (self.field "m" self.nat) ]
+            (p: self.succ p.m))
+          (self.conI "fsuc"  [ (self.field "m" self.nat)
+                               (self.recFieldAt "k" (p: p.m)) ]
+            (p: self.succ p.m))
+        ];
+        macroForm = lam "n" self.nat (n: app FinDT.T n);
+        handForm  = lam "n" self.nat (n: app self.fin n);
+      in Q.nf [] (elab macroForm) == Q.nf [] (elab handForm);
+      expected = true;
+    };
+
+    "datatypeI-fin-fzero-matches" = {
+      expr = let
+        FinDT = self.datatypeI "Fin" self.nat [
+          (self.conI "fzero" [ (self.field "m" self.nat) ]
+            (p: self.succ p.m))
+          (self.conI "fsuc"  [ (self.field "m" self.nat)
+                               (self.recFieldAt "k" (p: p.m)) ]
+            (p: self.succ p.m))
+        ];
+        macroForm = lam "m" self.nat (m: app FinDT.fzero m);
+        handForm  = lam "m" self.nat (m: self.fzero m);
+      in Q.nf [] (elab macroForm) == Q.nf [] (elab handForm);
+      expected = true;
+    };
+
+    "datatypeI-fin-fsuc-matches" = {
+      expr = let
+        FinDT = self.datatypeI "Fin" self.nat [
+          (self.conI "fzero" [ (self.field "m" self.nat) ]
+            (p: self.succ p.m))
+          (self.conI "fsuc"  [ (self.field "m" self.nat)
+                               (self.recFieldAt "k" (p: p.m)) ]
+            (p: self.succ p.m))
+        ];
+        macroForm = lam "m" self.nat (m:
+                    lam "k" (app self.fin m) (k:
+                      app (app FinDT.fsuc m) k));
+        handForm  = lam "m" self.nat (m:
+                    lam "k" (app self.fin m) (k:
+                      self.fsuc m k));
+      in Q.nf [] (elab macroForm) == Q.nf [] (elab handForm);
+      expected = true;
+    };
+
+    "datatypePI-vec-D-matches-vecDesc" = {
+      expr = let
+        VecDT = self.datatypePI "Vec"
+          [ { name = "A"; kind = u 0; } ]
+          (_: self.nat)
+          (ps: let A = builtins.elemAt ps 0; in [
+            (self.conI "vnil"  [] (_: self.zero))
+            (self.conI "vcons"
+              [ (self.field "m" self.nat)
+                (self.field "x" A)
+                (self.recFieldAt "xs" (p: p.m)) ]
+              (p: self.succ p.m))
+          ]);
+        macroForm = lam "A" (u 0) (A: app VecDT.D A);
+        handForm  = lam "A" (u 0) (A: self.vecDesc A);
+      in Q.nf [] (elab macroForm) == Q.nf [] (elab handForm);
+      expected = true;
+    };
+
+    # Same α-equivalence pattern as `datatypeI-fin-T-matches-fin`: apply
+    # `VecDT.T A` and `self.vec A` to a fresh nat marker so the inner
+    # index binder ("i" in the macro vs "n" in the hand-written) is
+    # β-reduced out of the resulting nf.
+    "datatypePI-vec-T-matches-vec" = {
+      expr = let
+        VecDT = self.datatypePI "Vec"
+          [ { name = "A"; kind = u 0; } ]
+          (_: self.nat)
+          (ps: let A = builtins.elemAt ps 0; in [
+            (self.conI "vnil"  [] (_: self.zero))
+            (self.conI "vcons"
+              [ (self.field "m" self.nat)
+                (self.field "x" A)
+                (self.recFieldAt "xs" (p: p.m)) ]
+              (p: self.succ p.m))
+          ]);
+        macroForm = lam "A" (u 0) (A:
+                    lam "n" self.nat (n: app (app VecDT.T A) n));
+        handForm  = lam "A" (u 0) (A:
+                    lam "n" self.nat (n: app (self.vec A) n));
+      in Q.nf [] (elab macroForm) == Q.nf [] (elab handForm);
+      expected = true;
+    };
+
+    "datatypePI-eq-D-matches-eqDesc" = {
+      expr = let
+        EqDT = self.datatypePI "Eq"
+          [ { name = "A"; kind = u 0; }
+            { name = "a"; kind = ms: builtins.elemAt ms 0; } ]
+          (ps: builtins.elemAt ps 0)
+          (ps: let a = builtins.elemAt ps 1; in [
+            (self.conI "refl" [] (_: a))
+          ]);
+        macroForm = lam "A" (u 0) (A:
+                    lam "a" A (a: app (app EqDT.D A) a));
+        handForm  = lam "A" (u 0) (A:
+                    lam "a" A (a: self.eqDesc A a));
+      in Q.nf [] (elab macroForm) == Q.nf [] (elab handForm);
+      expected = true;
+    };
+
+    "datatypePI-eq-T-matches-eqDT" = {
+      expr = let
+        EqDT = self.datatypePI "Eq"
+          [ { name = "A"; kind = u 0; }
+            { name = "a"; kind = ms: builtins.elemAt ms 0; } ]
+          (ps: builtins.elemAt ps 0)
+          (ps: let a = builtins.elemAt ps 1; in [
+            (self.conI "refl" [] (_: a))
+          ]);
+        macroForm = lam "A" (u 0) (A:
+                    lam "a" A (a:
+                    lam "b" A (b:
+                      app (app (app EqDT.T A) a) b)));
+        handForm  = lam "A" (u 0) (A:
+                    lam "a" A (a:
+                    lam "b" A (b: self.eqDT A a b)));
+      in Q.nf [] (elab macroForm) == Q.nf [] (elab handForm);
       expected = true;
     };
 
@@ -2185,15 +2350,22 @@ in {
     # prove the iso identity as HOAS terms.
 
     "eqDesc-at-nat-zero-checks" = {
-      # eqDesc nat zero : Desc nat.
-      expr = (checkHoas (descI nat) (eqDesc nat zero)).tag;
-      expected = "desc-ret";
+      # eqDesc nat zero : Desc nat. The forwarder emits an app spine
+      # over `EqDT.D`; under nf both layers β-reduce to the macro's
+      # description body, which for the single-ctor refl spine is
+      # exactly `retI zero`.
+      expr = Q.nf [] (elab (eqDesc nat zero))
+          == Q.nf [] (elab (retI zero));
+      expected = true;
     };
 
     "eqDT-at-refl-checks" = {
-      # eqDT nat zero zero : U(0).
-      expr = (checkHoas (u 0) (eqDT nat zero zero)).tag;
-      expected = "mu";
+      # eqDT nat zero zero : U(0). Forwarder's app spine β-reduces
+      # under nf to the bare `muI nat (retI zero) zero` the hand-written
+      # spelling produced directly.
+      expr = Q.nf [] (elab (eqDT nat zero zero))
+          == Q.nf [] (elab (muI nat (retI zero) zero));
+      expected = true;
     };
 
     "reflDT-at-zero-checks" = {

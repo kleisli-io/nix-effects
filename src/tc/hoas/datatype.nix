@@ -23,31 +23,55 @@ in {
     # argument list and in the payload spine.
     field    = name: type: { _fieldTag = _fieldMarker; kind = "data";  inherit name type; };
     fieldD   = name: tyFn: { _fieldTag = _fieldMarker; kind = "dataD"; inherit name; typeFn = tyFn; };
-    recField = name:       { _fieldTag = _fieldMarker; kind = "rec";   inherit name; };
+    # Recursive self-reference at a specific index. `idxFn : prev -> Hoas`
+    # computes the recursive-call index from markers bound by earlier
+    # data/dataD fields. `recField name` is sugar for the recursive field
+    # at the ⊤-slice (idxFn = _: ttPrim) — valid only when the enclosing
+    # datatype's index type is ⊤, and equivalent to `recFieldAt name
+    # (_: ttPrim)`.
+    recField   = name:        { _fieldTag = _fieldMarker; kind = "recAt"; inherit name; idxFn = _: self.ttPrim; };
+    recFieldAt = name: idxFn: { _fieldTag = _fieldMarker; kind = "recAt"; inherit name idxFn; };
     piField  = name: S:    { _fieldTag = _fieldMarker; kind = "pi";    inherit name S; };
     piFieldD = name: SFn:  { _fieldTag = _fieldMarker; kind = "piD";   inherit name; SFn = SFn; };
 
-    # Constructor specification.
-    con = name: fields: { _conTag = _conMarker; inherit name fields; };
+    # Constructor specification. `con` builds a constructor whose target
+    # index is implicitly `ttPrim` (for ⊤-indexed families); `conI`
+    # carries an explicit `targetIdx : prev -> Hoas` function computing
+    # the target index from bound data/dataD markers.
+    con  = name: fields:             { _conTag = _conMarker; inherit name fields; targetIdx = _: self.ttPrim; };
+    conI = name: fields: targetIdx:  { _conTag = _conMarker; inherit name fields targetIdx; };
 
-    # conDesc prev fields : Hoas Desc
-    # Compile a field list into a description spine. `prev` threads HOAS
-    # markers for earlier `field`/`fieldD` bindings (the only field kinds
-    # that bind a description-level variable via descArg); `rec`, `pi`,
-    # `piD` do not extend `prev`.
-    conDesc = prev: fields:
-      let inherit (self) descRet descArg descRec descPi conDesc; in
-      if fields == [] then descRet
+    # conDesc I prev fields targetIdx : Hoas Desc
+    # Compile a field list into a description spine over index type `I`.
+    # `prev` threads HOAS markers for earlier `field` / `fieldD` bindings
+    # (the only field kinds that bind a description-level variable via
+    # descArg); `recAt`, `pi`, `piD` do not extend `prev`. At the
+    # ret-leaf the target index is `targetIdx prev`. `pi` / `piD` emit
+    # the ⊤-slice `descPi` alias and are therefore only valid at I=⊤;
+    # at I≠⊤ an indexed pi-field sugar would be required and none
+    # exists yet.
+    conDesc = I: prev: fields: targetIdx:
+      let
+        inherit (self) retI recI descArg descPi conDesc;
+        isUnitI = (I._htag or null) == "unit";
+      in
+      if fields == [] then retI (targetIdx prev)
       else let
         f = builtins.head fields;
         rest = builtins.tail fields;
         k = f.kind;
       in
-        if      k == "data"  then descArg f.type         (v: conDesc (prev // { ${f.name} = v; }) rest)
-        else if k == "dataD" then descArg (f.typeFn prev) (v: conDesc (prev // { ${f.name} = v; }) rest)
-        else if k == "rec"   then descRec (conDesc prev rest)
-        else if k == "pi"    then descPi f.S        (conDesc prev rest)
-        else if k == "piD"   then descPi (f.SFn prev) (conDesc prev rest)
+        if      k == "data"  then descArg f.type          (v: conDesc I (prev // { ${f.name} = v; }) rest targetIdx)
+        else if k == "dataD" then descArg (f.typeFn prev) (v: conDesc I (prev // { ${f.name} = v; }) rest targetIdx)
+        else if k == "recAt" then recI (f.idxFn prev) (conDesc I prev rest targetIdx)
+        else if k == "pi"    then
+          if isUnitI
+          then descPi f.S (conDesc I prev rest targetIdx)
+          else throw "datatype: piField '${f.name}' not supported at indexed family (I != unit)"
+        else if k == "piD"   then
+          if isUnitI
+          then descPi (f.SFn prev) (conDesc I prev rest targetIdx)
+          else throw "datatype: piFieldD '${f.name}' not supported at indexed family (I != unit)"
         else throw "datatype: unknown field kind '${k}'";
 
     # spineDesc descs : Hoas Desc
@@ -84,28 +108,29 @@ in {
       if xs == [] then refl
       else pair (builtins.head xs) (payloadTuple (builtins.tail xs));
 
-    # encodeTag dOuter descsHoas t payload : Hoas
+    # encodeTag I dOuter descsHoas targetIdxVal t payload : Hoas
     # Wrap `payload` with the (n-1)-deep plus-coproduct prefix committing
     # at position t (0-based) out of n total. Mirrors spineDesc
     # structurally: at every layer the L/R type arguments are the interps
     # of the current summand and the plus-tree of the remaining summands
-    # respectively, under the muFam `λ_:⊤. μ ⊤ dOuter tt`. `inlPrim L R`
-    # at position t=0; otherwise `inrPrim L R (encodeTag ... (t-1)
-    # (rest) payload)`. n=1 has no prefix. `descsHoas` must have length
-    # >= 1; the singleton case returns `payload` directly.
-    encodeTag = dOuter: descsHoas: t: payload:
+    # respectively, under the muFam `λi:I. μI I dOuter i`, evaluated at
+    # the constructor's `targetIdxVal`. `inlPrim L R` at position t=0;
+    # otherwise `inrPrim L R (encodeTag ... (t-1) (rest) payload)`. n=1
+    # has no prefix. `descsHoas` must have length >= 1; the singleton
+    # case returns `payload` directly.
+    encodeTag = I: dOuter: descsHoas: targetIdxVal: t: payload:
       let
         inherit (self) plus inlPrim inrPrim interpHoas
-                        unitPrim ttPrim muI lam encodeTag;
+                        muI lam encodeTag;
         n = builtins.length descsHoas;
-        muFam = lam "_i" unitPrim (_: muI unitPrim dOuter ttPrim);
+        muFam = lam "_i" I (iArg: muI I dOuter iArg);
         # Plus-spine of summands starting at index k. Requires
         # `n - k >= 1`.
         spineAfter = k:
           let remaining = n - k; in
           if remaining == 1 then builtins.elemAt descsHoas k
           else plus (builtins.elemAt descsHoas k) (spineAfter (k + 1));
-        interpAt = dH: interpHoas unitPrim dH muFam ttPrim;
+        interpAt = dH: interpHoas I dH muFam targetIdxVal;
       in
       if n == 1 then payload
       else
@@ -116,17 +141,25 @@ in {
         in
         if t == 0 then inlPrim lTy rTy payload
         else inrPrim lTy rTy
-               (encodeTag dOuter rest (t - 1) payload);
+               (encodeTag I dOuter rest targetIdxVal (t - 1) payload);
 
-    # Build a monomorphic DataSpec from a non-empty list of ConSpecs.
-    datatype = name: consList:
+    # Internal: build a DataSpec at index type `I`. When `indexed =
+    # false`, exposes `T` as the bare kernel-level type `muI I D ttPrim`
+    # (I must be ⊤) and builds a 1-ary eliminator `P : T → U`. When
+    # `indexed = true`, exposes `T` as the ann-wrapped family-as-function
+    # `λi:I. muI I D i` and builds a 2-ary eliminator `P : (i:I) → muI
+    # I D i → U` with an explicit scrutinee-index binder. Description
+    # spine, constructor terms, and dispatchStep / jTransportLeaf are
+    # shared across both modes, parameterised on the per-constructor
+    # `targetIdx` spec field.
+    _datatypeImpl = { I, indexed, name, consList }:
       let
         inherit (self)
-          u desc forall lam let_ mu app ann fst_ snd_ pair
+          u forall lam let_ app ann fst_ snd_ pair
           ttPrim unitPrim
           plus sumPrim inlPrim inrPrim sumElimPrim
           eq refl j
-          descCon descInd interpHoas allHoas
+          muI descI descCon descInd interpHoas allHoas
           conDesc spineDesc payloadTuple encodeTag;
 
         n = builtins.length consList;
@@ -142,55 +175,64 @@ in {
                  in if builtins.elem nm seen then nm else null;
           in builtins.foldl' step null idxs;
 
-        conDescs = map (c: conDesc {} c.fields) consList;
-        # ann-wrap discipline: the description spine contains bare canonical
-        # forms at I=⊤ (e.g., `descRet` carries `tt` at its j position, which
-        # has no infer rule under bidirectional discipline). The outer `ann
-        # _ desc` lets every consumer (the `mu` type rule, `descCon`'s D,
-        # `descInd`'s D) check the spine in CHECK mode against `Desc ⊤`,
-        # where the bare canonical forms are accepted by the existing check
-        # rules.
-        D = ann (spineDesc conDescs) desc;
-        T = mu D ttPrim;
+        conDescs = map (c: conDesc I {} c.fields c.targetIdx) consList;
+        # The description spine contains bare canonical forms (e.g.,
+        # `retI j` carries a bare canonical j with no infer rule under
+        # bidirectional discipline). `ann _ (descI I)` lets every
+        # consumer (the `mu` type rule, `descCon`'s D, `descInd`'s D)
+        # check the spine in CHECK mode against `Desc I`, where the
+        # bare canonical forms are accepted by the existing check rules.
+        D = ann (spineDesc conDescs) (descI I);
+        # Bare μ at the constant ⊤ index. The exposed `T` at
+        # indexed=false, and the field type of `pi` / `piD` binders
+        # (which are only valid at I=⊤ — see conDesc).
+        TAtTt = muI I D ttPrim;
+        # Family-as-function: `λi:I. muI I D i`. The exposed `T` at
+        # indexed=true.
+        TFam = ann (lam "i" I (iArg: muI I D iArg))
+                   (forall "_" I (_: u 0));
+        T = if indexed then TFam else TAtTt;
 
-        # Index-family machinery for the indexed `descInd`. The datatype
-        # macro lives at the I=⊤ slice: `muFam _ = μ D ttPrim`, and the
-        # wrapped motive `Pp i x = P x` (β-reducing via conv on the user
-        # motive `P : T → U`).
-        muFam = lam "_i" unitPrim (iArg: mu D iArg);
-        ppTy = forall "i" unitPrim (iArg: forall "_" (mu D iArg) (_: u 0));
+        muFam = lam "_i" I (iArg: muI I D iArg);
+        ppTy = forall "i" I (iArg: forall "_" (muI I D iArg) (_: u 0));
 
-        # Type of field f, given `prev` (markers for earlier data/dataD
-        # fields). data/dataD bind a description-level variable visible to
-        # later dependent forms; rec/pi/piD compile to descRec/descPi which
-        # do not bind one (matching conDesc's marker-threading rule).
+        # Apply the user motive `P` to a scrutinee `x` at its index
+        # `idx`. At indexed=false the user motive is 1-ary and `idx` is
+        # ignored; at indexed=true the motive is 2-ary.
+        applyMotive = P: idx: x:
+          if indexed then app (app P idx) x
+          else app P x;
+
+        # HOAS type of field `f` given `prev` markers for earlier
+        # data/dataD fields. data/dataD bind a description-level
+        # variable visible to later dependent forms; recAt / pi / piD
+        # compile to recI / descPi which do not extend `prev`.
         fieldTyOf = f: prev:
           if      f.kind == "data"  then f.type
           else if f.kind == "dataD" then f.typeFn prev
-          else if f.kind == "rec"   then T
-          else if f.kind == "pi"    then forall "_" f.S (_: T)
-          else if f.kind == "piD"   then forall "_" (f.SFn prev) (_: T)
+          else if f.kind == "recAt" then muI I D (f.idxFn prev)
+          else if f.kind == "pi"    then forall "_" f.S (_: muI I D ttPrim)
+          else if f.kind == "piD"   then forall "_" (f.SFn prev) (_: muI I D ttPrim)
           else throw "datatype '${name}': unknown field kind '${f.kind}'";
 
         extendsPrev = f: f.kind == "data" || f.kind == "dataD";
-        isIHField = f: f.kind == "rec" || f.kind == "pi" || f.kind == "piD";
+        isIHField = f: f.kind == "recAt" || f.kind == "pi" || f.kind == "piD";
 
-        # Π type of constructor `c`. Zero-field cons have implicit type T;
-        # fielded cons produce a Π cascade over the field list terminating
-        # in T. Same field-kind dispatch as the bare-lam cascade in mkCtor.
+        # Π type of constructor `c`. Terminates in `muI I D (c.targetIdx
+        # prev)` — the per-constructor μ-slice at its declared target
+        # index. At I=⊤ with the default targetIdx this is `muI ⊤ D
+        # ttPrim` = TAtTt.
         ctorTyOf = c:
-          if c.fields == [] then T
-          else
-            let
-              tyGo = remaining: prev:
-                if remaining == [] then T
-                else
-                  let f = builtins.head remaining;
-                      rest = builtins.tail remaining;
-                  in forall f.name (fieldTyOf f prev) (v:
-                       tyGo rest
-                         (if extendsPrev f then prev // { ${f.name} = v; } else prev));
-            in tyGo c.fields {};
+          let
+            tyGo = remaining: prev:
+              if remaining == [] then muI I D (c.targetIdx prev)
+              else
+                let f = builtins.head remaining;
+                    rest = builtins.tail remaining;
+                in forall f.name (fieldTyOf f prev) (v:
+                     tyGo rest
+                       (if extendsPrev f then prev // { ${f.name} = v; } else prev));
+          in tyGo c.fields {};
 
         # Build constructor term for the i-th constructor. Zero-field cons
         # become `descCon D <tag-encoded tt>` directly; fielded cons build
@@ -205,13 +247,16 @@ in {
         # surface.
         mkCtor = i: c:
           if c.fields == []
-          then descCon D ttPrim (encodeTag D conDescs i (payloadTuple []))
+          then
+            let tIdx = c.targetIdx {}; in
+            descCon D tIdx (encodeTag I D conDescs tIdx i (payloadTuple []))
           else
             let
               bareGo = remaining: prev: collected:
                 if remaining == [] then
-                  descCon D ttPrim
-                    (encodeTag D conDescs i (payloadTuple collected))
+                  let tIdx = c.targetIdx prev; in
+                  descCon D tIdx
+                    (encodeTag I D conDescs tIdx i (payloadTuple collected))
                 else
                   let f = builtins.head remaining;
                       rest = builtins.tail remaining;
@@ -226,6 +271,16 @@ in {
               ctorIndex = i;
               nCtors = n;
               dHoas = D;
+              # Index type of the enclosing datatype and the
+              # constructor's target-index function. `elaborate`'s
+              # chain-flatten path uses these to emit the correct
+              # `descCon` i-slot and per-summand `interp` types at
+              # I ≠ ⊤. `targetIdx : prev → Hoas I` — `prev` is an
+              # attrset keyed by data/dataD field names (declaration
+              # order), values are HOAS arguments collected from the
+              # app spine.
+              inherit I;
+              targetIdx = c.targetIdx;
               # Per-constructor HOAS descriptions — consumed by
               # `elaborate`'s flatten path to precompute the per-layer
               # L/R interp Tms of the `inlPrim` / `inrPrim` wrapping.
@@ -240,44 +295,52 @@ in {
           in { name = c.name; value = mkCtor i c; }
         ) n);
 
-        # Type of step_i. Zero-field constructors reduce to `P C_i`.
-        # Fielded constructors produce a Π over fields (in declaration
-        # order), then a Π over rec/pi IHs (in rec/pi-only declaration
-        # order), terminating in P (C_i applied-to-fields).
+        # Type of step_i. Zero-field constructors reduce to `applyMotive
+        # P (c.targetIdx {}) C_i`. Fielded constructors produce a Π over
+        # fields (in declaration order), then a Π over IH binders (one
+        # per recAt/pi/piD field in declaration order), terminating in
+        # `applyMotive P (c.targetIdx prev) (C_i applied-to-fields)`.
         #
-        # The terminal `app P (foldl' app C_i fieldMarkers)` requires C_i
-        # to be inferable so the application chain types — hence mkCtor's
-        # ann-wrapping for fielded cons.
+        # The terminal application chain requires C_i to be inferable,
+        # hence mkCtor's ann-wrapping for fielded cons.
         stepTyOf = P: i: c:
-          if c.fields == [] then app P (mkCtor i c)
+          if c.fields == [] then
+            applyMotive P (c.targetIdx {}) (mkCtor i c)
           else
             let
               ctor = mkCtor i c;
 
-              # Π over IH binders, one per rec/pi/piD field. `markers` is
-              # the field-marker list collected by `fieldGo` (in
-              # declaration order); each entry carries the marker plus the
-              # `prev` snapshot at binding time, used for piD's dependent
-              # SFn.
+              # Reconstruct `prev` markers (data/dataD fields only) from
+              # the ordered marker list, used to evaluate `c.targetIdx
+              # prev` at the terminal position.
+              prevOfMarkers = ms:
+                builtins.foldl' (acc: m:
+                  if m.kind == "data" || m.kind == "dataD"
+                  then acc // { ${m.name} = m.marker; }
+                  else acc) {} ms;
+
               ihGo = ihRemaining: markers:
                 let
                   applied = builtins.foldl' (acc: m: app acc m.marker)
                                             ctor
                                             markers;
                 in
-                  if ihRemaining == [] then app P applied
+                  if ihRemaining == [] then
+                    applyMotive P (c.targetIdx (prevOfMarkers markers)) applied
                   else
                     let f = builtins.head ihRemaining;
                         rest = builtins.tail ihRemaining;
                         m = builtins.head (builtins.filter
                               (x: x.name == f.name) markers);
                         ihTy =
-                          if      f.kind == "rec" then app P m.marker
-                          else if f.kind == "pi"  then
-                            forall "s" f.S (s: app P (app m.marker s))
+                          if      f.kind == "recAt" then
+                            applyMotive P (f.idxFn m.prev) m.marker
+                          else if f.kind == "pi"    then
+                            forall "s" f.S (s:
+                              applyMotive P ttPrim (app m.marker s))
                           else
                             forall "s" (f.SFn m.prev) (s:
-                              app P (app m.marker s));
+                              applyMotive P ttPrim (app m.marker s));
                     in forall ("ih_" + f.name) ihTy (_: ihGo rest markers);
 
               # Π over fields, collecting markers + each field's `prev`
@@ -326,37 +389,56 @@ in {
               withIHs = builtins.foldl' (acc: a: app acc a) withFields ihArgs;
             in withIHs;
 
+        # Reconstruct `prev` markers (for data/dataD fields only) from
+        # a runtime payload value. Used by dispatchStep to evaluate a
+        # constructor's `targetIdx` at dispatch time so the J-motive can
+        # carry the correct `(I, targetIdx_c)` witness pair.
+        prevOfPayload = c: payload:
+          let
+            projAt = j: src:
+              let go = idx: acc:
+                if idx == 0 then fst_ acc
+                else go (idx - 1) (snd_ acc);
+              in go j src;
+            step = acc: idx:
+              let f = builtins.elemAt c.fields idx; in
+              if f.kind == "data" || f.kind == "dataD"
+              then acc // { ${f.name} = projAt idx payload; }
+              else acc;
+          in builtins.foldl' step {} (builtins.genList (x: x) (builtins.length c.fields));
+
         # dispatchStep Pp iArg ctx descs steps cons payload payloadIH : Hoas
         # Walks the per-constructor descriptions in declaration order,
         # threading an outer-context wrapper `ctx` that reconstitutes the
         # full payload at each level (used in the sumElim motive so conv
         # discharges Pp iArg (descCon D iArg (ctx ...)) ≡ P (C_i ...) via
-        # Pp-β + Σ-η + ⊤-η + J-transport on the leaf Eq witness). Pp is
-        # the indexed motive wrapper `λi λx. P x` — applying `Pp iArg`
-        # β-reduces to the user motive `P` at any typed `x`.
-        # n=1 (leaf) wraps the user step in J-transport over the leaf Eq
-        # witness; n>=2 emits a sumElim that commits to constructor i on
-        # `inl` (J-transported) and descends into the rest-spine on
-        # `inr`.
+        # Pp-β + Σ-η + J-transport on the leaf Eq witness). Pp is the
+        # indexed motive wrapper `λi:I. λx:muI I D i. P-applied`; at
+        # indexed=false it ignores i and applies P 1-ary, at indexed=true
+        # it applies P 2-ary (i.e. Pp = P). n=1 (leaf) wraps the user
+        # step in J-transport over the leaf Eq witness; n>=2 emits a
+        # sumElim that commits to constructor i on `inl` (J-transported)
+        # and descends into the rest-spine on `inr`.
         #
-        # J-transport (jTransportLeaf payloadCtx c r userApplied):
-        # The user step `s` produces `userApplied : app Pp ttPrim (descCon D ttPrim
-        # (payloadCtx (pair f_0 (... (pair f_{k-1} refl)))))` where each
-        # f_i = fst(snd^i r) and the leaf is the macro-inserted `refl`.
-        # The expected type is `app Pp iArg (descCon D iArg (payloadCtx
-        # (pair f_0 (... (pair f_{k-1} snd^k r)))))` — same modulo the
-        # iArg position and the leaf Eq witness `snd^k r : Eq ⊤ ttPrim iArg`.
-        # MLTT without K cannot conv `VRefl ≡ VNe(eq)`; J is the sanctioned
-        # transport. Motive `M(y,e) = app Pp y (descCon D y (payloadCtx
-        # (pair f_0 (... (pair f_{k-1} e)))))`; base `M(ttPrim, refl) ≡
-        # userApplied`; result `M(iArg, snd^k r)` matches the expected type.
-        # k=0 corner: r ITSELF is the Eq witness and `payloadCtx e` is the
-        # full payload at the leaf.
+        # J-transport (jTransportLeaf targetIdx_c payloadCtx c r userApplied):
+        # The user step `s` produces `userApplied : app Pp targetIdx_c
+        # (descCon D targetIdx_c (payloadCtx (pair f_0 (... (pair f_{k-1}
+        # refl)))))` where each f_i = fst(snd^i r) and the leaf is the
+        # macro-inserted `refl`. The expected type is `app Pp iArg (descCon
+        # D iArg (payloadCtx (pair f_0 (... (pair f_{k-1} snd^k r)))))` —
+        # same modulo the iArg position and the leaf Eq witness `snd^k r :
+        # Eq I targetIdx_c iArg`. MLTT without K cannot conv `VRefl ≡
+        # VNe(eq)`; J is the sanctioned transport. Motive `M(y,e) = app
+        # Pp y (descCon D y (payloadCtx (pair f_0 (... (pair f_{k-1}
+        # e)))))`; base `M(targetIdx_c, refl) ≡ userApplied`; result
+        # `M(iArg, snd^k r)` matches the expected type. k=0 corner: r
+        # ITSELF is the Eq witness and `payloadCtx e` is the full payload
+        # at the leaf.
         dispatchStep = Pp: iArg: ctx: descs: steps: cons: payload: payloadIH:
           let
             n' = builtins.length descs;
 
-            jTransportLeaf = payloadCtx: c: r: userApplied:
+            jTransportLeaf = targetIdx_c: payloadCtx: c: r: userApplied:
               let
                 k = builtins.length c.fields;
                 projAt = i: src:
@@ -376,18 +458,19 @@ in {
                       if i == k then e
                       else pair (projAt i r) (go (i + 1));
                   in go 0;
-                motive = lam "y" unitPrim (y:
-                         lam "e" (eq unitPrim ttPrim y) (e:
+                motive = lam "y" I (y:
+                         lam "e" (eq I targetIdx_c y) (e:
                            app (app Pp y)
                                (descCon D y (payloadCtx (buildPayload e)))));
-              in j unitPrim ttPrim motive userApplied iArg eLeaf;
+              in j I targetIdx_c motive userApplied iArg eLeaf;
           in
           if n' == 1 then
             let
               c = builtins.head cons;
               s = builtins.head steps;
               applied = buildStepApply s c payload payloadIH;
-            in jTransportLeaf ctx c payload applied
+              targetIdx_c = c.targetIdx (prevOfPayload c payload);
+            in jTransportLeaf targetIdx_c ctx c payload applied
           else
             let
               D1 = builtins.elemAt descs 0;
@@ -401,22 +484,23 @@ in {
               # the outer plus's interp reduces to `Sum lInterp rInterp`
               # (kernel Sum), and `payload : Sum lInterp rInterp` is
               # dispatched via `sumElimPrim`.
-              lInterp = interpHoas unitPrim D1 muFam iArg;
-              rInterp = interpHoas unitPrim restSpine muFam iArg;
+              lInterp = interpHoas I D1 muFam iArg;
+              rInterp = interpHoas I restSpine muFam iArg;
               # Sum-elim motive: each summand inhabits this Pp-target
               # rebuilt through `ctx (inlPrim/inrPrim …)`.
               sumMot = lam "s" (sumPrim lInterp rInterp) (s:
-                forall "rih" (allHoas unitPrim D (plus D1 restSpine) Pp iArg s) (_:
+                forall "rih" (allHoas I D (plus D1 restSpine) Pp iArg s) (_:
                   app (app Pp iArg) (descCon D iArg (ctx s))));
               onInl = lam "r" lInterp (r:
-                      lam "rih" (allHoas unitPrim D D1 Pp iArg r) (rih:
-                        jTransportLeaf
+                      lam "rih" (allHoas I D D1 Pp iArg r) (rih:
+                        let targetIdx_c1 = c1.targetIdx (prevOfPayload c1 r); in
+                        jTransportLeaf targetIdx_c1
                           (local: ctx (inlPrim lInterp rInterp local))
                           c1 r
                           (buildStepApply s1 c1 r rih)));
               ctx' = local: ctx (inrPrim lInterp rInterp local);
               onInr = lam "r" rInterp (r:
-                      lam "rih" (allHoas unitPrim D restSpine Pp iArg r) (rih:
+                      lam "rih" (allHoas I D restSpine Pp iArg r) (rih:
                         dispatchStep Pp iArg ctx' restD restS restC r rih));
             in app (sumElimPrim lInterp rInterp sumMot onInl onInr payload)
                  payloadIH;
@@ -426,7 +510,10 @@ in {
         # checked positions — the bidirectional kernel has no infer rule
         # for bare `lam`. `ann` is eval-transparent, so nf-equivalence
         # against the inline-adapter spelling is preserved.
-        motiveTy = forall "_" T (_: u 0);
+        motiveTy =
+          if indexed
+          then forall "i" I (iArg: forall "_" (muI I D iArg) (_: u 0))
+          else forall "_" TAtTt (_: u 0);
         stepNames = builtins.genList (i: "step_${toString i}") n;
 
         # Wrap a body with `lam step_i (stepTyOf P i c)` for each
@@ -452,44 +539,71 @@ in {
                   go (i + 1));
           in go 0;
 
+        # Step body for `descInd`. Same shape at indexed=false and
+        # indexed=true — the step function is always `λi:I. λd:⟦D⟧ muFam
+        # i. λih:All D D Pp i d. dispatchStep Pp i id conDescs steps cons
+        # d ih`.
+        indStep = Pp: steps:
+          lam "i" I (iArg:
+          lam "d" (interpHoas I D muFam iArg) (d:
+          lam "ih" (allHoas I D D Pp iArg d) (ih:
+            dispatchStep Pp iArg (x: x) conDescs steps consList d ih)));
+
         elimTy =
-          forall "P" motiveTy (P:
-          buildPiCascade
-            (forall "scrut" T (scrut: app P scrut))
-            P);
+          if indexed then
+            forall "P" motiveTy (P:
+            buildPiCascade
+              (forall "i" I (iArg:
+                forall "scrut" (muI I D iArg) (scrut: app (app P iArg) scrut)))
+              P)
+          else
+            forall "P" motiveTy (P:
+            buildPiCascade
+              (forall "scrut" TAtTt (scrut: app P scrut))
+              P);
 
         elimBody =
-          lam "P" motiveTy (P:
-          buildLamCascade (steps:
-            lam "scrut" T (scrut:
-              let_ "Pp" ppTy
-                (lam "i" unitPrim (_: lam "x" (mu D ttPrim) (x: app P x))) (Pp:
-                descInd D Pp
-                  (lam "i" unitPrim (iArg:
-                   lam "d" (interpHoas unitPrim D muFam iArg) (d:
-                   lam "ih" (allHoas unitPrim D D Pp iArg d) (ih:
-                     dispatchStep Pp iArg (x: x) conDescs steps consList d ih))))
-                  ttPrim
-                  scrut)))
-            P);
+          if indexed then
+            lam "P" motiveTy (P:
+            buildLamCascade (steps:
+              lam "i" I (iArg:
+              lam "scrut" (muI I D iArg) (scrut:
+                let_ "Pp" ppTy P (Pp:
+                  descInd D Pp (indStep Pp steps) iArg scrut))))
+              P)
+          else
+            lam "P" motiveTy (P:
+            buildLamCascade (steps:
+              lam "scrut" TAtTt (scrut:
+                let_ "Pp" ppTy
+                  (lam "i" I (_: lam "x" (muI I D ttPrim) (x: app P x))) (Pp:
+                  descInd D Pp (indStep Pp steps) ttPrim scrut)))
+              P);
 
         elim = ann elimBody elimTy;
 
+        # Uniform metadata exposed alongside the DataSpec. `indexTy`
+        # describes the index type of the family; at `indexed=false` it
+        # is the unit type, at `indexed=true` it is the user-supplied
+        # `I`. Consumers that walk `cons[i].fields` see only `name` /
+        # `kind` — the full spec is available under `_cons`.
         _dtypeMeta = {
-          inherit name;
+          inherit name indexed;
+          indexTy = I;
           cons = map (c: {
             name = c.name;
             fields = map (f: { name = f.name; kind = f.kind; }) c.fields;
           }) consList;
         };
 
-        # Per-field polymorphic types, consumed by datatypeP to build the
-        # outer `ann (λparams. monoField) (Π(params). monoFieldTy)`
-        # wrapping. Zero-field cons have type T (not Π), just like fielded
-        # ctors with no fields; ctorTyOf handles both cases.
+        # Per-field polymorphic types, consumed by datatypeP / datatypePI
+        # to build the outer `ann (λparams. monoField) (Π(params).
+        # monoFieldTy)` wrapping. At indexed=false `T`'s type is `U`; at
+        # indexed=true `T` is a function from I to U and its type is
+        # `Π(i:I). U`.
         _tys = {
-          D = desc;
-          T = u 0;
+          D = descI I;
+          T = if indexed then forall "_" I (_: u 0) else u 0;
           elim = elimTy;
         } // (builtins.listToAttrs (builtins.genList (i:
           let c = builtins.elemAt consList i; in
@@ -511,25 +625,57 @@ in {
           _cons = consList;
         });
 
-    # Polymorphic datatype builder. Each output field f is the mono field
-    # λ-abstracted over params, wrapped in `ann` against `Π(params). T_f`
-    # where `T_f` is pulled from the mono spec's `_tys.<field>`. The outer
-    # `ann` is what makes the curried constructor/eliminator inferable in
-    # checked positions after the first parameter application; without it
-    # `app <polyField> firstArg` would have a bare-λ head and fail
-    # synthesis.
+    # Monomorphic ⊤-indexed DataSpec. Exposes `T = muI ⊤ D ttPrim` (a
+    # bare μ-type) and a 1-ary eliminator `P : T → U`.
+    datatype = name: consList:
+      self._datatypeImpl {
+        I = self.unitPrim;
+        indexed = false;
+        inherit name consList;
+      };
+
+    # Monomorphic indexed DataSpec over index type `I`. Exposes `T = ann
+    # (λi:I. muI I D i) (Π(_:I). U)` — a family-as-function — and a
+    # 2-ary eliminator `P : (i:I) → muI I D i → U` with an explicit
+    # scrutinee-index binder. Each constructor is a `conI name fields
+    # targetIdx` where `targetIdx : prev → Hoas` computes the
+    # constructor's target index from bound data/dataD markers;
+    # recursive fields at non-default indices use `recFieldAt name
+    # idxFn`.
+    datatypeI = name: I: consList:
+      self._datatypeImpl {
+        inherit I;
+        indexed = true;
+        inherit name consList;
+      };
+
+    # Internal: polymorphic datatype builder. Each output field f is the
+    # mono field λ-abstracted over params, wrapped in `ann` against
+    # `Π(params). T_f` where `T_f` is pulled from the mono spec's
+    # `_tys.<field>`. The outer `ann` is what makes the curried
+    # constructor/eliminator inferable in checked positions after the
+    # first parameter application; without it `app <polyField> firstArg`
+    # would have a bare-λ head and fail synthesis.
+    #
+    # At `indexed = true`, `indexFn markers : Hoas` computes the index
+    # type from parameter markers (the param-dependent analogue of
+    # `datatypeI`'s I argument); the spec of each constructor uses
+    # `conI name fields targetIdx`.
     #
     # The probe call `mkCons dummyMarkers` is only used to extract
     # constructor names and metadata (via shallow attrs c.name / f.name /
     # f.kind). Each polymorphic field's closure re-runs `mkCons` with real
     # HOAS markers at elaborate-time, so field types and constructor
     # bodies are never resolved against the probe's dummy values.
-    datatypeP = name: params: mkCons:
+    _datatypePImpl = { indexed, name, params, indexFn, mkCons }:
       let
-        inherit (self) u lam forall ann datatype;
+        inherit (self) u lam forall ann;
 
         nParams = builtins.length params;
-        monoOf = markers: datatype name (mkCons markers);
+        monoOf = markers:
+          if indexed
+          then self.datatypeI name (indexFn markers) (mkCons markers)
+          else self.datatype  name (mkCons markers);
         # A parameter's `kind` is either a fixed Hoas (the common case,
         # e.g. `kind = u 0`) or a function from the list of
         # previously-bound parameter markers to a Hoas (e.g. for W-type's
@@ -610,8 +756,12 @@ in {
           name = cName;
           value = mkPolyCtorNode cName;
         }) conNames);
+        # Polymorphic `_dtypeMeta`: `indexTy` depends on parameter
+        # markers so it is not resolved here — consumers that need it
+        # pass params through `indexFn` (stored alongside). Mono
+        # datatypes expose `indexTy` directly.
         _dtypeMeta = {
-          inherit name;
+          inherit name indexed;
           cons = map (c: {
             name = c.name;
             fields = map (f: { name = f.name; kind = f.kind; }) c.fields;
@@ -629,6 +779,24 @@ in {
         inherit _dtypeMeta;
         _cons = probe;
       });
+
+    # ⊤-indexed polymorphic DataSpec. Each field of the output is an
+    # `ann`-wrapped `λparams. monoField`. Constructors use `con`.
+    datatypeP = name: params: mkCons:
+      self._datatypePImpl {
+        indexed = false;
+        indexFn = _: self.unitPrim;
+        inherit name params mkCons;
+      };
+
+    # Indexed polymorphic DataSpec. `indexFn : params → Hoas` produces
+    # the index type from parameter markers; `mkCons` produces a list of
+    # `conI`-tagged constructor specs.
+    datatypePI = name: params: indexFn: mkCons:
+      self._datatypePImpl {
+        indexed = true;
+        inherit name params indexFn mkCons;
+      };
 
     # Macro-derived prelude datatypes. The surface `nat`, `listOf`, `sum`
     # and their introductions (`zero`, `succ`, `nil`, `cons`, `inl`,
@@ -657,6 +825,50 @@ in {
         (ps: let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
           (con "inl" [ (field "value" A) ])
           (con "inr" [ (field "value" B) ])
+        ]);
+
+    # Fin — monomorphic indexed datatype over Nat. Two constructors,
+    # both with target index `succ m` carrying the index equality
+    # through the ret-leaf. `Fin 0` is vacuous by construction; the
+    # no-confusion discharge lives in `combinators.nix:absurdFin0`.
+    FinDT =
+      let inherit (self) datatypeI conI field recFieldAt nat succ; in
+      datatypeI "Fin" nat [
+        (conI "fzero" [ (field "m" nat) ]
+          (p: succ p.m))
+        (conI "fsuc"  [ (field "m" nat)
+                        (recFieldAt "k" (p: p.m)) ]
+          (p: succ p.m))
+      ];
+
+    # Vec — parametric indexed datatype `Vec A : Nat → U`. `vnil`
+    # targets index `zero`; `vcons` targets `succ m` with the tail
+    # at index `m`.
+    VecDT =
+      let inherit (self) datatypePI conI field recFieldAt u nat zero succ; in
+      datatypePI "Vec"
+        [ { name = "A"; kind = u 0; } ]
+        (_: nat)
+        (ps: let A = builtins.elemAt ps 0; in [
+          (conI "vnil"  [] (_: zero))
+          (conI "vcons"
+            [ (field "m" nat)
+              (field "x" A)
+              (recFieldAt "xs" (p: p.m)) ]
+            (p: succ p.m))
+        ]);
+
+    # Eq — parametric indexed datatype `Eq A a : A → U` with
+    # parameter-dependent index type (`indexFn = ps: ps.A`). Single
+    # constructor `refl` targets index `a`.
+    EqDT =
+      let inherit (self) datatypePI conI u; in
+      datatypePI "Eq"
+        [ { name = "A"; kind = u 0; }
+          { name = "a"; kind = ms: builtins.elemAt ms 0; } ]
+        (ps: builtins.elemAt ps 0)
+        (ps: let a = builtins.elemAt ps 1; in [
+          (conI "refl" [] (_: a))
         ]);
 
     # Surface forwarders onto the macro-derived prelude. `nat` is

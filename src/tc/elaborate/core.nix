@@ -322,7 +322,7 @@ in {
           isListShape = m:
             builtins.length m.cons == 2
             && fieldKinds (builtins.elemAt m.cons 0) == []
-            && fieldKinds (builtins.elemAt m.cons 1) == [ "data" "rec" ];
+            && fieldKinds (builtins.elemAt m.cons 1) == [ "data" "recAt" ];
           isSumShape = m:
             builtins.length m.cons == 2
             && fieldKinds (builtins.elemAt m.cons 0) == [ "data" ]
@@ -546,7 +546,7 @@ in {
           isListShape = m:
             builtins.length m.cons == 2
             && fieldKinds (builtins.elemAt m.cons 0) == []
-            && fieldKinds (builtins.elemAt m.cons 1) == [ "data" "rec" ];
+            && fieldKinds (builtins.elemAt m.cons 1) == [ "data" "recAt" ];
           isSumShape = m:
             builtins.length m.cons == 2
             && fieldKinds (builtins.elemAt m.cons 0) == [ "data" ]

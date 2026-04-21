@@ -217,137 +217,20 @@ in {
         eab
         c ebc;
 
-    # Indexed description of the Fin family via the first-class `plus`
-    # coproduct. Two summands sharing a `succ m` target-index pattern
-    # with an explicit `Eq Nat (succ m) i` obligation at the ret-leaf.
-    #   inl  → fzero m : Fin (succ m)    payload (m : Nat, refl)
-    #   inr  → fsuc m k : Fin (succ m)   payload (m : Nat, k : Fin m, refl)
-    # `interp (plus A B) X i` reduces STRUCTURALLY to kernel `Sum (⟦A⟧ X i)
-    # (⟦B⟧ X i)`, eliminating the commuting-conv obligation on
-    # `interp ∘ bool-elim` that the prior `descArg bool (b: …)` encoding
-    # required. The `finDesc.T (fst d)` selector idiom and the
-    # `finDescBody` sub-description lam are both retired.
-    finDesc =
-      let inherit (self) plus descArg retI recI nat succ; in
-      plus (descArg nat (m: retI (succ m)))
-           (descArg nat (m: recI m (retI (succ m))));
-
-    # fin : Nat → U — the Fin family as a Hoas function term. Ann-wrapped
-    # against its Π-type so `app fin <n>` is inferable in the bidirectional
-    # kernel (bare `lam` is checkable-only, so `app`'s infer rule cannot
-    # synthesise the codomain without the annotation).
-    fin =
-      let inherit (self) lam ann nat forall u muI finDesc; in
-      ann (lam "n" nat (n: muI nat finDesc n))
-          (forall "_" nat (_: u 0));
-
-    # fzero : Π(m : Nat). Fin (succ m)
-    # Payload at the inl summand: `pair m refl` — the summand's interp
-    # at iArg = succ m is `Σ(m':Nat). Eq Nat (succ m') (succ m)`,
-    # witnessed by `(m, refl)`. L/R are computed via `interpHoas` at
-    # iArg = succ m.
-    fzero = m:
-      let
-        inherit (self)
-          descCon finDesc succ pair refl inlPrim
-          interpHoas lam muI nat descArg retI recI;
-        muFam = lam "i" nat (i: muI nat finDesc i);
-        fzeroSum = descArg nat (m_: retI (succ m_));
-        fsucSum  = descArg nat (m_: recI m_ (retI (succ m_)));
-      in
-      descCon finDesc (succ m)
-        (inlPrim
-          (interpHoas nat fzeroSum muFam (succ m))
-          (interpHoas nat fsucSum  muFam (succ m))
-          (pair m refl));
-
-    # fsuc : Π(m : Nat)(k : Fin m). Fin (succ m)
-    # Payload at the inr summand: `pair m (pair k refl)` — the summand's
-    # interp at iArg = succ m is `Σ(m':Nat). Σ(_:μfin m'). Eq Nat
-    # (succ m') (succ m)`, witnessed by `(m, k, refl)`.
-    fsuc = m: k:
-      let
-        inherit (self)
-          descCon finDesc succ pair refl inrPrim
-          interpHoas lam muI nat descArg retI recI;
-        muFam = lam "i" nat (i: muI nat finDesc i);
-        fzeroSum = descArg nat (m_: retI (succ m_));
-        fsucSum  = descArg nat (m_: recI m_ (retI (succ m_)));
-      in
-      descCon finDesc (succ m)
-        (inrPrim
-          (interpHoas nat fzeroSum muFam (succ m))
-          (interpHoas nat fsucSum  muFam (succ m))
-          (pair m (pair k refl)));
-
-    # finElim : (P : (n : Nat) → Fin n → U)
-    #         → (Π(m : Nat). P (succ m) (fzero m))
-    #         → (Π(m : Nat)(k : Fin m). P m k → P (succ m) (fsuc m k))
-    #         → (n : Nat) → (k : Fin n) → P n k
-    #
-    # Built as `descInd finDesc P step`; step dispatches on the plus
-    # summand via `sumElimPrim` on `d : Sum (⟦fzeroSum⟧ muFam nArg)
-    # (⟦fsucSum⟧ muFam nArg)` and J-transports each user-supplied case
-    # across the ret-leaf equality witness `em : Eq (succ m) nArg`,
-    # aligning the constructor's base index `succ m` with the result
-    # index nArg. Per-summand interps are parametric in iArg, so the J
-    # motive rebuilds them at each J-bound index.
-    finElim = P: Pz: Ps:
-      let
-        inherit (self)
-          lam forall app fst_ snd_ pair
-          nat succ
-          eq j
-          muI descCon descInd interpHoas allHoas
-          sumPrim sumElimPrim inlPrim inrPrim
-          descArg retI recI
-          finDesc;
-
-        muFam = lam "i" nat (i: muI nat finDesc i);
-
-        fzeroSum = descArg nat (m_: retI (succ m_));
-        fsucSum  = descArg nat (m_: recI m_ (retI (succ m_)));
-        lInterpAt = iArg_: interpHoas nat fzeroSum muFam iArg_;
-        rInterpAt = iArg_: interpHoas nat fsucSum  muFam iArg_;
-
-        step = lam "n" nat (nArg:
-               lam "d" (interpHoas nat finDesc muFam nArg) (d:
-               lam "ih" (allHoas nat finDesc finDesc P nArg d) (ih:
-                 let
-                   lInterp = lInterpAt nArg;
-                   rInterp = rInterpAt nArg;
-
-                   sumMot = lam "s" (sumPrim lInterp rInterp) (s:
-                     app (app P nArg) (descCon finDesc nArg s));
-
-                   onInl = lam "r" lInterp (r:
-                     let
-                       m  = fst_ r;
-                       em = snd_ r;
-                       jMot = lam "np" nat (np:
-                              lam "e" (eq nat (succ m) np) (e:
-                                app (app P np)
-                                    (descCon finDesc np
-                                      (inlPrim (lInterpAt np) (rInterpAt np)
-                                        (pair m e)))));
-                     in j nat (succ m) jMot (app Pz m) nArg em);
-
-                   onInr = lam "r" rInterp (r:
-                     let
-                       m   = fst_ r;
-                       kk  = fst_ (snd_ r);
-                       em  = snd_ (snd_ r);
-                       ihk = fst_ ih;
-                       jMot = lam "np" nat (np:
-                              lam "e" (eq nat (succ m) np) (e:
-                                app (app P np)
-                                    (descCon finDesc np
-                                      (inrPrim (lInterpAt np) (rInterpAt np)
-                                        (pair m (pair kk e))))));
-                     in j nat (succ m) jMot
-                          (app (app (app Ps m) kk) ihk) nArg em);
-                 in sumElimPrim lInterp rInterp sumMot onInl onInr d)));
-      in n: k: descInd finDesc P step n k;
+    # Fin prelude forwarders onto `FinDT` (defined in
+    # `hoas/datatype.nix` via `datatypeI "Fin" nat […]`). The
+    # description, type family, constructors, and eliminator all
+    # route through the macro-derived fields. Constructor / elim
+    # forwarders η-expand to match the Nix-level arity the old
+    # hand-written spellings exposed, so `absurdFin0` below and every
+    # downstream consumer (`app fin n`, `fzero m`, `fsuc m k`,
+    # `finElim P Pz Ps n k`) keeps its surface shape.
+    finDesc = self.FinDT.D;
+    fin     = self.FinDT.T;
+    fzero   = m: self.app self.FinDT.fzero m;
+    fsuc    = m: k: self.app (self.app self.FinDT.fsuc m) k;
+    finElim = P: Pz: Ps: n: k:
+      self.app (self.app (self.app (self.app (self.app self.FinDT.elim P) Pz) Ps) n) k;
 
     # absurdFin0 : (P : U) → Fin 0 → P
     # Fin 0 is vacuous: both constructor payloads carry an `em : Eq (succ m) n`
@@ -445,141 +328,17 @@ in {
       ann (lam "n" nat (n: descInd D motive step ttPrim n))
           (forall "_" nat (_: u 0));
 
-    # Indexed description of the Vec family: `Vec A : Nat → U`.
-    # Via the first-class `plus` coproduct, two summands:
-    #   inl  → vnil  : Vec A 0                    (retI zero — no data)
-    #   inr  → vcons : Π(m:Nat). A → Vec A m → Vec A (succ m)
-    # `interp (plus A B) X i` reduces structurally to `Sum (⟦A⟧ X i)
-    # (⟦B⟧ X i)` — no bool-tag dispatch, no commuting-conv obligation,
-    # and no `vecDescBody` selector lam.
-    vecDesc = A:
-      let inherit (self) plus descArg retI recI nat zero succ; in
-      plus (retI zero)
-           (descArg nat (m: descArg A (_: recI m (retI (succ m)))));
-
-    # vec : (A : U) → Nat → U — the Vec family as a Nix-level function on
-    # A producing an ann-wrapped HOAS lam on n, so `app (vec A) n` is
-    # inferable in the bidirectional kernel. Matches the `fin` precedent.
-    vec = A:
-      let inherit (self) lam ann nat forall u muI vecDesc; in
-      ann (lam "n" nat (n: muI nat (vecDesc A) n))
-          (forall "_" nat (_: u 0));
-
-    # vnil : (A : U) → Vec A zero.
-    # Payload at the inl summand: just `refl`, witnessing
-    # `Eq Nat zero zero` at the ret-leaf.
-    vnil = A:
-      let
-        inherit (self)
-          descCon vecDesc zero refl inlPrim
-          interpHoas lam muI nat descArg retI recI succ;
-        vD = vecDesc A;
-        muFam = lam "i" nat (i: muI nat vD i);
-        vnilSum  = retI zero;
-        vconsSum = descArg nat (m: descArg A (_: recI m (retI (succ m))));
-      in
-      descCon vD zero
-        (inlPrim
-          (interpHoas nat vnilSum  muFam zero)
-          (interpHoas nat vconsSum muFam zero)
-          refl);
-
-    # vcons : (A : U)(m : Nat)(x : A)(xs : Vec A m) → Vec A (succ m).
-    # Payload at the inr summand: `(m, x, xs, refl)` — matches the
-    # `descArg nat (m. descArg A (_. recI m (retI (succ m))))` spine's
-    # interp Σ(m:Nat). Σ(x:A). Σ(xs:μ vec A m). Eq Nat (succ m) (succ m).
-    vcons = A: m: x: xs:
-      let
-        inherit (self)
-          descCon vecDesc succ pair refl inrPrim
-          interpHoas lam muI nat descArg retI recI zero;
-        vD = vecDesc A;
-        muFam = lam "i" nat (i: muI nat vD i);
-        vnilSum  = retI zero;
-        vconsSum = descArg nat (m_: descArg A (_: recI m_ (retI (succ m_))));
-      in
-      descCon vD (succ m)
-        (inrPrim
-          (interpHoas nat vnilSum  muFam (succ m))
-          (interpHoas nat vconsSum muFam (succ m))
-          (pair m (pair x (pair xs refl))));
-
-    # vecElim : (A : U)
-    #         → (P : (n : Nat) → Vec A n → U)
-    #         → P zero (vnil A)
-    #         → ((m:Nat)(x:A)(xs:Vec A m) → P m xs → P (succ m) (vcons A m x xs))
-    #         → (n : Nat) → (xs : Vec A n) → P n xs
-    #
-    # Built as `descInd (vecDesc A) P step`; step dispatches on the plus
-    # summand via `sumElimPrim` and J-transports each branch's
-    # user-supplied case across the ret-leaf equality witness, aligning
-    # the constructor's base index (zero / succ m) with the result index
-    # nArg. Identical shape to `finElim` modulo the vcons payload
-    # carrying an extra A-field (x) alongside the recursive Vec A m
-    # field (xs).
-    vecElim = A: P: Pn: Pc:
-      let
-        inherit (self)
-          lam forall app fst_ snd_ pair
-          nat zero succ
-          eq j
-          muI descCon descInd interpHoas allHoas
-          sumPrim sumElimPrim inlPrim inrPrim
-          descArg retI recI
-          vecDesc;
-
-        vD  = vecDesc A;
-        muFam = lam "i" nat (i: muI nat vD i);
-
-        vnilSum  = retI zero;
-        vconsSum = descArg nat (m_: descArg A (_: recI m_ (retI (succ m_))));
-        lInterpAt = iArg_: interpHoas nat vnilSum  muFam iArg_;
-        rInterpAt = iArg_: interpHoas nat vconsSum muFam iArg_;
-
-        step = lam "n" nat (nArg:
-               lam "d" (interpHoas nat vD muFam nArg) (d:
-               lam "ih" (allHoas nat vD vD P nArg d) (ih:
-                 let
-                   lInterp = lInterpAt nArg;
-                   rInterp = rInterpAt nArg;
-
-                   sumMot = lam "s" (sumPrim lInterp rInterp) (s:
-                     app (app P nArg) (descCon vD nArg s));
-
-                   # onInl: vnil branch. r : Eq Nat zero nArg
-                   # (retI zero has no payload data, only the equality).
-                   # J-transport Pn : P zero (vnil A) along r to P nArg (…).
-                   onInl = lam "r" lInterp (r:
-                     let
-                       em = r;
-                       jMot = lam "np" nat (np:
-                              lam "e" (eq nat zero np) (e:
-                                app (app P np)
-                                    (descCon vD np
-                                      (inlPrim (lInterpAt np) (rInterpAt np) e))));
-                     in j nat zero jMot Pn nArg em);
-
-                   # onInr: vcons branch.
-                   # r : Σ(m:Nat). Σ(x:A). Σ(xs:Vec A m). Eq Nat (succ m) nArg.
-                   # ih's first Σ-component is P m xs (the recursive
-                   # vecElim result at index m on the tail).
-                   onInr = lam "r" rInterp (r:
-                     let
-                       m    = fst_ r;
-                       x    = fst_ (snd_ r);
-                       xs   = fst_ (snd_ (snd_ r));
-                       em   = snd_ (snd_ (snd_ r));
-                       ihxs = fst_ ih;
-                       jMot = lam "np" nat (np:
-                              lam "e" (eq nat (succ m) np) (e:
-                                app (app P np)
-                                    (descCon vD np
-                                      (inrPrim (lInterpAt np) (rInterpAt np)
-                                        (pair m (pair x (pair xs e)))))));
-                     in j nat (succ m) jMot
-                          (app (app (app (app Pc m) x) xs) ihxs) nArg em);
-                 in sumElimPrim lInterp rInterp sumMot onInl onInr d)));
-      in n: xs: descInd vD P step n xs;
+    # Vec prelude forwarders onto `VecDT` (defined in
+    # `hoas/datatype.nix` via `datatypePI "Vec" [{A; U₀}] (_: nat) …`).
+    # `natPredCase` / `vhead` / `vtail` below still reference
+    # `vec` / `vecElim` by name and continue to work unchanged.
+    vecDesc = A: self.app self.VecDT.D A;
+    vec     = A: self.app self.VecDT.T A;
+    vnil    = A: self.app self.VecDT.vnil A;
+    vcons   = A: m: x: xs:
+      self.app (self.app (self.app (self.app self.VecDT.vcons A) m) x) xs;
+    vecElim = A: P: Pn: Pc: n: xs:
+      self.app (self.app (self.app (self.app (self.app (self.app self.VecDT.elim A) P) Pn) Pc) n) xs;
 
     # natPredCase A : Nat → U —
     #   `natPredCase A zero ≡ unit`,
@@ -676,12 +435,14 @@ in {
     # is an equality between the roundtrip and the identity,
     # discharged by J / descInd reducing both sides to the same
     # canonical form at the refl / descCon cases.
-    eqDesc = A: a: self.retI a;
-
-    eqDT = A: a: b: self.muI A (self.eqDesc A a) b;
-
-    reflDT = A: a:
-      self.descCon (self.eqDesc A a) a self.refl;
+    # Eq-as-description forwarders onto `EqDT` (defined in
+    # `hoas/datatype.nix` via `datatypePI "Eq" …`). The iso proofs
+    # `eqToEqDT` / `eqDTToEq` / `eqIsoFwd` / `eqIsoBwd` below reference
+    # `eqDesc` / `eqDT` / `reflDT` by name and continue to work
+    # unchanged — they live in user space and are not macro-output.
+    eqDesc = A: a: self.app (self.app self.EqDT.D A) a;
+    eqDT   = A: a: b: self.app (self.app (self.app self.EqDT.T A) a) b;
+    reflDT = A: a: self.app (self.app self.EqDT.refl A) a;
 
     eqToEqDT = A: a: b: e:
       let

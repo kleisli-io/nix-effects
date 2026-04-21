@@ -6,12 +6,12 @@ foundation — handlers, blame tracking, and error policy all flow through
 it. The type checker is a Lean-light MLTT core that uses the effect
 infrastructure for its own checking pipeline.
 
-The kernel is implemented in `src/tc/` (~2200 lines) and fully integrated.
-All types have kernel backing — `.check` is derived mechanically from
-the kernel's `decide` procedure. There is no separate contract system
-and no adequacy bridge. Universe levels are computed by the kernel's
-`checkTypeLevel`. One notion of type, one checking mechanism, with
-decidable checking as a derived operation.
+The type-checking kernel lives in `src/tc/`. Every `fx.types` type
+carries a `_kernel` field — an HOAS tree that elaborates to a kernel
+type — and `.check` is derived from `decide(_kernel, v)`. Universe
+levels are computed by `checkTypeLevel`. Refinement types layer a
+guard predicate on top of the kernel's structural check
+(`check = kernelDecide(v) ∧ guard(v)`).
 
 ## Foundation layers
 
@@ -40,57 +40,34 @@ firewall rule exists" — that's a universally quantified statement. No
 decision procedure can check it. You need structural verification of a
 proof term, not evaluation of a predicate.
 
-An earlier design considered separating decision procedures from the
-kernel, with an adequacy bridge connecting two separate notions of type.
-That architecture was rejected. If a kernel exists, the type system
-should be grounded in it from the start.
-
-## The kernel-first architecture
-
-Instead of two systems with a bridge:
+## Kernel integration
 
 ```
-Contracts (ad hoc)          Proofs (kernel)
-  Record, ListOf, Pi...       Pi, Sigma, Nat, eq...
-       \                        /
-        \   adequacy bridge    /
-         \                    /
-          \                  /
-           \                /
-            v              v
-             Effects kernel
-
-```
-
-One system, one source of truth:
-
-```
-Type system API
+Type system API (src/types/)
   Record, ListOf, DepRecord, refined, Pi, Sigma, ...
        |
-       | elaboration
+       | elaboration (src/tc/elaborate/, src/tc/hoas/)
        v
-Type-checking kernel (MLTT)
+Type-checking kernel (MLTT, src/tc/)
        |
-       | checker runs as effectful computation
+       | typeError sent as effect request
        v
-Effects kernel (freer monad, FTCQueue, trampoline, handlers)
+Effects kernel (freer monad + FTCQueue, src/kernel.nix)
        |
+       | handler (strict / collecting / ...) interprets effects
        v
 Pure Nix
 
 ```
 
-Types are kernel types. `Record`, `ListOf`, `DepRecord`, `refined` —
-all of them compile down to kernel constructions via elaboration.
-Checking a value against a type is a kernel judgment. Proving a
-universal property about a type is also a kernel judgment. Same
-kernel, same judgment form `Γ ⊢ t : T`, two modes of interaction:
-automated (decidable checking) and explicit (proof terms).
-
-There is no adequacy gap to bridge. Contracts don't exist as a
-separate concept — they're the decidable fragment of kernel type
-checking, optimized with proven-correct fast paths.
+Types in `fx.types.*` compile to kernel HOAS trees via
+`elaborate.nix`. `Record`, `ListOf`, `DepRecord`, and `refined` all
+resolve to Σ/Π/μ constructions the kernel can check. `.check` runs
+`decide(_kernel, v)`; `.validate v` wraps the same pipeline in a
+`typeCheck` effect request so handlers in `src/effects/typecheck.nix`
+can attach blame context. `.prove` runs bidirectional kernel
+checking on a HOAS proof term. All three go through the same
+judgment `Γ ⊢ t : T`.
 
 ## The trusted kernel
 
@@ -127,11 +104,9 @@ Terms are Nix attrsets. Each has a `tag` field for the constructor:
 { tag = "nat"; }                              # ℕ
 { tag = "zero"; }                             # 0
 { tag = "succ"; pred = ...; }                 # S(n)
-{ tag = "bool"; } { tag = "true"; } { tag = "false"; }    # 𝔹
 { tag = "list"; elem = ...; }                 # List A
 { tag = "nil"; elem = ...; } { tag = "cons"; elem = ...; head = ...; tail = ...; }
 { tag = "unit"; } { tag = "tt"; }             # ⊤
-{ tag = "void"; } { tag = "absurd"; type = ...; term = ...; }  # ⊥
 { tag = "sum"; left = ...; right = ...; }     # A + B
 { tag = "inl"; left = ...; right = ...; term = ...; }
 { tag = "inr"; left = ...; right = ...; term = ...; }
@@ -141,7 +116,9 @@ Terms are Nix attrsets. Each has a `tag` field for the constructor:
 { tag = "U"; level = 0; }                    # universe
 { tag = "ann"; term = ...; type = ...; }     # annotation
 { tag = "let"; name = "x"; type = ...; val = ...; body = ...; }  # let
-# Eliminators: nat-elim, bool-elim, list-elim, sum-elim
+# Eliminators: nat-elim, list-elim, sum-elim, desc-ind
+# Description universe: desc, desc-ret, desc-arg, desc-rec, desc-pi, desc-plus
+# Indexed fixpoint: mu, desc-con
 
 ```
 
@@ -587,9 +564,9 @@ All types have kernel backing via `kernelType`. The architecture is:
    construction and annotation insertion.
 
 5. **Decision procedures** — `.check` on every type is the kernel's
-   `decide` procedure: elaborate value to HOAS, kernel-check, return
-   boolean. This is the "one system" architecture — no separate
-   contract system, no adequacy bridge.
+   `decide` procedure: elaborate the value to HOAS, run bidirectional
+   kernel checking, return a boolean. Refinement types extend this
+   with a guard predicate conjoined at the leaf.
 
 6. **Surface API** — the public-facing `fx.types.*` attrset. Same
    names, same usage patterns. `Record`, `ListOf`,
@@ -621,10 +598,13 @@ v.verify (H.forall "x" H.nat (_: H.nat)) (v.fn "x" H.nat (x: H.succ x))
 
 1. **Type-checking kernel** (`src/tc/eval.nix`, `check.nix`,
    `quote.nix`, `conv.nix`, `term.nix`, `value.nix`). Pi, Sigma, Nat,
-   Bool, List, Sum, Unit, Void, identity types, cumulative universes,
-   and 7 axiomatized primitive types (String, Int, Float, Attrs, Path,
-   Function, Any). Bidirectional checking with NbE. Fuel-bounded
-   evaluation with `genericClosure` trampolining for stack safety.
+   List, Sum, Unit, identity types, indexed descriptions (`Desc I`,
+   `μ`, `desc-ind`) with a first-class plus coproduct, cumulative
+   universes, and 7 axiomatized primitive types (String, Int, Float,
+   Attrs, Path, Function, Any). `Bool` and `Void` are derived:
+   `H.bool = μ ⊤ (plus (retI tt) (retI tt)) tt`, `H.void = Fin 0`.
+   Bidirectional checking with NbE. Fuel-bounded evaluation with
+   `genericClosure` trampolining for stack safety.
 
 2. **HOAS surface combinators** (`src/tc/hoas.nix`). `forall`, `lam`,
    `sigma`, `pair`, `natLit`, `natElim`, `boolElim`, `listElim`,

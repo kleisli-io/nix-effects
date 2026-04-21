@@ -55,20 +55,22 @@ let
                 (_listDrop 1 lTms) (_listDrop 1 rTms)
                 (i - 1) (n - 1) payloadTm);
 
-  # Build per-layer L/R interp Tm lists for a plus-spine of n summands.
-  # Given the outer mu's description HOAS `dHoasOuter` and the
+  # Build per-layer L/R interp Tm lists for a plus-spine of n summands
+  # over index type `I`. Given the outer mu's description HOAS
+  # `dHoasOuter`, the target index HOAS `targetIdxVal`, and the
   # per-summand HOAS descriptions `descsHoas`, elaborates
-  #   lTms[k] = interp (descsHoas[k]) muFam tt
-  #   rTms[k] = interp (spineAfter (k+1)) muFam tt     (k in 0..n-2)
-  # where `muFam = λ_:⊤. μ ⊤ dHoasOuter tt`. Used by the datatype-macro
-  # flatten path and by the direct scalar paths (zero/succ/nil/cons/
-  # inl/inr) to synthesize the `inlPrim L R …` / `inrPrim L R …`
-  # wrapping at each tag-encoding layer. n must be >= 1.
-  buildTagInterpTms = depth: dHoasOuter: descsHoas:
+  #   lTms[k] = interp (descsHoas[k]) muFam targetIdxVal
+  #   rTms[k] = interp (spineAfter (k+1)) muFam targetIdxVal   (k in 0..n-2)
+  # where `muFam = λi:I. μ I dHoasOuter i`. Used by the datatype-macro
+  # flatten path (with `I`/`targetIdxVal` read off the ctor spec) and by
+  # the direct scalar paths (zero/succ/nil/cons/inl/inr) which pass
+  # `self.unitPrim` / `self.ttPrim` since all kernel scalars are
+  # ⊤-indexed. n must be >= 1.
+  buildTagInterpTms = depth: I: dHoasOuter: targetIdxVal: descsHoas:
     let
       n = builtins.length descsHoas;
-      muFam = self.lam "_i" self.unitPrim (_:
-        self.muI self.unitPrim dHoasOuter self.ttPrim);
+      muFam = self.lam "_i" I (iArg:
+        self.muI I dHoasOuter iArg);
       # Plus-spine of summands k..n-1. Requires remaining >= 1.
       spineAfter = k:
         let remaining = n - k; in
@@ -76,7 +78,7 @@ let
         else self.plus (builtins.elemAt descsHoas k) (spineAfter (k + 1));
       interpTm = dHoas:
         elaborate depth
-          (self.interpHoas self.unitPrim dHoas muFam self.ttPrim);
+          (self.interpHoas I dHoas muFam targetIdxVal);
     in {
       lTms = builtins.genList (k: interpTm (builtins.elemAt descsHoas k)) n;
       rTms = builtins.genList (k: interpTm (spineAfter (k + 1)))
@@ -107,7 +109,7 @@ let
       allData = n >= 1 && initsAllData n;
       lastRec =
         n >= 1
-        && (builtins.elemAt fields (n - 1)).kind == "rec"
+        && (builtins.elemAt fields (n - 1)).kind == "recAt"
         && initsAllData (n - 1);
     in
       if lastRec then { kind = "recursive"; }
@@ -185,28 +187,55 @@ let
       dTm = elaborate depth mono.dHoas;
       ctorIdx = mono.ctorIndex;
       nCtors = mono.nCtors;
-      # Precompute per-layer L/R interp Tms for the plus-coproduct tag
-      # encoding. Shared across recursive-chain layers (the ctor
-      # structure is identical at every layer).
-      tags =
-        if nCtors >= 2
-        then buildTagInterpTms depth mono.dHoas mono.conDescs
+      I = mono.I;
+      # Rebuild the `prev` attrset required by `mono.targetIdx` from an
+      # ordered list of HOAS field-arg nodes. Positions line up with
+      # `mono.fields`; only data/dataD entries contribute. Under the
+      # ctorShape precondition, `data` fields populate every position
+      # used to compute targetIdx (the ⊤-sugar and `datatypeI`'s
+      # targetIdx function close only over data-level markers).
+      prevOfArgs = args:
+        builtins.foldl' (acc: idx:
+          let f = builtins.elemAt mono.fields idx; in
+          if f.kind == "data" || f.kind == "dataD"
+          then acc // { ${f.name} = builtins.elemAt args idx; }
+          else acc) {} (builtins.genList (x: x) (builtins.length args));
+      # Under the ⊤-sugar path (`datatype` / `datatypeP`), every
+      # `targetIdx` is `_: ttPrim` regardless of `prev`, so the tags
+      # are invariant across chain layers and can be shared. Detect
+      # that case via `I`'s HOAS tag and precompute once; at I ≠ ⊤,
+      # tags depend on each layer's `targetIdx prev` and are
+      # recomputed per layer.
+      isUnitI = (I._htag or null) == "unit";
+      sharedTags =
+        if isUnitI && nCtors >= 2
+        then buildTagInterpTms depth I mono.dHoas self.ttPrim mono.conDescs
+        else null;
+      mkTags = targetIdxHoas:
+        if sharedTags != null then sharedTags
+        else if nCtors >= 2
+        then buildTagInterpTms depth I mono.dHoas targetIdxHoas mono.conDescs
         else { lTms = []; rTms = []; };
     in
     if shape.kind == "saturated" then
       # No recursion: build one payload from the data field Tms.
-      #   descCon dTm tt (encodeTag i n (pair d_0 (pair d_1 (… (pair d_{n-1} refl) …))))
-      # The innermost payload component inhabits Eq I j i at the ret-leaf
-      # (I=⊤, j=i=tt): refl discharges the reflexive equality.
+      #   descCon dTm tIdx (encodeTag i n (pair d_0 (pair d_1 (… (pair d_{n-1} refl) …))))
+      # The innermost payload component inhabits `Eq I j i` at the
+      # ret-leaf with `j = targetIdx prev`; `refl` discharges the
+      # reflexive equality `Eq I j j`.
       let
         dataTms = map (a: elaborate depth a) fieldArgs;
+        prev = prevOfArgs fieldArgs;
+        targetIdxHoas = mono.targetIdx prev;
+        targetIdxTm = elaborate depth targetIdxHoas;
+        tags = mkTags targetIdxHoas;
         payload = builtins.foldl'
           (acc: j:
             let d = builtins.elemAt dataTms (nFields - 1 - j);
             in T.mkPair d acc)
           T.mkRefl
           (builtins.genList (x: x) nFields);
-      in T.mkDescCon dTm T.mkTt
+      in T.mkDescCon dTm targetIdxTm
            (encodeTagTm tags.lTms tags.rTms ctorIdx nCtors payload)
     else
       let
@@ -254,15 +283,19 @@ let
         # first non-chain-successor tail). Elaborated normally — may be
         # a zero-field ctor application, a neutral, or anything else.
         baseTm = elaborate depth innermost.recArg;
-        # Build one layer's payload given elaborated non-rec field args
-        # and a tail accumulator. Field args are prepended in declaration
-        # order, the accumulator sits at the rec position, terminated
-        # with `tt`:
-        #   encodeTag i n (pair f_0 (pair f_1 (… (pair acc tt) …))).
-        buildLayer = nonRecTms: accTm:
+        # Build one layer's payload from its non-rec HOAS field args and
+        # a tail accumulator. Field args line up positionally with
+        # `mono.fields[0..nFields-2]` (the rec field is at the end);
+        # `prevOfArgs` extracts the data markers needed by `targetIdx`.
+        # The innermost pair terminator is `Refl : Eq I j j` where
+        # `j = targetIdx prev` for this layer.
+        buildLayer = nonRecHoasArgs: accTm:
           let
-            # The innermost pair terminator sits at the ret-leaf: its
-            # witness inhabits Eq I j i (refl at I=⊤).
+            nonRecTms = map (a: elaborate depth a) nonRecHoasArgs;
+            prev = prevOfArgs nonRecHoasArgs;
+            targetIdxHoas = mono.targetIdx prev;
+            targetIdxTm = elaborate depth targetIdxHoas;
+            tags = mkTags targetIdxHoas;
             innerMost = T.mkPair accTm T.mkRefl;
             payloadInner = builtins.foldl'
               (acc: j:
@@ -270,7 +303,7 @@ let
                 in T.mkPair f acc)
               innerMost
               (builtins.genList (x: x) (builtins.length nonRecTms));
-          in T.mkDescCon dTm T.mkTt
+          in T.mkDescCon dTm targetIdxTm
                (encodeTagTm tags.lTms tags.rTms ctorIdx nCtors payloadInner);
       in
       # Fold inward-to-outward: step idx=0 wraps baseTm with the
@@ -279,8 +312,7 @@ let
       builtins.foldl' (acc: idx:
         let
           layer = (builtins.elemAt chain (nLayers - 1 - idx)).val;
-          nonRecTms = map (a: elaborate depth a) layer.nonRecArgs;
-        in buildLayer nonRecTms acc
+        in buildLayer layer.nonRecArgs acc
       ) baseTm (builtins.genList (x: x) nLayers);
 
   # Elaboration: HOAS tree → de Bruijn Tm.
@@ -417,7 +449,7 @@ let
     # L/R are closed interps: L = Eq ⊤ tt tt, R = Σ (μnat tt) (_: Eq ⊤ tt tt).
     else if t == "zero" then
       let
-        tags = buildTagInterpTms depth self.natDesc
+        tags = buildTagInterpTms depth self.unitPrim self.natDesc self.ttPrim
                  [ self.descRet (self.descRec self.descRet) ];
       in
       T.mkDescCon self.natDescTm T.mkTt
@@ -437,7 +469,7 @@ let
         };
         n = builtins.length chain - 1;
         base = (builtins.elemAt chain n).val;
-        tags = buildTagInterpTms depth self.natDesc
+        tags = buildTagInterpTms depth self.unitPrim self.natDesc self.ttPrim
                  [ self.descRet (self.descRec self.descRet) ];
       in builtins.foldl' (acc: _:
         T.mkDescCon self.natDescTm T.mkTt
@@ -459,7 +491,7 @@ let
     else if t == "nil" then
       let
         dHoas = self.listDesc h.elem;
-        tags = buildTagInterpTms depth dHoas
+        tags = buildTagInterpTms depth self.unitPrim dHoas self.ttPrim
                  [ self.descRet
                    (self.descArg h.elem (_: self.descRec self.descRet)) ];
       in
@@ -484,7 +516,7 @@ let
         base = (builtins.elemAt chain n).val;
         dHoas = self.listDesc h.elem;
         dTm = elaborate depth dHoas;
-        tags = buildTagInterpTms depth dHoas
+        tags = buildTagInterpTms depth self.unitPrim dHoas self.ttPrim
                  [ self.descRet
                    (self.descArg h.elem (_: self.descRec self.descRet)) ];
       in builtins.foldl' (acc: i:
@@ -503,7 +535,7 @@ let
     else if t == "inl" then
       let
         dHoas = self.sumDesc h.left h.right;
-        tags = buildTagInterpTms depth dHoas
+        tags = buildTagInterpTms depth self.unitPrim dHoas self.ttPrim
                  [ (self.descArg h.left  (_: self.descRet))
                    (self.descArg h.right (_: self.descRet)) ];
       in
@@ -515,7 +547,7 @@ let
     else if t == "inr" then
       let
         dHoas = self.sumDesc h.left h.right;
-        tags = buildTagInterpTms depth dHoas
+        tags = buildTagInterpTms depth self.unitPrim dHoas self.ttPrim
                  [ (self.descArg h.left  (_: self.descRet))
                    (self.descArg h.right (_: self.descRet)) ];
       in

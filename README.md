@@ -82,6 +82,7 @@ Everything runs at `nix eval` time.
 - [Known limitations](#known-limitations)
 - [Testing](#testing)
 - [Formal foundations](#formal-foundations)
+- [Used by](#used-by)
 - [Acknowledgments](#acknowledgments)
 - [License](#license)
 
@@ -201,16 +202,6 @@ Or import directly (non-flake):
 let
   pkgs = import <nixpkgs> {};
   fx = import ./path/to/nix-effects { lib = pkgs.lib; };
-in ...
-```
-
-To also get benchmark runner derivations (`fx.bench.run`, `fx.bench.compare`),
-pass `pkgs`:
-
-```nix
-let
-  pkgs = import <nixpkgs> {};
-  fx = import ./path/to/nix-effects { inherit pkgs; lib = pkgs.lib; };
 in ...
 ```
 
@@ -555,6 +546,19 @@ Key papers that shaped the design:
   Graded Modal Types*. The graded linear type model. nix-effects' `Linear`,
   `Affine`, and `Graded` types implement resource-usage tracking following
   this quantitative framework.
+
+## Used by
+
+Projects that import nix-effects as a dependency. If your project uses
+nix-effects and you'd like it listed here, open a PR.
+
+- **[den](https://github.com/denful/den)** by [@vic](https://github.com/vic) —
+  an aspect-oriented Nix configuration framework. Users declare parametric
+  *aspects* (functions from a composition context to NixOS / darwin /
+  home-manager modules) and den's pipeline resolves and composes them.
+  den's CI template (`templates/ci/`) exercises `den.lib.aspects.fx.*` —
+  handlers, constraint registry, chain handler — on top of nix-effects'
+  freer-monad runtime.
 
 ## Acknowledgments
 

@@ -1,4 +1,8 @@
-# Synthetic microbenchmarks for diagnosing bottlenecks.
+# Synthetic microbenchmarks for diagnosing effect-layer bottlenecks.
+#
+# Each workload is a pure Nix expression that forces a computation of bounded
+# size. `s10k` = 10 000 iterations (quick tier), `s100k` = 100 000 iterations
+# (standard tier), `s1m` = 1 000 000 iterations (heavy tier).
 { fx }:
 
 let
@@ -51,14 +55,33 @@ let
     in (builtins.elemAt steps (builtins.length steps - 1)).value;
 
 in {
-  inherit mkEffectHeavy mkBindHeavy mkMixed mkNestedHandlers mkDeepChains mkRawGC;
-
-  bench = {
-    effectHeavy = { s10k = mkEffectHeavy 10000; s100k = mkEffectHeavy 100000; s1m = mkEffectHeavy 1000000; };
-    bindHeavy = { s10k = mkBindHeavy 10000; s100k = mkBindHeavy 100000; s1m = mkBindHeavy 1000000; };
-    mixed = { s10k = mkMixed 10000; s100k = mkMixed 100000; s1m = mkMixed 1000000; };
-    nestedHandlers = { d3_i1k = mkNestedHandlers 3 1000; d5_i1k = mkNestedHandlers 5 1000; d10_i100 = mkNestedHandlers 10 100; };
-    deepChains = { s10k = mkDeepChains 10000; s50k = mkDeepChains 50000; };
-    rawGC = { s10k = mkRawGC 10000; s100k = mkRawGC 100000; s1m = mkRawGC 1000000; };
+  effectHeavy = {
+    s10k  = mkEffectHeavy 10000;
+    s100k = mkEffectHeavy 100000;
+    s1m   = mkEffectHeavy 1000000;
+  };
+  bindHeavy = {
+    s10k  = mkBindHeavy 10000;
+    s100k = mkBindHeavy 100000;
+    s1m   = mkBindHeavy 1000000;
+  };
+  mixed = {
+    s10k  = mkMixed 10000;
+    s100k = mkMixed 100000;
+    s1m   = mkMixed 1000000;
+  };
+  nestedHandlers = {
+    d3_i1k   = mkNestedHandlers 3 1000;
+    d5_i1k   = mkNestedHandlers 5 1000;
+    d10_i100 = mkNestedHandlers 10 100;
+  };
+  deepChains = {
+    s10k = mkDeepChains 10000;
+    s50k = mkDeepChains 50000;
+  };
+  rawGC = {
+    s10k  = mkRawGC 10000;
+    s100k = mkRawGC 100000;
+    s1m   = mkRawGC 1000000;
   };
 }

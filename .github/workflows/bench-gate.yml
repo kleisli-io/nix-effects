@@ -1,0 +1,96 @@
+name: Bench Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [labeled, opened, synchronize, reopened, review_requested, ready_for_review]
+    paths:
+      - 'src/**'
+      - 'bench/**'
+      - 'flake.nix'
+      - 'flake.lock'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Bench gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history is needed for --since to resolve commit-trailer
+          # overrides against the PR base branch.
+          fetch-depth: 0
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Determine trailer range
+        id: range
+        # Resolve the commit range that trailer scanning should cover,
+        # per event type:
+        #   pull_request    — origin/<base_ref>..HEAD, every PR commit.
+        #   push            — <before>..<sha>, every commit in the push
+        #                     (may be >1 when josh syncs multiple commits
+        #                     in one tick: owner squashes + external
+        #                     replays). HEAD~1..HEAD would miss the tail.
+        #                     First-ever push to a new branch sets
+        #                     `before` to 40 zeros; fall back to HEAD~1.
+        #   workflow_dispatch / other — HEAD~1..HEAD as best effort;
+        #                     manual dispatches typically don't carry
+        #                     meaningful trailer context.
+        run: |
+          if [ -n "${{ github.base_ref }}" ]; then
+            echo "range=origin/${{ github.base_ref }}..HEAD" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ github.event.before }}" ] && \
+               [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            echo "range=${{ github.event.before }}..${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "range=HEAD~1..HEAD" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Capture current run
+        run: |
+          RUN="$(nix build .#bench-run --no-link --print-out-paths)"
+          "$RUN/bin/nix-effects-bench-run" \
+            --name "pr-${GITHUB_SHA::7}" \
+            --runs 5 --warmup 1 --tier quick
+
+      - name: Gate against committed baseline
+        # --alloc-only: CI runners and the developer workstation that
+        # captured the baseline have different hardware profiles, so
+        # cpu.p50 percentage deltas aren't meaningful. Alloc counters are
+        # evaluator-deterministic (the flake pins the Nix that evaluates
+        # workloads) and remain a valid structural gate.
+        run: |
+          GATE="$(nix build .#bench-gate --no-link --print-out-paths)"
+          "$GATE/bin/nix-effects-bench-gate" \
+            --alloc-only \
+            --baseline bench/history/baseline.json \
+            --current  "bench/history/pr-${GITHUB_SHA::7}.json" \
+            --budgets  bench/budgets.toml \
+            --since    "${{ steps.range.outputs.range }}" \
+            --output   "bench/history/pr-${GITHUB_SHA::7}.gate.md"
+
+      - name: Publish gate report to step summary
+        if: always()
+        run: |
+          if [ -f "bench/history/pr-${GITHUB_SHA::7}.gate.md" ]; then
+            cat "bench/history/pr-${GITHUB_SHA::7}.gate.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload bench artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-gate-${{ github.sha }}
+          path: |
+            bench/history/pr-*.json
+            bench/history/pr-*.md

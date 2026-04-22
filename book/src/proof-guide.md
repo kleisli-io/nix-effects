@@ -578,6 +578,26 @@ normal forms.
   description-macro layer; they are not written directly against the
   kernel.
 
+  The macro layer exposes four user-facing entry points for defining
+  inductive types. `H.datatype name cons` compiles a monomorphic,
+  ⊤-indexed datatype from a list of `H.con name fields` specs
+  (`H.field`, `H.fieldD`, `H.recField`, `H.piField`, `H.piFieldD` for
+  the field shapes). `H.datatypeP name params mkCons` adds a
+  parameter layer, threading each parameter through an outer Π
+  binder. `H.datatypeI name I consList` adds an arbitrary index type
+  `I : U`; constructors use `H.conI name fields targetIdx` to specify
+  their target index as a function of earlier field markers, and
+  recursive fields at non-default indices use `H.recFieldAt name
+  idxFn` (plain `H.recField` is rejected at `I ≠ ⊤`). `H.datatypePI
+  name params indexFn mkCons` combines parameters and indexing — the
+  index type itself may depend on parameters, which is what
+  `Eq A a : A → U` requires. Each macro returns a record exposing
+  `.D : Desc I`, `.T : Π(i:I). U` (or `μ ⊤ D tt` at the ⊤-sugar
+  path), per-constructor fields, and `.elim` built on `desc-ind`. The
+  prelude's `FinDT`, `VecDT`, and `EqDT` are the canonical indexed
+  instances and drive the surface `H.fin` / `H.vec` / `H.eqDT`
+  bindings as thin forwarders.
+
 For Nix, the "concrete data" restriction is less of a limitation than
 it sounds. Nix evaluates configurations completely before building —
 every module option, every service config, every package attribute is a

@@ -1,0 +1,66 @@
+# Perf budgets generated from calibration run 'calibrate-20260422-102815'.
+# Runs per workload: 50
+# Nix: 2.31.4
+# System: x86_64-linux
+# Timestamp: 2026-04-22T10:45:46Z
+
+allocTolerancePermille = 5
+
+# Workloads whose cpu.p95 spread is structurally noise-limited
+# (small-workload relative-variance artifacts or GC jitter on
+# specific DAG shapes). Excluded from cpu gating; alloc-deterministic
+# gating still applies at 0.5‰ tolerance.
+noiseLimited = [
+"effects.buildSim.diamond5",
+"effects.stress.rawGC.s10k",
+]
+
+[cpu]
+"effects.buildSim.fail_early" = 17
+"effects.buildSim.fail_late" = 12
+"effects.buildSim.fail_mid" = 11
+"effects.buildSim.linear100" = 12
+"effects.buildSim.linear50" = 9
+"effects.buildSim.mixed_small" = 11
+"effects.buildSim.tree5" = 12
+"effects.buildSim.wide100" = 12
+"effects.buildSim.wide50" = 9
+"effects.interp.countdown1000" = 8
+"effects.interp.fib10" = 9
+"effects.interp.fib15" = 11
+"effects.interp.lets100" = 14
+"effects.interp.lets500" = 6
+"effects.interp.sum100" = 11
+"effects.interp.sum1000" = 9
+"effects.stress.bindHeavy.s10k" = 9
+"effects.stress.deepChains.s10k" = 14
+"effects.stress.effectHeavy.s10k" = 11
+"effects.stress.mixed.s10k" = 11
+"effects.stress.nestedHandlers.d3_i1k" = 11
+"tc.check.list-chain-5000" = 12
+"tc.check.macro-field" = 12
+"tc.check.nat-chain-5000" = 11
+"tc.conv.alpha-equivalent" = 9
+"tc.conv.beta-distinct" = 8
+"tc.conv.identical-deep" = 14
+"tc.conv.identical-shallow" = 9
+"tc.conv.mu-heavy" = 12
+"tc.conv.plus-heavy" = 9
+"tc.e2e.datatype-macro-big" = 9
+"tc.e2e.datatypeI-fin-deep" = 9
+"tc.e2e.tc-test-suite-full" = 8
+"tc.e2e.tc-test-suite-per-module.check" = 8
+"tc.e2e.tc-test-suite-per-module.conv" = 12
+"tc.e2e.tc-test-suite-per-module.elaborate" = 8
+"tc.e2e.tc-test-suite-per-module.eval" = 11
+"tc.e2e.tc-test-suite-per-module.hoas" = 8
+"tc.e2e.tc-test-suite-per-module.quote" = 9
+"tc.e2e.tc-test-suite-per-module.term" = 9
+"tc.e2e.tc-test-suite-per-module.value" = 11
+"tc.e2e.tc-test-suite-per-module.verified" = 11
+"tc.elaborate.flatten" = 17
+"tc.elaborate.recursive" = 17
+"tc.infer.deep-app-100" = 11
+"tc.quote.closed" = 12
+"tc.quote.open" = 11
+"tc.quote.stuck" = 8

@@ -246,8 +246,8 @@ in {
           lam forall app fst_ snd_
           nat zero succ j natCaseU
           eq refl
-          muI descCon descInd interpHoas allHoas
-          sumPrim sumElimPrim inlPrim inrPrim
+          muI descInd interpHoas allHoas
+          sumPrim sumElimPrim
           descArg retI recI
           finDesc transNat unitPrim ttPrim;
 
@@ -305,7 +305,7 @@ in {
     # discrimination doesn't depend on recursion.
     natCaseU = A: B:
       let
-        inherit (self) ann lam forall app nat u unitPrim
+        inherit (self) ann lam forall nat u unitPrim
                         ttPrim mu descInd interpHoas allHoas
                         sumPrim sumElimPrim descRet descRec;
         D = nat.D;
@@ -475,7 +475,7 @@ in {
     # `Eq (Eq A a a) refl refl`, witnessed by refl.
     eqIsoFwd = A: a: b:
       let
-        inherit (self) lam forall eq j refl eqToEqDT eqDTToEq;
+        inherit (self) lam eq j refl eqToEqDT eqDTToEq;
         motive = lam "b'" A (b': lam "e'" (eq A a b') (e':
                    eq (eq A a b')
                       (eqDTToEq A a b' (eqToEqDT A a b' e'))
@@ -492,7 +492,7 @@ in {
     # refl ≡ reflDT = descCon eD a refl — to the general i.
     eqIsoBwd = A: a: b:
       let
-        inherit (self) lam forall eq j refl muI unitPrim
+        inherit (self) lam eq j refl muI unitPrim
                        descCon descInd eqDesc eqToEqDT eqDTToEq;
         eD = eqDesc A a;
         Q = lam "i" A (iArg: lam "x'" (muI A eD iArg) (x':

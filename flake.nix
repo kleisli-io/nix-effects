@@ -26,9 +26,12 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
           lib = nixpkgs.lib;
-          bench = import ./bench { inherit lib pkgs; };
           # Per-module API markdown generated from extractDocs mk wrappers.
           apiDocsSrc = import ./book/gen { inherit pkgs lib nix-effects; };
+          # bench runners need pkgs at import time to produce shell
+          # derivations. Re-import the root with pkgs here so `bench.runner`
+          # resolves to the non-null attrset.
+          nix-effects-with-pkgs = import ./. { inherit pkgs lib; };
         in {
           # Raw generated API markdown (one .md per module).
           api-docs-src = apiDocsSrc;
@@ -39,21 +42,14 @@
             inherit pkgs lib nix-effects;
           };
 
-          # Benchmark runner and comparison tool
-          bench = bench.run;
-          bench-compare = bench.compare;
+          # Benchmark harness. Invoked directly from $out/bin; see
+          # PERFORMANCE.md for the full CLI surface.
+          bench-run              = nix-effects-with-pkgs.bench.runner.run;
+          bench-compare          = nix-effects-with-pkgs.bench.runner.compare;
+          bench-gate             = nix-effects-with-pkgs.bench.runner.gate;
+          bench-calibrate        = nix-effects-with-pkgs.bench.runner.calibrate;
+          bench-open-regressions = nix-effects-with-pkgs.bench.runner.open-regressions;
         });
-
-      apps = forAllSystems (system: {
-        bench = {
-          type = "app";
-          program = "${self.packages.${system}.bench}/bin/nix-effects-bench";
-        };
-        bench-compare = {
-          type = "app";
-          program = "${self.packages.${system}.bench-compare}/bin/nix-effects-bench-compare";
-        };
-      });
 
       checks = forAllSystems (system:
         let

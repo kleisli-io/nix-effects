@@ -98,7 +98,7 @@ jobs:
 
       - name: Upload bench artifacts
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: bench-gate-${{ github.sha }}
           path: |

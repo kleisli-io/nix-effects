@@ -49,7 +49,11 @@ let
     baseline,
     current,
     cpuBudgetPct,                 # Int or null. Null = alloc-only gating.
-    allocTolerancePermille
+    allocTolerancePermille,
+    allocGated ? true             # When false, alloc regressions are silently
+                                  # passed. Used for workloads whose alloc
+                                  # count scales with unrelated work (e.g.
+                                  # test-count-monotonic suites).
   }:
     let
       bothDeterministic = (baseline.alloc_deterministic or false) && (current.alloc_deterministic or false);
@@ -63,7 +67,7 @@ let
       cpuDelta = pctDelta baseline.cpu.p50 current.cpu.p50;
       cpuP95NonOverlap = current.cpu.p95 > baseline.cpu.p95;
 
-      allocFailed = bothDeterministic && allocDelta > allocTolerancePermille;
+      allocFailed = allocGated && bothDeterministic && allocDelta > allocTolerancePermille;
       cpuFailed   = cpuBudgetPct != null && cpuDelta > cpuBudgetPct && cpuP95NonOverlap;
       cpuWarn     = cpuBudgetPct != null && cpuDelta > 2 && cpuDelta <= cpuBudgetPct;
     in
@@ -97,10 +101,14 @@ let
     current,
     budgets,          # { cpu = { <workload> = Int; ... }; allocTolerancePermille = Int; }
     trailers ? [ ],   # [{ workload, reason }]. See gate.nix runner for syntax.
+    allocNoiseLimited ? [ ],      # Workloads excluded from alloc gating.
   }:
     let
       overrideMap = builtins.listToAttrs
         (map (t: { name = t.workload; value = t; }) trailers);
+
+      allocNoiseLimitedSet = builtins.listToAttrs
+        (map (w: { name = w; value = true; }) allocNoiseLimited);
 
       currentNames = builtins.attrNames current.results;
       baselineNames = builtins.attrNames baseline.results;
@@ -113,6 +121,7 @@ let
           current = current.results.${w};
           cpuBudgetPct = budgets.cpu.${w} or null;
           allocTolerancePermille = budgets.allocTolerancePermille or 5;
+          allocGated = ! (allocNoiseLimitedSet ? ${w});
         })
         commonNames;
 

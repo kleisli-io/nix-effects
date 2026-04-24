@@ -26,6 +26,7 @@ let
     else if t1 == "VZero" && t2 == "VZero" then true
     else if t1 == "VTt" && t2 == "VTt" then true
     else if t1 == "VRefl" && t2 == "VRefl" then true
+    else if t1 == "VFunext" && t2 == "VFunext" then true
     else if t1 == "VU" && t2 == "VU" then v1.level == v2.level
     else if t1 == "VString" && t2 == "VString" then true
     else if t1 == "VInt" && t2 == "VInt" then true
@@ -234,6 +235,8 @@ in mk {
     "conv-zero" = { expr = conv 0 vZero vZero; expected = true; };
     "conv-tt" = { expr = conv 0 vTt vTt; expected = true; };
     "conv-refl" = { expr = conv 0 vRefl vRefl; expected = true; };
+    "conv-funext" = { expr = conv 0 V.vFunext V.vFunext; expected = true; };
+    "conv-funext-refl" = { expr = conv 0 V.vFunext vRefl; expected = false; };
     "conv-U0" = { expr = conv 0 (vU 0) (vU 0); expected = true; };
     "conv-U1" = { expr = conv 0 (vU 1) (vU 1); expected = true; };
 

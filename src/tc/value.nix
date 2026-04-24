@@ -50,6 +50,9 @@ let
   vEq = type: lhs: rhs: { tag = "VEq"; inherit type lhs rhs; };
   vRefl = { tag = "VRefl"; };
 
+  # Function extensionality postulate — zero-payload atomic value.
+  vFunext = { tag = "VFunext"; };
+
   # Descriptions
   vDesc = I: { tag = "VDesc"; inherit I; };
   vDescRet = j: { tag = "VDescRet"; inherit j; };            # j : I (target index of ret-leaf)
@@ -163,7 +166,7 @@ in mk {
     inherit vList vNil vCons;
     inherit vUnit vTt;
     inherit vSum vInl vInr;
-    inherit vEq vRefl;
+    inherit vEq vRefl vFunext;
     inherit vDesc vDescRet vDescArg vDescRec vDescPi vDescPlus vMu vDescCon;
     inherit vU;
     inherit vString vInt vFloat vAttrs vPath vFunction vAny;
@@ -202,6 +205,7 @@ in mk {
     "vinr-tag" = { expr = (vInr vNat vUnit vTt).tag; expected = "VInr"; };
     "veq-tag" = { expr = (vEq vNat vZero vZero).tag; expected = "VEq"; };
     "vrefl-tag" = { expr = vRefl.tag; expected = "VRefl"; };
+    "vfunext-tag" = { expr = vFunext.tag; expected = "VFunext"; };
     "vu-tag" = { expr = (vU 0).tag; expected = "VU"; };
     "vu-level" = { expr = (vU 1).level; expected = 1; };
     "vstring-tag" = { expr = vString.tag; expected = "VString"; };

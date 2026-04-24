@@ -7,64 +7,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The benchmark harness is rebuilt around dual-metric measurement. Allocation counters from `NIX_SHOW_STATS` (deterministic for a fixed Nix evaluator + nixpkgs) are the primary, structural axis; cpu.p50 / cpu.p95 percentiles are the secondary, environmental axis. `bench/workloads/` collects the existing effects-kernel workloads (`effects.interp.*`, `effects.buildSim.*`, `effects.stress.*`) alongside new type-checking-kernel workloads (`tc.conv.*`, `tc.check.*`, `tc.infer.*`, `tc.quote.*`, `tc.elaborate.*`, `tc.e2e.*`). `bench/lib/{measure,gate,format}.nix` produces pure sampling, classification, and markdown; `bench/runner/` exposes `bench-run`, `bench-compare`, `bench-gate`, `bench-calibrate`, and `bench-open-regressions` as flake packages under `packages.<system>.bench-*`. The committed `bench/history/baseline.{json,md}` is the rolling reference and `bench/budgets.toml` carries per-workload cpu budgets plus a `noiseLimited` array for workloads whose cpu.p95 spread is structurally too wide for cpu gating. Commit trailers `Perf-regression: <workload>, <reason ≥20 chars>` acknowledge intentional regressions; the gate demotes matching hard-fails into an "overridden" bucket.
+### Headline changes
 
-A `bench-gate` CI workflow runs on every push to main and every pull request touching `src/**`, `bench/**`, `flake.{nix,lock}`. It gates **alloc-only**: shared runners and the developer workstation that captured the baseline have different hardware profiles, so cpu percentage deltas aren't meaningful across them, but allocation counters — as evaluator-deterministic byte counts — are a valid universal gate. A shell-level and Nix-level pair of guards refuses to compare a baseline captured on one Nix version against a current run on another, since allocation counts can shift under evaluator changes unrelated to the contributor's code. Workloads in `noiseLimited` retain alloc gating but are exempt from cpu gating even on the workstation path.
-
-Bench runners pin `NIX_PATH=nixpkgs=${pkgs.path}` to the flake-locked nixpkgs store path instead of resolving `<nixpkgs>` from the ambient channel. The host's channel version of `lib` previously entered workload evaluation and produced hardware- and developer-specific allocation counts even for identical code; the pin closes that hole so alloc determinism actually holds across machines with the same `flake.lock`.
-
-Type validation threads a structural `path` through the `typeCheck` effect, so the collecting handler now reports deep blame as a list of descent segments rather than a single opaque type name. `Record`, `ListOf`, `Variant`, and `Sigma` recurse via a new `validateAt path v` alongside the existing `validate v`; the 1-arg API is unchanged, and `ListOf` now delegates to `elemType.validateAt` so record elements decompose into per-field effects instead of blaming as a whole.
-
-The kernel retires `Bool`, `Void`, and `absurd` as primitives. The plus-coproduct and `Fin 0` from the indexed-description layer now carry them: `H.bool = μ ⊤ (plus (retI tt) (retI tt)) tt`, `H.void = Fin 0`, `H.boolElim` derived via `descInd` on `boolDesc`, and `H.absurd` routed through `absurdFin0` — a direct `J`-transport at motive `λx _. app (natCaseU P unitPrim) x`, eliminating the `natDisc → noConfSuccZero → absurdPrim` chain. Twelve kernel dispatch cases, six `Tm` constructors, four `Val` constructors, and two `Elim` frames disappear from the TCB. User-facing API (`H.bool`, `H.true_`, `H.false_`, `H.void`, `H.boolElim`, `H.absurd`, `v.if_`, `v.true_`, `v.false_`) is unchanged — they are the same combinators, now derived. `VUnit`/`VTt` remain as the irreducible bootstrap singleton.
-
-The datatype macro gains an indexed variant. `datatypeI name I consList` and `datatypePI name params indexFn mkCons` compile indexed families alongside the existing ⊤-indexed `datatype` / `datatypeP`, with `conI name fields targetIdx` and `recFieldAt name idxFn` as the spec constructors for non-trivial target indices and recursive calls at non-default indices. `Fin : Nat → U`, `Vec A : Nat → U`, and the propositional-equality family `Eq A a : A → U` are reimplemented as macro invocations (`FinDT`, `VecDT`, `EqDT`) and the hand-written `finDesc` / `fin` / `fzero` / `fsuc` / `finElim`, `vecDesc` / `vec` / `vnil` / `vcons` / `vecElim`, `eqDesc` / `eqDT` / `reflDT` bodies in `combinators.nix` collapse into forwarders over the macro outputs. Single source of truth for indexed families: the description, type family, constructors, and eliminator all flow through `datatypeI` / `datatypePI`, and every internal consumer (`absurdFin0`, `natPredCase`, `vhead`, `vtail`, `eqToEqDT`, `eqDTToEq`, `eqIsoFwd`, `eqIsoBwd`) continues to resolve through the macro-bound names.
+- **Dual-metric bench harness** (`bench/`). `bench-run` samples each
+  workload N times and records `NIX_SHOW_STATS` allocation counters
+  plus cpu percentiles under `bench/history/<name>.{json,md}`.
+  `bench-gate` classifies a run against the committed baseline,
+  demotes hard-fails matched by `Perf-regression: <workload>, <reason>`
+  commit trailers to "overridden", and runs **alloc-only in CI**
+  (shared runners have too much cpu variance against a
+  workstation-captured baseline). `bench-calibrate`, `bench-compare`,
+  `bench-open-regressions`, and `bench-lint-workloads` round out the
+  toolchain as flake packages. Per-workload cpu budgets,
+  `noiseLimited` (cpu-axis) and `allocNoiseLimited` (alloc-axis)
+  exclusion arrays, a Nix-version guard, and typo / missing-registry
+  guards ship in `bench/budgets.toml` + `bench/runner/finalize-gate.nix`
+- **Kernel diagnostic surface.** `H.checkHoas` / `H.inferHoas` now
+  attach a `hint` string and a `surface` HOAS-node pointer to every
+  type-error, lazily — only the failure branch materialises the
+  walker. Powered by a position-stack effect in the `runCheck` handler
+  (`src/tc/check/ctx.nix`), a `bindP pos m k` bracket combinator that
+  tags sub-delegations with structural `Position`s, and a SourceMap
+  mirror tree (`src/tc/hoas/source_map.nix`) keyed on the same
+  `Position` alphabet
+- **Bool / Void retired as primitives.** `H.bool = μ ⊤ (plus (retI tt)
+  (retI tt)) tt`, `H.void = Fin 0`, `H.boolElim` via `descInd`,
+  `H.absurd` via direct `J`-transport through `natCaseU`. Six `Tm`
+  constructors, four `Val` constructors, two `Elim` frames, twelve
+  dispatch cases, and ~60 lines of dead helpers leave the TCB. API
+  surface unchanged
+- **Indexed datatype macro.** `datatypeI` and `datatypePI` compile
+  arbitrary-indexed inductive families atop the ⊤-indexed
+  `datatype` / `datatypeP`. `FinDT`, `VecDT`, `EqDT` replace the
+  hand-written description / constructor / eliminator triples;
+  ~260 lines collapse to 25 lines of forwarders
+- **Path-threaded `typeCheck` effect.** `Type.validateAt path v`
+  recurses structural path segments through `Record`, `ListOf`,
+  `Variant`, `Sigma`. Value-side and kernel-side Errors now share
+  one `Position` ADT, so a single pretty-printer and hint-resolver
+  cover both
 
 ### Added
 
-- **Dual-metric bench harness** (`bench/{lib,runner,workloads}/`) — `bench-run` samples each workload N times, aggregates via `measure.summarize` into alloc counters and cpu percentiles, writes `bench/history/<name>.{json,md}`. `bench-compare` / `bench-gate` classify baseline-vs-current via `bench.gate.gate`; `bench-gate` additionally scans `git log --since <range>` for `Perf-regression:` trailers and validates them (rejects wildcards, unknown workloads, reasons <20 chars). `bench-calibrate` drives runs at elevated sample counts, computes per-workload cpu budgets as `ceil((p95 - p50) / p50 × 1.5 × 100)` (floored at 3%), and preserves a `noiseLimited` array across re-calibration via `--existing-budgets`. `bench-open-regressions` audits `Perf-regression:` trailers against current metrics, classifying each as RECOVERED / OPEN / UNMEASURED. All five runners exposed as flake packages (`.#bench-run`, `.#bench-compare`, `.#bench-gate`, `.#bench-calibrate`, `.#bench-open-regressions`)
-- **Type-checking-kernel bench workloads** (`bench/workloads/tc/`) — microbenchmarks on `conv` (identical-shallow/deep, α-equivalent, β-distinct, μ-heavy, plus-heavy), `quote` (closed, open, stuck on `VNe`), `check` (nat-chain-5000, list-chain-5000, macro-field), `infer` (100-deep app spine), `elaborate` (saturated-flatten, linear-recursive), plus end-to-end workloads covering the full 1014-test tc suite, per-module breakdowns, the category-theory library, and a 20-constructor `datatypeP` macro stress
-- **`bench-gate --alloc-only`** flag — ignores the `[cpu]` table of `--budgets` and gates only on allocation counters. Used by CI where the baseline was captured on different hardware than the PR runner. Local developers keep the full dual-metric gate
-- **Nix-version guard in `bench-gate`** — refuses to compare a baseline captured on one Nix version against a current run on another. The shell driver fast-fails with a clean CLI message; `finalize-gate.nix` re-asserts the invariant for non-CLI callers
-- **`.github/workflows/bench-gate.yml`** — alloc-only CI gate on every push to main and every PR touching `src/**`, `bench/**`, `flake.{nix,lock}`. Captures a `pr-<sha>` run, gates against the committed baseline, publishes the verdict to the job step summary, and uploads `pr-*.{json,md,gate.md}` as artifacts. `Perf-regression:` commit trailers demote matching hard-fails to "overridden"
-- **`datatypeI` / `datatypePI` indexed-datatype macros** — compile indexed inductive families `I : U` into a record exposing `.D : Desc I`, `.T : Π(i:I). U`, per-constructor fields `.<name> : Π(params). Π(fields). μ I D (targetIdx prev)`, and `.elim` on top of `descInd`. Spec constructors `conI name fields targetIdx` and `recFieldAt name idxFn` land alongside the existing `con` / `recField`. `datatypeI` is monomorphic over a user-supplied `I`; `datatypePI name params indexFn mkCons` threads an outer Π-over-params and a parameter-dependent index type (needed for `Eq A a : A → U` where the index type is the parameter `A`). The ⊤-indexed `datatype` / `datatypeP` continue to work verbatim — internally they lift `con` specs to `conI` with default `targetIdx = (_: ttPrim)` and delegate to the indexed path
-- **`FinDT` / `VecDT` / `EqDT` scope bindings** in `hoas/datatype.nix` — macro-derived instances of the three canonical indexed families, mirroring the existing `NatDT` / `ListDT` / `SumDT` pattern
-- **`fx.effects.hasHandler : String → Computation Bool`** — runtime query for whether a handler with the given name exists in the current scope. Dispatched by the trampoline via a scope-aware `localHandler` shim: returns `true` when the name is bound in the nearest enclosing `handle`/`scope.run`, rotates outward through unhandled scopes, and defaults to `false` at the root. **Reserves the effect name `"has-handler"`** — user handlers bound to that name are shadowed by the internal dispatch and should be renamed
-- **Deep handler semantics for effect rotation** (Plotkin & Pretnar 2013) — when an effect rotates past an inner `scope.run` to an outer handler, and the outer handler's `resume` is itself a computation, that computation's effects now route back through the inner scope's handlers first. Previously the shallow path had the sub-effects bypass the inner scope, producing unhandled-effect errors for patterns like `scope.run { A = … } (send "B")` where the outer `B` handler resumes with `send "A"`. The fix tags the rotation continuation's queue with `__rawResume` and routes raw resumes through `effectRotate` against the inner handler stack
-- **Path-threaded `typeCheck` effect** — the effect param grows a `path : [String]` field. Collecting-handler state grows `{ path }`; logging-handler state grows `{ path }`. Strict handler's throw message renders `path` when non-empty, falls back to `context` otherwise
-- **`Type.validateAt path v`** — public method on every type for effectful validation with an explicit path prefix. `validate v` is the 1-arg convenience that delegates to `validateAt []`. Constructors (`Record`, `ListOf`, `Variant`, `Sigma`) thread path by appending one segment per recursion (field name, `"[i]"` for list elements, variant tag, `"fst"`/`"snd"` for `Sigma`)
-- **`verify` callback contract** — custom verifiers now take `self: path: v: Computation`. Previously `self: v: Computation`
+- `datatypeI name I consList` / `datatypePI name params indexFn mkCons`
+  with `conI` / `recFieldAt` spec constructors; `FinDT` / `VecDT` /
+  `EqDT` scope bindings
+- `fx.effects.hasHandler : String → Computation Bool` (reserves the
+  effect name `"has-handler"`)
+- Deep handler semantics for effect rotation (Plotkin & Pretnar): raw
+  resumes from an outer handler route back through the inner scope
+- `.github/workflows/bench-gate.yml` — alloc-only CI gate per push /
+  PR, with step-summary publication
+- Short-alias `bench-*` commands alongside `nix-effects-bench-*` via
+  a `bench-shims` derivation in `shell.nix`
+- `bench/workloads/tc/{bindP,diag}.nix` canaries; `tc.e2e.let-chain-100`
 
 ### Changed
 
-- **Bench runners pin nixpkgs to `${pkgs.path}`** (the flake-locked store path) instead of resolving `<nixpkgs>` from the ambient channel. Workload evaluation now uses the same `lib` that built the runner derivation, so allocation counts are reproducible across machines that share a `flake.lock`. Affects `bench-run`, `bench-compare`, `bench-gate`, `bench-calibrate`, and `bench-open-regressions`
-- **`open-regressions` audit is data-driven, not trailer-pair-based.** Previously a single `Perf-recovers-in:` trailer in the log range coarsely marked every outstanding regression as recovered. The runner now invokes the gate against supplied baseline/current pairs and classifies each `Perf-regression:` trailer by the workload's current gate status: `pass` → RECOVERED, `fail_*` → OPEN, missing → UNMEASURED. No external task-tracker references
-- **`finalize-gate.nix` asserts `[cpu]` and `noiseLimited` disjointness.** A workload present in both would silently prefer the cpu budget and mask the noise-limited declaration; the finalizer now throws with the offending workload names
-- **Fin / Vec / Eq-as-description preludes rebound through the datatype macro.** `finDesc` / `fin` / `fzero` / `fsuc` / `finElim`, `vecDesc` / `vec` / `vnil` / `vcons` / `vecElim`, and `eqDesc` / `eqDT` / `reflDT` in `hoas/combinators.nix` are now η-expanded forwarders over `FinDT` / `VecDT` / `EqDT` fields. Single source of truth for the indexed-family machinery; `absurdFin0`, `natPredCase`, `vhead`, `vtail`, `eqToEqDT`, `eqDTToEq`, `eqIsoFwd`, and `eqIsoBwd` keep their references unchanged. ~260 lines of hand-written description / constructor / eliminator bodies collapse into 25 lines of forwarders
-- **Chain-flatten path in `hoas/elaborate.nix` generalised to `I ≠ ⊤`.** `buildTagInterpTms`'s signature widens to carry the index type `I` and per-summand `targetIdxVal`; `flattenCtor` derives a `prev` attrset from the ctor's HOAS field args, computes each layer's `targetIdxHoas = mono.targetIdx prev`, and emits `mkDescCon dTm targetIdxTm payload` with the correct i-slot and per-summand `interp` types. The ⊤-sugar invariant is preserved: under `mono.I._htag == "unit"` the tags are computed once per chain (`sharedTags`), preserving the O(1) cost for 5000-deep list / nat chains; only genuinely indexed families recompute per layer. The six scalar callers (`zero` / `succ` / `nil` / `cons` / `inl` / `inr`) pass `unitPrim` / `ttPrim` explicitly
-- **`absurdFin0` discharges `Fin 0` via direct `J`-transport.** At motive `λx _. app (natCaseU P unitPrim) x`, base `ttPrim` — `natCaseU P unitPrim` maps `zero → P` and `succ → Unit`, the `J`-base `tt : Unit = natCaseU P Unit (succ m)`, and the result `natCaseU P Unit zero = P`. No `Void` intermediate; the `natDisc → noConfSuccZero → absurdPrim` chain is gone
-- **StrEq's INFER rule returns the derived bool.** Return type is `μ ⊤ (plus (retI tt) (retI tt)) tt` instead of the retired `VBool`; `vStrEq` on two concrete string literals produces the plus-encoded `VDescCon boolDescV VTt (VInl/VInr eqTtV eqTtV VRefl)` instead of `VTrue`/`VFalse`
-- **`reifyType` VMu-plus recognizer.** The retired `VBool → H.bool` and `VVoid → H.void` cases are replaced by a VMu handler that checks the plus-coproduct-of-two-`retI tt` shape and maps to `H.bool`; `extractInner`'s `t == "bool"` branch is dropped (the mu branch handles the derived form)
-- **Elaborate's empty-variant case** routes to `self.void` (the derived `Fin 0`) instead of the deleted `T.mkVoid`
+- Bench runners pin `NIX_PATH=nixpkgs=${pkgs.path}` to the
+  flake-locked store path; `shell.nix` pins its own `pkgs` to
+  `./nixpkgs.nix` so shell-built and `nix build`-built derivations
+  share one Nix version
+- `open-regressions` audit is data-driven: `Perf-regression:` trailers
+  are classified RECOVERED / OPEN / UNMEASURED by consulting the live
+  gate
+- `readSrc` (`default.nix`) recurses into subdirectories uniformly
+  in both split-module and plain-namespace modes; every output is
+  `api.mk`-wrapped
+- `StrEq` INFER rule returns the derived `H.bool`; `reifyType`
+  recognises the plus-coproduct mu shape and maps back to `H.bool`
+- Fin / Vec / Eq preludes in `hoas/combinators.nix` are now
+  η-expanded forwarders over macro outputs; `absurdFin0` discharges
+  `Fin 0` via direct `J`-transport through `natCaseU`
 
 ### Removed
 
-- **Kernel `Tm` constructors** — `Bool`, `True`, `False`, `BoolElim(P,t,f,b)`, `Void`, `Absurd(A,t)`. No Tm builders (`mkBool`, `mkTrue`, `mkFalse`, `mkBoolElim`, `mkVoid`, `mkAbsurd`), no `inherit`s of them, no docs
-- **Kernel `Val` constructors** — `VBool`, `VTrue`, `VFalse`, `VVoid`. `Elim` frames `EBoolElim(P,t,f)`, `EAbsurd(A)` also gone. Their `eval` / `check` / `infer` / `conv` / `quote` / `elaborate` dispatch cases removed across `src/tc/`
-- **HOAS primitive aliases** — `boolPrim`, `truePrim_`, `falsePrim_`, `voidPrim`, `absurdPrim`, `boolElimPrim` in `src/tc/hoas/combinators.nix`. Along with dead helpers `natDisc` (43 lines), `noConfSuccZero` (9 lines), `symNat` (5 lines) — all unreachable after the `absurdFin0` rewrite
-
-### Documented
-
-- **`CONTRIBUTING.md` CI-requirements and bench sections.** The `## CI requirements` section explains the dual-axis gate, the CI alloc-only vs. local dual-metric split, the Nix-version constraint, and the `Perf-regression:` trailer contract. A new `## Baseline refresh` section documents when to regenerate `bench/history/baseline.{json,md}` (intentional alloc improvement, Nix evaluator upgrade, new workload), the exact procedure, the sample-size caveat for local cpu gating, and how to recalibrate `bench/budgets.toml` while preserving `noiseLimited`
-- **`kernel-architecture.md` reframed** — replaced the vacuously-true "one system" prose with a factual "two kernels" description: effects kernel (`src/kernel.nix`, freer monad + FTCQueue) and type-checking kernel (`src/tc/`, MLTT), plus the route by which the TC kernel's higher layers send `typeError` effect requests that handlers in `src/effects/typecheck.nix` interpret with pluggable strategies. Structural-types list moves `Bool`/`Void` into a derived bullet pointing at `combinators.nix`
-- **`kernel-spec.md` synced with Bool/Void retirement** — §4.5 Booleans and §4.8 Void deleted; §4 renumbered (§4.5–§4.11); retired `Tm`/`Val`/`Elim` constructors and dispatch cases removed across §§2–9; §4.11 and §7.3 StrEq rules updated to return the derived `H.bool`; §11 positive/negative fixtures migrated from `Bool`/`True`/`False`/`Void`/`Absurd`/`BoolElim` to `Unit`/`Tt`/`Sum(Nat,Unit)` where the point wasn't testing bool/void behavior; §12 notation index rows `𝔹` and `⊥` annotated "(derived: …)"
-- **`proof-guide.md` updated** — §Booleans and §Boolean-and-cross-type-elimination describe `H.boolElim k motive trueCase falseCase scrutinee` as a derived combinator on the plus-coproduct `boolDesc`; §"What the kernel can and cannot prove" opening and the user-defined-recursive-types bullet distinguish primitive inductives (Nat, List, Sum, Unit, Eq, indexed descriptions) from derived (Bool, Void); quick-reference table rows updated accordingly
-- **`systems-architecture.md` reframed** — drop the "one system / no adequacy bridge / no separate contract system" framing at the opener, §"The kernel-first architecture", and §"What exists"; describe the two-kernel layering and `typeError`-effect route factually instead. Kernel `Tm` enumeration in §"The term language" drops the retired `bool`/`true`/`false`/`void`/`absurd` tags and adds the indexed-description constructors (`desc`, `desc-ret`, `desc-arg`, `desc-rec`, `desc-pi`, `desc-plus`, `mu`, `desc-con`, `desc-ind`); "What exists" §1 kernel inventory corrected (Bool/Void now listed as derived)
-- **`README.md` gains a table of contents** aligned to the existing section headings
+- Kernel `Tm` constructors `Bool` / `True` / `False` / `BoolElim` /
+  `Void` / `Absurd`; kernel `Val` constructors `VBool` / `VTrue` /
+  `VFalse` / `VVoid`; `Elim` frames `EBoolElim` / `EAbsurd`; HOAS
+  aliases `boolPrim` / `truePrim_` / `falsePrim_` / `voidPrim` /
+  `absurdPrim` / `boolElimPrim`; dead helpers `natDisc` /
+  `noConfSuccZero` / `symNat`
 
 ### Fixed
 
-- **`ListOf` element decomposition.** `ListOf.verify` previously sent a flat `typeCheck` effect with the element type and a synthetic `"List[T][i]"` context string, bypassing per-element decomposition. For record elements this flattened per-field blame to a single "whole element invalid" effect. Fixed by delegating to `elemType.validateAt (path ++ ["[${i}]"]) elem`, so a list of records now emits one effect per (element, field) pair
-- **Deep blame path loss in `Record`.** `Record.verify`'s present-field branch called `field.validate v.field` without threading context, so a three-level nested record with a bad leaf reported only the leaf type name — no structural descent. Fixed by threading `path ++ [field]` through `validateAt`
+- `finalize-calibrate.nix` preserves `allocNoiseLimited` across
+  recalibration (was silently dropped)
+- `ListOf.verify` delegates to `elemType.validateAt` for per-element
+  blame instead of flattening records to a single effect
+- `Record.verify` threads `path ++ [field]` through `validateAt` so
+  nested blame no longer collapses to the leaf type name
+- `effects.tests` and `tc.e2e.category-theory-verify` moved to
+  `noiseLimited` + `allocNoiseLimited`. Both forced whole-test-tree
+  attrsets whose counts grow with unrelated feature additions;
+  `bench-lint-workloads` catches the class of misconfiguration
 
 ## [0.9.0] - 2026-04-18
 

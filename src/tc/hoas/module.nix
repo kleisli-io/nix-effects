@@ -118,6 +118,9 @@ api.mk {
       datatype datatypeI datatypeP datatypePI;
     # Elaboration
     inherit (self) elaborate elab;
+    # HOAS surface → SourceMap walker, and the pair-producing `elab2`
+    # that the diagnostic shell consumes.
+    inherit (self) sourceMapOf elab2;
     # Convenience
     inherit (self) checkHoas inferHoas natLit;
   };

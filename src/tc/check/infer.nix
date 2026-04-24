@@ -27,8 +27,22 @@ let
   send = K.send;
   bind = K.bind;
 
-  typeError = msg: expected: got: term:
-    send "typeError" { inherit msg expected got term; };
+  D = fx.diag.error;
+  P = fx.diag.positions;
+
+  # Hoist the fixpoint-resolved rule-body combinators out of the rule
+  # dispatch. Each `self.X` is an attribute lookup on the kernel
+  # fixpoint; referenced from inside a 5000-deep rule-descent loop, the
+  # cost compounds. Binding once at module init collapses each use site
+  # to a plain variable reference.
+  bindP = self.bindP;
+  bindPChain = self.bindPChain;
+
+  # Cached evaluation of funext's polymorphic Π-type. The Tm lives at
+  # term.nix (closed, no free variables), so evaluating once at module
+  # initialisation is sound — the VPi chain is shared across every
+  # infer call that hits the "funext" branch.
+  funextTypeVal = E.eval [] T.funextTypeTm;
 in {
   scope = {
     infer = ctx: tm:
@@ -38,41 +52,65 @@ in {
         pure { term = tm; type = self.lookupType ctx tm.idx; }
 
       else if t == "ann" then
-        bind (self.checkType ctx tm.type) (aTm:
+        bindP P.AnnType (self.checkType ctx tm.type) (aTm:
           let aVal = E.eval ctx.env aTm; in
-          bind (self.check ctx tm.term aVal) (tTm:
+          bindP P.AnnTerm (self.check ctx tm.term aVal) (tTm:
             pure { term = T.mkAnn tTm aTm; type = aVal; }))
 
       else if t == "app" then
-        bind (self.infer ctx tm.fn) (fResult:
+        bindP P.AppHead (self.infer ctx tm.fn) (fResult:
           let fTy = fResult.type; in
           if fTy.tag != "VPi"
-          then typeError "expected function type" { tag = "pi"; } (Q.quote ctx.depth fTy) tm
+          then send "typeError" {
+            error = D.mkKernelError {
+              position = P.AppHead;
+              rule     = "app";
+              msg      = "expected function type";
+              expected = { tag = "pi"; };
+              got      = Q.quote ctx.depth fTy;
+            };
+          }
           else
-            bind (self.check ctx tm.arg fTy.domain) (uTm:
+            bindP P.AppArg (self.check ctx tm.arg fTy.domain) (uTm:
               let retTy = E.instantiate fTy.closure (E.eval ctx.env uTm); in
               pure { term = T.mkApp fResult.term uTm; type = retTy; }))
 
       else if t == "fst" then
-        bind (self.infer ctx tm.pair) (pResult:
+        bindP P.Scrut (self.infer ctx tm.pair) (pResult:
           let pTy = pResult.type; in
           if pTy.tag != "VSigma"
-          then typeError "expected sigma type" { tag = "sigma"; } (Q.quote ctx.depth pTy) tm
+          then send "typeError" {
+            error = D.mkKernelError {
+              position = P.Scrut;
+              rule     = "fst";
+              msg      = "expected sigma type";
+              expected = { tag = "sigma"; };
+              got      = Q.quote ctx.depth pTy;
+            };
+          }
           else pure { term = T.mkFst pResult.term; type = pTy.fst; })
 
       else if t == "snd" then
-        bind (self.infer ctx tm.pair) (pResult:
+        bindP P.Scrut (self.infer ctx tm.pair) (pResult:
           let pTy = pResult.type; in
           if pTy.tag != "VSigma"
-          then typeError "expected sigma type" { tag = "sigma"; } (Q.quote ctx.depth pTy) tm
+          then send "typeError" {
+            error = D.mkKernelError {
+              position = P.Scrut;
+              rule     = "snd";
+              msg      = "expected sigma type";
+              expected = { tag = "sigma"; };
+              got      = Q.quote ctx.depth pTy;
+            };
+          }
           else
             let bTy = E.instantiate pTy.closure (E.vFst (E.eval ctx.env pResult.term)); in
             pure { term = T.mkSnd pResult.term; type = bTy; })
 
       else if t == "nat-elim" then
-        bind (self.checkMotive ctx tm.motive (self.singleton V.vNat)) (pTm:
+        bindP P.Motive (self.checkMotive ctx tm.motive (self.singleton V.vNat)) (pTm:
           let pVal = E.eval ctx.env pTm; in
-          bind (self.check ctx tm.base (E.vApp pVal V.vZero)) (zTm:
+          bindP (P.Case "zero") (self.check ctx tm.base (E.vApp pVal V.vZero)) (zTm:
             let
               # s : Π(k:Nat). P(k) → P(S(k))
               # De Bruijn arithmetic: closure body is evaluated at depth+1
@@ -85,17 +123,17 @@ in {
               stepTy = V.vPi "k" V.vNat (V.mkClosure ctx.env
                 (T.mkPi "ih" (T.mkApp (Q.quote (ctx.depth + 1) pVal) (T.mkVar 0))
                   (T.mkApp (Q.quote (ctx.depth + 2) pVal) (T.mkSucc (T.mkVar 1)))));
-            in bind (self.check ctx tm.step stepTy) (sTm:
-              bind (self.check ctx tm.scrut V.vNat) (nTm:
+            in bindP (P.Case "succ") (self.check ctx tm.step stepTy) (sTm:
+              bindP P.Scrut (self.check ctx tm.scrut V.vNat) (nTm:
                 let retTy = E.vApp pVal (E.eval ctx.env nTm); in
                 pure { term = T.mkNatElim pTm zTm sTm nTm; type = retTy; }))))
 
       else if t == "list-elim" then
         bind (self.checkType ctx tm.elem) (aRaw:
           let aVal = E.eval ctx.env aRaw;
-          in bind (self.checkMotive ctx tm.motive (self.singleton (V.vList aVal))) (pTm:
+          in bindP P.Motive (self.checkMotive ctx tm.motive (self.singleton (V.vList aVal))) (pTm:
             let pVal = E.eval ctx.env pTm; in
-            bind (self.check ctx tm.nil (E.vApp pVal (V.vNil aVal))) (nTm:
+            bindP (P.Case "nil") (self.check ctx tm.nil (E.vApp pVal (V.vNil aVal))) (nTm:
               let
                 # c : Π(h:A). Π(t:List A). P(t) → P(cons h t)
                 # De Bruijn arithmetic:
@@ -108,8 +146,8 @@ in {
                     (T.mkPi "ih" (T.mkApp (Q.quote (ctx.depth + 2) pVal) (T.mkVar 0))
                       (T.mkApp (Q.quote (ctx.depth + 3) pVal)
                         (T.mkCons (Q.quote (ctx.depth + 3) aVal) (T.mkVar 2) (T.mkVar 1))))));
-              in bind (self.check ctx tm.cons consTy) (cTm:
-                bind (self.check ctx tm.scrut (V.vList aVal)) (lTm:
+              in bindP (P.Case "cons") (self.check ctx tm.cons consTy) (cTm:
+                bindP P.Scrut (self.check ctx tm.scrut (V.vList aVal)) (lTm:
                   let retTy = E.vApp pVal (E.eval ctx.env lTm); in
                   pure { term = T.mkListElim aRaw pTm nTm cTm lTm; type = retTy; })))))
 
@@ -119,7 +157,7 @@ in {
           let aVal = E.eval ctx.env aRaw; in
           bind (self.checkType ctx tm.right) (bRaw:
             let bVal = E.eval ctx.env bRaw;
-            in bind (self.checkMotive ctx tm.motive (self.singleton (V.vSum aVal bVal))) (pTm:
+            in bindP P.Motive (self.checkMotive ctx tm.motive (self.singleton (V.vSum aVal bVal))) (pTm:
               let pVal = E.eval ctx.env pTm;
                   # l : Π(x:A). P(inl x)
                   # De Bruijn: closure binds x at depth+1. Var(0) = x.
@@ -131,54 +169,62 @@ in {
                   rTy = V.vPi "y" bVal (V.mkClosure ctx.env
                     (T.mkApp (Q.quote (ctx.depth + 1) pVal)
                       (T.mkInr (Q.quote (ctx.depth + 1) aVal) (Q.quote (ctx.depth + 1) bVal) (T.mkVar 0))));
-              in bind (self.check ctx tm.onLeft lTy) (lTm:
-                bind (self.check ctx tm.onRight rTy) (rTm:
-                  bind (self.check ctx tm.scrut (V.vSum aVal bVal)) (sTm:
+              in bindP (P.Case "inl") (self.check ctx tm.onLeft lTy) (lTm:
+                bindP (P.Case "inr") (self.check ctx tm.onRight rTy) (rTm:
+                  bindP P.Scrut (self.check ctx tm.scrut (V.vSum aVal bVal)) (sTm:
                     let retTy = E.vApp pVal (E.eval ctx.env sTm); in
                     pure { term = T.mkSumElim aRaw bRaw pTm lTm rTm sTm; type = retTy; }))))))
 
       else if t == "j" then
-        bind (self.checkType ctx tm.type) (aRaw:
+        bindP P.JType (self.checkType ctx tm.type) (aRaw:
           let aVal = E.eval ctx.env aRaw; in
-          bind (self.check ctx tm.lhs aVal) (aTm:
+          bindP P.JLhs (self.check ctx tm.lhs aVal) (aTm:
             let aValEvaled = E.eval ctx.env aTm;
                 # P : Π(y:A). Π(e:Eq(A,a,y)). U(k) for some k
                 eqDomTy = depth: V.vEq aVal aValEvaled (V.freshVar depth);
+                jMotiveErr = msg: expected: got:
+                  send "typeError" {
+                    error = D.mkKernelError {
+                      position = P.Motive;
+                      rule     = "j";
+                      inherit msg expected got;
+                    };
+                  };
                 checkJMotive =
                   if tm.motive.tag == "lam" then
                     let ctx' = self.extend ctx tm.motive.name aVal;
                     in bind (self.checkMotive ctx' tm.motive.body (self.singleton (eqDomTy ctx.depth))) (innerTm:
                       pure (T.mkLam tm.motive.name (Q.quote ctx.depth aVal) innerTm))
                   else
-                    bind (self.infer ctx tm.motive) (result:
+                    bindP P.Motive (self.infer ctx tm.motive) (result:
                       let rTy = result.type; in
                       if rTy.tag != "VPi"
-                      then typeError "J motive must be a function"
-                        { tag = "pi"; } (Q.quote ctx.depth rTy) tm.motive
+                      then jMotiveErr "J motive must be a function"
+                        { tag = "pi"; } (Q.quote ctx.depth rTy)
                       else if !(C.conv ctx.depth rTy.domain aVal)
-                      then typeError "J motive domain mismatch"
-                        (Q.quote ctx.depth aVal) (Q.quote ctx.depth rTy.domain) tm.motive
+                      then jMotiveErr "J motive domain mismatch"
+                        (Q.quote ctx.depth aVal) (Q.quote ctx.depth rTy.domain)
                       else
                         let innerTy = E.instantiate rTy.closure (V.freshVar ctx.depth); in
                         if innerTy.tag != "VPi"
-                        then typeError "J motive must take two arguments"
-                          { tag = "pi"; } (Q.quote (ctx.depth + 1) innerTy) tm.motive
+                        then jMotiveErr "J motive must take two arguments"
+                          { tag = "pi"; } (Q.quote (ctx.depth + 1) innerTy)
                         else if !(C.conv (ctx.depth + 1) innerTy.domain (eqDomTy ctx.depth))
-                        then typeError "J motive inner domain must be Eq(A, a, y)"
+                        then jMotiveErr "J motive inner domain must be Eq(A, a, y)"
                           (Q.quote (ctx.depth + 1) (eqDomTy ctx.depth))
-                          (Q.quote (ctx.depth + 1) innerTy.domain) tm.motive
+                          (Q.quote (ctx.depth + 1) innerTy.domain)
                         else
                           let codVal = E.instantiate innerTy.closure (V.freshVar (ctx.depth + 1)); in
                           if codVal.tag != "VU"
-                          then typeError "J motive must return a type"
-                            { tag = "U"; } (Q.quote (ctx.depth + 2) codVal) tm.motive
+                          then jMotiveErr "J motive must return a type"
+                            { tag = "U"; } (Q.quote (ctx.depth + 2) codVal)
                           else pure result.term);
             in bind checkJMotive (pTm:
               let pVal = E.eval ctx.env pTm; in
-              bind (self.check ctx tm.base (E.vApp (E.vApp pVal aValEvaled) V.vRefl)) (prTm:
-                bind (self.check ctx tm.rhs aVal) (bTm:
+              bindP (P.Case "base") (self.check ctx tm.base (E.vApp (E.vApp pVal aValEvaled) V.vRefl)) (prTm:
+                bindP P.JRhs (self.check ctx tm.rhs aVal) (bTm:
                   let bVal = E.eval ctx.env bTm; in
-                  bind (self.check ctx tm.eq (V.vEq aVal aValEvaled bVal)) (eqTm:
+                  bindP P.JEq (self.check ctx tm.eq (V.vEq aVal aValEvaled bVal)) (eqTm:
                     let retTy = E.vApp (E.vApp pVal bVal) (E.eval ctx.env eqTm); in
                     pure { term = T.mkJ aRaw aTm pTm prTm bTm eqTm; type = retTy; }))))))
 
@@ -189,6 +235,10 @@ in {
       # Type formers infer at U(0)
       else if t == "nat" then pure { term = T.mkNat; type = V.vU 0; }
       else if t == "unit" then pure { term = T.mkUnit; type = V.vU 0; }
+      # funext postulate. Type is the cached 5-layer closed Π chain
+      # from term.nix, evaluated once at module initialisation.
+      else if t == "funext" then
+        pure { term = T.mkFunext; type = funextTypeVal; }
       else if t == "string" then pure { term = T.mkString; type = V.vU 0; }
       else if t == "int" then pure { term = T.mkInt; type = V.vU 0; }
       else if t == "float" then pure { term = T.mkFloat; type = V.vU 0; }
@@ -202,84 +252,137 @@ in {
           pure { term = T.mkDesc iTm; type = V.vU 1; })
 
       # desc-ret j — `ret j : Desc I` where I is inferred from j's type.
+      # `bindP P.DRetIndex` tags the index sub-delegation so a failure
+      # deep in j's inference surfaces at the `ret.j` position.
       else if t == "desc-ret" then
-        bind (self.infer ctx tm.j) (jResult:
+        bindP P.DRetIndex (self.infer ctx tm.j) (jResult:
           pure { term = T.mkDescRet jResult.term; type = V.vDesc jResult.type; })
 
       # desc-arg (§2.4). `S` must live in `V.vU 0`: descriptions carry
       # only small types, so any description argument type is in U 0.
-      # The body `T : S → Desc I` is inferred to determine I.
+      # The body `T : S → Desc I` is inferred to determine I. Sub-
+      # delegations are wrapped in `bindP` so any failure inherits the
+      # descent coordinate (`arg.S` or `arg.T`) at the caller site;
+      # the terminal mismatch emits a `diag.Error` directly.
       else if t == "desc-arg" then
-        bind (self.check ctx tm.S (V.vU 0)) (sTm:
+        bindP P.DArgSort (self.check ctx tm.S (V.vU 0)) (sTm:
           let sVal = E.eval ctx.env sTm;
               ctx' = self.extend ctx "_" sVal;
-          in bind (self.infer ctx' tm.T) (tResult:
+          in bindP P.DArgBody (self.infer ctx' tm.T) (tResult:
             if tResult.type.tag != "VDesc"
-            then typeError "desc-arg: body must have type Desc I"
-              { tag = "desc"; } (Q.quote ctx'.depth tResult.type) tm.T
+            then send "typeError" {
+              error = D.mkKernelError {
+                position = P.DArgBody;
+                rule     = "desc-arg";
+                msg      = "desc-arg: body must have type Desc I";
+                expected = { tag = "desc"; };
+                got      = Q.quote ctx'.depth tResult.type;
+              };
+            }
             else
               pure { term = T.mkDescArg sTm tResult.term;
                      type = V.vDesc tResult.type.I; }))
 
       # desc-rec j D — `rec j D : Desc I`. Infer j's type to get I,
-      # then check D against Desc I.
+      # then check D against Desc I. `bindP P.DRecIndex` tags the
+      # index sub-delegation; `bindP P.DRecTail` tags the tail-
+      # description sub-check.
       else if t == "desc-rec" then
-        bind (self.infer ctx tm.j) (jResult:
+        bindP P.DRecIndex (self.infer ctx tm.j) (jResult:
           let iVal = jResult.type; in
-          bind (self.check ctx tm.D (V.vDesc iVal)) (dTm:
+          bindP P.DRecTail (self.check ctx tm.D (V.vDesc iVal)) (dTm:
             pure { term = T.mkDescRec jResult.term dTm;
                    type = V.vDesc iVal; }))
 
       # desc-pi S f D — `pi S f D : Desc I` where f : S → I determines I.
+      # Three sub-delegations each carry their own descent coordinate:
+      # `DPiSort` for the domain sort, `DPiFn` for the index selector,
+      # `DPiBody` for the tail description. The two f-shape mismatches
+      # (non-Pi type, domain mismatch) emit `mkKernelError` with
+      # `position = P.DPiFn` directly.
       else if t == "desc-pi" then
-        bind (self.check ctx tm.S (V.vU 0)) (sTm:
+        bindP P.DPiSort (self.check ctx tm.S (V.vU 0)) (sTm:
           let sVal = E.eval ctx.env sTm;
-          in bind (self.infer ctx tm.f) (fResult:
+          in bindP P.DPiFn (self.infer ctx tm.f) (fResult:
             let fTy = fResult.type; in
             if fTy.tag != "VPi"
-            then typeError "desc-pi: f must have type S → I"
-              { tag = "pi"; } (Q.quote ctx.depth fTy) tm.f
+            then send "typeError" {
+              error = D.mkKernelError {
+                position = P.DPiFn;
+                rule     = "desc-pi";
+                msg      = "desc-pi: f must have type S → I";
+                expected = { tag = "pi"; };
+                got      = Q.quote ctx.depth fTy;
+              };
+            }
             else if !(C.conv ctx.depth fTy.domain sVal)
-            then typeError "desc-pi: f domain does not match S"
-              (Q.quote ctx.depth sVal) (Q.quote ctx.depth fTy.domain) tm.f
+            then send "typeError" {
+              error = D.mkKernelError {
+                position = P.DPiFn;
+                rule     = "desc-pi";
+                msg      = "desc-pi: f domain does not match S";
+                expected = Q.quote ctx.depth sVal;
+                got      = Q.quote ctx.depth fTy.domain;
+              };
+            }
             else
               # I = codomain (non-dependent on s per the Desc grammar).
               let iVal = E.instantiate fTy.closure (V.freshVar ctx.depth);
-              in bind (self.check ctx tm.D (V.vDesc iVal)) (dTm:
+              in bindP P.DPiBody (self.check ctx tm.D (V.vDesc iVal)) (dTm:
                 pure { term = T.mkDescPi sTm fResult.term dTm;
                        type = V.vDesc iVal; })))
 
       # desc-plus A B — `plus A B : Desc I`. Infer A to determine I, then
       # check B against the same Desc I. Both summands share an index type.
+      # `bindP P.DPlusL` tags A's sub-delegation; a non-VDesc inferred
+      # type for A emits `mkKernelError` with `position = P.DPlusL`.
+      # `bindP P.DPlusR` tags B's sub-check.
       else if t == "desc-plus" then
-        bind (self.infer ctx tm.A) (aResult:
+        bindP P.DPlusL (self.infer ctx tm.A) (aResult:
           let aTy = aResult.type; in
           if aTy.tag != "VDesc"
-          then typeError "desc-plus: A must have type Desc I"
-            { tag = "desc"; } (Q.quote ctx.depth aTy) tm.A
+          then send "typeError" {
+            error = D.mkKernelError {
+              position = P.DPlusL;
+              rule     = "desc-plus";
+              msg      = "desc-plus: A must have type Desc I";
+              expected = { tag = "desc"; };
+              got      = Q.quote ctx.depth aTy;
+            };
+          }
           else
             let iVal = aTy.I; in
-            bind (self.check ctx tm.B (V.vDesc iVal)) (bTm:
+            bindP P.DPlusR (self.check ctx tm.B (V.vDesc iVal)) (bTm:
               pure { term = T.mkDescPlus aResult.term bTm;
                      type = V.vDesc iVal; }))
 
       # desc-con D i d — `con : μ D i` packing payload d at index i.
+      # `bindP P.MuDesc` / `P.MuIndex` / `P.MuPayload` tag the three
+      # sub-delegations; the terminal D-shape mismatch emits
+      # `mkKernelError` with `position = P.MuDesc`.
       else if t == "desc-con" then
-        bind (self.infer ctx tm.D) (dResult:
+        bindP P.MuDesc (self.infer ctx tm.D) (dResult:
           let dTy = dResult.type; in
           if dTy.tag != "VDesc"
-          then typeError "desc-con: D must have type Desc I"
-            { tag = "desc"; } (Q.quote ctx.depth dTy) tm.D
+          then send "typeError" {
+            error = D.mkKernelError {
+              position = P.MuDesc;
+              rule     = "desc-con";
+              msg      = "desc-con: D must have type Desc I";
+              expected = { tag = "desc"; };
+              got      = Q.quote ctx.depth dTy;
+            };
+          }
           else
             let iTyVal = dTy.I;
                 dVal = E.eval ctx.env dResult.term;
-            in bind (self.check ctx tm.i iTyVal) (iTm:
+            in bindP P.MuIndex (self.check ctx tm.i iTyVal) (iTm:
               let iVal = E.eval ctx.env iTm;
                   # X = λ(_i:I). μ I D _i as a VLam so interp can apply it.
                   muDFunc = V.vLam "_i" iTyVal (V.mkClosure [ dVal iTyVal ]
                     (T.mkMu (T.mkVar 2) (T.mkVar 1) (T.mkVar 0)));
                   interpTy = E.interp iTyVal dVal muDFunc iVal;
-              in bind (self.check ctx tm.d interpTy) (dataTm:
+              in bindP P.MuPayload (self.check ctx tm.d interpTy) (dataTm:
                 pure { term = T.mkDescCon dResult.term iTm dataTm;
                        type = V.vMu iTyVal dVal iVal; })))
 
@@ -290,16 +393,23 @@ in {
         # no rule. checkMotive accepts bare lams by descending under the
         # known domain, and preserves large elim (motive body may return
         # any universe level).
-        bind (self.infer ctx tm.scrut) (sResult:
+        bindP P.Scrut (self.infer ctx tm.scrut) (sResult:
           let sTy = sResult.type; in
           if sTy.tag != "VDesc"
-          then typeError "desc-elim: scrutinee must have type Desc I"
-            { tag = "desc"; } (Q.quote ctx.depth sTy) tm.scrut
+          then send "typeError" {
+            error = D.mkKernelError {
+              position = P.Scrut;
+              rule     = "desc-elim";
+              msg      = "desc-elim: scrutinee must have type Desc I";
+              expected = { tag = "desc"; };
+              got      = Q.quote ctx.depth sTy;
+            };
+          }
           else
             let
               iTyVal = sTy.I;
               iTyTm = Q.quote ctx.depth iTyVal;
-            in bind (self.checkMotive ctx tm.motive (self.singleton (V.vDesc iTyVal))) (pTm:
+            in bindP P.Motive (self.checkMotive ctx tm.motive (self.singleton (V.vDesc iTyVal))) (pTm:
               let
                 pVal = E.eval ctx.env pTm;
                 pQ1 = Q.quote (ctx.depth + 1) pVal;
@@ -335,21 +445,28 @@ in {
                     (T.mkPi "ihA" (T.mkApp pQ2 (T.mkVar 1))
                       (T.mkPi "ihB" (T.mkApp pQ3 (T.mkVar 1))
                         (T.mkApp pQ4 (T.mkDescPlus (T.mkVar 3) (T.mkVar 2)))))));
-            in bind (self.check ctx tm.onRet prTy) (prTm:
-                bind (self.check ctx tm.onArg paTy) (paTm:
-                  bind (self.check ctx tm.onRec peTy) (peTm:
-                    bind (self.check ctx tm.onPi ppTy) (ppTm:
-                      bind (self.check ctx tm.onPlus pqTy) (pqTm:
+            in bindP (P.Case "onRet") (self.check ctx tm.onRet prTy) (prTm:
+                bindP (P.Case "onArg") (self.check ctx tm.onArg paTy) (paTm:
+                  bindP (P.Case "onRec") (self.check ctx tm.onRec peTy) (peTm:
+                    bindP (P.Case "onPi") (self.check ctx tm.onPi ppTy) (ppTm:
+                      bindP (P.Case "onPlus") (self.check ctx tm.onPlus pqTy) (pqTm:
                         let retTy = E.vApp pVal (E.eval ctx.env sResult.term); in
                         pure { term = T.mkDescElim pTm prTm paTm peTm ppTm pqTm sResult.term;
                                type = retTy; })))))))
 
       else if t == "desc-ind" then
-        bind (self.infer ctx tm.D) (dResult:
+        bindP P.MuDesc (self.infer ctx tm.D) (dResult:
           let dTy = dResult.type; in
           if dTy.tag != "VDesc"
-          then typeError "desc-ind: D must have type Desc I"
-            { tag = "desc"; } (Q.quote ctx.depth dTy) tm.D
+          then send "typeError" {
+            error = D.mkKernelError {
+              position = P.MuDesc;
+              rule     = "desc-ind";
+              msg      = "desc-ind: D must have type Desc I";
+              expected = { tag = "desc"; };
+              got      = Q.quote ctx.depth dTy;
+            };
+          }
           else
             let
               iTyVal = dTy.I;
@@ -368,7 +485,7 @@ in {
                   tail = _xVal: null;
                 };
               };
-            in bind (self.checkMotive ctx tm.motive chain) (pTm:
+            in bindP P.Motive (self.checkMotive ctx tm.motive chain) (pTm:
               let
                 pVal = E.eval ctx.env pTm;
                 # step : Π(i:I). Π(d : ⟦D⟧(μ D) i). All D P i d → P i (con i d)
@@ -383,10 +500,10 @@ in {
                   (T.mkPi "d" (Q.quote (ctx.depth + 1) interpTyAtI)
                     (T.mkPi "_" (Q.quote (ctx.depth + 2) allTyAtI)
                       (Q.quote (ctx.depth + 3) retTyAtI))));
-              in bind (self.check ctx tm.step stepTy) (stepTm:
-                bind (self.check ctx tm.i iTyVal) (iTm:
+              in bindP (P.Case "step") (self.check ctx tm.step stepTy) (stepTm:
+                bindP P.MuIndex (self.check ctx tm.i iTyVal) (iTm:
                   let iVal = E.eval ctx.env iTm; in
-                  bind (self.check ctx tm.scrut (V.vMu iTyVal dVal iVal)) (xTm:
+                  bindP P.Scrut (self.check ctx tm.scrut (V.vMu iTyVal dVal iVal)) (xTm:
                     let retTy = E.vApp (E.vApp pVal iVal)
                                   (E.eval ctx.env xTm); in
                     pure { term = T.mkDescInd dTm pTm stepTm iTm xTm;
@@ -403,17 +520,24 @@ in {
 
       # Opaque lambda: infer Pi type from annotation.
       else if t == "opaque-lam" then
-        bind (self.checkType ctx tm.piTy) (piTyTm:
+        bindP P.OpaqueType (self.checkType ctx tm.piTy) (piTyTm:
           let piTyVal = E.eval ctx.env piTyTm; in
           if piTyVal.tag != "VPi" then
-            typeError "opaque-lam annotation must be Pi"
-              { tag = "pi"; } (Q.quote ctx.depth piTyVal) tm
+            send "typeError" {
+              error = D.mkKernelError {
+                position = P.OpaqueType;
+                rule     = "opaque-lam";
+                msg      = "opaque-lam annotation must be Pi";
+                expected = { tag = "pi"; };
+                got      = Q.quote ctx.depth piTyVal;
+              };
+            }
           else pure { term = T.mkOpaqueLam tm._fnBox piTyTm; type = piTyVal; })
 
       # StrEq: both args must be String, result is Bool (plus-encoded).
       else if t == "str-eq" then
-        bind (self.check ctx tm.lhs V.vString) (lhsTm:
-          bind (self.check ctx tm.rhs V.vString) (rhsTm:
+        bindP P.AppHead (self.check ctx tm.lhs V.vString) (lhsTm:
+          bindP P.AppArg (self.check ctx tm.rhs V.vString) (rhsTm:
             let boolVal = V.vMu V.vUnit (V.vDescPlus (V.vDescRet V.vTt) (V.vDescRet V.vTt)) V.vTt;
             in pure { term = T.mkStrEq lhsTm rhsTm; type = boolVal; }))
 
@@ -421,7 +545,14 @@ in {
         bind (self.checkTypeLevel ctx tm) (r:
           pure { term = r.term; type = V.vU r.level; })
 
-      else typeError "cannot infer type" { tag = "unknown"; } (Q.quote ctx.depth (V.vU 0)) tm;
+      else send "typeError" {
+        error = D.mkKernelError {
+          rule     = "infer";
+          msg      = "cannot infer type";
+          expected = { tag = "unknown"; };
+          got      = Q.quote ctx.depth (V.vU 0);
+        };
+      };
   };
   tests = {};
 }

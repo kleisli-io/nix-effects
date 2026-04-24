@@ -12,12 +12,19 @@
 # always-fail bucket without hiding real regressions.
 #
 # `existingBudgetsPath` is the canonical `budgets.toml` (if it exists).
-# Its `noiseLimited = [...]` array enumerates workloads whose cpu.p95
-# spread is structurally noise-limited (small-workload relative-variance
-# artifacts, GC-jitter on specific DAG shapes). Those workloads are
-# excluded from the emitted `[cpu]` section so future calibrations don't
-# silently regenerate cpu budgets for them; the `noiseLimited` array
-# round-trips verbatim so the declaration is preserved.
+# Two exclusion arrays round-trip through calibration so re-running does
+# not silently drop the declarations:
+#
+#   noiseLimited      — workloads excluded from cpu gating. Emitted TOML
+#                       also skips them in the `[cpu]` section, since a
+#                       budget for a noise-limited workload is worthless.
+#   allocNoiseLimited — workloads excluded from alloc gating because
+#                       their alloc count scales with unrelated work
+#                       (e.g. test-count-monotonic suites). Cpu budgets
+#                       still emitted for them — orthogonal dimension.
+#
+# Both arrays are validated against `bench.meta.tiers` so typos or stale
+# names after a workload rename fail loudly at calibration time.
 #
 # The emitted TOML is a *proposal*; human review + `budgets.toml` commit
 # is expected before CI uses it.
@@ -28,7 +35,7 @@ let
 
   # Authoritative workload registry — validated against this, not the
   # current run's results, because `--filter` may narrow a calibration
-  # to a subset of workloads while `noiseLimited` remains global.
+  # to a subset of workloads while the exclusion arrays remain global.
   bench = import benchPath { };
   knownWorkloads = builtins.attrNames bench.meta.tiers;
 
@@ -37,12 +44,15 @@ let
              else builtins.fromTOML (builtins.readFile existingBudgetsPath);
 
   noiseLimited = existing.noiseLimited or [ ];
+  allocNoiseLimited = existing.allocNoiseLimited or [ ];
 
-  # Every `noiseLimited` entry must be a known bench workload. A typo or
+  # Both exclusion arrays must name known bench workloads. A typo or
   # stale name (post-rename) would otherwise silently suppress nothing;
   # fail loudly instead.
   unknownNoiseLimited =
     builtins.filter (w: ! (builtins.elem w knownWorkloads)) noiseLimited;
+  unknownAllocNoiseLimited =
+    builtins.filter (w: ! (builtins.elem w knownWorkloads)) allocNoiseLimited;
 
   isNoiseLimited = w: builtins.elem w noiseLimited;
 
@@ -90,6 +100,25 @@ let
         ]
       '';
 
+  allocNoiseLimitedBlock =
+    if allocNoiseLimited == [ ] then ""
+    else
+      let
+        items = map (w: ''  "${w}",'') allocNoiseLimited;
+      in ''
+
+        # Workloads whose alloc-count regresses monotonically with
+        # unrelated work (e.g. test suites that grow with every feature
+        # added to any module). Excluded from alloc gating because any
+        # alloc delta on these workloads is dominated by test-count
+        # growth, not by regressions in the code under test. Still
+        # measured and recorded in bench runs for audit; simply not
+        # CI-blocking.
+        allocNoiseLimited = [
+        ${builtins.concatStringsSep "\n" items}
+        ]
+      '';
+
   toml = ''
     # Perf budgets generated from calibration run '${run.name}'.
     # Runs per workload: ${toString run.runsPerWorkload}
@@ -98,7 +127,7 @@ let
     # Timestamp: ${run.timestamp}
 
     allocTolerancePermille = 5
-    ${noiseLimitedBlock}
+    ${noiseLimitedBlock}${allocNoiseLimitedBlock}
     [cpu]
     ${cpuBody}
   '';
@@ -126,9 +155,12 @@ let
 
 in
   if unknownNoiseLimited != [ ]
-  then throw "finalize-calibrate: noiseLimited contains workloads not present in the current run: ${builtins.concatStringsSep ", " unknownNoiseLimited}"
+  then throw "finalize-calibrate: noiseLimited contains unknown workloads (typo?): ${builtins.concatStringsSep ", " unknownNoiseLimited}"
+  else if unknownAllocNoiseLimited != [ ]
+  then throw "finalize-calibrate: allocNoiseLimited contains unknown workloads (typo?): ${builtins.concatStringsSep ", " unknownAllocNoiseLimited}"
   else {
     inherit toml summary;
     cpuWorkloads = cpuEntries;
     noiseLimitedWorkloads = noiseEntries;
+    inherit allocNoiseLimited;
   }

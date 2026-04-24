@@ -20,7 +20,7 @@ let
   inherit (val) mkClosure
     vLam vPi vSigma vPair vNat vZero vSucc
     vList vNil vCons
-    vUnit vTt vSum vInl vInr vEq vRefl vU vNe
+    vUnit vTt vSum vInl vInr vEq vRefl vFunext vU vNe
     vDesc vDescRet vDescArg vDescRec vDescPi vDescPlus vMu vDescCon
     vString vInt vFloat vAttrs vPath vFunction vAny
     vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit
@@ -219,6 +219,7 @@ in {
 
       else if t == "eq" then vEq (ev tm.type) (ev tm.lhs) (ev tm.rhs)
       else if t == "refl" then vRefl
+      else if t == "funext" then vFunext
       else if t == "j" then
         self.vJ (ev tm.type) (ev tm.lhs) (ev tm.motive)
           (ev tm.base) (ev tm.rhs) (ev tm.eq)
@@ -491,6 +492,7 @@ in {
 
     "eval-eq" = { expr = (eval [] (T.mkEq T.mkNat T.mkZero T.mkZero)).tag; expected = "VEq"; };
     "eval-refl" = { expr = (eval [] T.mkRefl).tag; expected = "VRefl"; };
+    "eval-funext" = { expr = (eval [] T.mkFunext).tag; expected = "VFunext"; };
     "eval-j-refl" = {
       # J(Nat, 0, P, base, 0, refl) = base
       expr = (eval [ vNat vZero (freshVar 2) vZero vZero ]

@@ -102,6 +102,17 @@ let
   inherit (fx.types.foundation) mkType check;
   inherit (fx.kernel) pure bind send;
   H = fx.tc.hoas;
+  D = fx.diag.error;
+  P = fx.diag.positions;
+
+  # Wrap a Generic leaf Error in a Position chain, outermost first.
+  # Matches `constructors.nix`'s `chainErr`.
+  chainErr = positions: leafErr:
+    let n = builtins.length positions; in
+    builtins.foldl'
+      (err: i: D.nestUnder (builtins.elemAt positions (n - 1 - i)) err)
+      leafErr
+      (builtins.genList (x: x) n);
 
   # -- PI TYPES (DEPENDENT FUNCTIONS) --
 
@@ -528,17 +539,28 @@ let
         # The .validate → .check pattern: validate produces deep effects
         # (per-element errors for collecting handler), then .check (pure,
         # memoized by Nix) gives the boolean for short-circuit.
-        verify = self: path: v:
+        verify = self: path: positions: v:
           if !(builtins.isAttrs v && v ? fst && v ? snd)
           then send "typeCheck" {
-            type = self; context = "Σ (${name})"; value = v; inherit path;
+            type = self; context = "Σ (${name})"; value = v;
+            inherit path positions;
+            diagError = chainErr positions (D.mkGenericError {
+              type = self.name; context = "Σ (${name})"; value = v;
+              msg = "expected pair";
+            });
           }
           else
-            bind (fst.validateAt (path ++ [ "fst" ]) v.fst) (_:
+            bind (fst.validateAt
+                    (path ++ [ "fst" ])
+                    (positions ++ [ P.SigmaFst ])
+                    v.fst) (_:
               if fst.check v.fst == false then pure v
               else
                 let sndType = snd v.fst;
-                in bind (sndType.validateAt (path ++ [ "snd" ]) v.snd) (_:
+                in bind (sndType.validateAt
+                          (path ++ [ "snd" ])
+                          (positions ++ [ P.SigmaSnd ])
+                          v.snd) (_:
                   pure v));
       } // {
         fstType = fst;

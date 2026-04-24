@@ -22,8 +22,7 @@ let
   send = K.send;
   bind = K.bind;
 
-  typeError = msg: expected: got: term:
-    send "typeError" { inherit msg expected got term; };
+  D = fx.diag.error;
 in {
   scope = {
     checkTypeLevel = ctx: tm:
@@ -111,8 +110,14 @@ in {
         bind (self.infer ctx tm) (result:
           if result.type.tag == "VU"
           then pure { term = result.term; level = result.type.level; }
-          else typeError "expected a type (universe)" { tag = "U"; }
-            (Q.quote ctx.depth result.type) tm);
+          else send "typeError" {
+            error = D.mkKernelError {
+              rule     = "checkTypeLevel";
+              msg      = "expected a type (universe)";
+              expected = { tag = "U"; };
+              got      = Q.quote ctx.depth result.type;
+            };
+          });
 
     checkType = ctx: tm:
       bind (self.checkTypeLevel ctx tm) (r: pure r.term);

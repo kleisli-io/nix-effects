@@ -73,6 +73,7 @@ let
     else if t == "VInr" then T.mkInr (quote d v.left) (quote d v.right) (quote d v.val)
     else if t == "VEq" then T.mkEq (quote d v.type) (quote d v.lhs) (quote d v.rhs)
     else if t == "VRefl" then T.mkRefl
+    else if t == "VFunext" then T.mkFunext
     # Descriptions
     else if t == "VDesc" then T.mkDesc (quote d v.I)
     else if t == "VDescRet" then T.mkDescRet (quote d v.j)
@@ -240,6 +241,7 @@ in mk {
     "quote-unit" = { expr = (quote 0 vUnit).tag; expected = "unit"; };
     "quote-tt" = { expr = (quote 0 vTt).tag; expected = "tt"; };
     "quote-refl" = { expr = (quote 0 vRefl).tag; expected = "refl"; };
+    "quote-funext" = { expr = (quote 0 V.vFunext).tag; expected = "funext"; };
     "quote-U0" = { expr = (quote 0 (vU 0)).tag; expected = "U"; };
     "quote-U0-level" = { expr = (quote 0 (vU 0)).level; expected = 0; };
     "quote-string" = { expr = (quote 0 V.vString).tag; expected = "string"; };

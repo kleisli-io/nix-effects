@@ -21,24 +21,39 @@ rec {
     else x;
 
   # Recursively extract all inline tests from nested mk wrappers.
+  #
+  # Traversal discipline:
+  #   - mk-wrapped node (_type = "nix-effects-api"): take its own tests,
+  #     then recurse into .value ONLY through mk-wrapped children. Plain
+  #     data entries in .value (records, functions, primitives) are
+  #     terminal — the module's scope is not a namespace.
+  #   - Untagged attrset (readSrc namespace): recurse into every entry.
+  #   - _tag-marked attrset (ADT instance) or non-attrset: terminal.
+  #
+  # The strictness in the mk-wrapped branch prevents plain records with
+  # fields named `expr`/`expected` (e.g. a Detail default with
+  # `expected = null`) from leaking into the test tree.
   extractTests = x:
-    let
-      ownTests =
-        if x ? _type && x._type == "nix-effects-api" && x.tests != {}
-        then lib.mapAttrs' (name: test: {
+    if (x._type or null) == "nix-effects-api" then
+      let
+        ownTests = lib.mapAttrs' (name: test: {
           name = "test-${name}";
           value = test;
-        }) x.tests
-        else {};
-      childTests =
-        let
-          isAPI = builtins.isAttrs (x.value or null) && x._type or null == "nix-effects-api";
-          isRaw = builtins.isAttrs x && !(x ? _type) && !(x ? _tag);
-        in
-        if isAPI then lib.mapAttrs (_: extractTests) x.value
-        else if isRaw then lib.mapAttrs (_: extractTests) x
-        else {};
-    in ownTests // childTests;
+        }) x.tests;
+        childTests =
+          if builtins.isAttrs x.value
+          then lib.filterAttrs (_: v: v != {})
+                (lib.mapAttrs (_: extractTests)
+                  (lib.filterAttrs
+                    (_: v: builtins.isAttrs v
+                        && (v._type or null) == "nix-effects-api")
+                    x.value))
+          else {};
+      in ownTests // childTests
+    else if builtins.isAttrs x && !(x ? _tag)
+    then lib.filterAttrs (_: v: v != {})
+         (lib.mapAttrs (_: extractTests) x)
+    else {};
 
   # Recursively extract documentation from nested mk wrappers.
   # Returns hierarchical attrset: { doc, tests, fnName = { doc, tests }, subModule = { ... }, ... }

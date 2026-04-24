@@ -12,6 +12,19 @@ let
   inherit (fx.types.foundation) mkType check;
   inherit (fx.kernel) pure bind send;
   H = fx.tc.hoas;
+  D = fx.diag.error;
+  P = fx.diag.positions;
+
+  # Wrap a Generic leaf Error in a Position chain, outermost first:
+  #   chainErr [p0, p1, ..., pk-1] leaf
+  #     = nestUnder p0 (nestUnder p1 (... (nestUnder pk-1 leaf)))
+  # so `chainPositions` (children[0] walk) reproduces the input order.
+  chainErr = positions: leafErr:
+    let n = builtins.length positions; in
+    builtins.foldl'
+      (err: i: D.nestUnder (builtins.elemAt positions (n - 1 - i)) err)
+      leafErr
+      (builtins.genList (x: x) n);
 
   Record = mk {
     doc = ''
@@ -42,11 +55,18 @@ let
         # Per-field effectful verify for blame tracking. Delegates to each
         # field type's .validateAt for recursive decomposition — a nested
         # Record or ListOf field produces deep per-component effects with
-        # the field name appended to the structural path.
-        verify = self: path: v:
+        # the field name appended to the structural path AND a `Field`
+        # Position appended to the positions chain. The two lists move in
+        # lockstep; handlers may consume either.
+        verify = self: path: positions: v:
           if !(builtins.isAttrs v) then
             send "typeCheck" {
-              type = self; context = self.name; value = v; inherit path;
+              type = self; context = self.name; value = v;
+              inherit path positions;
+              diagError = chainErr positions (D.mkGenericError {
+                type = self.name; context = self.name; value = v;
+                msg = "expected attrset";
+              });
             }
           else
             let
@@ -57,6 +77,7 @@ let
                   let
                     field = builtins.elemAt sortedNames i;
                     childPath = path ++ [ field ];
+                    childPositions = positions ++ [ (P.Field field) ];
                   in
                   if !(v ? ${field}) then
                     bind (send "typeCheck" {
@@ -64,9 +85,17 @@ let
                       context = "${self.name}.${field}";
                       value = null;
                       path = childPath;
+                      positions = childPositions;
+                      diagError = chainErr childPositions (D.mkGenericError {
+                        type = schema.${field}.name;
+                        context = "${self.name}.${field}";
+                        value = null;
+                        msg = "missing field";
+                      });
                     }) (_: acc)
                   else
-                    bind (schema.${field}.validateAt childPath v.${field})
+                    bind (schema.${field}.validateAt
+                           childPath childPositions v.${field})
                       (_: acc))
                 (pure v)
                 (builtins.genList (i: n - 1 - i) n);
@@ -250,6 +279,68 @@ let
           in (builtins.head result.state).path;
         expected = [ "n" ];
       };
+      # -- Position threading and diagError emission --
+      "verify-wrong-shape-diagError-is-Generic" = {
+        expr =
+          let
+            PersonT = Record { n = FP.Int; };
+            comp = PersonT.validate 42;
+          in comp.effect.param.diagError.layer.tag;
+        expected = "Generic";
+      };
+      "verify-wrong-shape-positions-are-empty-at-root" = {
+        expr =
+          let
+            PersonT = Record { n = FP.Int; };
+            comp = PersonT.validate 42;
+          in comp.effect.param.positions;
+        expected = [];
+      };
+      "verify-missing-field-has-Field-position" = {
+        expr =
+          let
+            PersonT = Record { n = FP.Int; };
+            comp = PersonT.validate {};
+          in map (p: p.tag) comp.effect.param.positions;
+        expected = [ "Field" ];
+      };
+      "verify-missing-field-position-carries-field-name" = {
+        expr =
+          let
+            PersonT = Record { n = FP.Int; };
+            comp = PersonT.validate {};
+          in (builtins.elemAt comp.effect.param.positions 0).name;
+        expected = "n";
+      };
+      "verify-missing-field-diagError-chain-is-Field" = {
+        expr =
+          let
+            PersonT = Record { n = FP.Int; };
+            comp = PersonT.validate {};
+            err = comp.effect.param.diagError;
+          in (builtins.elemAt err.children 0).position.tag;
+        expected = "Field";
+      };
+      "verify-bad-field-delegates-positions-through-primitive" = {
+        expr =
+          let
+            PersonT = Record { n = FP.Int; };
+            comp = PersonT.validate { n = "wrong"; };
+            pos = comp.effect.param.positions;
+          in { length = builtins.length pos;
+               tag = (builtins.elemAt pos 0).tag;
+               name = (builtins.elemAt pos 0).name; };
+        expected = { length = 1; tag = "Field"; name = "n"; };
+      };
+      "verify-nested-record-threads-two-Field-positions" = {
+        expr =
+          let
+            Inner = Record { x = FP.Int; };
+            Outer = Record { y = Inner; };
+            comp = Outer.validate { y = { x = "wrong"; }; };
+          in map (p: p.name) comp.effect.param.positions;
+        expected = [ "y" "x" ];
+      };
       # -- Adequacy: kernel-exact types have check == kernelCheck --
       "adequacy-record" = {
         expr =
@@ -289,10 +380,18 @@ let
         # Per-element effectful verify for blame tracking. Delegates to
         # elemType.validateAt so record elements decompose into
         # per-field effects (not just a coarse "element invalid" blame).
-        verify = self: path: v:
+        # Thread both `path` (strings like `"[3]"`) and `positions`
+        # (`P.Elem 3`) so downstream consumers can pick their descent
+        # representation.
+        verify = self: path: positions: v:
           if !(builtins.isList v) then
             send "typeCheck" {
-              type = self; context = self.name; value = v; inherit path;
+              type = self; context = self.name; value = v;
+              inherit path positions;
+              diagError = chainErr positions (D.mkGenericError {
+                type = self.name; context = self.name; value = v;
+                msg = "expected list";
+              });
             }
           else
             let
@@ -300,8 +399,12 @@ let
               # Build chain right-to-left so effects execute in index order (0, 1, 2, ...)
               checkAll = builtins.foldl'
                 (acc: i:
-                  let childPath = path ++ [ "[${toString i}]" ]; in
-                  bind (elemType.validateAt childPath (builtins.elemAt v i))
+                  let
+                    childPath = path ++ [ "[${toString i}]" ];
+                    childPositions = positions ++ [ (P.Elem i) ];
+                  in
+                  bind (elemType.validateAt
+                         childPath childPositions (builtins.elemAt v i))
                     (_: acc))
                 (pure v)
                 (builtins.genList (i: n - 1 - i) n);
@@ -367,6 +470,35 @@ let
         # (mtu, name). Element 0 passes cleanly. This is Gap 2 — previously
         # the failing element blamed as a whole, not per field.
         expected = [ [ "[1]" "mtu" ] [ "[1]" "name" ] ];
+      };
+      # -- Elem-tagged Position threading --
+      "listof-not-a-list-diagError-is-Generic" = {
+        expr =
+          let
+            intList = ListOf FP.Int;
+            comp = intList.validate 42;
+          in comp.effect.param.diagError.layer.tag;
+        expected = "Generic";
+      };
+      "listof-element-carries-Elem-position" = {
+        expr =
+          let
+            intList = ListOf FP.Int;
+            comp = intList.validate [ "bad" ];
+            pos = comp.effect.param.positions;
+          in { length = builtins.length pos;
+               tag = (builtins.elemAt pos 0).tag;
+               idx = (builtins.elemAt pos 0).idx; };
+        expected = { length = 1; tag = "Elem"; idx = 0; };
+      };
+      "listof-of-record-threads-Elem-then-Field" = {
+        expr =
+          let
+            Iface = Record { name = FP.String; };
+            ifaces = ListOf Iface;
+            comp = ifaces.validate [ { name = 42; } ];
+          in map (p: p.tag) comp.effect.param.positions;
+        expected = [ "Elem" "Field" ];
       };
     };
   };
@@ -512,14 +644,23 @@ let
         approximate = !(allPrecise && sortedTags != []);
         # Per-branch verify: only the active branch needs validation.
         # Delegates to the branch type's .validateAt for recursive
-        # decomposition, with the tag appended to the path.
-        verify = self: path: v:
+        # decomposition, with the tag appended to the path AND a
+        # `Tag v._tag` Position appended to the positions chain.
+        verify = self: path: positions: v:
           if !(builtins.isAttrs v && v ? _tag && v ? value && schema ? ${v._tag}) then
             send "typeCheck" {
-              type = self; context = self.name; value = v; inherit path;
+              type = self; context = self.name; value = v;
+              inherit path positions;
+              diagError = chainErr positions (D.mkGenericError {
+                type = self.name; context = self.name; value = v;
+                msg = "unknown variant tag";
+              });
             }
           else
-            schema.${v._tag}.validateAt (path ++ [ v._tag ]) v.value;
+            schema.${v._tag}.validateAt
+              (path ++ [ v._tag ])
+              (positions ++ [ (P.Tag v._tag) ])
+              v.value;
       };
     tests = let FP = fx.types.primitives; in {
       "accepts-valid-variant" = {
@@ -567,6 +708,35 @@ let
             } (Shape.validate { _tag = "circle"; value = "not-float"; });
           in (builtins.head result.state).path;
         expected = [ "circle" ];
+      };
+      # -- Tag-tagged Position threading --
+      "verify-variant-unknown-tag-diagError-is-Generic" = {
+        expr =
+          let
+            Shape = Variant { circle = FP.Float; };
+            comp = Shape.validate { _tag = "triangle"; value = null; };
+          in comp.effect.param.diagError.layer.tag;
+        expected = "Generic";
+      };
+      "verify-variant-active-branch-carries-Tag-position" = {
+        expr =
+          let
+            Shape = Variant { circle = FP.Float; };
+            comp = Shape.validate { _tag = "circle"; value = "not-float"; };
+            pos = comp.effect.param.positions;
+          in { length = builtins.length pos;
+               tag = (builtins.elemAt pos 0).tag;
+               name = (builtins.elemAt pos 0).name; };
+        expected = { length = 1; tag = "Tag"; name = "circle"; };
+      };
+      "verify-variant-of-record-threads-Tag-then-Field" = {
+        expr =
+          let
+            Inner = Record { x = FP.Int; };
+            V = Variant { some = Inner; };
+            comp = V.validate { _tag = "some"; value = { x = "bad"; }; };
+          in map (p: p.tag) comp.effect.param.positions;
+        expected = [ "Tag" "Field" ];
       };
     };
   };

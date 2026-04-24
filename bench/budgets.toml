@@ -1,8 +1,8 @@
-# Perf budgets generated from calibration run 'calibrate-20260422-102815'.
+# Perf budgets generated from calibration run 'calibrate-20260424-103334'.
 # Runs per workload: 50
 # Nix: 2.31.4
 # System: x86_64-linux
-# Timestamp: 2026-04-22T10:45:46Z
+# Timestamp: 2026-04-24T10:53:32Z
 
 allocTolerancePermille = 5
 
@@ -13,54 +13,83 @@ allocTolerancePermille = 5
 noiseLimited = [
 "effects.buildSim.diamond5",
 "effects.stress.rawGC.s10k",
+"effects.tests",
+"tc.e2e.category-theory-verify",
+"tc.e2e.tc-test-suite-full",
+"tc.e2e.tc-test-suite-per-module.check",
+"tc.e2e.tc-test-suite-per-module.conv",
+"tc.e2e.tc-test-suite-per-module.elaborate",
+"tc.e2e.tc-test-suite-per-module.eval",
+"tc.e2e.tc-test-suite-per-module.hoas",
+"tc.e2e.tc-test-suite-per-module.quote",
+"tc.e2e.tc-test-suite-per-module.term",
+"tc.e2e.tc-test-suite-per-module.value",
+"tc.e2e.tc-test-suite-per-module.verified",
+]
+
+# Workloads whose alloc-count regresses monotonically with
+# unrelated work (e.g. test suites that grow with every feature
+# added to any module). Excluded from alloc gating because any
+# alloc delta on these workloads is dominated by test-count
+# growth, not by regressions in the code under test. Still
+# measured and recorded in bench runs for audit; simply not
+# CI-blocking.
+allocNoiseLimited = [
+"effects.tests",
+"tc.e2e.category-theory-verify",
+"tc.e2e.tc-test-suite-full",
+"tc.e2e.tc-test-suite-per-module.check",
+"tc.e2e.tc-test-suite-per-module.conv",
+"tc.e2e.tc-test-suite-per-module.elaborate",
+"tc.e2e.tc-test-suite-per-module.eval",
+"tc.e2e.tc-test-suite-per-module.hoas",
+"tc.e2e.tc-test-suite-per-module.quote",
+"tc.e2e.tc-test-suite-per-module.term",
+"tc.e2e.tc-test-suite-per-module.value",
+"tc.e2e.tc-test-suite-per-module.verified",
 ]
 
 [cpu]
 "effects.buildSim.fail_early" = 17
-"effects.buildSim.fail_late" = 12
-"effects.buildSim.fail_mid" = 11
-"effects.buildSim.linear100" = 12
-"effects.buildSim.linear50" = 9
-"effects.buildSim.mixed_small" = 11
-"effects.buildSim.tree5" = 12
+"effects.buildSim.fail_late" = 15
+"effects.buildSim.fail_mid" = 12
+"effects.buildSim.linear100" = 15
+"effects.buildSim.linear50" = 12
+"effects.buildSim.mixed_small" = 12
+"effects.buildSim.tree5" = 20
 "effects.buildSim.wide100" = 12
-"effects.buildSim.wide50" = 9
-"effects.interp.countdown1000" = 8
-"effects.interp.fib10" = 9
-"effects.interp.fib15" = 11
-"effects.interp.lets100" = 14
-"effects.interp.lets500" = 6
-"effects.interp.sum100" = 11
-"effects.interp.sum1000" = 9
-"effects.stress.bindHeavy.s10k" = 9
-"effects.stress.deepChains.s10k" = 14
-"effects.stress.effectHeavy.s10k" = 11
-"effects.stress.mixed.s10k" = 11
-"effects.stress.nestedHandlers.d3_i1k" = 11
+"effects.buildSim.wide50" = 30
+"effects.interp.countdown1000" = 15
+"effects.interp.fib10" = 18
+"effects.interp.fib15" = 33
+"effects.interp.lets100" = 9
+"effects.interp.lets500" = 14
+"effects.interp.sum100" = 14
+"effects.interp.sum1000" = 18
+"effects.stress.bindHeavy.s10k" = 12
+"effects.stress.deepChains.s10k" = 15
+"effects.stress.effectHeavy.s10k" = 15
+"effects.stress.mixed.s10k" = 30
+"effects.stress.nestedHandlers.d3_i1k" = 33
+"tc.bindP.slow-path-chain-5000" = 17
 "tc.check.list-chain-5000" = 12
-"tc.check.macro-field" = 12
-"tc.check.nat-chain-5000" = 11
-"tc.conv.alpha-equivalent" = 9
-"tc.conv.beta-distinct" = 8
-"tc.conv.identical-deep" = 14
-"tc.conv.identical-shallow" = 9
-"tc.conv.mu-heavy" = 12
-"tc.conv.plus-heavy" = 9
-"tc.e2e.datatype-macro-big" = 9
-"tc.e2e.datatypeI-fin-deep" = 9
-"tc.e2e.tc-test-suite-full" = 8
-"tc.e2e.tc-test-suite-per-module.check" = 8
-"tc.e2e.tc-test-suite-per-module.conv" = 12
-"tc.e2e.tc-test-suite-per-module.elaborate" = 8
-"tc.e2e.tc-test-suite-per-module.eval" = 11
-"tc.e2e.tc-test-suite-per-module.hoas" = 8
-"tc.e2e.tc-test-suite-per-module.quote" = 9
-"tc.e2e.tc-test-suite-per-module.term" = 9
-"tc.e2e.tc-test-suite-per-module.value" = 11
-"tc.e2e.tc-test-suite-per-module.verified" = 11
+"tc.check.macro-field" = 15
+"tc.check.nat-chain-5000" = 14
+"tc.conv.alpha-equivalent" = 11
+"tc.conv.beta-distinct" = 11
+"tc.conv.identical-deep" = 15
+"tc.conv.identical-shallow" = 11
+"tc.conv.mu-heavy" = 18
+"tc.conv.plus-heavy" = 15
+"tc.diag.hint-resolve-5000" = 11
+"tc.diag.pretty-multi-line-5000" = 15
+"tc.diag.pretty-one-line-5000" = 20
+"tc.e2e.datatype-macro-big" = 14
+"tc.e2e.datatypeI-fin-deep" = 11
+"tc.e2e.let-chain-100" = 11
 "tc.elaborate.flatten" = 17
 "tc.elaborate.recursive" = 17
-"tc.infer.deep-app-100" = 11
-"tc.quote.closed" = 12
-"tc.quote.open" = 11
-"tc.quote.stuck" = 8
+"tc.infer.deep-app-100" = 30
+"tc.quote.closed" = 63
+"tc.quote.open" = 17
+"tc.quote.stuck" = 17

@@ -52,7 +52,9 @@ api.mk {
     inherit (self)
       check infer checkType checkTypeLevel
       emptyCtx extend lookupType
-      runCheck checkTm inferTm;
+      runCheck checkTm inferTm
+      bindP bindPChain
+      diag;
   };
   tests = partTests;
 }

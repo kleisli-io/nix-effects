@@ -60,6 +60,44 @@ let
   mkJ = type: lhs: motive: base: rhs: eq:
     { tag = "j"; inherit type lhs motive base rhs eq; };
 
+  # -- Function extensionality postulate --
+  # Atomic constant whose type is the closed 5-layer Π chain
+  # `funextTypeTm` below. No reduction rule; inhabits
+  # `Eq (Π(a:A). B a) f g` given a pointwise-equality witness.
+  mkFunext = { tag = "funext"; };
+
+  # Closed Π chain serving as the type of `funext` at universe 0.
+  # Equivalent to:
+  #   Π(A : U 0).
+  #   Π(B : A → U 0).
+  #   Π(f : Π(a:A). B a).
+  #   Π(g : Π(a:A). B a).
+  #   Π(_ : Π(a:A). Eq (B a) (f a) (g a)).
+  #     Eq (Π(a:A). B a) f g
+  # De Bruijn depths — at the Pi-body introducing binder k (k = 0..4):
+  #   k=0 (A bound): A=0.
+  #   k=1 (B bound): B=0, A=1.
+  #   k=2 (f bound): f=0, B=1, A=2.
+  #   k=3 (g bound): g=0, f=1, B=2, A=3.
+  #   k=4 (hyp bound): hyp=0, g=1, f=2, B=3, A=4.
+  # The innermost Eq type `Π(a:A). B a` opens another a-binder, under
+  # which a=0 and every outer var shifts by 1.
+  funextTypeTm =
+    mkPi "A" (mkU 0)
+      (mkPi "B" (mkPi "_" (mkVar 0) (mkU 0))
+        (mkPi "f" (mkPi "a" (mkVar 1) (mkApp (mkVar 1) (mkVar 0)))
+          (mkPi "g" (mkPi "a" (mkVar 2) (mkApp (mkVar 2) (mkVar 0)))
+            (mkPi "_"
+              (mkPi "a" (mkVar 3)
+                (mkEq
+                  (mkApp (mkVar 3) (mkVar 0))
+                  (mkApp (mkVar 2) (mkVar 0))
+                  (mkApp (mkVar 1) (mkVar 0))))
+              (mkEq
+                (mkPi "a" (mkVar 4) (mkApp (mkVar 4) (mkVar 0)))
+                (mkVar 2)
+                (mkVar 1))))));
+
   # -- Descriptions --
   mkDesc = I: { tag = "desc"; inherit I; };
   mkDescRet = j: { tag = "desc-ret"; inherit j; };
@@ -162,6 +200,7 @@ in mk {
     inherit mkUnit mkTt;
     inherit mkSum mkInl mkInr mkSumElim;
     inherit mkEq mkRefl mkJ;
+    inherit mkFunext funextTypeTm;
     inherit mkDesc mkDescRet mkDescArg mkDescRec mkDescPi mkDescPlus mkMu mkDescCon mkDescInd mkDescElim;
     inherit mkU;
     inherit mkString mkInt mkFloat mkAttrs mkPath mkFunction mkAny;
@@ -295,6 +334,29 @@ in mk {
     "desc-plus-B" = {
       expr = (mkDescPlus (mkDescRet mkTt) (mkDescRet mkTt)).B.tag;
       expected = "desc-ret";
+    };
+
+    # Function extensionality postulate
+    "funext-tag" = { expr = mkFunext.tag; expected = "funext"; };
+    "funext-type-tag" = { expr = funextTypeTm.tag; expected = "pi"; };
+    "funext-type-outer-name" = { expr = funextTypeTm.name; expected = "A"; };
+    "funext-type-outer-domain-tag" = { expr = funextTypeTm.domain.tag; expected = "U"; };
+    "funext-type-outer-domain-level" = { expr = funextTypeTm.domain.level; expected = 0; };
+    "funext-type-b-domain-is-pi" = {
+      expr = funextTypeTm.codomain.domain.tag;
+      expected = "pi";
+    };
+    "funext-type-innermost-eq" = {
+      # Walk into: A → B → f → g → hyp → body.
+      # Body should be an Eq of (Pi a:A. B a) f g.
+      expr = funextTypeTm
+        .codomain   # after A
+        .codomain   # after B
+        .codomain   # after f
+        .codomain   # after g
+        .codomain   # after hyp (body of outermost Pi chain)
+        .tag;
+      expected = "eq";
     };
   };
 }

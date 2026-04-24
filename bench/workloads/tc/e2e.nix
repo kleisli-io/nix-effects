@@ -73,4 +73,18 @@ in {
   # indexed type.
   datatypeI-fin-deep =
     (H.checkHoas (H.app H.fin (H.natLit 100)) (H.fzero (H.natLit 99))).tag;
+
+  # 100-deep nested `let` chain:
+  #   let x0:Nat = 0 in let x1:Nat = 0 in ... let x99:Nat = 0 in 0.
+  # Each layer exercises check.nix's `let` rule: check the annotated
+  # type, check the value, extend the context, recurse into the body.
+  # Stable in size (unlike test-suite workloads) and covers the let
+  # rule's cost, which is not hit by any other synthetic workload.
+  let-chain-100 =
+    let
+      body = builtins.foldl'
+        (inner: i: H.let_ "x${toString i}" H.nat H.zero (_: inner))
+        H.zero
+        (builtins.genList (x: x) 100);
+    in (H.checkHoas H.nat body).tag;
 }

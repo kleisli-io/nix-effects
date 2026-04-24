@@ -1,10 +1,15 @@
-# Typing contexts and test helpers.
+# Typing contexts and kernel-run handler.
 #
 # `emptyCtx` / `extend` / `lookupType` form the de Bruijn context used by
 # `check` / `infer`: index 0 is the most recent binding, matching eval's
 # convention. `runCheck` runs a checking computation through the
-# trampoline handler, collapsing `typeError` effects into an error
-# attrset so tests can inspect the failure.
+# trampoline handler, unwrapping the `typeError` effect's `diag.Error`
+# payload into a flat attrset so callers can inspect the failure.
+#
+# `error` holds the structured `diag.Error` (walkable via `children`
+# for position/blame-path inspection). `msg`/`expected`/`got` are
+# convenience projections of the leaf fields (`error.msg`,
+# `error.detail.expected`, `error.detail.got`).
 { self, fx, ... }:
 
 let
@@ -27,7 +32,12 @@ let
   runCheck = comp:
     let result = TR.handle {
       handlers.typeError = { param, state }: {
-        abort = { error = true; msg = param.msg; expected = param.expected; got = param.got; };
+        abort = {
+          error    = param.error;
+          msg      = param.error.msg;
+          expected = param.error.detail.expected;
+          got      = param.error.detail.got;
+        };
         state = null;
       };
     } comp;

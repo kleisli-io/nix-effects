@@ -58,6 +58,7 @@ in {
     # `tt` / `ttPrim` are two names for the kernel-primitive Unit intro.
     pair = fst: snd: { _htag = "pair"; inherit fst snd; };
     refl = { _htag = "refl"; };
+    funext = { _htag = "funext"; };
 
     stringLit = s: { _htag = "string-lit"; value = s; };
     intLit = n: { _htag = "int-lit"; value = n; };

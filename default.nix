@@ -39,25 +39,48 @@ let
         && lib.hasSuffix ".nix" name
         && !(builtins.elem name excluded);
       isSplitModule = entries ? "module.nix";
+
+      # Subdirectories are nested namespaces in both split-module and
+      # plain-namespace modes. Recursing once here keeps the treatment
+      # uniform: a subdir's readSrc result is always an api.mk-wrapped
+      # node (split dirs via their module.nix; plain dirs via the wrap
+      # below), so parent-level traversals see only mk-wrapped children.
+      subDirs = lib.foldlAttrs (acc: name: type:
+        if type == "directory"
+        then acc // { ${name} = readSrc (dir + "/${name}") ctx; }
+        else acc
+      ) {} entries;
     in
       if isSplitModule then
         let
           partNames = builtins.attrNames (lib.filterAttrs isNixFile entries);
           importPart = n: s: import (dir + "/${n}") (ctx // { self = s; });
 
+          # Sibling parts contribute flat bindings; subdirectories enter
+          # self under their directory name. Collisions between the two
+          # (a scope binding colliding with a subdir name) are a hard
+          # error — each binding has exactly one definition site.
           self = lib.fix (s:
-            builtins.foldl' (acc: n:
-              let
-                part = importPart n s;
-                scope = part.scope;
-                collisions = lib.intersectLists
-                               (builtins.attrNames acc)
-                               (builtins.attrNames scope);
-              in
-                if collisions != []
-                then throw "readSrc: ${toString dir}: duplicate binding(s) ${toString collisions}"
-                else acc // scope
-            ) {} partNames);
+            let
+              partsScope = builtins.foldl' (acc: n:
+                let
+                  part = importPart n s;
+                  scope = part.scope;
+                  collisions = lib.intersectLists
+                                 (builtins.attrNames acc)
+                                 (builtins.attrNames scope);
+                in
+                  if collisions != []
+                  then throw "readSrc: ${toString dir}: duplicate binding(s) ${toString collisions}"
+                  else acc // scope
+              ) {} partNames;
+              sdCollisions = lib.intersectLists
+                               (builtins.attrNames partsScope)
+                               (builtins.attrNames subDirs);
+            in
+              if sdCollisions != []
+              then throw "readSrc: ${toString dir}: subdirectory name(s) collide with scope binding(s): ${toString sdCollisions}"
+              else partsScope // subDirs);
 
           partTests = builtins.foldl' (acc: n:
             let
@@ -80,12 +103,11 @@ let
             then acc // { ${lib.removeSuffix ".nix" name} = import (dir + "/${name}") ctx; }
             else acc
           ) {} entries;
-          dirs = lib.foldlAttrs (acc: name: type:
-            if type == "directory"
-            then acc // { ${name} = readSrc (dir + "/${name}") ctx; }
-            else acc
-          ) {} entries;
-        in files // dirs;
+        in api.mk {
+          doc = "";
+          value = files // subDirs;
+          tests = {};
+        };
 
   # -- Library fixpoint via lib.fix --
   #
@@ -217,14 +239,19 @@ let
   # nix-unit compatible test attrset. nix-unit requires the "test" prefix on
   # test case attrs; non-prefixed attrs are recursed into as namespaces.
   # We use the module/directory structure as namespaces and prefix leaf tests.
-  prefixTests = lib.mapAttrs' (name: value: 
-    if value ? expected then {
-    name = if lib.hasPrefix "test" name then name else "test-${name}";
-    inherit value;
-  } else {
-    inherit name;
-    value = prefixTests value;
-  });
+  #
+  # A genuine nix-unit test leaf has both `expr` AND `expected`; checking
+  # only one would misclassify data records (like a Detail default with a
+  # bare `expected = null` field) as tests. The `isAttrs` guards let
+  # non-attrset leaves (strings, numbers) fall through untouched.
+  prefixTests = lib.mapAttrs' (name: value:
+    if builtins.isAttrs value && value ? expr && value ? expected then {
+      name = if lib.hasPrefix "test" name then name else "test-${name}";
+      inherit value;
+    } else {
+      inherit name;
+      value = if builtins.isAttrs value then prefixTests value else value;
+    });
 
   # Normalize integration tests: some are booleans, some are { expr; expected; }.
   # Wrap booleans as { expr; expected = true; }, pass through existing pairs.
@@ -248,6 +275,13 @@ let
 
 in fx // {
   inherit extractDocs bench;
+
+  # Raw internal-module namespace. Used by bench workloads and tests that
+  # isolate the cost of a specific module (e.g. `src.diag.pretty`,
+  # `src.tc.check.bindP`). Not part of the stable consumer API — modules under
+  # `src` may be reshaped without notice. Consumer code should use the flat
+  # `fx.<...>` exports declared above.
+  inherit src;
 
   # Content derivation for docs.kleisli.io.
   # Returns a directory of markdown files with front matter, structured as

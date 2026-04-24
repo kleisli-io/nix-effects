@@ -87,7 +87,7 @@ let
       trailers_json="$tmpdir/trailers.json"
       printf '[]' > "$trailers_json"
 
-      log=$(cd "$repo_root" && git log --format='%H%x1f%B%x1e' "$since" 2>/dev/null || true)
+      log=$(git -C "$repo_root" log --format='%H%x1f%B%x1e' "$since" 2>/dev/null || true)
 
       if [[ -n "$log" ]]; then
         while IFS= read -r -d $'\x1e' entry; do

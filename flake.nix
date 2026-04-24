@@ -43,12 +43,13 @@
           };
 
           # Benchmark harness. Invoked directly from $out/bin; see
-          # PERFORMANCE.md for the full CLI surface.
+          # CONTRIBUTING.md §"Performance gate" for the full CLI surface.
           bench-run              = nix-effects-with-pkgs.bench.runner.run;
           bench-compare          = nix-effects-with-pkgs.bench.runner.compare;
           bench-gate             = nix-effects-with-pkgs.bench.runner.gate;
           bench-calibrate        = nix-effects-with-pkgs.bench.runner.calibrate;
           bench-open-regressions = nix-effects-with-pkgs.bench.runner.open-regressions;
+          bench-lint-workloads   = nix-effects-with-pkgs.bench.runner.lint-workloads;
         });
 
       checks = forAllSystems (system:

@@ -141,12 +141,38 @@ let
           # deep blame. validate v is the 1-arg convenience that starts
           # from an empty path. Constructors (Record, ListOf, Variant)
           # thread path through their recursive validateAt calls.
+          # validateAt path positions v — effectful check with accumulated
+          # path (string list for display) and positions (Position list for
+          # structural descent). Constructors (Record, ListOf, Variant,
+          # Sigma) thread both in lockstep; `positions` supplies the
+          # `Field`/`Elem`/`Tag`/`SigmaFst`/`SigmaSnd` tags that pipe into
+          # the emitted `diagError`. Primitives carry empty-chain positions
+          # unless a constructor wraps them.
           validateAt =
             if verify != null then verify self
-            else path: v: send "typeCheck" {
-              type = self; context = name; value = v; inherit path;
-            };
-          validate = v: self.validateAt [] v;
+            else path: positions: v:
+              let
+                leafErr = fx.diag.error.mkGenericError {
+                  type = name; context = name; value = v;
+                  msg = "type check failed";
+                };
+                n = builtins.length positions;
+                # Fold positions outer→inner around the leaf: for
+                # positions = [p0, p1, ..., pk-1],
+                #   diagError = nestUnder p0 (nestUnder p1 (... leaf))
+                # so chainPositions (walking children[0]) reproduces
+                # positions in the original descent order.
+                diagError = builtins.foldl'
+                  (err: i:
+                    fx.diag.error.nestUnder
+                      (builtins.elemAt positions (n - 1 - i)) err)
+                  leafErr
+                  (builtins.genList (x: x) n);
+              in send "typeCheck" {
+                type = self; context = name; value = v;
+                inherit path positions diagError;
+              };
+          validate = v: self.validateAt [] [] v;
           diagnose = v: {
             kernel = kernelDecide v;
             guard = if guard != null then guard v else null;
@@ -363,7 +389,7 @@ let
           let t = mkType {
             name = "Custom";
             kernelType = H.any;
-            verify = _self: _path: v: pure v;
+            verify = _self: _path: _positions: v: pure v;
           };
           in fx.comp.isPure (t.validate 42);
         expected = true;
@@ -372,11 +398,46 @@ let
         expr = ((mkType { name = "T"; kernelType = H.any; }).validate 42).effect.param.path;
         expected = [];
       };
+      "auto-validate-carries-empty-positions" = {
+        expr = ((mkType { name = "T"; kernelType = H.any; }).validate 42).effect.param.positions;
+        expected = [];
+      };
       "validate-at-threads-path" = {
         expr =
           let t = mkType { name = "T"; kernelType = H.any; };
-          in (t.validateAt [ "a" "b" ] 42).effect.param.path;
+          in (t.validateAt [ "a" "b" ] [] 42).effect.param.path;
         expected = [ "a" "b" ];
+      };
+      "validate-at-threads-positions" = {
+        expr =
+          let
+            t = mkType { name = "T"; kernelType = H.any; };
+            Ps = [ (fx.diag.positions.Field "a") (fx.diag.positions.Elem 2) ];
+          in (t.validateAt [ "a" "[2]" ] Ps 42).effect.param.positions;
+        expected = [
+          (fx.diag.positions.Field "a")
+          (fx.diag.positions.Elem 2)
+        ];
+      };
+      "default-emit-has-leaf-diagError" = {
+        expr =
+          let t = mkType { name = "T"; kernelType = H.any; };
+          in (t.validate 42).effect.param.diagError.layer.tag;
+        expected = "Generic";
+      };
+      "default-emit-diagError-chains-positions" = {
+        expr =
+          let
+            t = mkType { name = "T"; kernelType = H.any; };
+            P = fx.diag.positions;
+            Ps = [ P.PiDom P.DArgSort ];
+            err = (t.validateAt [ "dom" "arg.S" ] Ps 42).effect.param.diagError;
+            # Walk children[0] from the outer wrapper to verify chain order.
+            outerTag = (builtins.elemAt err.children 0).position.tag;
+            innerTag = (builtins.elemAt
+              ((builtins.elemAt err.children 0).error.children) 0).position.tag;
+          in { outer = outerTag; inner = innerTag; };
+        expected = { outer = "PiDom"; inner = "DArgSort"; };
       };
     };
   };
@@ -404,7 +465,7 @@ let
     value = type: v:
       if type.check v
       then v
-      else builtins.throw "nix-effects type error: expected ${type.name}, got ${builtins.typeOf v}";
+      else throw "nix-effects type error: expected ${type.name}, got ${builtins.typeOf v}";
     tests = let H = fx.tc.hoas; in {
       "make-passes" = {
         expr = make (mkType { name = "Any"; kernelType = H.any; }) 42;

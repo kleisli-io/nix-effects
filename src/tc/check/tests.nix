@@ -953,6 +953,258 @@ in {
       expected = true;
     };
 
+    # Blame-path precision: the infer `desc-arg` rule wraps its sort
+    # sub-delegation with `bindP P.DArgSort`, so the structural descent
+    # coordinate is DArgSort even though the actual failure originates
+    # in the generic sub-rule catch-all's "type mismatch".
+    "reject-desc-arg-bad-S-position" = {
+      expr =
+        let r = inferTm ctx0
+          (T.mkDescArg T.mkZero (T.mkDescRet T.mkTt));
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DArgSort";
+    };
+
+    # Terminal body-shape mismatch: var 0 in the extended context
+    # infers to VNat, which is not VDesc. The rule emits
+    # `diag.mkKernelError` with `position = P.DArgBody`, so the root
+    # child edge carries DArgBody and the leaf carries `rule = "desc-arg"`.
+    "reject-desc-arg-bad-body-position" = {
+      expr =
+        let r = inferTm ctx0
+          (T.mkDescArg T.mkNat (T.mkVar 0));
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DArgBody";
+    };
+    "reject-desc-arg-bad-body-rule" = {
+      expr =
+        let r = inferTm ctx0
+          (T.mkDescArg T.mkNat (T.mkVar 0));
+        in r.error.detail.rule;
+      expected = "desc-arg";
+    };
+
+    # CHECK-mode desc-arg dispatch exercises the same positional
+    # wrappers as INFER: a bad sort surfaces under DArgSort.
+    "reject-desc-arg-check-bad-S-position" = {
+      expr =
+        let r = runCheck (self.check ctx0
+          (T.mkDescArg T.mkZero (T.mkDescRet T.mkTt))
+          (V.vDesc vUnit));
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DArgSort";
+    };
+
+    # INFER-mode desc-ret: a non-synthesising index (mkTt has no
+    # INFER rule) fails via the "cannot infer type" catch-all, but
+    # `bindP P.DRetIndex` at the caller supplies the descent
+    # coordinate so the error surfaces at `ret.j`.
+    "reject-desc-ret-infer-bad-j-position" = {
+      expr =
+        let r = inferTm ctx0 (T.mkDescRet T.mkTt);
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DRetIndex";
+    };
+
+    # CHECK-mode desc-ret against Desc Unit: mkZero does not check
+    # against VUnit, so the sub-rule fall-through raises "type
+    # mismatch"; `bindP P.DRetIndex` tags it at the index position.
+    "reject-desc-ret-check-bad-j-position" = {
+      expr =
+        let r = runCheck (self.check ctx0
+          (T.mkDescRet T.mkZero)
+          (V.vDesc vUnit));
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DRetIndex";
+    };
+
+    # INFER-mode desc-rec with a non-synthesising index (mkTt has no
+    # INFER rule) fails at the `j` sub-delegation; `bindP P.DRecIndex`
+    # supplies the `rec.j` coordinate.
+    "reject-desc-rec-infer-bad-j-position" = {
+      expr =
+        let r = inferTm ctx0 (T.mkDescRec T.mkTt (T.mkDescRet T.mkTt));
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DRecIndex";
+    };
+
+    # INFER-mode desc-rec with a good index and a malformed tail:
+    # infer j=var 0 in ctx with "_" : Nat yields iVal=VNat; the tail
+    # D=mkZero fails to check against `Desc Nat` via the sub-rule
+    # fall-through. `bindP P.DRecTail` tags the tail position.
+    "reject-desc-rec-infer-bad-D-position" = {
+      expr =
+        let ctx' = extend ctx0 "_" vNat;
+            r = inferTm ctx' (T.mkDescRec (T.mkVar 0) T.mkZero);
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DRecTail";
+    };
+
+    # CHECK-mode desc-rec against Desc Unit: a non-Unit index fails
+    # the `j` sub-check; `bindP P.DRecIndex` tags it.
+    "reject-desc-rec-check-bad-j-position" = {
+      expr =
+        let r = runCheck (self.check ctx0
+          (T.mkDescRec T.mkZero (T.mkDescRet T.mkTt))
+          (V.vDesc vUnit));
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DRecIndex";
+    };
+
+    # CHECK-mode desc-rec with a good j=mkTt : VUnit but a malformed
+    # tail D=mkZero: `bindP P.DRecTail` tags the tail position.
+    "reject-desc-rec-check-bad-D-position" = {
+      expr =
+        let r = runCheck (self.check ctx0
+          (T.mkDescRec T.mkTt T.mkZero)
+          (V.vDesc vUnit));
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DRecTail";
+    };
+
+    # INFER-mode desc-pi with a non-type sort: S=mkZero fails the
+    # `U(0)` check via sub-rule fall-through; `bindP P.DPiSort` tags it.
+    "reject-desc-pi-infer-bad-S-position" = {
+      expr =
+        let r = inferTm ctx0
+          (T.mkDescPi T.mkZero
+            (T.mkLam "_" T.mkNat T.mkTt)
+            (T.mkDescRet T.mkTt));
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DPiSort";
+    };
+
+    # INFER-mode desc-pi where f is not inferable: mkTt has no INFER
+    # rule, the catch-all fires; `bindP P.DPiFn` tags the fn position.
+    "reject-desc-pi-infer-bad-f-position" = {
+      expr =
+        let r = inferTm ctx0
+          (T.mkDescPi T.mkNat T.mkTt (T.mkDescRet T.mkTt));
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DPiFn";
+    };
+
+    # INFER-mode desc-pi where f infers to a non-Pi type: mkVar 0 in
+    # ctx extended by Nat infers to Nat, which is not a VPi. The rule
+    # emits `mkKernelError { position = DPiFn; rule = "desc-pi"; }`.
+    "reject-desc-pi-infer-f-not-pi-position" = {
+      expr =
+        let ctx' = extend ctx0 "_" vNat;
+            r = inferTm ctx' (T.mkDescPi T.mkNat (T.mkVar 0) (T.mkDescRet T.mkTt));
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DPiFn";
+    };
+    "reject-desc-pi-infer-f-not-pi-rule" = {
+      expr =
+        let ctx' = extend ctx0 "_" vNat;
+            r = inferTm ctx' (T.mkDescPi T.mkNat (T.mkVar 0) (T.mkDescRet T.mkTt));
+        in r.error.detail.rule;
+      expected = "desc-pi";
+    };
+
+    # INFER-mode desc-pi where f is Pi but domain ≠ S. S=Nat, f=λx:Unit.tt
+    # (domain=Unit). The rule emits `mkKernelError { position = DPiFn; }`.
+    "reject-desc-pi-infer-f-domain-mismatch-position" = {
+      expr =
+        let r = inferTm ctx0
+          (T.mkDescPi T.mkNat
+            (T.mkAnn (T.mkLam "_" T.mkUnit T.mkTt)
+                     (T.mkPi "_" T.mkUnit T.mkUnit))
+            (T.mkDescRet T.mkTt));
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DPiFn";
+    };
+
+    # CHECK-mode desc-pi against Desc Unit: bad sort → DPiSort.
+    "reject-desc-pi-check-bad-S-position" = {
+      expr =
+        let r = runCheck (self.check ctx0
+          (T.mkDescPi T.mkZero
+            (T.mkLam "_" T.mkNat T.mkTt)
+            (T.mkDescRet T.mkTt))
+          (V.vDesc vUnit));
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DPiSort";
+    };
+
+    # CHECK-mode desc-pi: good S=Unit, bad f (zero does not check
+    # against Pi Unit Unit). `bindP P.DPiFn` tags it.
+    "reject-desc-pi-check-bad-f-position" = {
+      expr =
+        let r = runCheck (self.check ctx0
+          (T.mkDescPi T.mkUnit T.mkZero (T.mkDescRet T.mkTt))
+          (V.vDesc vUnit));
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DPiFn";
+    };
+
+    # CHECK-mode desc-pi: good S and f, bad tail D=mkZero.
+    "reject-desc-pi-check-bad-D-position" = {
+      expr =
+        let r = runCheck (self.check ctx0
+          (T.mkDescPi T.mkUnit (T.mkLam "_" T.mkUnit T.mkTt) T.mkZero)
+          (V.vDesc vUnit));
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DPiBody";
+    };
+
+    # INFER-mode desc-plus where A is not synthesising (mkTt has no
+    # INFER rule): `bindP P.DPlusL` tags the left summand.
+    "reject-desc-plus-infer-bad-A-position" = {
+      expr =
+        let r = inferTm ctx0 (T.mkDescPlus T.mkTt (T.mkDescRet T.mkTt));
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DPlusL";
+    };
+
+    # INFER-mode desc-plus where A infers but to a non-VDesc: var 0
+    # in ctx extended by Nat infers as Nat. The rule emits
+    # `mkKernelError { position = DPlusL; rule = "desc-plus"; }`.
+    "reject-desc-plus-infer-A-not-desc-position" = {
+      expr =
+        let ctx' = extend ctx0 "_" vNat;
+            r = inferTm ctx' (T.mkDescPlus (T.mkVar 0) (T.mkDescRet T.mkTt));
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DPlusL";
+    };
+    "reject-desc-plus-infer-A-not-desc-rule" = {
+      expr =
+        let ctx' = extend ctx0 "_" vNat;
+            r = inferTm ctx' (T.mkDescPlus (T.mkVar 0) (T.mkDescRet T.mkTt));
+        in r.error.detail.rule;
+      expected = "desc-plus";
+    };
+
+    # INFER-mode desc-plus: A is ann-wrapped as Desc Unit (infers OK),
+    # B is malformed (mkZero). `bindP P.DPlusR` tags the right summand.
+    "reject-desc-plus-infer-bad-B-position" = {
+      expr =
+        let A = T.mkAnn (T.mkDescRet T.mkTt) (T.mkDesc T.mkUnit);
+            r = inferTm ctx0 (T.mkDescPlus A T.mkZero);
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DPlusR";
+    };
+
+    # CHECK-mode desc-plus against Desc Unit: bad A → DPlusL.
+    "reject-desc-plus-check-bad-A-position" = {
+      expr =
+        let r = runCheck (self.check ctx0
+          (T.mkDescPlus T.mkZero (T.mkDescRet T.mkTt))
+          (V.vDesc vUnit));
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DPlusL";
+    };
+
+    # CHECK-mode desc-plus: good A, bad B → DPlusR.
+    "reject-desc-plus-check-bad-B-position" = {
+      expr =
+        let r = runCheck (self.check ctx0
+          (T.mkDescPlus (T.mkDescRet T.mkTt) T.mkZero)
+          (V.vDesc vUnit));
+        in (builtins.elemAt r.error.children 0).position.tag;
+      expected = "DPlusR";
+    };
+
     "infer-desc-ind-ret" = {
       # Motive: (i:I) → μD i → U. Step: Π(i:I). Π(d:Eq Unit tt i). Π(_:Unit). Nat.
       # desc-ind infers tm.D; ann-wrap D so I=Unit is recoverable.
@@ -966,6 +1218,48 @@ in {
         T.mkTt
         (T.mkDescCon D T.mkTt T.mkRefl))).type.tag;
       expected = "VNat";
+    };
+
+    "infer-funext-type-tag" = {
+      expr = (inferTm ctx0 T.mkFunext).type.tag;
+      expected = "VPi";
+    };
+    "infer-funext-type-roundtrips-to-funextTypeTm" = {
+      expr = let
+        r = inferTm ctx0 T.mkFunext;
+      in Q.quote 0 r.type == T.funextTypeTm;
+      expected = true;
+    };
+    "infer-funext-type-level" = {
+      expr = let
+        r = inferTm ctx0 T.mkFunext;
+        tyTm = Q.quote 0 r.type;
+      in (inferTm ctx0 tyTm).type.level;
+      expected = 1;
+    };
+    "check-funext-against-its-type" = {
+      expr = let
+        funextTy = fx.tc.eval.eval [] T.funextTypeTm;
+      in (checkTm ctx0 T.mkFunext funextTy).tag;
+      expected = "funext";
+    };
+    "check-funext-reflexive-application" = {
+      expr = let
+        A = T.mkNat;
+        Bty = T.mkPi "_" A (T.mkU 0);
+        B = T.mkAnn (T.mkLam "_" A A) Bty;
+        fTy = T.mkPi "a" A A;
+        f = T.mkAnn (T.mkLam "_" A T.mkZero) fTy;
+        ptTy = T.mkPi "a" A (T.mkEq A T.mkZero T.mkZero);
+        pointwise = T.mkAnn (T.mkLam "_" A T.mkRefl) ptTy;
+        term = T.mkApp (T.mkApp (T.mkApp (T.mkApp (T.mkApp
+          T.mkFunext A) B) f) f) pointwise;
+        expectedTy = V.vEq
+          (V.vPi "a" V.vNat (V.mkClosure [] A))
+          (fx.tc.eval.eval [] f)
+          (fx.tc.eval.eval [] f);
+      in (checkTm ctx0 term expectedTy).tag;
+      expected = "app";
     };
 
     "infer-desc-ind-arg" = {

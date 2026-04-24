@@ -24,6 +24,11 @@
 #   - `budgets.cpu` keys and `budgets.noiseLimited` entries are disjoint.
 #     Overlap would silently prefer the cpu budget and hide the
 #     noise-limited declaration.
+#   - Every entry in `noiseLimited` and `allocNoiseLimited` names a
+#     workload present in baseline or current. An unknown entry (typo
+#     or retired-and-forgotten workload) degrades silently to a no-op
+#     exclusion, so the gate would keep hard-failing the workload the
+#     operator thought was excluded.
 #   - `baseline.nix == current.nix`. Allocation counters emitted by
 #     `NIX_SHOW_STATS` are deterministic *for a fixed evaluator* —
 #     different Nix versions can ship different thunk/env strategies and
@@ -59,12 +64,53 @@ let
   # canonical file explicitly excluded. When cpu gating is off the
   # check is vacuously true (empty cpu set).
   noiseLimited = rawBudgets.noiseLimited or [ ];
+  allocNoiseLimited = rawBudgets.allocNoiseLimited or [ ];
   cpuKeys = builtins.attrNames (budgets.cpu or { });
   overlap = builtins.filter (w: builtins.elem w cpuKeys) noiseLimited;
   validateBudgets =
     if overlap == [ ]
     then null
     else throw "finalize-gate: budgets.toml lists workloads in both [cpu] and noiseLimited: ${builtins.concatStringsSep ", " overlap}";
+
+  # Typo-detection for exclusion lists. An unknown entry degrades
+  # silently to a no-op — the intended exclusion never fires, and the
+  # gate will hard-fail on a workload the operator thought was
+  # excluded. Known workloads are the union of:
+  #   - `bench.meta.tiers` — the canonical declared-workloads set.
+  #     Higher-tier workloads (standard/heavy) appear here even when
+  #     the current run is quick-tier and excludes them.
+  #   - `baseline.results` — tolerates an exclusion for a workload that
+  #     was retired since the baseline was captured.
+  #   - `current.results` — tolerates a new workload added without a
+  #     meta.nix entry (its tier defaults to standard).
+  # Attrset union gives keyset membership in O(1).
+  knownWorkloadSet =
+    (bench.meta.tiers or { })
+    // (baseline.results or { })
+    // (current.results or { });
+  validateExclusionList = listName: list:
+    let unknown = builtins.filter (w: ! (knownWorkloadSet ? ${w})) list;
+    in if unknown == [ ]
+       then null
+       else throw "finalize-gate: ${listName} lists unknown workloads (typo?): ${builtins.concatStringsSep ", " unknown}";
+  validateNoiseLimited = validateExclusionList "noiseLimited" noiseLimited;
+  validateAllocNoiseLimited = validateExclusionList "allocNoiseLimited" allocNoiseLimited;
+
+  # Workloads missing from meta.nix default to tier=standard and
+  # silently consume CI cycles. Soft-warn (non-fatal) so contributors
+  # can iterate before landing the meta.nix entry.
+  tieredWorkloadSet = bench.meta.tiers or { };
+  currentWorkloadNames = builtins.attrNames (current.results or { });
+  unregisteredWorkloads =
+    builtins.filter
+      (w: ! (tieredWorkloadSet ? ${w}))
+      currentWorkloadNames;
+  warnUnregistered =
+    if unregisteredWorkloads == [ ]
+    then null
+    else builtins.trace
+      "finalize-gate: warning — workloads missing from bench/workloads/meta.nix (tier defaults to standard): ${builtins.concatStringsSep ", " unregisteredWorkloads}"
+      null;
 
   # Alloc determinism holds only within a Nix version. Allowing a
   # mismatch here turns every evaluator upgrade into a false alloc
@@ -88,10 +134,14 @@ let
   trailers = if trailersPath == null then [ ]
              else builtins.fromJSON (builtins.readFile trailersPath);
 
-  guards = builtins.seq validateBudgets (builtins.seq validateNixVersion null);
+  guards = builtins.seq validateBudgets
+             (builtins.seq validateNoiseLimited
+               (builtins.seq validateAllocNoiseLimited
+                 (builtins.seq validateNixVersion
+                   (builtins.seq warnUnregistered null))));
 
   gateResult = builtins.seq guards (bench.gate.gate {
-    inherit baseline current budgets trailers;
+    inherit baseline current budgets trailers allocNoiseLimited;
   });
 
   markdown = bench.format.emitGateMarkdown {

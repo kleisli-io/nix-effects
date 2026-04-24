@@ -136,7 +136,7 @@ let
       trailers_json="$tmpdir/trailers.json"
       printf '[]' > "$trailers_json"
 
-      commit_bodies=$(cd "$repo_root" && git log --format='%B%x1e' "$since" 2>/dev/null || true)
+      commit_bodies=$(git -C "$repo_root" log --format='%B%x1e' "$since" 2>/dev/null || true)
 
       fail_trailer() {
         echo "bench-gate: trailer validation: $*" >&2

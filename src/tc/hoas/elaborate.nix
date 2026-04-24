@@ -15,6 +15,7 @@ let
   T = fx.tc.term;
   E = fx.tc.eval;
   CH = fx.tc.check;
+  CHD = fx.tc.check.diag;
 
   # List helpers — inline `take`/`drop` so this module does not need to
   # pull in nixpkgs `lib`.
@@ -478,6 +479,7 @@ let
       ) (elaborate depth base) (builtins.genList (x: x) n)
     else if t == "tt" then T.mkTt
     else if t == "refl" then T.mkRefl
+    else if t == "funext" then T.mkFunext
     else if t == "string-lit" then T.mkStringLit h.value
     else if t == "int-lit" then T.mkIntLit h.value
     else if t == "float-lit" then T.mkFloatLit h.value
@@ -625,17 +627,42 @@ in {
     # Elaborate from depth 0.
     elab = elaborate 0;
 
-    # Elaborate type + term, then run the kernel checker.
+    # Elaborate type + term, then run the kernel checker. On success the
+    # elaborated Tm is returned unchanged; on failure the result is
+    # decorated with `hint` (from `fx.diag.hints`) and `surface` (back-map
+    # through the term's SourceMap).
+    #
+    # Inlined rather than routed through `CHD.runCheckDLazy` to avoid a
+    # per-call function layer + closure allocation on the hot success
+    # path. The SourceMap reference sits inside the failure branch, so
+    # `self.sourceMapOf hoasTm` is only forced when a type error fires.
+    # `CHD.runCheckDLazy` / `elab2` remain available for library callers
+    # that prefer the shell wrapper or an eager (Tm, SourceMap) pair.
     checkHoas = hoasTy: hoasTm:
       let
-        ty = self.elab hoasTy;
-        tm = self.elab hoasTm;
+        ty  = self.elab hoasTy;
+        tm  = self.elab hoasTm;
         vTy = E.eval [] ty;
-      in CH.runCheck (CH.check CH.emptyCtx tm vTy);
+        r   = CH.runCheck (CH.check CH.emptyCtx tm vTy);
+      in
+        if builtins.isAttrs r && r ? error
+        then r // {
+          hint    = fx.diag.hints.resolve r.error;
+          surface = CHD.sourceMap.hoasAtError r.error (self.sourceMapOf hoasTm);
+        }
+        else r;
 
     inferHoas = hoasTm:
-      let tm = self.elab hoasTm;
-      in CH.runCheck (CH.infer CH.emptyCtx tm);
+      let
+        tm = self.elab hoasTm;
+        r  = CH.runCheck (CH.infer CH.emptyCtx tm);
+      in
+        if builtins.isAttrs r && r ? error
+        then r // {
+          hint    = fx.diag.hints.resolve r.error;
+          surface = CHD.sourceMap.hoasAtError r.error (self.sourceMapOf hoasTm);
+        }
+        else r;
 
     # Natural number literal helper — build S^n(zero).
     natLit = n:

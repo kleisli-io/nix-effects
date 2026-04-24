@@ -10,4 +10,6 @@
   infer     = import ./infer.nix     { inherit fx; };
   elaborate = import ./elaborate.nix { inherit fx; };
   e2e       = import ./e2e.nix       { inherit fx; };
+  diag      = import ./diag.nix      { inherit fx; };
+  bindP     = import ./bindP.nix     { inherit fx; };
 }

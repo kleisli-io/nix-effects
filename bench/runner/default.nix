@@ -13,4 +13,5 @@
   gate             = import ./gate.nix             { inherit lib pkgs; };
   calibrate        = import ./calibrate.nix        { inherit lib pkgs; };
   open-regressions = import ./open-regressions.nix { inherit lib pkgs; };
+  lint-workloads   = import ./lint-workloads.nix   { inherit pkgs; };
 }

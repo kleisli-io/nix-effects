@@ -92,6 +92,14 @@ let
     # --- tc / infer ---
     "tc.infer.deep-app-100" = { tier = "quick"; };
 
+    # --- tc / diag ---
+    "tc.diag.pretty-one-line-5000"   = { tier = "quick"; };
+    "tc.diag.pretty-multi-line-5000" = { tier = "quick"; };
+    "tc.diag.hint-resolve-5000"      = { tier = "quick"; };
+
+    # --- tc / bindP ---
+    "tc.bindP.slow-path-chain-5000" = { tier = "quick"; };
+
     # --- tc / elaborate ---
     "tc.elaborate.flatten"   = { tier = "quick"; };
     "tc.elaborate.recursive" = { tier = "quick"; };
@@ -102,6 +110,7 @@ let
     "tc.e2e.synthetic-large-proof"   = { tier = "heavy"; };
     "tc.e2e.datatype-macro-big"      = { tier = "quick"; };
     "tc.e2e.datatypeI-fin-deep"      = { tier = "quick"; };
+    "tc.e2e.let-chain-100"           = { tier = "quick"; };
     # Per-module breakdown of the tc test suite.
     "tc.e2e.tc-test-suite-per-module.check"     = { tier = "quick"; };
     "tc.e2e.tc-test-suite-per-module.conv"      = { tier = "quick"; };

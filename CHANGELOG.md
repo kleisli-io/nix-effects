@@ -13,134 +13,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Kernel
 
-- **Universe-polymorphic descriptions and universes.** `Desc^k I`,
-  `U(k)`, `descArg^k`, `descPi^k`, `descElim^k` carry an explicit
-  universe level `k : Level`. The Tarski `Level` sort
-  (`zero` / `suc` / `max`) inhabits `U(0)`; `convLevel` normalises
-  level expressions modulo idempotence of `max`, distribution of
-  `suc`, and zero absorption before comparing structurally
-- **Conversion fast-paths.** Π-η reduction (`λx. f x ≡ f`) with
-  `freshVar` sharing across both sides of `convVal`, plus a
-  `convLevel a == b` syntactic-equality short-circuit
-- **Description-of-descriptions.** `descDesc : Π(k:Level). Desc ⊤`
-  describes descriptions themselves at any level. The `iso(D)`
-  theorem is stateable in the kernel via the right-associated Σ
-  shape `Π(k:Level). Σ(to). Σ(from). Σ(toFrom). fromTo`, and
-  `from(to D) ≡ D` reduces structurally on prelude descriptions
+- **Universe-polymorphic descriptions and universes.** `Desc^k I`, `U(k)`, `descArg^k`, `descPi^k`, `descElim^k` carry an explicit universe level `k : Level`. The Tarski `Level` sort (`zero` / `suc` / `max`) inhabits `U(0)`; `convLevel` normalises level expressions modulo idempotence of `max`, distribution of `suc`, and zero absorption before comparing structurally
+- **Conversion fast-paths.** Π-η reduction (`λx. f x ≡ f`) with `freshVar` sharing across both sides of `convVal`, plus a `convLevel a == b` syntactic-equality short-circuit **Description-of-descriptions.** `descDesc : Π(k:Level). Desc ⊤` describes descriptions themselves at any level. The `iso(D)` theorem is stateable in the kernel via the right-associated Σ shape `Π(k:Level). Σ(to). Σ(from). Σ(toFrom). fromTo`, and `from(to D) ≡ D` reduces structurally on prelude descriptions
 
 #### Performance
 
-- The representative cons-list construction workload is
-  alloc-neutral against the 0.9.0 baseline (primOpCalls ±0‰; sets
-  −26.6‰), and the full quick-tier alloc gate passes
+- The representative cons-list construction workload is alloc-neutral against the 0.9.0 baseline (primOpCalls ±0‰; sets −26.6‰), and the full quick-tier alloc gate passes
 
 #### Tooling and surface
 
-- **Dual-metric bench harness** (`bench/`). `bench-run` samples each
-  workload N times and records `NIX_SHOW_STATS` allocation counters
-  plus cpu percentiles under `bench/history/<name>.{json,md}`.
-  `bench-gate` classifies a run against the committed baseline,
-  demotes hard-fails matched by `Perf-regression: <workload>, <reason>`
-  commit trailers to "overridden", and runs **alloc-only in CI**
-  (shared runners have too much cpu variance against a
-  workstation-captured baseline). `bench-calibrate`, `bench-compare`,
-  `bench-open-regressions`, and `bench-lint-workloads` round out the
-  toolchain as flake packages. Per-workload cpu budgets,
-  `noiseLimited` (cpu-axis) and `allocNoiseLimited` (alloc-axis)
-  exclusion arrays, a Nix-version guard, and typo / missing-registry
-  guards ship in `bench/budgets.toml` + `bench/runner/finalize-gate.nix`
-- **Kernel diagnostic surface.** `H.checkHoas` / `H.inferHoas` now
-  attach a `hint` string and a `surface` HOAS-node pointer to every
-  type-error, lazily — only the failure branch materialises the
-  walker. Powered by a position-stack effect in the `runCheck` handler
-  (`src/tc/check/ctx.nix`), a `bindP pos m k` bracket combinator that
-  tags sub-delegations with structural `Position`s, and a SourceMap
-  mirror tree (`src/tc/hoas/source_map.nix`) keyed on the same
-  `Position` alphabet
-- **Bool / Void retired as primitives.** `H.bool = μ ⊤ (plus (retI tt)
-  (retI tt)) tt`, `H.void = Fin 0`, `H.boolElim` via `descInd`,
-  `H.absurd` via direct `J`-transport through `natCaseU`. Six `Tm`
-  constructors, four `Val` constructors, two `Elim` frames, twelve
-  dispatch cases, and ~60 lines of dead helpers leave the TCB. API
-  surface unchanged
-- **Indexed datatype macro.** `datatypeI` and `datatypePI` compile
-  arbitrary-indexed inductive families atop the ⊤-indexed
-  `datatype` / `datatypeP`. `FinDT`, `VecDT`, `EqDT` replace the
-  hand-written description / constructor / eliminator triples;
-  ~260 lines collapse to 25 lines of forwarders
-- **Path-threaded `typeCheck` effect.** `Type.validateAt path v`
-  recurses structural path segments through `Record`, `ListOf`,
-  `Variant`, `Sigma`. Value-side and kernel-side Errors now share
-  one `Position` ADT, so a single pretty-printer and hint-resolver
-  cover both
+- **Dual-metric bench harness** (`bench/`). `bench-run` samples each workload N times and records `NIX_SHOW_STATS` allocation counters plus cpu percentiles under `bench/history/<name>.{json,md}`. `bench-gate` classifies a run against the committed baseline, demotes hard-fails matched by `Perf-regression: <workload>, <reason>` commit trailers to "overridden", and runs **alloc-only in CI** (shared runners have too much cpu variance against a workstation-captured baseline). `bench-calibrate`, `bench-compare`, `bench-open-regressions`, and `bench-lint-workloads` round out the toolchain as flake packages. Per-workload cpu budgets, `noiseLimited` (cpu-axis) and `allocNoiseLimited` (alloc-axis) exclusion arrays, a Nix-version guard, and typo / missing-registry guards ship in `bench/budgets.toml` + `bench/runner/finalize-gate.nix`
+- **Kernel diagnostic surface.** `H.checkHoas` / `H.inferHoas` now attach a `hint` string and a `surface` HOAS-node pointer to every type-error, lazily — only the failure branch materialises the walker. Powered by a position-stack effect in the `runCheck` handler (`src/tc/check/ctx.nix`), a `bindP pos m k` bracket combinator that tags sub-delegations with structural `Position`s, and a SourceMap mirror tree (`src/tc/hoas/source_map.nix`) keyed on the same `Position` alphabet
+- **Bool / Void retired as primitives.** `H.bool = μ ⊤ (plus (retI tt) (retI tt)) tt`, `H.void = Fin 0`, `H.boolElim` via `descInd`, `H.absurd` via direct `J`-transport through `natCaseU`. Six `Tm` constructors, four `Val` constructors, two `Elim` frames, twelve dispatch cases, and ~60 lines of dead helpers leave the TCB. API surface unchanged **Indexed datatype macro.** `datatypeI` and `datatypePI` compile arbitrary-indexed inductive families atop the ⊤-indexed `datatype` / `datatypeP`. `FinDT`, `VecDT`, `EqDT` replace the hand-written description / constructor / eliminator triples; ~260 lines collapse to 25 lines of forwarders
+- **Path-threaded `typeCheck` effect.** `Type.validateAt path v` recurses structural path segments through `Record`, `ListOf`, `Variant`, `Sigma`. Value-side and kernel-side Errors now share one `Position` ADT, so a single pretty-printer and hint-resolver cover both
 
 ### Added
 
 #### Kernel — Level sort
 
-- `Level` sort with `mkLevel`, `mkLevelZero`, `mkLevelSuc`,
-  `mkLevelMax`, `mkLevelLit n` term constructors and `vLevel*` value
-  mirrors. `convLevel` normaliser modulo idempotence, distribution of
-  `suc`, zero absorption, and sorted-spine `max`, plus an `a == b`
-  syntactic-equality fast-path
+- `Level` sort with `mkLevel`, `mkLevelZero`, `mkLevelSuc`, `mkLevelMax`, `mkLevelLit n` term constructors and `vLevel*` value mirrors. `convLevel` normaliser modulo idempotence, distribution of `suc`, zero absorption, and sorted-spine `max`, plus an `a == b` syntactic-equality fast-path
 - `vLevelMaxOpt` — drop-zero-if-dominated optimisation for
   `vLevelMax`, applied in `descInd` `K_eff` reconstruction
-- `reifyLevel` — closes the kernel↔HOAS round-trip for polymorphic
-  levels
+- `reifyLevel` — closes the kernel↔HOAS round-trip for polymorphic levels
 
 #### Kernel — Universe-polymorphic primitives
 
-- `descDesc : Π(k:Level). Desc ⊤` — kernel-internal description of
-  descriptions, threaded for the `iso(D)` weak-levitation theorem
-- Universe-polymorphic `descElim` (leading `K : Level` slot matching
-  the description's level) and heterogeneous `funext`
-  (`Π(j:Level). Π(k:Level)` with decoupled domain/codomain levels)
-- `checkDescAtAnyLevel` — bidirectional bridge that infers the
-  description's universe level from a checked target type before
-  delegating to the level-indexed description CHECK rules
-- Π-η conversion with `freshVar` sharing across both sides of
-  `convVal`
+- `descDesc : Π(k:Level). Desc ⊤` — kernel-internal description of descriptions, threaded for the `iso(D)` weak-levitation theorem
+- Universe-polymorphic `descElim` (leading `K : Level` slot matching the description's level) and heterogeneous `funext` (`Π(j:Level). Π(k:Level)` with decoupled domain/codomain levels)
+- `checkDescAtAnyLevel` — bidirectional bridge that infers the description's universe level from a checked target type before delegating to the level-indexed description CHECK rules
+- Π-η conversion with `freshVar` sharing across both sides of `convVal`
 
 #### Tooling and surface
 
-- `datatypeI name I consList` / `datatypePI name params indexFn mkCons`
-  with `conI` / `recFieldAt` spec constructors; `FinDT` / `VecDT` /
-  `EqDT` scope bindings
-- `fx.effects.hasHandler : String → Computation Bool` (reserves the
-  effect name `"has-handler"`)
-- Deep handler semantics for effect rotation (Plotkin & Pretnar): raw
-  resumes from an outer handler route back through the inner scope
-- `.github/workflows/bench-gate.yml` — alloc-only CI gate per push /
-  PR, with step-summary publication
-- Short-alias `bench-*` commands alongside `nix-effects-bench-*` via
-  a `bench-shims` derivation in `shell.nix`
+- `datatypeI name I consList` / `datatypePI name params indexFn mkCons` with `conI` / `recFieldAt` spec constructors; `FinDT` / `VecDT` / `EqDT` scope bindings
+- `fx.effects.hasHandler : String → Computation Bool` (reserves the effect name `"has-handler"`) Deep handler semantics for effect rotation (Plotkin & Pretnar): raw resumes from an outer handler route back through the inner scope
+- `.github/workflows/bench-gate.yml` — alloc-only CI gate per push / PR, with step-summary publication
+- Short-alias `bench-*` commands alongside `nix-effects-bench-*` via a `bench-shims` derivation in `shell.nix`
 - `bench/workloads/tc/{bindP,diag}.nix` canaries; `tc.e2e.let-chain-100`
 
 ### Changed
 
-- **Breaking:** description and universe constructors take a leading
-  `Level` slot. `vDesc`, `vDescArg`, `vDescPi`, `vU`, `mkDesc`,
-  `mkDescArg`, `mkDescPi`, `mkDescElim`, `mkU` accept a `Level`
-  Val/Tm; integer literals must be wrapped explicitly via
-  `mkLevelZero` / `mkLevelLit n` (or `vLevelZero` / `vLevelSuc
-  vLevelZero` for the common 0/1 cases)
-- `StrEq` INFER rule returns the derived `H.bool`; `reifyType`
-  recognises the plus-coproduct mu shape and maps back to `H.bool`
-- Fin / Vec / Eq preludes in `hoas/combinators.nix` are
-  η-expanded forwarders over macro outputs; `absurdFin0` discharges
-  `Fin 0` via direct `J`-transport through `natCaseU`
-- `readSrc` (`default.nix`) recurses into subdirectories uniformly
-  in both split-module and plain-namespace modes; every output is
-  `api.mk`-wrapped
+- **Breaking:** description and universe constructors take a leading `Level` slot. `vDesc`, `vDescArg`, `vDescPi`, `vU`, `mkDesc`, `mkDescArg`, `mkDescPi`, `mkDescElim`, `mkU` accept a `Level` Val/Tm; integer literals must be wrapped explicitly via `mkLevelZero` / `mkLevelLit n` (or `vLevelZero` / `vLevelSuc vLevelZero` for the common 0/1 cases)
+- `StrEq` INFER rule returns the derived `H.bool`; `reifyType` recognises the plus-coproduct mu shape and maps back to `H.bool`
+- Fin / Vec / Eq preludes in `hoas/combinators.nix` are η-expanded forwarders over macro outputs; `absurdFin0` discharges `Fin 0` via direct `J`-transport through `natCaseU`
+- `readSrc` (`default.nix`) recurses into subdirectories uniformly in both split-module and plain-namespace modes; every output is `api.mk`-wrapped
 
 ### Removed
 
-- Kernel `Tm` constructors `Bool` / `True` / `False` / `BoolElim` /
-  `Void` / `Absurd`; kernel `Val` constructors `VBool` / `VTrue` /
-  `VFalse` / `VVoid`; `Elim` frames `EBoolElim` / `EAbsurd`; HOAS
-  aliases `boolPrim` / `truePrim_` / `falsePrim_` / `voidPrim` /
-  `absurdPrim` / `boolElimPrim`; dead helpers `natDisc` /
-  `noConfSuccZero` / `symNat`
+- Kernel `Tm` constructors `Bool` / `True` / `False` / `BoolElim` / `Void` / `Absurd`; kernel `Val` constructors `VBool` / `VTrue` / `VFalse` / `VVoid`; `Elim` frames `EBoolElim` / `EAbsurd`; HOAS aliases `boolPrim` / `truePrim_` / `falsePrim_` / `voidPrim` / `absurdPrim` / `boolElimPrim`; dead helpers `natDisc` / `noConfSuccZero` / `symNat`
 
 ## [0.9.0] - 2026-04-18
 

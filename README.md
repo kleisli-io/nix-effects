@@ -80,6 +80,7 @@ Everything runs at `nix eval` time.
 - [API reference](#api-reference)
 - [How it works](#how-it-works)
 - [Known limitations](#known-limitations)
+- [Documentation MCP Server](#documentation-mcp-server)
 - [Testing](#testing)
 - [Formal foundations](#formal-foundations)
 - [Used by](#used-by)

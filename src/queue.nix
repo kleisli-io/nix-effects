@@ -67,14 +67,15 @@ let
     value = q1: q2:
       if q1._variant == "Identity" then q2
       else if q2._variant == "Identity" then q1
-      else node q1 q2
-        # Preserve __rawResume flag through queue concatenation.
-        # effectRotate tags rotation continuations with __rawResume
-        # so the outer interpreter routes effectful resumes back
-        # through inner scope handlers (deep handler semantics).
-        # Without this, fx.bind chains around scope.provide lose
-        # the flag and deep semantics silently break.
-        // (if q1.__rawResume or false then { __rawResume = true; } else {});
+      # Preserve __rawResume flag through queue concatenation.
+      # effectRotate tags rotation continuations with __rawResume
+      # so the outer interpreter routes effectful resumes back
+      # through inner scope handlers (deep handler semantics).
+      # Without this, fx.bind chains around scope.provide lose
+      # the flag and deep semantics silently break.
+      else if q1.__rawResume or false
+      then (node q1 q2) // { __rawResume = true; }
+      else node q1 q2;
   };
 
   # -- Deconstruction --

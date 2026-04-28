@@ -138,6 +138,19 @@ let
     inherit k motive onRet onArg onRec onPi onPlus scrut;
   };
 
+  # -- Lift primitive --
+  # Tarski + non-cumulative cross-level transport. `Lift l m eq A : U(m)`
+  # is the type of values transported from `A : U(l)` up to `U(m)`,
+  # given a bound witness `eq : Eq Level (max l m) m` proving `l ≤ m`
+  # decidably via `convLevel`. Conv collapses `Lift l l _ A ≡ A`
+  # (idempotent at equal levels), `lower _ (lift _ a) ≡ a` (β),
+  # `lift _ (lower _ x) ≡ x` (η), composition of nested Lifts. The
+  # `eq` slot is witness-irrelevant: two Lifts with matching levels and
+  # underlying type are conv-equal regardless of the proof carried.
+  mkLift      = l: m: eq: A:    { tag = "lift";       inherit l m eq A; };
+  mkLiftIntro = l: m: eq: A: a: { tag = "lift-intro"; inherit l m eq A a; };
+  mkLiftElim  = l: m: eq: A: x: { tag = "lift-elim";  inherit l m eq A x; };
+
   # -- Level sort --
   # Tarski-style explicit universe levels. `Level` inhabits `U(0)`.
   # Level expressions are built from `zero`, `suc`, and `max`; conv
@@ -152,6 +165,13 @@ let
   mkLevelLit = n:
     if n <= 0 then mkLevelZero
     else mkLevelSuc (mkLevelLit (n - 1));
+
+  # Asymmetric Nat→Level bridge. `natToLevel n : Level` for `n : Nat`.
+  # The opposite direction is intentionally absent — `Level` is
+  # quantifiable but not destructible (no eliminator), so no term
+  # recovers a `Nat` from a `Level`. Eval reduces structurally:
+  # `natToLevel zero ≡ zero`, `natToLevel (suc n) ≡ suc (natToLevel n)`.
+  mkNatToLevel = n: { tag = "nat-to-level"; inherit n; };
 
   # -- Universes --
   # `U` carries a Level-typed Tm. Callers pass a Level Tm directly;
@@ -251,7 +271,8 @@ in mk {
     inherit mkFunext funextTypeTm;
     inherit mkDesc mkDescRet mkDescArg mkDescRec mkDescPi mkDescPlus mkMu mkDescCon mkDescInd mkDescElim;
     inherit mkU;
-    inherit mkLevel mkLevelZero mkLevelSuc mkLevelMax mkLevelLit;
+    inherit mkLift mkLiftIntro mkLiftElim;
+    inherit mkLevel mkLevelZero mkLevelSuc mkLevelMax mkLevelLit mkNatToLevel;
     inherit mkString mkInt mkFloat mkAttrs mkPath mkFunction mkAny;
     inherit mkStrEq;
     inherit mkStringLit mkIntLit mkFloatLit mkAttrsLit mkPathLit mkFnLit mkAnyLit;
@@ -316,6 +337,8 @@ in mk {
       expr = (mkLevelLit (-3)).tag;
       expected = "level-zero";
     };
+    "nat-to-level-tag" = { expr = (mkNatToLevel mkZero).tag; expected = "nat-to-level"; };
+    "nat-to-level-n" = { expr = (mkNatToLevel mkZero).n.tag; expected = "zero"; };
     "let-tag" = { expr = (mkLet "x" mkNat mkZero (mkVar 0)).tag; expected = "let"; };
     "ann-tag" = { expr = (mkAnn mkZero mkNat).tag; expected = "ann"; };
     "string-tag" = { expr = mkString.tag; expected = "string"; };
@@ -458,6 +481,35 @@ in mk {
     "desc-plus-B" = {
       expr = (mkDescPlus (mkDescRet mkTt) (mkDescRet mkTt)).B.tag;
       expected = "desc-ret";
+    };
+
+    # Lift primitive
+    "lift-tag" = { expr = (mkLift mkLevelZero mkLevelZero mkRefl mkUnit).tag; expected = "lift"; };
+    "lift-l-zero" = {
+      expr = (mkLift mkLevelZero mkLevelZero mkRefl mkUnit).l.tag;
+      expected = "level-zero";
+    };
+    "lift-m-suc" = {
+      expr = (mkLift mkLevelZero (mkLevelSuc mkLevelZero) mkRefl mkUnit).m.tag;
+      expected = "level-suc";
+    };
+    "lift-A" = { expr = (mkLift mkLevelZero mkLevelZero mkRefl mkUnit).A.tag; expected = "unit"; };
+    "lift-eq-refl" = { expr = (mkLift mkLevelZero mkLevelZero mkRefl mkUnit).eq.tag; expected = "refl"; };
+    "lift-intro-tag" = {
+      expr = (mkLiftIntro mkLevelZero mkLevelZero mkRefl mkUnit mkTt).tag;
+      expected = "lift-intro";
+    };
+    "lift-intro-a" = {
+      expr = (mkLiftIntro mkLevelZero mkLevelZero mkRefl mkUnit mkTt).a.tag;
+      expected = "tt";
+    };
+    "lift-elim-tag" = {
+      expr = (mkLiftElim mkLevelZero mkLevelZero mkRefl mkUnit (mkVar 0)).tag;
+      expected = "lift-elim";
+    };
+    "lift-elim-x" = {
+      expr = (mkLiftElim mkLevelZero mkLevelZero mkRefl mkUnit (mkVar 0)).x.tag;
+      expected = "var";
     };
 
     # Function extensionality postulate

@@ -399,6 +399,19 @@ let
     else if t == "level-suc" then T.mkLevelSuc (elaborateLevel depth h.pred)
     else if t == "level-max" then
       T.mkLevelMax (elaborateLevel depth h.lhs) (elaborateLevel depth h.rhs)
+    # Asymmetric Nat→Level bridge. `n` accepts either a Nix-meta `Int`
+    # (built into a primitive `suc^n zero` Nat term) or a HOAS term that
+    # already elaborates to a primitive `Nat`. The kernel primitive
+    # `Nat`/`zero`/`succ` is required here because `natToLevel`'s eval
+    # rule dispatches on `VZero`/`VSucc` directly; the HOAS surface
+    # `nat`/`zero`/`succ` produce μ-encoded Naturals and are not
+    # accepted by the bridge.
+    else if t == "nat-to-level" then
+      T.mkNatToLevel (
+        if builtins.isInt h.n
+        then builtins.foldl' (acc: _: T.mkSucc acc)
+               T.mkZero (builtins.genList (x: x) (if h.n < 0 then 0 else h.n))
+        else elaborate depth h.n)
     # `listOf elem` is the description-based fixpoint `mu (listDesc elem) tt`.
     else if t == "list" then T.mkMu T.mkUnit (elaborate depth (self.listDesc h.elem)) T.mkTt
     # `sum l r` is the description-based fixpoint `mu (sumDesc l r) tt`.
@@ -656,6 +669,21 @@ let
         (elaborate depth h.motive) (elaborate depth h.onRet)
         (elaborate depth h.onArg) (elaborate depth h.onRec)
         (elaborate depth h.onPi) (elaborate depth h.onPlus) (elaborate depth h.scrut)
+
+    # -- Lift primitive --
+    # The bound witness `eq : Eq Level (max l m) m` is auto-emitted as
+    # `T.mkRefl`; the kernel CHECK rule decides `convLevel (max l m) m`
+    # via the semilattice quotient. Reuses the same shape as desc-arg's
+    # bound witness (Decision #3 / Decision #4 share the mechanism).
+    else if t == "lift" then
+      T.mkLift (elaborateLevel depth h.l) (elaborateLevel depth h.m)
+        T.mkRefl (elaborate depth h.A)
+    else if t == "lift-intro" then
+      T.mkLiftIntro (elaborateLevel depth h.l) (elaborateLevel depth h.m)
+        T.mkRefl (elaborate depth h.A) (elaborate depth h.a)
+    else if t == "lift-elim" then
+      T.mkLiftElim (elaborateLevel depth h.l) (elaborateLevel depth h.m)
+        T.mkRefl (elaborate depth h.A) (elaborate depth h.x)
 
     # -- Eliminators --
     # Nat/List/Sum eliminators route through the macro-generated

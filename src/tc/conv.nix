@@ -139,8 +139,20 @@ let
   conv = d: v1: v2:
     let t1 = v1.tag; t2 = v2.tag; in
 
+    # Lift idempotent collapse — short-circuit before any structural
+    # rule. `Lift l l _ A ≡ A` is the load-bearing backward-compat rule
+    # that keeps homogeneous code transparent under the explicit-Lift
+    # discipline. The same shape applies to the introducer:
+    # `lift l l _ A a ≡ a`. Both reuse `convLevel`'s semilattice
+    # quotient (§6.6) — no new conv mechanism. The witness slot is
+    # never inspected.
+    if t1 == "VLift" && convLevel v1.l v1.m then conv d v1.A v2
+    else if t2 == "VLift" && convLevel v2.l v2.m then conv d v1 v2.A
+    else if t1 == "VLiftIntro" && convLevel v1.l v1.m then conv d v1.a v2
+    else if t2 == "VLiftIntro" && convLevel v2.l v2.m then conv d v1 v2.a
+
     # §6.1 Structural rules — simple values
-    if t1 == "VNat" && t2 == "VNat" then true
+    else if t1 == "VNat" && t2 == "VNat" then true
     else if t1 == "VUnit" && t2 == "VUnit" then true
     else if t1 == "VZero" && t2 == "VZero" then true
     else if t1 == "VTt" && t2 == "VTt" then true
@@ -325,6 +337,28 @@ let
     else if t1 == "VDescCon" && t2 == "VDescCon" then
       conv d v1.D v2.D && conv d v1.i v2.i && conv d v1.d v2.d
 
+    # Lift type-former — structural with witness-irrelevance. The `eq`
+    # slot is not compared: two `VLift`s with matching levels and
+    # underlying type are conv-equal regardless of the proof witness
+    # carried (sound because `Eq Level a b` over the hSet `Level` is
+    # propositional).
+    else if t1 == "VLift" && t2 == "VLift" then
+      convLevel v1.l v2.l && convLevel v1.m v2.m && conv d v1.A v2.A
+    # Lift introducer — structural. Compares carried values; skips
+    # `eq` for the same reason.
+    else if t1 == "VLiftIntro" && t2 == "VLiftIntro" then
+      convLevel v1.l v2.l && convLevel v1.m v2.m
+      && conv d v1.A v2.A && conv d v1.a v2.a
+    # Lift-eta on stuck neutrals: `lift l m _ A a ≡ x` ⟺
+    # `a ≡ lower l m _ A x`. Symmetric to Sigma-eta (VPair vs VNe).
+    # Restricted to VNe on the other side: any other shape is not an
+    # inhabitant of Lift, so the catch-all `false` is the right answer
+    # without forcing `vLiftElimF` to throw.
+    else if t1 == "VLiftIntro" && t2 == "VNe" then
+      conv d v1.a (E.vLiftElimF v1.l v1.m v1.eq v1.A v2)
+    else if t1 == "VNe" && t2 == "VLiftIntro" then
+      conv d (E.vLiftElimF v2.l v2.m v2.eq v2.A v1) v2.a
+
     # Opaque lambda: identity on _fnBox (Nix attrset thunk identity) + structural piTy
     else if t1 == "VOpaqueLam" && t2 == "VOpaqueLam" then
       v1._fnBox == v2._fnBox && conv d v1.piTy v2.piTy
@@ -374,6 +408,13 @@ let
       && conv d e1.motive e2.motive && conv d e1.onRet e2.onRet
       && conv d e1.onArg e2.onArg && conv d e1.onRec e2.onRec
       && conv d e1.onPi e2.onPi && conv d e1.onPlus e2.onPlus
+    # ELiftElim spine frame — compare l, m, A. The `eq` slot is not
+    # compared, mirroring the witness-irrelevance of the type-former.
+    else if t1 == "ELiftElim" then
+      convLevel e1.l e2.l && convLevel e1.m e2.m && conv d e1.A e2.A
+    # ENatToLevel is nullary: any two such frames at the same scrutinee
+    # are conv-equal.
+    else if t1 == "ENatToLevel" then true
     else false;
 
 in mk {
@@ -944,6 +985,156 @@ in mk {
       expr = conv 1
         (vNe 0 [ (V.eDescElim V.vLevelZero vNat vZero vZero vZero vZero vZero) ])
         (vNe 0 [ (V.eDescElim (V.vLevelSuc V.vLevelZero) vNat vZero vZero vZero vZero vZero) ]);
+      expected = false;
+    };
+
+    # Lift primitive — idempotent collapse, structural with
+    # witness-irrelevance, eta on stuck neutrals, ELiftElim spine.
+    "conv-lift-idempotent-collapse-vs-A" = {
+      # Lift l l _ A ≡ A — load-bearing backward-compat rule.
+      expr = conv 0 (V.vLift V.vLevelZero V.vLevelZero V.vRefl vUnit) vUnit;
+      expected = true;
+    };
+    "conv-lift-idempotent-collapse-A-vs" = {
+      # Symmetric direction — A ≡ Lift l l _ A.
+      expr = conv 0 vUnit (V.vLift V.vLevelZero V.vLevelZero V.vRefl vUnit);
+      expected = true;
+    };
+    "conv-lift-intro-idempotent-collapse-vs-a" = {
+      # lift l l _ A a ≡ a.
+      expr = conv 0 (V.vLiftIntro V.vLevelZero V.vLevelZero V.vRefl vUnit vTt) vTt;
+      expected = true;
+    };
+    "conv-lift-intro-idempotent-collapse-a-vs" = {
+      expr = conv 0 vTt (V.vLiftIntro V.vLevelZero V.vLevelZero V.vRefl vUnit vTt);
+      expected = true;
+    };
+    "conv-lift-structural-equal" = {
+      # Lift 0 1 _ Unit ≡ Lift 0 1 _ Unit at distinct levels.
+      expr = conv 0
+        (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vUnit)
+        (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vUnit);
+      expected = true;
+    };
+    "conv-lift-structural-diff-A" = {
+      # Differing underlying types do not convert.
+      expr = conv 0
+        (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vUnit)
+        (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vNat);
+      expected = false;
+    };
+    "conv-lift-structural-diff-m" = {
+      expr = conv 0
+        (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vUnit)
+        (V.vLift V.vLevelZero (V.vLevelSuc (V.vLevelSuc V.vLevelZero)) V.vRefl vUnit);
+      expected = false;
+    };
+    "conv-lift-witness-irrelevance" = {
+      # The `eq` slot is not compared — two `VLift`s with structurally
+      # different but propositionally-equal witnesses convert.
+      # vRefl vs (vRefl) is a degenerate case; substitute distinct
+      # placeholder values to confirm the eq slot is not consulted.
+      expr = conv 0
+        (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vUnit)
+        (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero) vTt vUnit);
+      expected = true;
+    };
+    "conv-lift-intro-structural-equal" = {
+      expr = conv 0
+        (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vUnit vTt)
+        (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vUnit vTt);
+      expected = true;
+    };
+    "conv-lift-intro-structural-diff-a" = {
+      expr = conv 0
+        (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vNat vZero)
+        (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vNat (vSucc vZero));
+      expected = false;
+    };
+    "conv-lift-intro-witness-irrelevance" = {
+      expr = conv 0
+        (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vUnit vTt)
+        (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero) vTt vUnit vTt);
+      expected = true;
+    };
+    "conv-lift-eta-intro-vs-neutral" = {
+      # lift _ _ a ≡ x for stuck x : Lift — fires by η applied to the
+      # neutral on the right. Construct: the neutral `x` is a fresh var
+      # standing for an inhabitant of `Lift 0 1 _ Unit`. The intro side
+      # pairs `a = lower x`. Both should convert.
+      expr = let
+        x = V.freshVar 0;
+        loweredX = E.vLiftElimF V.vLevelZero (V.vLevelSuc V.vLevelZero)
+          V.vRefl vUnit x;
+      in conv 1
+        (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero)
+          V.vRefl vUnit loweredX)
+        x;
+      expected = true;
+    };
+    "conv-lift-eta-neutral-vs-intro" = {
+      # Symmetric direction.
+      expr = let
+        x = V.freshVar 0;
+        loweredX = E.vLiftElimF V.vLevelZero (V.vLevelSuc V.vLevelZero)
+          V.vRefl vUnit x;
+      in conv 1
+        x
+        (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero)
+          V.vRefl vUnit loweredX);
+      expected = true;
+    };
+    "conv-ne-lift-elim" = {
+      # Two stuck `lower`s with matching params convert.
+      expr = conv 1
+        (vNe 0 [ (V.eLiftElim V.vLevelZero (V.vLevelSuc V.vLevelZero)
+                   V.vRefl vUnit) ])
+        (vNe 0 [ (V.eLiftElim V.vLevelZero (V.vLevelSuc V.vLevelZero)
+                   V.vRefl vUnit) ]);
+      expected = true;
+    };
+    "conv-ne-lift-elim-diff-A" = {
+      expr = conv 1
+        (vNe 0 [ (V.eLiftElim V.vLevelZero (V.vLevelSuc V.vLevelZero)
+                   V.vRefl vUnit) ])
+        (vNe 0 [ (V.eLiftElim V.vLevelZero (V.vLevelSuc V.vLevelZero)
+                   V.vRefl vNat) ]);
+      expected = false;
+    };
+    "conv-ne-lift-elim-witness-irrelevance" = {
+      # The `eq` slot is not compared in the spine frame.
+      expr = conv 1
+        (vNe 0 [ (V.eLiftElim V.vLevelZero (V.vLevelSuc V.vLevelZero)
+                   V.vRefl vUnit) ])
+        (vNe 0 [ (V.eLiftElim V.vLevelZero (V.vLevelSuc V.vLevelZero)
+                   vTt vUnit) ]);
+      expected = true;
+    };
+
+    # natToLevel — structural Nat→Level reduction; ENatToLevel spine on stuck.
+    "conv-nat-to-level-zero-vs-zero" = {
+      expr = conv 0
+        (E.vNatToLevel V.vZero) V.vLevelZero;
+      expected = true;
+    };
+    "conv-nat-to-level-suc-chain" = {
+      # natToLevel (suc (suc zero)) ≡ suc (suc zero) at the Level sort.
+      expr = conv 0
+        (E.vNatToLevel (vSucc (vSucc V.vZero)))
+        (V.vLevelSuc (V.vLevelSuc V.vLevelZero));
+      expected = true;
+    };
+    "conv-nat-to-level-stuck-equal" = {
+      # Two stuck `natToLevel` on the same Nat-typed neutral convert.
+      expr = conv 1
+        (E.vNatToLevel (V.freshVar 0))
+        (E.vNatToLevel (V.freshVar 0));
+      expected = true;
+    };
+    "conv-nat-to-level-stuck-diff-scrut" = {
+      expr = conv 2
+        (E.vNatToLevel (V.freshVar 0))
+        (E.vNatToLevel (V.freshVar 1));
       expected = false;
     };
 

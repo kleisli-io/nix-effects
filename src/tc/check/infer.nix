@@ -273,6 +273,12 @@ in {
         bindP P.LevelMaxLhs (self.check ctx tm.lhs V.vLevel) (lTm:
           bindP P.LevelMaxRhs (self.check ctx tm.rhs V.vLevel) (rTm:
             pure { term = T.mkLevelMax lTm rTm; type = V.vLevel; }))
+      # `natToLevel n` infers as `Level` when `n : Nat`. Asymmetric
+      # bridge per Decision #2 corollary — the kernel projects Nat to
+      # Level for ergonomic level literals; no inverse rule exists.
+      else if t == "nat-to-level" then
+        bindP P.NatToLevelN (self.check ctx tm.n V.vNat) (nTm:
+          pure { term = T.mkNatToLevel nTm; type = V.vLevel; })
 
       # Type formers infer at U(0)
       else if t == "nat" then pure { term = T.mkNat; type = vU0; }
@@ -288,6 +294,85 @@ in {
       else if t == "path" then pure { term = T.mkPath; type = vU0; }
       else if t == "function" then pure { term = T.mkFunction; type = vU0; }
       else if t == "any" then pure { term = T.mkAny; type = vU0; }
+      # Lift l m eq A — `Lift l m eq A : U(m)`. The bound witness
+      # `eq : Eq Level (max l m) m` proves `l ≤ m` decidably via
+      # `convLevel`. `A : U(l)` is the underlying type. Eval collapses
+      # `Lift l l _ A ≡ A` (idempotent at equal levels via the smart
+      # constructor); the inferred type returned here threads through
+      # `vLiftF` so the same collapse fires at infer time. Level-zero
+      # fast-paths on `l` and `m` mirror the desc-arg shape.
+      else if t == "lift" then
+        let
+          atLevels = lVal: mVal:
+            bind (self.check ctx tm.A (V.vU lVal)) (aTm:
+              bind (self.check ctx tm.eq
+                (V.vEq V.vLevel (V.vLevelMax lVal mVal) mVal)) (eqTm:
+                pure { term = T.mkLift tm.l tm.m eqTm aTm;
+                       type = V.vU mVal; }));
+          withM = lVal:
+            if tm.m.tag == "level-zero"
+            then atLevels lVal V.vLevelZero
+            else bind (self.check ctx tm.m V.vLevel) (mTm:
+              atLevels lVal (E.eval ctx.env mTm));
+        in
+          if tm.l.tag == "level-zero"
+          then withM V.vLevelZero
+          else bind (self.check ctx tm.l V.vLevel) (lTm:
+            withM (E.eval ctx.env lTm))
+
+      # lift-intro l m eq A a — `lift l m eq A a : Lift l m eq A`.
+      # Threads the inferred type through `vLiftF` so the idempotent
+      # collapse at `l = m` fires (the inferred type becomes `A`,
+      # matching eval's `vLiftIntroF` collapse to `a` at `convLevel
+      # l m`). When `l ≠ m`, the type stays as a `VLift` cell.
+      else if t == "lift-intro" then
+        let
+          atLevels = lVal: mVal:
+            bind (self.check ctx tm.A (V.vU lVal)) (aTm:
+              let aVal = E.eval ctx.env aTm; in
+              bind (self.check ctx tm.eq
+                (V.vEq V.vLevel (V.vLevelMax lVal mVal) mVal)) (eqTm:
+                let eqVal = E.eval ctx.env eqTm; in
+                bind (self.check ctx tm.a aVal) (innerTm:
+                  pure { term = T.mkLiftIntro tm.l tm.m eqTm aTm innerTm;
+                         type = E.vLiftF lVal mVal eqVal aVal; })));
+          withM = lVal:
+            if tm.m.tag == "level-zero"
+            then atLevels lVal V.vLevelZero
+            else bind (self.check ctx tm.m V.vLevel) (mTm:
+              atLevels lVal (E.eval ctx.env mTm));
+        in
+          if tm.l.tag == "level-zero"
+          then withM V.vLevelZero
+          else bind (self.check ctx tm.l V.vLevel) (lTm:
+            withM (E.eval ctx.env lTm))
+
+      # lift-elim l m eq A x — `lower l m eq A x : A`. Synthesises the
+      # underlying type `A` directly (not `Lift l m eq A`); the eval-time
+      # idempotent collapse of `Lift l l _ A ≡ A` makes this rule
+      # transparent at `l = m` since the scrutinee was already at `A`.
+      else if t == "lift-elim" then
+        let
+          atLevels = lVal: mVal:
+            bind (self.check ctx tm.A (V.vU lVal)) (aTm:
+              let aVal = E.eval ctx.env aTm; in
+              bind (self.check ctx tm.eq
+                (V.vEq V.vLevel (V.vLevelMax lVal mVal) mVal)) (eqTm:
+                let eqVal = E.eval ctx.env eqTm; in
+                bind (self.check ctx tm.x (V.vLift lVal mVal eqVal aVal)) (xTm:
+                  pure { term = T.mkLiftElim tm.l tm.m eqTm aTm xTm;
+                         type = aVal; })));
+          withM = lVal:
+            if tm.m.tag == "level-zero"
+            then atLevels lVal V.vLevelZero
+            else bind (self.check ctx tm.m V.vLevel) (mTm:
+              atLevels lVal (E.eval ctx.env mTm));
+        in
+          if tm.l.tag == "level-zero"
+          then withM V.vLevelZero
+          else bind (self.check ctx tm.l V.vLevel) (lTm:
+            withM (E.eval ctx.env lTm))
+
       # desc^k I — takes a level k and index type I. `desc^k I : U(suc k)`.
       # Level-zero fast-path: when `tm.k` is the `level-zero` singleton
       # (the overwhelmingly common shape for prelude descriptions),
@@ -489,7 +574,7 @@ in {
                   # X = λ(_i:I). μ I D _i as a VLam so interp can apply it.
                   muDFunc = V.vLam "_i" iTyVal (V.mkClosure [ dVal iTyVal ]
                     (T.mkMu (T.mkVar 2) (T.mkVar 1) (T.mkVar 0)));
-                  interpTy = E.interp iTyVal dVal muDFunc iVal;
+                  interpTy = E.interp dTy.level iTyVal dVal muDFunc iVal;
               in bindP P.MuPayload (self.check ctx tm.d interpTy) (dataTm:
                 pure { term = T.mkDescCon dResult.term iTm dataTm;
                        type = V.vMu iTyVal dVal iVal; })))
@@ -669,9 +754,9 @@ in {
                 iVar = V.freshVar ctx.depth;
                 muDFunc1 = V.vLam "_i" iTyVal (V.mkClosure [ dVal iTyVal ]
                   (T.mkMu (T.mkVar 2) (T.mkVar 1) (T.mkVar 0)));
-                interpTyAtI = E.interp iTyVal dVal muDFunc1 iVar;
+                interpTyAtI = E.interp dTy.level iTyVal dVal muDFunc1 iVar;
                 dVar = V.freshVar (ctx.depth + 1);
-                allTyAtI = E.allTy kEff iTyVal dVal dVal pVal iVar dVar;
+                allTyAtI = E.allTy kEff dTy.level iTyVal dVal dVal pVal iVar dVar;
                 retTyAtI = E.vApp (E.vApp pVal iVar) (V.vDescCon dVal iVar dVar);
                 stepTy = V.vPi "i" iTyVal (V.mkClosure ctx.env
                   (T.mkPi "d" (Q.quote (ctx.depth + 1) interpTyAtI)

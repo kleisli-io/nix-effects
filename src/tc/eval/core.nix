@@ -22,10 +22,11 @@ let
     vList vNil vCons
     vUnit vTt vSum vInl vInr vEq vRefl vFunext vU vNe
     vLevel vLevelZero vLevelSuc vLevelMax
+    vLift vLiftIntro
     vDesc vDescRet vDescArg vDescRec vDescPi vDescPlus vMu vDescCon
     vString vInt vFloat vAttrs vPath vFunction vAny
     vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit
-    eApp eFst eSnd eNatElim eListElim eSumElim eJ eStrEq;
+    eApp eFst eSnd eNatElim eListElim eSumElim eJ eStrEq eLiftElim eNatToLevel;
 
   # Cached `U(0)` value. `mkU mkLevelZero` produces a term whose `level` is the
   # `level-zero` singleton; evaluating under the U-case returns this
@@ -81,6 +82,31 @@ in {
           ) { acc = baseResult; inherit fuel; } (builtins.genList (i: i + 1) n);
         in result.acc
       else throw "tc: vNatElim on non-nat (tag=${scrut.tag})";
+
+    # vNatToLevelF — asymmetric Nat→Level bridge. Reduces structurally
+    # on closed Nats (`zero → vLevelZero`, `suc^n zero → vLevelSuc^n
+    # vLevelZero`); records `eNatToLevel` on a stuck Nat-typed neutral.
+    # Trampolined via genericClosure for deep Nats, mirroring vNatElimF.
+    vNatToLevelF = fuel: scrut:
+      if scrut.tag == "VZero" then vLevelZero
+      else if scrut.tag == "VNe" then
+        vNe scrut.level (scrut.spine ++ [ eNatToLevel ])
+      else if scrut.tag == "VSucc" then
+        let
+          chain = builtins.genericClosure {
+            startSet = [{ key = 0; val = scrut; }];
+            operator = item:
+              if item.val.tag == "VSucc"
+              then [{ key = item.key + 1; val = item.val.pred; }]
+              else [];
+          };
+          last = builtins.elemAt chain (builtins.length chain - 1);
+          baseResult = self.vNatToLevelF fuel last.val;
+          n = builtins.length chain - 1;
+        in if n > fuel then throw "normalization budget exceeded"
+        else builtins.foldl' (acc: _: vLevelSuc acc)
+          baseResult (builtins.genList (x: x) n)
+      else throw "tc: vNatToLevel on non-nat (tag=${scrut.tag})";
 
     # vStrEq — string equality primitive.
     # Both VStringLit → plus-encoded VDescCon true/false. Neutral → spine.
@@ -146,6 +172,47 @@ in {
       else if eq.tag == "VNe" then
         vNe eq.level (eq.spine ++ [ (eJ type lhs motive base rhs) ])
       else throw "tc: vJ on non-eq (tag=${eq.tag})";
+
+    # Lift type-former. `Lift l m eq A : U(m)` is the type of values of
+    # `A : U(l)` transported up to `U(m)`. Conv collapses idempotently
+    # when `convLevel l m` (the load-bearing backward-compat rule for
+    # homogeneous code: `Lift l l _ A ≡ A`) and composes nested Lifts
+    # (`Lift l m _ (Lift l' l _ A') ≡ Lift l' m _ A'`). The witness slot
+    # is irrelevant — emit `vRefl` on collapse since both bound
+    # conditions hold by transitivity.
+    vLiftF = l: m: eq: A:
+      if fx.tc.conv.convLevel l m then A
+      else if A.tag == "VLift"
+      then vLift A.l m vRefl A.A
+      else vLift l m eq A;
+
+    # Lift introducer. Idempotent at `convLevel l m` (returns `a`); η on
+    # a stuck `lower`-spine drops the trailing `ELiftElim` frame
+    # (`lift _ (lower _ x) ≡ x`). Witness-irrelevance is enforced by
+    # `convLevel`-comparing levels and structural equality on the
+    # carried `A` — the spine's `eq` is not consulted.
+    vLiftIntroF = l: m: eq: A: a:
+      if fx.tc.conv.convLevel l m then a
+      else if a.tag == "VNe" && a.spine != []
+        && (let last = builtins.elemAt a.spine (builtins.length a.spine - 1);
+            in last.tag == "ELiftElim"
+               && fx.tc.conv.convLevel last.l l
+               && fx.tc.conv.convLevel last.m m
+               && last.A == A)
+      then let n = builtins.length a.spine; in
+        vNe a.level (builtins.genList (i: builtins.elemAt a.spine i) (n - 1))
+      else vLiftIntro l m eq A a;
+
+    # Lift eliminator (`lower`). Idempotent at `convLevel l m`;
+    # β-reduces `lower _ (lift _ a) → a`; appends `ELiftElim` to the
+    # spine of a stuck neutral. Throws on any other shape — the type
+    # checker rejects ill-typed `lower` before evaluation.
+    vLiftElimF = l: m: eq: A: x:
+      if fx.tc.conv.convLevel l m then x
+      else if x.tag == "VLiftIntro" then x.a
+      else if x.tag == "VNe"
+      then vNe x.level (x.spine ++ [ (eLiftElim l m eq A) ])
+      else throw "tc: vLiftElim on non-Lift (tag=${x.tag})";
 
     # Main evaluator with fuel (§9)
     evalF = fuel: env: tm:
@@ -364,6 +431,27 @@ in {
         self.vDescElimF f (ev tm.k) (ev tm.motive) (ev tm.onRet) (ev tm.onArg)
           (ev tm.onRec) (ev tm.onPi) (ev tm.onPlus) (ev tm.scrut)
 
+      # Lift primitive. Level-zero fast-path on `tm.l` / `tm.m` mirrors
+      # the `desc-arg` / `desc-pi` shape — both slots are most often
+      # `mkLevelZero` for the prelude's homogeneous-at-zero call sites,
+      # and the smart constructor's `convLevel l m` idempotent collapse
+      # then fires immediately on the cached `vLevelZero` singleton.
+      else if t == "lift" then
+        self.vLiftF
+          (if tm.l.tag == "level-zero" then vLevelZero else ev tm.l)
+          (if tm.m.tag == "level-zero" then vLevelZero else ev tm.m)
+          (ev tm.eq) (ev tm.A)
+      else if t == "lift-intro" then
+        self.vLiftIntroF
+          (if tm.l.tag == "level-zero" then vLevelZero else ev tm.l)
+          (if tm.m.tag == "level-zero" then vLevelZero else ev tm.m)
+          (ev tm.eq) (ev tm.A) (ev tm.a)
+      else if t == "lift-elim" then
+        self.vLiftElimF
+          (if tm.l.tag == "level-zero" then vLevelZero else ev tm.l)
+          (if tm.m.tag == "level-zero" then vLevelZero else ev tm.m)
+          (ev tm.eq) (ev tm.A) (ev tm.x)
+
       else if t == "U" then
         if tm.level.tag == "level-zero" then vUZero
         else vU (ev tm.level)
@@ -375,6 +463,7 @@ in {
       else if t == "level-zero" then vLevelZero
       else if t == "level-suc" then vLevelSuc (ev tm.pred)
       else if t == "level-max" then vLevelMax (ev tm.lhs) (ev tm.rhs)
+      else if t == "nat-to-level" then self.vNatToLevelF f (ev tm.n)
 
       # Axiomatized primitives
       else if t == "string" then vString
@@ -407,6 +496,7 @@ in {
     vNatElim = self.vNatElimF self.defaultFuel;
     vListElim = self.vListElimF self.defaultFuel;
     vSumElim = self.vSumElimF self.defaultFuel;
+    vNatToLevel = self.vNatToLevelF self.defaultFuel;
   };
 
   tests = let
@@ -740,6 +830,134 @@ in {
         scrut = T.mkDescCon D T.mkTt (T.mkPair T.mkZero T.mkRefl);
       in (eval [] (T.mkDescInd D P step T.mkTt scrut)).tag;
       expected = "VZero";
+    };
+
+    # Lift primitive — type-former, introducer, eliminator.
+    "eval-lift-idempotent" = {
+      # Lift l l _ A ≡ A — load-bearing backward-compat at homogeneous
+      # levels. Both levels mkLevelZero, so convLevel fires and the
+      # smart constructor returns A directly.
+      expr = (eval [] (T.mkLift T.mkLevelZero T.mkLevelZero T.mkRefl T.mkUnit)).tag;
+      expected = "VUnit";
+    };
+    "eval-lift-distinct-levels" = {
+      # 0 < 1: convLevel rejects, vLiftF falls through to constructor.
+      expr = (eval [] (T.mkLift T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
+        T.mkRefl T.mkUnit)).tag;
+      expected = "VLift";
+    };
+    "eval-lift-distinct-levels-A" = {
+      expr = (eval [] (T.mkLift T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
+        T.mkRefl T.mkUnit)).A.tag;
+      expected = "VUnit";
+    };
+    "eval-lift-composition" = {
+      # Lift 0 2 _ (Lift 0 1 _ Unit) collapses to Lift 0 2 _ Unit by
+      # the inner-Lift composition rule (witness combined into vRefl).
+      expr = let
+        inner = T.mkLift T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
+          T.mkRefl T.mkUnit;
+        outer = T.mkLift T.mkLevelZero
+          (T.mkLevelSuc (T.mkLevelSuc T.mkLevelZero))
+          T.mkRefl inner;
+      in (eval [] outer).A.tag;
+      # Composition collapses A to the deepest underlying type (Unit).
+      expected = "VUnit";
+    };
+
+    "eval-lift-intro-idempotent" = {
+      # lift l l _ A a ≡ a (η-collapse on idempotent Lift)
+      expr = (eval [] (T.mkLiftIntro T.mkLevelZero T.mkLevelZero T.mkRefl
+        T.mkUnit T.mkTt)).tag;
+      expected = "VTt";
+    };
+    "eval-lift-intro-distinct-levels" = {
+      # 0 < 1: builds a VLiftIntro cell.
+      expr = (eval [] (T.mkLiftIntro T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
+        T.mkRefl T.mkUnit T.mkTt)).tag;
+      expected = "VLiftIntro";
+    };
+
+    "eval-lift-elim-idempotent" = {
+      # lower l l _ A x ≡ x (idempotent at l=m)
+      expr = (eval [] (T.mkLiftElim T.mkLevelZero T.mkLevelZero T.mkRefl
+        T.mkUnit T.mkTt)).tag;
+      expected = "VTt";
+    };
+    "eval-lift-elim-beta" = {
+      # lower (lift a) → a
+      expr = let
+        inner = T.mkLiftIntro T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
+          T.mkRefl T.mkUnit T.mkTt;
+        outer = T.mkLiftElim T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
+          T.mkRefl T.mkUnit inner;
+      in (eval [] outer).tag;
+      expected = "VTt";
+    };
+    "eval-lift-elim-stuck" = {
+      # lower on a neutral produces VNe with ELiftElim spine entry.
+      expr = (eval [ (freshVar 0) ]
+        (T.mkLiftElim T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
+          T.mkRefl T.mkUnit (T.mkVar 0))).tag;
+      expected = "VNe";
+    };
+    "eval-lift-elim-stuck-spine-tag" = {
+      expr = let
+        r = eval [ (freshVar 0) ]
+          (T.mkLiftElim T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
+            T.mkRefl T.mkUnit (T.mkVar 0));
+      in (builtins.elemAt r.spine 0).tag;
+      expected = "ELiftElim";
+    };
+
+    "eval-lift-intro-eta-stuck" = {
+      # lift (lower x) on a stuck `x` η-reduces by dropping the
+      # trailing ELiftElim from the spine.
+      expr = let
+        lowerd = T.mkLiftElim T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
+          T.mkRefl T.mkUnit (T.mkVar 0);
+        wrapped = T.mkLiftIntro T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
+          T.mkRefl T.mkUnit lowerd;
+      in (eval [ (freshVar 0) ] wrapped).tag;
+      expected = "VNe";
+    };
+    "eval-lift-intro-eta-spine-empty" = {
+      # After η, the only spine entry (the ELiftElim) is gone.
+      expr = let
+        lowerd = T.mkLiftElim T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
+          T.mkRefl T.mkUnit (T.mkVar 0);
+        wrapped = T.mkLiftIntro T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
+          T.mkRefl T.mkUnit lowerd;
+      in (eval [ (freshVar 0) ] wrapped).spine;
+      expected = [];
+    };
+
+    "eval-nat-to-level-zero" = {
+      expr = (eval [] (T.mkNatToLevel T.mkZero)).tag;
+      expected = "VLevelZero";
+    };
+    "eval-nat-to-level-suc-zero" = {
+      expr = (eval [] (T.mkNatToLevel (T.mkSucc T.mkZero))).tag;
+      expected = "VLevelSuc";
+    };
+    "eval-nat-to-level-3-shape" = {
+      # natToLevel 3 ≡ suc (suc (suc zero)) definitionally.
+      expr = let
+        n3 = T.mkSucc (T.mkSucc (T.mkSucc T.mkZero));
+        v = eval [] (T.mkNatToLevel n3);
+      in v.pred.pred.pred.tag;
+      expected = "VLevelZero";
+    };
+    "eval-nat-to-level-stuck" = {
+      # natToLevel (Var 0) leaves an ENatToLevel frame on a Nat-typed neutral.
+      expr = (eval [ (freshVar 0) ] (T.mkNatToLevel (T.mkVar 0))).tag;
+      expected = "VNe";
+    };
+    "eval-nat-to-level-stuck-spine-tag" = {
+      expr = let
+        v = eval [ (freshVar 0) ] (T.mkNatToLevel (T.mkVar 0));
+      in (builtins.head v.spine).tag;
+      expected = "ENatToLevel";
     };
 
     # §11.3 Stress tests (eval level)

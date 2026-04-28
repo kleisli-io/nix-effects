@@ -13,7 +13,7 @@ let
   inherit (self)
     nat bool unit void string int_ float_ attrs path function_ any
     listOf sum eq u
-    level levelZero levelSuc levelMax
+    level levelZero levelSuc levelMax natToLevel
     forall sigma lam let_
     zero succ true_ false_ tt nil cons pair inl inr refl
     stringLit intLit floatLit attrsLit pathLit fnLit anyLit
@@ -644,23 +644,6 @@ in {
     # level — the large-elim invariant across both description
     # eliminators.
 
-    # desc-ind: motive `(i:⊤) → μD i → U(0)` has `u 0 : U(1)` at its
-    # innermost body. D = descRet (one constructor), step produces `nat`
-    # at each case (nat : U(0), inhabiting the motive's U(0)-value codomain).
-    "descInd-u1-motive-checks" = {
-      expr = let
-        D = ann descRet desc;
-        tm = self.descInd D
-          (lam "i" unit (_: lam "_" (mu D tt) (_: u 0)))
-          (lam "i" unit (iV:
-            lam "d" (eq unit tt iV) (_:
-              lam "_" unit (_: nat))))
-          tt
-          (descCon D tt refl);
-      in (checkHoas (u 1) tm).tag;
-      expected = "desc-ind";
-    };
-
     # desc-elim: motive `(D':Desc ⊤) → U(0)` with body `u 0 : U(1)` at the
     # innermost position. Exercises the universe-polymorphic path
     # documented at `check/infer.nix:289-294`.
@@ -698,7 +681,7 @@ in {
         lhsNf = Q.nf [] (elab (interpHoasAt 0 unit descRet Xfam tt));
         dVal = E.eval [] (elab descRet);
         xVal = E.eval [] (elab Xfam);
-        rhsNf = Q.quote 0 (E.interp V.vUnit dVal xVal V.vTt);
+        rhsNf = Q.quote 0 (E.interp V.vLevelZero V.vUnit dVal xVal V.vTt);
       in lhsNf == rhsNf;
       expected = true;
     };
@@ -709,7 +692,7 @@ in {
         D = descRec descRet;
         Xfam = lam "_" unit (_: bool);
         lhsNf = Q.nf [] (elab (interpHoasAt 0 unit D Xfam tt));
-        rhsNf = Q.quote 0 (E.interp V.vUnit
+        rhsNf = Q.quote 0 (E.interp V.vLevelZero V.vUnit
           (E.eval [] (elab D)) (E.eval [] (elab Xfam)) V.vTt);
       in lhsNf == rhsNf;
       expected = true;
@@ -721,7 +704,7 @@ in {
         D = descArg 0 bool (_: descRet);
         Xfam = lam "_" unit (_: nat);
         lhsNf = Q.nf [] (elab (interpHoasAt 0 unit D Xfam tt));
-        rhsNf = Q.quote 0 (E.interp V.vUnit
+        rhsNf = Q.quote 0 (E.interp V.vLevelZero V.vUnit
           (E.eval [] (elab D)) (E.eval [] (elab Xfam)) V.vTt);
       in lhsNf == rhsNf;
       expected = true;
@@ -733,7 +716,7 @@ in {
         D = descPi 0 bool descRet;
         Xfam = lam "_" unit (_: nat);
         lhsNf = Q.nf [] (elab (interpHoasAt 0 unit D Xfam tt));
-        rhsNf = Q.quote 0 (E.interp V.vUnit
+        rhsNf = Q.quote 0 (E.interp V.vLevelZero V.vUnit
           (E.eval [] (elab D)) (E.eval [] (elab Xfam)) V.vTt);
       in lhsNf == rhsNf;
       expected = true;
@@ -881,7 +864,7 @@ in {
       expr = let
         Xfam = lam "_" unit (_: bool);
         lhsNf = Q.nf [] (elab (interpHoasAt 0 unit natDesc Xfam tt));
-        rhsNf = Q.quote 0 (E.interp V.vUnit
+        rhsNf = Q.quote 0 (E.interp V.vLevelZero V.vUnit
           (E.eval [] (elab natDesc))
           (E.eval [] (elab Xfam)) V.vTt);
       in lhsNf == rhsNf;
@@ -902,7 +885,7 @@ in {
         dsub = E.eval [] (elab descRet);
         pVal = E.eval [] (elab pHoas);
         dVal = E.eval [] (elab refl);
-        rhsNf = Q.quote 0 (E.allTy V.vLevelZero V.vUnit douter dsub pVal V.vTt dVal);
+        rhsNf = Q.quote 0 (E.allTy V.vLevelZero V.vLevelZero V.vUnit douter dsub pVal V.vTt dVal);
       in lhsNf == rhsNf;
       expected = true;
     };
@@ -920,7 +903,7 @@ in {
         dsub = E.eval [] (elab D);
         pVal = E.eval [] (elab pHoas);
         dVal = E.eval [] (elab dH);
-        rhsNf = Q.quote 0 (E.allTy V.vLevelZero V.vUnit douter dsub pVal V.vTt dVal);
+        rhsNf = Q.quote 0 (E.allTy V.vLevelZero V.vLevelZero V.vUnit douter dsub pVal V.vTt dVal);
       in lhsNf == rhsNf;
       expected = true;
     };
@@ -938,7 +921,7 @@ in {
         dsub = E.eval [] (elab D);
         pVal = E.eval [] (elab pHoas);
         dVal = E.eval [] (elab dH);
-        rhsNf = Q.quote 0 (E.allTy V.vLevelZero V.vUnit douter dsub pVal V.vTt dVal);
+        rhsNf = Q.quote 0 (E.allTy V.vLevelZero V.vLevelZero V.vUnit douter dsub pVal V.vTt dVal);
       in lhsNf == rhsNf;
       expected = true;
     };
@@ -1022,7 +1005,7 @@ in {
         T' = fx.tc.term;
         Dstuck = V.vNe 0 [];
         Xfam = V.vLam "_" V.vUnit (V.mkClosure [] T'.mkNat);
-        qt = Q.quote 1 (E.interp V.vUnit Dstuck Xfam V.vTt);
+        qt = Q.quote 1 (E.interp V.vLevelZero V.vUnit Dstuck Xfam V.vTt);
         descElim = qt.fn.fn;
       in descElim.onArg.body.domain.codomain.I.tag;
       expected = "unit";
@@ -1035,7 +1018,7 @@ in {
         T' = fx.tc.term;
         Dstuck = V.vNe 0 [];
         Xfam = V.vLam "_" V.vUnit (V.mkClosure [] T'.mkNat);
-        qt = Q.quote 1 (E.interp V.vUnit Dstuck Xfam V.vTt);
+        qt = Q.quote 1 (E.interp V.vLevelZero V.vUnit Dstuck Xfam V.vTt);
         descElim = qt.fn.fn;
       in descElim.onPi.body.domain.codomain.tag;
       expected = "unit";
@@ -1049,7 +1032,7 @@ in {
         Dstuck = V.vNe 0 [];
         # P : (i:⊤) → μ Dstuck i → U — use a trivial constant.
         P = V.vLam "i" V.vUnit (V.mkClosure [] (T'.mkU T'.mkLevelZero));
-        qt = Q.quote 1 (E.allTy V.vLevelZero V.vUnit Dstuck Dstuck P V.vTt V.vRefl);
+        qt = Q.quote 1 (E.allTy V.vLevelZero V.vLevelZero V.vUnit Dstuck Dstuck P V.vTt V.vRefl);
         descElim = qt.fn.fn.fn;
       in descElim.onPi.body.domain.codomain.tag;
       expected = "unit";
@@ -1072,7 +1055,7 @@ in {
         Dstuck = V.vNe 0 [];
         P = V.vLam "i" V.vUnit (V.mkClosure [] (fx.tc.term.mkU fx.tc.term.mkLevelZero));
         Kval = V.vLevelMax V.vLevelZero V.vLevelZero;
-        result = E.allTy Kval V.vUnit Dstuck Dstuck P V.vTt V.vRefl;
+        result = E.allTy Kval V.vLevelZero V.vUnit Dstuck Dstuck P V.vTt V.vRefl;
       in result.tag;
       expected = "VNe";
     };
@@ -1086,7 +1069,7 @@ in {
         Dstuck = V.vNe 0 [];
         P = V.vLam "i" V.vUnit (V.mkClosure [] (fx.tc.term.mkU fx.tc.term.mkLevelZero));
         Kval = V.vLevelMax V.vLevelZero V.vLevelZero;
-        qt = Q.quote 1 (E.allTy Kval V.vUnit Dstuck Dstuck P V.vTt V.vRefl);
+        qt = Q.quote 1 (E.allTy Kval V.vLevelZero V.vUnit Dstuck Dstuck P V.vTt V.vRefl);
         descElim = qt.fn.fn.fn;
       in descElim.motive.body.codomain.codomain.codomain.level.tag;
       expected = "level-max";
@@ -1706,6 +1689,45 @@ in {
         uVal = V.vU Kval;
       in (fx.tc.elaborate.reifyType uVal).level._htag;
       expected = "level-max";
+    };
+
+    # natToLevel surface combinator — accepts an Int and elaborates to
+    # `mkNatToLevel (mkSucc^n mkZero)`, which reduces definitionally to
+    # `mkLevelSuc^n mkLevelZero` per Decision #2 corollary.
+    "elab-natToLevel-zero-tag" = {
+      expr = (elab (natToLevel 0)).tag;
+      expected = "nat-to-level";
+    };
+    "elab-natToLevel-zero-payload" = {
+      expr = (elab (natToLevel 0)).n.tag;
+      expected = "zero";
+    };
+    "elab-natToLevel-3-payload" = {
+      # `natToLevel 3` elaborates to a term whose `n` is `succ^3 zero`.
+      expr = (elab (natToLevel 3)).n.pred.pred.pred.tag;
+      expected = "zero";
+    };
+    "natToLevel-3-checks-at-Level" = {
+      # End-to-end: surface `natToLevel 3` checks against `level`.
+      expr = (checkHoas level (natToLevel 3)).tag;
+      expected = "nat-to-level";
+    };
+    "natToLevel-3-reduces-to-suc3-zero" = {
+      # The bridge's defining equation: `natToLevel 3 ≡ suc^3 zero` at
+      # the Level sort, decided by conv after eval.
+      expr = let
+        lhs = E.eval [] (elab (natToLevel 3));
+        rhs = V.vLevelSuc (V.vLevelSuc (V.vLevelSuc V.vLevelZero));
+      in fx.tc.conv.conv 0 lhs rhs;
+      expected = true;
+    };
+    "u-natToLevel-1-elaborates-as-U-of-suc-zero" = {
+      # `u (natToLevel 1)` is a universe `U(natToLevel 1) ≡ U(1)` —
+      # exercised through the level slot, normalised at conv time.
+      expr = let
+        ty = E.eval [] (elab (u (natToLevel 1)));
+      in fx.tc.conv.conv 0 ty (V.vU (V.vLevelSuc V.vLevelZero));
+      expected = true;
     };
 
 

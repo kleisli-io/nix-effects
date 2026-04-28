@@ -69,12 +69,6 @@ let
         expr = check (typeAt 3) (typeAt 3);
         expected = false;
       };
-      "cumulative-type1-accepts-level0" = {
-        expr =
-          let IntType = mkType { name = "Int"; kernelType = H.int_; };
-          in check (typeAt 1) IntType;
-        expected = true;
-      };
       "has-kernel" = {
         expr = (typeAt 0) ? _kernel;
         expected = true;

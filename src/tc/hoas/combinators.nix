@@ -45,6 +45,8 @@ in {
     levelZero = { _htag = "level-zero"; };
     levelSuc = pred: { _htag = "level-suc"; inherit pred; };
     levelMax = lhs: rhs: { _htag = "level-max"; inherit lhs rhs; };
+    # Asymmetric Nat→Level bridge. Surface form for `mkNatToLevel`.
+    natToLevel = n: { _htag = "nat-to-level"; inherit n; };
 
     # Compound types (sugar for nested sigma/sum — carry structural info
     # for elaborateValue).
@@ -240,6 +242,20 @@ in {
         (self.ann (self.lam "_" S (_: self.ttPrim))
                   (self.forall "_" S (_: self.unitPrim)))
         D;
+
+    # Lift primitive — Tarski + non-cumulative cross-level transport.
+    # `LiftAt l m A : U(m)` is the type of values transported from
+    # `A : U(l)` up to `U(m)`, given `l ≤ m`. The bound witness
+    # `eq : Eq Level (max l m) m` is auto-emitted as `mkRefl` by the
+    # elaborator (decided via convLevel's semilattice quotient).
+    # Conv collapses `LiftAt l l A ≡ A` (idempotent at equal levels),
+    # `lowerAt l m A (liftAt l m A a) ≡ a` (β), and
+    # `liftAt l m A (lowerAt l m A x) ≡ x` (η). At `l = m`, both the
+    # type and the introducer/eliminator are transparent, so prelude
+    # code wrapping at homogeneous levels is no-cost.
+    LiftAt  = l: m: A:    { _htag = "lift";       inherit l m A; };
+    liftAt  = l: m: A: a: { _htag = "lift-intro"; inherit l m A a; };
+    lowerAt = l: m: A: x: { _htag = "lift-elim";  inherit l m A x; };
 
     descCon = D: i: d: { _htag = "desc-con"; inherit D i d; };
 

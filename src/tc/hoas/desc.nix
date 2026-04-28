@@ -111,7 +111,7 @@
                        u plus pair fst_ snd_ refl ttPrim unitPrim
                        eq desc descAt descRet descArg descRec descPi descPiAt
                        descCon descElim descInd interpHoasAt allHoasAt
-                       sumPrim sumElimPrim inlPrim inrPrim
+                       sumPrim sumElimPrim inlPrim inrPrim liftAt lowerAt
                        muI mu app descDesc encodeTag;
 
         # The polymorphic iso type. `dDescAt k` is `app descDesc k`
@@ -196,6 +196,21 @@
             # summands so descElim's leading k aligns at type-check.
             interpAt = dH: interpHoasAt dDescL unitPrim dH muFam ttPrim;
 
+            # Lift mediation at the descRet leaf for `L = dDescL = suc k`.
+            # The kernel's `interp`'s `onRet` wraps `Eq I j i` with
+            # `Lift 0 L _` (eval/desc.nix `interpOnRet`); at `L = suc k
+            # > 0` this is a genuine lift cell (no idempotent collapse).
+            # Every value flowing into the descRet-leaf slot of a
+            # descCon payload must inhabit `Lift 0 dDescL _ (Eq Unit
+            # tt tt)`; every leaf-eq projection consumed by `j` (which
+            # check-matches a `VEq`, never a `VLift`) must be lowered.
+            # `iArg = tt` and the descRet's `j = tt` are uniform across
+            # all summands, so the leaf type is invariant.
+            eqLeafTy = eq unitPrim ttPrim ttPrim;
+            liftLeaf = e: liftAt levelZero dDescL eqLeafTy e;
+            lowerLeaf = x: lowerAt levelZero dDescL eqLeafTy x;
+            liftedRefl = liftLeaf refl;
+
             # =================================================================
             # to : Desc ⊤ → μ dDesc tt
             #
@@ -208,33 +223,33 @@
             toMotive = lam "_D" descK (_: muTt);
 
             toOnRet = lam "j" unitPrim (_:
-              descCon dDesc ttPrim (encodeAt 0 refl));
+              descCon dDesc ttPrim (encodeAt 0 liftedRefl));
 
             toOnArg = lam "S" (u k) (S:
                       lam "T" (forall "_" S (_: descK)) (_:
                       lam "ih" (forall "_s" S (_: muTt)) (ih:
                         descCon dDesc ttPrim
-                          (encodeAt 1 (pair S (pair ih refl))))));
+                          (encodeAt 1 (pair S (pair ih liftedRefl))))));
 
             toOnRec = lam "j" unitPrim (_:
                       lam "D" descK (_:
                       lam "ih" muTt (ih:
                         descCon dDesc ttPrim
-                          (encodeAt 2 (pair ih refl)))));
+                          (encodeAt 2 (pair ih liftedRefl)))));
 
             toOnPi  = lam "S" (u k) (S:
                       lam "f" (forall "_" S (_: unitPrim)) (_:
                       lam "D" descK (_:
                       lam "ih" muTt (ih:
                         descCon dDesc ttPrim
-                          (encodeAt 3 (pair S (pair ih refl)))))));
+                          (encodeAt 3 (pair S (pair ih liftedRefl)))))));
 
             toOnPlus = lam "A" descK (_:
                        lam "B" descK (_:
                        lam "ihA" muTt (ihA:
                        lam "ihB" muTt (ihB:
                          descCon dDesc ttPrim
-                           (encodeAt 4 (pair ihA (pair ihB refl)))))));
+                           (encodeAt 4 (pair ihA (pair ihB liftedRefl)))))));
 
             to = ann
               (lam "D" descK (D:
@@ -495,9 +510,9 @@
                 jMot = lam "_y" unitPrim (_:
                        lam "e" (eq unitPrim ttPrim ttPrim) (e:
                          eq muTt
-                           (descCon dDesc ttPrim (wrap refl))
-                           (descCon dDesc ttPrim (wrap e))));
-              in self.j unitPrim ttPrim jMot refl ttPrim r;
+                           (descCon dDesc ttPrim (wrap liftedRefl))
+                           (descCon dDesc ttPrim (wrap (liftLeaf e)))));
+              in self.j unitPrim ttPrim jMot refl ttPrim (lowerLeaf r);
 
             # arg-leaf proof. Payload `r = pair S (pair Tlifted leafEq)`.
             # The fromTo IH at the descArg+descPi descRet body provides
@@ -533,24 +548,24 @@
                 stage1Mot = lam "g" fnTy (g:
                             lam "_e" (eq fnTy fLifted g) (_:
                               eq muTt
-                                (descCon dDesc ttPrim (wrap fLifted refl))
-                                (descCon dDesc ttPrim (wrap g refl))));
+                                (descCon dDesc ttPrim (wrap fLifted liftedRefl))
+                                (descCon dDesc ttPrim (wrap g liftedRefl))));
                 stage1 = self.j fnTy fLifted stage1Mot refl Tlifted eqFns;
                 stage2Mot = lam "_y" unitPrim (_:
                             lam "e" (eq unitPrim ttPrim ttPrim) (e:
                               eq muTt
-                                (descCon dDesc ttPrim (wrap Tlifted refl))
-                                (descCon dDesc ttPrim (wrap Tlifted e))));
-                stage2 = self.j unitPrim ttPrim stage2Mot refl ttPrim leafEq;
+                                (descCon dDesc ttPrim (wrap Tlifted liftedRefl))
+                                (descCon dDesc ttPrim (wrap Tlifted (liftLeaf e)))));
+                stage2 = self.j unitPrim ttPrim stage2Mot refl ttPrim (lowerLeaf leafEq);
                 composeMot = lam "y" muTt (y:
                              lam "_e" (eq muTt
-                               (descCon dDesc ttPrim (wrap Tlifted refl)) y)
+                               (descCon dDesc ttPrim (wrap Tlifted liftedRefl)) y)
                                (_:
                                  eq muTt
-                                   (descCon dDesc ttPrim (wrap fLifted refl))
+                                   (descCon dDesc ttPrim (wrap fLifted liftedRefl))
                                    y));
               in self.j muTt
-                   (descCon dDesc ttPrim (wrap Tlifted refl))
+                   (descCon dDesc ttPrim (wrap Tlifted liftedRefl))
                    composeMot
                    stage1
                    (descCon dDesc ttPrim (wrap Tlifted leafEq))
@@ -575,24 +590,24 @@
                 stage1Mot = lam "x" muTt (x:
                             lam "_e" (eq muTt ftDrec x) (_:
                               eq muTt
-                                (descCon dDesc ttPrim (wrap ftDrec refl))
-                                (descCon dDesc ttPrim (wrap x refl))));
+                                (descCon dDesc ttPrim (wrap ftDrec liftedRefl))
+                                (descCon dDesc ttPrim (wrap x liftedRefl))));
                 stage1 = self.j muTt ftDrec stage1Mot refl Drec ihEq;
                 stage2Mot = lam "_y" unitPrim (_:
                             lam "e" (eq unitPrim ttPrim ttPrim) (e:
                               eq muTt
-                                (descCon dDesc ttPrim (wrap Drec refl))
-                                (descCon dDesc ttPrim (wrap Drec e))));
-                stage2 = self.j unitPrim ttPrim stage2Mot refl ttPrim leafEq;
+                                (descCon dDesc ttPrim (wrap Drec liftedRefl))
+                                (descCon dDesc ttPrim (wrap Drec (liftLeaf e)))));
+                stage2 = self.j unitPrim ttPrim stage2Mot refl ttPrim (lowerLeaf leafEq);
                 composeMot = lam "y" muTt (y:
                              lam "_e" (eq muTt
-                               (descCon dDesc ttPrim (wrap Drec refl)) y)
+                               (descCon dDesc ttPrim (wrap Drec liftedRefl)) y)
                                (_:
                                  eq muTt
-                                   (descCon dDesc ttPrim (wrap ftDrec refl))
+                                   (descCon dDesc ttPrim (wrap ftDrec liftedRefl))
                                    y));
               in self.j muTt
-                   (descCon dDesc ttPrim (wrap Drec refl))
+                   (descCon dDesc ttPrim (wrap Drec liftedRefl))
                    composeMot
                    stage1
                    (descCon dDesc ttPrim (wrap Drec leafEq))
@@ -616,24 +631,24 @@
                 stage1Mot = lam "x" muTt (x:
                             lam "_e" (eq muTt ftDrec x) (_:
                               eq muTt
-                                (descCon dDesc ttPrim (wrap ftDrec refl))
-                                (descCon dDesc ttPrim (wrap x refl))));
+                                (descCon dDesc ttPrim (wrap ftDrec liftedRefl))
+                                (descCon dDesc ttPrim (wrap x liftedRefl))));
                 stage1 = self.j muTt ftDrec stage1Mot refl Drec ihEq;
                 stage2Mot = lam "_y" unitPrim (_:
                             lam "e" (eq unitPrim ttPrim ttPrim) (e:
                               eq muTt
-                                (descCon dDesc ttPrim (wrap Drec refl))
-                                (descCon dDesc ttPrim (wrap Drec e))));
-                stage2 = self.j unitPrim ttPrim stage2Mot refl ttPrim leafEq;
+                                (descCon dDesc ttPrim (wrap Drec liftedRefl))
+                                (descCon dDesc ttPrim (wrap Drec (liftLeaf e)))));
+                stage2 = self.j unitPrim ttPrim stage2Mot refl ttPrim (lowerLeaf leafEq);
                 composeMot = lam "y" muTt (y:
                              lam "_e" (eq muTt
-                               (descCon dDesc ttPrim (wrap Drec refl)) y)
+                               (descCon dDesc ttPrim (wrap Drec liftedRefl)) y)
                                (_:
                                  eq muTt
-                                   (descCon dDesc ttPrim (wrap ftDrec refl))
+                                   (descCon dDesc ttPrim (wrap ftDrec liftedRefl))
                                    y));
               in self.j muTt
-                   (descCon dDesc ttPrim (wrap Drec refl))
+                   (descCon dDesc ttPrim (wrap Drec liftedRefl))
                    composeMot
                    stage1
                    (descCon dDesc ttPrim (wrap Drec leafEq))
@@ -657,43 +672,43 @@
                 stage1Mot = lam "a" muTt (a:
                             lam "_e" (eq muTt ftA a) (_:
                               eq muTt
-                                (descCon dDesc ttPrim (wrap ftA ftB refl))
-                                (descCon dDesc ttPrim (wrap a ftB refl))));
+                                (descCon dDesc ttPrim (wrap ftA ftB liftedRefl))
+                                (descCon dDesc ttPrim (wrap a ftB liftedRefl))));
                 stage1 = self.j muTt ftA stage1Mot refl Aenc ihA;
                 stage2Mot = lam "b" muTt (b:
                             lam "_e" (eq muTt ftB b) (_:
                               eq muTt
-                                (descCon dDesc ttPrim (wrap Aenc ftB refl))
-                                (descCon dDesc ttPrim (wrap Aenc b refl))));
+                                (descCon dDesc ttPrim (wrap Aenc ftB liftedRefl))
+                                (descCon dDesc ttPrim (wrap Aenc b liftedRefl))));
                 stage2 = self.j muTt ftB stage2Mot refl Benc ihB;
                 stage3Mot = lam "_y" unitPrim (_:
                             lam "e" (eq unitPrim ttPrim ttPrim) (e:
                               eq muTt
-                                (descCon dDesc ttPrim (wrap Aenc Benc refl))
-                                (descCon dDesc ttPrim (wrap Aenc Benc e))));
-                stage3 = self.j unitPrim ttPrim stage3Mot refl ttPrim leafEq;
+                                (descCon dDesc ttPrim (wrap Aenc Benc liftedRefl))
+                                (descCon dDesc ttPrim (wrap Aenc Benc (liftLeaf e)))));
+                stage3 = self.j unitPrim ttPrim stage3Mot refl ttPrim (lowerLeaf leafEq);
                 trans12Mot = lam "y" muTt (y:
                              lam "_e" (eq muTt
-                               (descCon dDesc ttPrim (wrap Aenc ftB refl)) y)
+                               (descCon dDesc ttPrim (wrap Aenc ftB liftedRefl)) y)
                                (_:
                                  eq muTt
-                                   (descCon dDesc ttPrim (wrap ftA ftB refl))
+                                   (descCon dDesc ttPrim (wrap ftA ftB liftedRefl))
                                    y));
                 trans12 = self.j muTt
-                            (descCon dDesc ttPrim (wrap Aenc ftB refl))
+                            (descCon dDesc ttPrim (wrap Aenc ftB liftedRefl))
                             trans12Mot
                             stage1
-                            (descCon dDesc ttPrim (wrap Aenc Benc refl))
+                            (descCon dDesc ttPrim (wrap Aenc Benc liftedRefl))
                             stage2;
                 trans123Mot = lam "y" muTt (y:
                               lam "_e" (eq muTt
-                                (descCon dDesc ttPrim (wrap Aenc Benc refl)) y)
+                                (descCon dDesc ttPrim (wrap Aenc Benc liftedRefl)) y)
                                 (_:
                                   eq muTt
-                                    (descCon dDesc ttPrim (wrap ftA ftB refl))
+                                    (descCon dDesc ttPrim (wrap ftA ftB liftedRefl))
                                     y));
               in self.j muTt
-                   (descCon dDesc ttPrim (wrap Aenc Benc refl))
+                   (descCon dDesc ttPrim (wrap Aenc Benc liftedRefl))
                    trans123Mot
                    trans12
                    (descCon dDesc ttPrim (wrap Aenc Benc leafEq))
@@ -784,11 +799,30 @@
         motive = lam "_" descLI (_:
                  forall "_" iToU (_:
                  forall "_" I (_: u L)));
-        # onRet : λ(j:I). λ(X:I→U(L)). λ(i:I). Eq I j i
+        # onRet : λ(j:I). λ(X:I→U(L)). λ(i:I). Lift 0 L (Eq I j i)
+        # The `Eq I j i` leaf naturally inhabits `U(level(I))`; for the
+        # prelude callers `I = unitPrim : U(0)` so the leaf is at U(0).
+        # Wrapping with `LiftAt 0 L` lifts it to U(L) so the case body
+        # matches the motive's U(L) codomain. Idempotent at L = 0 — the
+        # smart constructor collapses `Lift 0 0 _ A ≡ A`, so prelude
+        # code at homogeneous L = 0 is unaffected.
+        #
+        # Static L=0 fast-path: when L is statically the zero level
+        # (Nix-int 0, HOAS levelZero, or kernel `mkLevelZero`), emit the
+        # post-collapse form `Eq I j i'` directly. Mirrors the eval-side
+        # `interpF` fast-path at `eval/desc.nix:349-404`. At L>0 (or
+        # polymorphic L) the principled Lift wrap is retained.
+        lIsZero =
+          (builtins.isInt L && L == 0)
+          || (builtins.isAttrs L
+              && ((L._htag or null) == "level-zero"
+                  || (L.tag or null) == "level-zero"));
         onRet  = lam "j" I (j:
                  lam "X" iToU (_:
                  lam "i" I (i':
-                   eq I j i')));
+                   if lIsZero
+                   then eq I j i'
+                   else self.LiftAt self.levelZero L (eq I j i'))));
         # onArg : λ(S:U(L)). λ(T:S→Desc^L I). λ(ih:Π(s:S).(I→U(L))→I→U(L)).
         #           λ(X:I→U(L)). λ(i:I). Σ(s:S). ih s X i
         onArg  = lam "S" (u L) (S:
@@ -867,11 +901,14 @@
                  forall "P" pTy (_:
                  forall "i" I (iArg:
                  forall "d" (interpHoasAt L I Dm muFam iArg) (_: u K))));
-        # onRet : λj λP λi λd. Unit
+        # onRet : λj λP λi λd. Lift 0 K Unit
+        # The `All`-result at a `retI` leaf is trivially `Unit`; wrapping
+        # in `LiftAt 0 K` lifts the U(0) Unit type to U(K) so the case
+        # body matches the motive's U(K) codomain. Idempotent at K = 0.
         onRet  = lam "j" I (_:
                  lam "P" pTy (_:
                  lam "i" I (_:
-                 lam "d" unitPrim (_: unitPrim))));
+                 lam "d" unitPrim (_: self.LiftAt self.levelZero K unitPrim))));
         # onArg : λS λT λihA λP λi λd. ihA (fst d) P i (snd d)
         onArg  = lam "S" (u L) (S:
                  lam "T" (forall "_" S (_: descLI)) (T:

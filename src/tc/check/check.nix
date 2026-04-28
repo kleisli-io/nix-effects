@@ -45,13 +45,6 @@ let
   # plain variable reference, eliminating the repeated lookup in deep
   # rule-descent loops.
   bindP = self.bindP;
-
-  # Idempotent `vLevelMax` mirroring `check/type.nix`'s local helper.
-  # Duplicated to avoid a module-fixpoint cycle through `self`.
-  vLevelMaxOpt = a: b:
-    if a.tag == "VLevelZero" then b
-    else if b.tag == "VLevelZero" then a
-    else V.vLevelMax a b;
 in {
   scope = {
     # Build a 1-layer non-dependent domain chain from a single domain Val.
@@ -279,10 +272,8 @@ in {
               let sVal = E.eval ctx.env sTm;
                   ctx' = self.extend ctx "_" sVal;
               in bindP P.DArgBody (self.check ctx' tm.T ty) (tTm:
-                bindP P.DArgEq
-                  (self.check ctx tm.eq
-                    (V.vEq V.vLevel (V.vLevelMax lVal kVal) kVal))
-                  (eqTm:
+                let
+                  finish = eqTm:
                     if C.convLevel kVal ty.level
                     then pure (T.mkDescArg tm.k tm.l sTm eqTm tTm)
                     else send "typeError" {
@@ -293,7 +284,17 @@ in {
                         expected = Q.quote ctx.depth ty.level;
                         got      = Q.quote ctx.depth kVal;
                       };
-                    })));
+                    };
+                in
+                  # Fast-path at l = k = 0 with refl: Eq Level (max 0 0) 0
+                  # ≡ Eq Level 0 0, trivially inhabited by refl. Skip the
+                  # recursive check on tm.eq.
+                  if tm.k.tag == "level-zero" && tm.l.tag == "level-zero" && tm.eq.tag == "refl"
+                  then finish T.mkRefl
+                  else bindP P.DArgEq
+                         (self.check ctx tm.eq
+                           (V.vEq V.vLevel (V.vLevelMax lVal kVal) kVal))
+                         finish));
           withL = kVal:
             if tm.l.tag == "level-zero"
             then sortAt kVal V.vLevelZero
@@ -338,10 +339,8 @@ in {
                     (Q.quote (ctx.depth + 1) ty.I));
               in bindP P.DPiFn (self.check ctx tm.f fTy) (fTm:
                 bindP P.DPiBody (self.check ctx tm.D ty) (dTm:
-                  bindP P.DPiEq
-                    (self.check ctx tm.eq
-                      (V.vEq V.vLevel (V.vLevelMax lVal kVal) kVal))
-                    (eqTm:
+                  let
+                    finish = eqTm:
                       if C.convLevel kVal ty.level
                       then pure (T.mkDescPi tm.k tm.l sTm eqTm fTm dTm)
                       else send "typeError" {
@@ -352,7 +351,17 @@ in {
                           expected = Q.quote ctx.depth ty.level;
                           got      = Q.quote ctx.depth kVal;
                         };
-                      }))));
+                      };
+                  in
+                    # Fast-path at l = k = 0 with refl: Eq Level (max 0 0) 0
+                    # ≡ Eq Level 0 0, trivially inhabited by refl. Skip the
+                    # recursive check on tm.eq.
+                    if tm.k.tag == "level-zero" && tm.l.tag == "level-zero" && tm.eq.tag == "refl"
+                    then finish T.mkRefl
+                    else bindP P.DPiEq
+                           (self.check ctx tm.eq
+                             (V.vEq V.vLevel (V.vLevelMax lVal kVal) kVal))
+                           finish)));
           withL = kVal:
             if tm.l.tag == "level-zero"
             then sortAt kVal V.vLevelZero
@@ -479,7 +488,7 @@ in {
                   else T.mkInr topPeel.lTm topPeel.rTm innerTm;
               in bind (self.check ctx base.i iTyVal) (baseITm:
                 let baseIVal = E.eval ctx.env baseITm;
-                    interpTyBase = E.interp iTyVal ty.D muDFunc baseIVal;
+                    interpTyBase = E.interp dInfo.level iTyVal ty.D muDFunc baseIVal;
                 in bind (self.check ctx base.d interpTyBase) (baseDataTm:
                   let baseTm = T.mkDescCon dTm baseITm baseDataTm; in
                   builtins.foldl' (accComp: k:
@@ -511,23 +520,17 @@ in {
                               (buildInner hTms (T.mkPair acc T.mkRefl)))))))
                   ) (pure baseTm) (builtins.genList (x: x) n)))))
 
-      # Sub rule (§7.4): fall through to synthesis, with cumulativity
-      # for universes (§8.3: VU(i) ≤ VU(j) when i ≤ j). With
-      # Level-valued universes, cumulativity is `max inferred ty = ty`
-      # — i.e. the Level normaliser can absorb `inferred` into `ty`
-      # without changing it. `convLevel` does the canonicalise-and-
-      # compare once; callers ignore the intermediate `vLevelMax`.
-      # Fast-path: when `inferred.level` is the `VLevelZero` singleton,
-      # cumulativity holds against any `ty.level` (0 ≤ anything) — no
-      # normaliser pipeline needed.
+      # Sub rule (§7.4): fall through to synthesis + structural conv.
+      # The kernel is Tarski + non-cumulative: a term checked against
+      # `U(k)` must have inferred type exactly `U(k)` modulo `convLevel`.
+      # No universe-cumulativity coercion fires — the bidirectional
+      # path's only bridge from CHECK to INFER is the structural conv
+      # round-trip. Per-summand level mixing in `desc-arg` / `desc-pi`
+      # is handled by the bound-witness slot, not by this rule.
       else
         bind (self.infer ctx tm) (result:
           let inferredTy = result.type; in
-          if inferredTy.tag == "VU" && ty.tag == "VU"
-             && (inferredTy.level.tag == "VLevelZero"
-                 || C.convLevel (V.vLevelMax inferredTy.level ty.level) ty.level)
-          then pure result.term
-          else if C.conv ctx.depth inferredTy ty
+          if C.conv ctx.depth inferredTy ty
           then pure result.term
           else send "typeError" {
             error = D.mkKernelError {

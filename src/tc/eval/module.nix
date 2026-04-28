@@ -46,6 +46,8 @@ api.mk {
     inherit (self)
       eval evalF instantiate
       vApp vFst vSnd vNatElim vListElim vSumElim vJ
+      vLiftF vLiftIntroF vLiftElimF
+      vNatToLevel vNatToLevelF
       vDescInd vDescElim interp allTy linearProfile;
   };
   tests = partTests;

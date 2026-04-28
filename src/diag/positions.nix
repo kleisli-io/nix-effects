@@ -80,6 +80,7 @@ let
   LevelSucPred = mkPos "LevelSucPred" "suc.pred" {};
   LevelMaxLhs  = mkPos "LevelMaxLhs"  "max.L"    {};
   LevelMaxRhs  = mkPos "LevelMaxRhs"  "max.R"    {};
+  NatToLevelN  = mkPos "NatToLevelN"  "natToLevel.n" {};
 
   # Position naming the level argument of `U(k)`.
   ULevel = mkPos "ULevel" "U.k" {};
@@ -154,7 +155,7 @@ in mk {
       MuDesc MuIndex MuPayload
       JType JLhs JRhs JEq
       OpaqueType
-      LevelSucPred LevelMaxLhs LevelMaxRhs ULevel
+      LevelSucPred LevelMaxLhs LevelMaxRhs ULevel NatToLevelN
       Field Elem Tag Case
       eq renderSegment isPosition;
   };

@@ -30,92 +30,108 @@ let
     vLevelZero
     eDescInd eDescElim;
 
-  # Closed Tms (no free vars) with `I` as the outermost lambda binder.
-  # Applied via `mkApp ... I_tm` wherever interp needs to be emitted as
-  # a Tm in a surrounding scope. β-reduction during conv-equality handles
-  # shifting uniformly.
+  # Closed Tms (no free vars) with `L` as the outermost lambda binder
+  # and `I` immediately under. Applied via `mkApp (mkApp ... L_tm) I_tm`
+  # wherever interp needs to be emitted as a Tm in a surrounding scope.
+  # β-reduction during conv-equality handles shifting uniformly.
+  #
+  # `L : Level` is the description's intrinsic level — the K-slot at
+  # which interp's `descElim` spine binds `S`, the universe in which
+  # `X` lives (`X : I → U(L)`), and the result universe at every motive
+  # / case site. The Lift wrapping in `interpOnRet` converts `Eq I j i`
+  # (naturally at `U(level(I))`, `U(0)` for prelude callers) to U(L)
+  # to match the motive's `U(L)` codomain. Idempotent at L = 0 via the
+  # `vLiftF` smart constructor's `convLevel` collapse.
 
-  # interpMotive : λI. λ(_:Desc I). (I → U) → I → U
+  # interpMotive : λL. λI. λ(_:Desc^L I). (I → U(L)) → I → U(L)
   interpMotiveTm_closed =
-    term.mkLam "I" (term.mkU term.mkLevelZero)
-      (term.mkLam "_" (term.mkDesc term.mkLevelZero (term.mkVar 0))
-        (term.mkPi "_" (term.mkPi "_" (term.mkVar 1) (term.mkU term.mkLevelZero))
-          (term.mkPi "_" (term.mkVar 2) (term.mkU term.mkLevelZero))));
+    term.mkLam "L" term.mkLevel
+      (term.mkLam "I" (term.mkU term.mkLevelZero)
+        (term.mkLam "_" (term.mkDesc (term.mkVar 1) (term.mkVar 0))
+          (term.mkPi "_" (term.mkPi "_" (term.mkVar 1) (term.mkU (term.mkVar 3)))
+            (term.mkPi "_" (term.mkVar 2) (term.mkU (term.mkVar 4))))));
 
-  # interpOnRet : λI. λ(j:I). λ(X:I→U). λ(i:I). Eq I j i
+  # interpOnRet : λL. λI. λ(j:I). λ(X:I→U(L)). λ(i:I). Lift 0 L refl (Eq I j i)
   interpOnRetTm_closed =
-    term.mkLam "I" (term.mkU term.mkLevelZero)
-      (term.mkLam "j" (term.mkVar 0)
-        (term.mkLam "X" (term.mkPi "_" (term.mkVar 1) (term.mkU term.mkLevelZero))
-          (term.mkLam "i" (term.mkVar 2)
-            (term.mkEq (term.mkVar 3) (term.mkVar 2) (term.mkVar 0)))));
+    term.mkLam "L" term.mkLevel
+      (term.mkLam "I" (term.mkU term.mkLevelZero)
+        (term.mkLam "j" (term.mkVar 0)
+          (term.mkLam "X" (term.mkPi "_" (term.mkVar 1) (term.mkU (term.mkVar 3)))
+            (term.mkLam "i" (term.mkVar 2)
+              (term.mkLift term.mkLevelZero (term.mkVar 4) term.mkRefl
+                (term.mkEq (term.mkVar 3) (term.mkVar 2) (term.mkVar 0)))))));
 
-  # interpOnArg : λI. λ(S:U). λ(T:S→Desc I). λ(ih:Π(s:S). (I→U)→I→U). λ(X:I→U). λ(i:I).
-  #                  Σ(s:S). ih s X i
+  # interpOnArg : λL. λI. λ(S:U(L)). λ(T:S→Desc^L I). λ(ih:Π(s:S). (I→U(L))→I→U(L)).
+  #                 λ(X:I→U(L)). λ(i:I). Σ(s:S). ih s X i
   #
-  # T's type is `Π _:S. Desc I`. Under the Pi's `_` binder the scope is
-  # [_, S, I], so the Desc argument `I` is at index 2.
+  # T's type is `Π _:S. Desc^L I`. Under the Pi's `_` binder the scope is
+  # [_, S, I, L], so the Desc argument `I` is at index 2 and `L` at 3.
   interpOnArgTm_closed =
-    term.mkLam "I" (term.mkU term.mkLevelZero)
-      (term.mkLam "S" (term.mkU term.mkLevelZero)
-        (term.mkLam "T" (term.mkPi "_" (term.mkVar 0) (term.mkDesc term.mkLevelZero (term.mkVar 2)))
-          (term.mkLam "ih" (term.mkPi "s" (term.mkVar 1)
-                             (term.mkPi "_" (term.mkPi "_" (term.mkVar 3) (term.mkU term.mkLevelZero))
-                               (term.mkPi "_" (term.mkVar 4) (term.mkU term.mkLevelZero))))
-            (term.mkLam "X" (term.mkPi "_" (term.mkVar 3) (term.mkU term.mkLevelZero))
-              (term.mkLam "i" (term.mkVar 4)
-                (term.mkSigma "s" (term.mkVar 4)
-                  (term.mkApp (term.mkApp (term.mkApp (term.mkVar 3) (term.mkVar 0))
-                                          (term.mkVar 2))
-                              (term.mkVar 1))))))));
+    term.mkLam "L" term.mkLevel
+      (term.mkLam "I" (term.mkU term.mkLevelZero)
+        (term.mkLam "S" (term.mkU (term.mkVar 1))
+          (term.mkLam "T" (term.mkPi "_" (term.mkVar 0) (term.mkDesc (term.mkVar 3) (term.mkVar 2)))
+            (term.mkLam "ih" (term.mkPi "s" (term.mkVar 1)
+                               (term.mkPi "_" (term.mkPi "_" (term.mkVar 3) (term.mkU (term.mkVar 5)))
+                                 (term.mkPi "_" (term.mkVar 4) (term.mkU (term.mkVar 6)))))
+              (term.mkLam "X" (term.mkPi "_" (term.mkVar 3) (term.mkU (term.mkVar 5)))
+                (term.mkLam "i" (term.mkVar 4)
+                  (term.mkSigma "s" (term.mkVar 4)
+                    (term.mkApp (term.mkApp (term.mkApp (term.mkVar 3) (term.mkVar 0))
+                                            (term.mkVar 2))
+                                (term.mkVar 1)))))))));
 
-  # interpOnRec : λI. λ(j:I). λ(D:Desc I). λ(ih:(I→U)→I→U). λ(X:I→U). λ(i:I).
-  #                  Σ(_:X j). ih X i
+  # interpOnRec : λL. λI. λ(j:I). λ(D:Desc^L I). λ(ih:(I→U(L))→I→U(L)).
+  #                 λ(X:I→U(L)). λ(i:I). Σ(_:X j). ih X i
   interpOnRecTm_closed =
-    term.mkLam "I" (term.mkU term.mkLevelZero)
-      (term.mkLam "j" (term.mkVar 0)
-        (term.mkLam "D" (term.mkDesc term.mkLevelZero (term.mkVar 1))
-          (term.mkLam "ih" (term.mkPi "_" (term.mkPi "_" (term.mkVar 2) (term.mkU term.mkLevelZero))
-                            (term.mkPi "_" (term.mkVar 3) (term.mkU term.mkLevelZero)))
-            (term.mkLam "X" (term.mkPi "_" (term.mkVar 3) (term.mkU term.mkLevelZero))
-              (term.mkLam "i" (term.mkVar 4)
-                (term.mkSigma "_" (term.mkApp (term.mkVar 1) (term.mkVar 4))
-                  (term.mkApp (term.mkApp (term.mkVar 3) (term.mkVar 2))
-                              (term.mkVar 1))))))));
-
-  # interpOnPi : λI. λ(S:U). λ(f:S→I). λ(D:Desc I). λ(ih:(I→U)→I→U). λ(X:I→U). λ(i:I).
-  #                 Σ(_:Π(s:S). X(f s)). ih X i
-  #
-  # f's type is `Π _:S. I`. Under the Pi's `_` binder the scope is
-  # [_, S, I], so the codomain `I` is at index 2.
-  interpOnPiTm_closed =
-    term.mkLam "I" (term.mkU term.mkLevelZero)
-      (term.mkLam "S" (term.mkU term.mkLevelZero)
-        (term.mkLam "f" (term.mkPi "_" (term.mkVar 0) (term.mkVar 2))
-          (term.mkLam "D" (term.mkDesc term.mkLevelZero (term.mkVar 2))
-            (term.mkLam "ih" (term.mkPi "_" (term.mkPi "_" (term.mkVar 3) (term.mkU term.mkLevelZero))
-                              (term.mkPi "_" (term.mkVar 4) (term.mkU term.mkLevelZero)))
-              (term.mkLam "X" (term.mkPi "_" (term.mkVar 4) (term.mkU term.mkLevelZero))
-                (term.mkLam "i" (term.mkVar 5)
-                  (term.mkSigma "_"
-                    (term.mkPi "s" (term.mkVar 5)
-                      (term.mkApp (term.mkVar 2) (term.mkApp (term.mkVar 5) (term.mkVar 0))))
+    term.mkLam "L" term.mkLevel
+      (term.mkLam "I" (term.mkU term.mkLevelZero)
+        (term.mkLam "j" (term.mkVar 0)
+          (term.mkLam "D" (term.mkDesc (term.mkVar 2) (term.mkVar 1))
+            (term.mkLam "ih" (term.mkPi "_" (term.mkPi "_" (term.mkVar 2) (term.mkU (term.mkVar 4)))
+                              (term.mkPi "_" (term.mkVar 3) (term.mkU (term.mkVar 5))))
+              (term.mkLam "X" (term.mkPi "_" (term.mkVar 3) (term.mkU (term.mkVar 4)))
+                (term.mkLam "i" (term.mkVar 4)
+                  (term.mkSigma "_" (term.mkApp (term.mkVar 1) (term.mkVar 4))
                     (term.mkApp (term.mkApp (term.mkVar 3) (term.mkVar 2))
                                 (term.mkVar 1)))))))));
 
-  # interpOnPlus : λI. λ(A:Desc I). λ(B:Desc I). λ(ihA:(I→U)→I→U). λ(ihB:(I→U)→I→U).
-  #                λ(X:I→U). λ(i:I). Sum (ihA X i) (ihB X i)
+  # interpOnPi : λL. λI. λ(S:U(L)). λ(f:S→I). λ(D:Desc^L I). λ(ih:(I→U(L))→I→U(L)).
+  #                λ(X:I→U(L)). λ(i:I). Σ(_:Π(s:S). X(f s)). ih X i
+  #
+  # f's type is `Π _:S. I`. Under the Pi's `_` binder the scope is
+  # [_, S, I, L], so the codomain `I` is at index 2.
+  interpOnPiTm_closed =
+    term.mkLam "L" term.mkLevel
+      (term.mkLam "I" (term.mkU term.mkLevelZero)
+        (term.mkLam "S" (term.mkU (term.mkVar 1))
+          (term.mkLam "f" (term.mkPi "_" (term.mkVar 0) (term.mkVar 2))
+            (term.mkLam "D" (term.mkDesc (term.mkVar 3) (term.mkVar 2))
+              (term.mkLam "ih" (term.mkPi "_" (term.mkPi "_" (term.mkVar 3) (term.mkU (term.mkVar 5)))
+                                (term.mkPi "_" (term.mkVar 4) (term.mkU (term.mkVar 6))))
+                (term.mkLam "X" (term.mkPi "_" (term.mkVar 4) (term.mkU (term.mkVar 6)))
+                  (term.mkLam "i" (term.mkVar 5)
+                    (term.mkSigma "_"
+                      (term.mkPi "s" (term.mkVar 5)
+                        (term.mkApp (term.mkVar 2) (term.mkApp (term.mkVar 5) (term.mkVar 0))))
+                      (term.mkApp (term.mkApp (term.mkVar 3) (term.mkVar 2))
+                                  (term.mkVar 1))))))))));
+
+  # interpOnPlus : λL. λI. λ(A:Desc^L I). λ(B:Desc^L I).
+  #                  λ(ihA:(I→U(L))→I→U(L)). λ(ihB:(I→U(L))→I→U(L)).
+  #                  λ(X:I→U(L)). λ(i:I). Sum (ihA X i) (ihB X i)
   interpOnPlusTm_closed =
-    term.mkLam "I" (term.mkU term.mkLevelZero)
-      (term.mkLam "A" (term.mkDesc term.mkLevelZero (term.mkVar 0))
-        (term.mkLam "B" (term.mkDesc term.mkLevelZero (term.mkVar 1))
-          (term.mkLam "ihA" (term.mkU term.mkLevelZero)
-            (term.mkLam "ihB" (term.mkU term.mkLevelZero)
-              (term.mkLam "X" (term.mkPi "_" (term.mkVar 4) (term.mkU term.mkLevelZero))
-                (term.mkLam "i" (term.mkVar 5)
-                  (term.mkSum
-                    (term.mkApp (term.mkApp (term.mkVar 3) (term.mkVar 1)) (term.mkVar 0))
-                    (term.mkApp (term.mkApp (term.mkVar 2) (term.mkVar 1)) (term.mkVar 0)))))))));
+    term.mkLam "L" term.mkLevel
+      (term.mkLam "I" (term.mkU term.mkLevelZero)
+        (term.mkLam "A" (term.mkDesc (term.mkVar 1) (term.mkVar 0))
+          (term.mkLam "B" (term.mkDesc (term.mkVar 2) (term.mkVar 1))
+            (term.mkLam "ihA" (term.mkU term.mkLevelZero)
+              (term.mkLam "ihB" (term.mkU term.mkLevelZero)
+                (term.mkLam "X" (term.mkPi "_" (term.mkVar 4) (term.mkU (term.mkVar 6)))
+                  (term.mkLam "i" (term.mkVar 5)
+                    (term.mkSum
+                      (term.mkApp (term.mkApp (term.mkVar 3) (term.mkVar 1)) (term.mkVar 0))
+                      (term.mkApp (term.mkApp (term.mkVar 2) (term.mkVar 1)) (term.mkVar 0))))))))));
 
 in {
   scope = {
@@ -146,7 +162,20 @@ in {
                 (term.mkMu (term.mkVar 4) (term.mkVar 3) (term.mkVar 0))
                 (term.mkDescInd (term.mkVar 4) (term.mkVar 3) (term.mkVar 2)
                   (term.mkVar 1) (term.mkVar 0))));
-          evResult = self.everywhereF f I D D motive ihVal i d;
+          # `vDescIndF` doesn't carry the description's level (the
+          # `desc-ind` term has no level slot — descInd's typing rule
+          # recovers it from D's inferred type at check time). Pass
+          # `vLevelZero` to `everywhereF`: this produces a stuck
+          # `eDescElim vLevelZero …` frame at L>0 instead of the
+          # description's actual level, but `everywhere` is value-level
+          # only (no HOAS counterpart) and its result is fed directly
+          # into `step` via `vAppF` — `step`'s type was already checked
+          # against the proper L at descInd's typing site, so the
+          # placeholder L here doesn't propagate to a type-correctness
+          # gap. Both HOAS-elaborated and eval-direct paths run through
+          # this same `vDescIndF` code, so they produce identical VNe
+          # values on stuck D.
+          evResult = self.everywhereF f vLevelZero I D D motive ihVal i d;
         in self.vAppF f (self.vAppF f (self.vAppF f step i) d) evResult
       else throw "tc: vDescInd on non-mu (tag=${scrut.tag})";
 
@@ -222,61 +251,67 @@ in {
 
       else throw "tc: vDescElim on non-desc (tag=${scrut.tag})";
 
-    # Value-level interp motive and on-cases, parameterised over I_val.
-    # Closure envs carry [I_val] so the stored Tm bodies can reference I
-    # via Var 1 (or shifted further when under their own binders).
+    # Value-level interp motive and on-cases, parameterised over L_val
+    # and I_val. Closure envs carry [I_val L_val] so the stored Tm
+    # bodies can reference I via Var 1 (or shifted under inner binders)
+    # and L via Var 2 (similarly shifted). The Lift wrapping in
+    # `interpOnRet` mirrors the HOAS-side `LiftAt levelZero L (eq I j i)`;
+    # the smart constructor's `convLevel l m` collapse keeps the prelude
+    # homogeneous-at-zero call sites byte-identical (`Lift 0 0 _ A ≡ A`).
 
-    # interpMotive I : λ(_:Desc I). (I → U) → I → U
-    interpMotive = I_val: vLam "_" (vDesc vLevelZero I_val) (mkClosure [ I_val ]
-      (term.mkPi "_" (term.mkPi "_" (term.mkVar 1) (term.mkU term.mkLevelZero))
-        (term.mkPi "_" (term.mkVar 2) (term.mkU term.mkLevelZero))));
+    # interpMotive L I : λ(_:Desc^L I). (I → U(L)) → I → U(L)
+    interpMotive = L_val: I_val: vLam "_" (vDesc L_val I_val) (mkClosure [ I_val L_val ]
+      (term.mkPi "_" (term.mkPi "_" (term.mkVar 1) (term.mkU (term.mkVar 3)))
+        (term.mkPi "_" (term.mkVar 2) (term.mkU (term.mkVar 4)))));
 
-    # interpOnRet I : λ(j:I). λ(X:I→U). λ(i:I). Eq I j i
-    interpOnRet = I_val: vLam "j" I_val (mkClosure [ I_val ]
-      (term.mkLam "X" (term.mkPi "_" (term.mkVar 1) (term.mkU term.mkLevelZero))
+    # interpOnRet L I : λ(j:I). λ(X:I→U(L)). λ(i:I). Lift 0 L refl (Eq I j i)
+    interpOnRet = L_val: I_val: vLam "j" I_val (mkClosure [ I_val L_val ]
+      (term.mkLam "X" (term.mkPi "_" (term.mkVar 1) (term.mkU (term.mkVar 3)))
         (term.mkLam "i" (term.mkVar 2)
-          (term.mkEq (term.mkVar 3) (term.mkVar 2) (term.mkVar 0)))));
+          (term.mkLift term.mkLevelZero (term.mkVar 4) term.mkRefl
+            (term.mkEq (term.mkVar 3) (term.mkVar 2) (term.mkVar 0))))));
 
-    # interpOnArg I : λ(S:U). λ(T:S→Desc I). λ(ih:Π(s:S).(I→U)→I→U). λ(X:I→U). λ(i:I).
-    #                  Σ(s:S). ih s X i
+    # interpOnArg L I : λ(S:U(L)). λ(T:S→Desc^L I). λ(ih:Π(s:S).(I→U(L))→I→U(L)).
+    #                    λ(X:I→U(L)). λ(i:I). Σ(s:S). ih s X i
     #
-    # T's type is `Π _:S. Desc I`. Under the Pi's `_` binder the closure
-    # env is [_, S, I] (innermost first), so `I` is at index 2.
-    interpOnArg = I_val: vLam "S" (vU vLevelZero) (mkClosure [ I_val ]
-      (term.mkLam "T" (term.mkPi "_" (term.mkVar 0) (term.mkDesc term.mkLevelZero (term.mkVar 2)))
+    # T's type is `Π _:S. Desc^L I`. Under the Pi's `_` binder the closure
+    # env is [_, S, I, L] (innermost first), so `I` is at index 2 and `L`
+    # at index 3.
+    interpOnArg = L_val: I_val: vLam "S" (vU L_val) (mkClosure [ I_val L_val ]
+      (term.mkLam "T" (term.mkPi "_" (term.mkVar 0) (term.mkDesc (term.mkVar 3) (term.mkVar 2)))
         (term.mkLam "ih" (term.mkPi "s" (term.mkVar 1)
-                           (term.mkPi "_" (term.mkPi "_" (term.mkVar 3) (term.mkU term.mkLevelZero))
-                             (term.mkPi "_" (term.mkVar 4) (term.mkU term.mkLevelZero))))
-          (term.mkLam "X" (term.mkPi "_" (term.mkVar 3) (term.mkU term.mkLevelZero))
+                           (term.mkPi "_" (term.mkPi "_" (term.mkVar 3) (term.mkU (term.mkVar 5)))
+                             (term.mkPi "_" (term.mkVar 4) (term.mkU (term.mkVar 6)))))
+          (term.mkLam "X" (term.mkPi "_" (term.mkVar 3) (term.mkU (term.mkVar 5)))
             (term.mkLam "i" (term.mkVar 4)
               (term.mkSigma "s" (term.mkVar 4)
                 (term.mkApp (term.mkApp (term.mkApp (term.mkVar 3) (term.mkVar 0))
                                         (term.mkVar 2))
                             (term.mkVar 1))))))));
 
-    # interpOnRec I : λ(j:I). λ(D:Desc I). λ(ih:(I→U)→I→U). λ(X:I→U). λ(i:I).
-    #                  Σ(_:X j). ih X i
-    interpOnRec = I_val: vLam "j" I_val (mkClosure [ I_val ]
-      (term.mkLam "D" (term.mkDesc term.mkLevelZero (term.mkVar 1))
-        (term.mkLam "ih" (term.mkPi "_" (term.mkPi "_" (term.mkVar 2) (term.mkU term.mkLevelZero))
-                          (term.mkPi "_" (term.mkVar 3) (term.mkU term.mkLevelZero)))
-          (term.mkLam "X" (term.mkPi "_" (term.mkVar 3) (term.mkU term.mkLevelZero))
+    # interpOnRec L I : λ(j:I). λ(D:Desc^L I). λ(ih:(I→U(L))→I→U(L)).
+    #                    λ(X:I→U(L)). λ(i:I). Σ(_:X j). ih X i
+    interpOnRec = L_val: I_val: vLam "j" I_val (mkClosure [ I_val L_val ]
+      (term.mkLam "D" (term.mkDesc (term.mkVar 2) (term.mkVar 1))
+        (term.mkLam "ih" (term.mkPi "_" (term.mkPi "_" (term.mkVar 2) (term.mkU (term.mkVar 4)))
+                          (term.mkPi "_" (term.mkVar 3) (term.mkU (term.mkVar 5))))
+          (term.mkLam "X" (term.mkPi "_" (term.mkVar 3) (term.mkU (term.mkVar 4)))
             (term.mkLam "i" (term.mkVar 4)
               (term.mkSigma "_" (term.mkApp (term.mkVar 1) (term.mkVar 4))
                 (term.mkApp (term.mkApp (term.mkVar 3) (term.mkVar 2))
                             (term.mkVar 1))))))));
 
-    # interpOnPi I : λ(S:U). λ(f:S→I). λ(D:Desc I). λ(ih:(I→U)→I→U). λ(X:I→U). λ(i:I).
-    #                 Σ(_:Π(s:S). X(f s)). ih X i
+    # interpOnPi L I : λ(S:U(L)). λ(f:S→I). λ(D:Desc^L I). λ(ih:(I→U(L))→I→U(L)).
+    #                   λ(X:I→U(L)). λ(i:I). Σ(_:Π(s:S). X(f s)). ih X i
     #
     # f's type is `Π _:S. I`. Under the Pi's `_` binder the closure env is
-    # [_, S, I], so the codomain `I` is at index 2.
-    interpOnPi = I_val: vLam "S" (vU vLevelZero) (mkClosure [ I_val ]
+    # [_, S, I, L], so the codomain `I` is at index 2.
+    interpOnPi = L_val: I_val: vLam "S" (vU L_val) (mkClosure [ I_val L_val ]
       (term.mkLam "f" (term.mkPi "_" (term.mkVar 0) (term.mkVar 2))
-        (term.mkLam "D" (term.mkDesc term.mkLevelZero (term.mkVar 2))
-          (term.mkLam "ih" (term.mkPi "_" (term.mkPi "_" (term.mkVar 3) (term.mkU term.mkLevelZero))
-                            (term.mkPi "_" (term.mkVar 4) (term.mkU term.mkLevelZero)))
-            (term.mkLam "X" (term.mkPi "_" (term.mkVar 4) (term.mkU term.mkLevelZero))
+        (term.mkLam "D" (term.mkDesc (term.mkVar 3) (term.mkVar 2))
+          (term.mkLam "ih" (term.mkPi "_" (term.mkPi "_" (term.mkVar 3) (term.mkU (term.mkVar 5)))
+                            (term.mkPi "_" (term.mkVar 4) (term.mkU (term.mkVar 6))))
+            (term.mkLam "X" (term.mkPi "_" (term.mkVar 4) (term.mkU (term.mkVar 6)))
               (term.mkLam "i" (term.mkVar 5)
                 (term.mkSigma "_"
                   (term.mkPi "s" (term.mkVar 5)
@@ -284,99 +319,169 @@ in {
                   (term.mkApp (term.mkApp (term.mkVar 3) (term.mkVar 2))
                               (term.mkVar 1)))))))));
 
-    # interpOnPlus I : λ(A:Desc I). λ(B:Desc I). λ(ihA:(I→U)→I→U). λ(ihB:(I→U)→I→U).
-    #                  λ(X:I→U). λ(i:I). Sum (ihA X i) (ihB X i)
+    # interpOnPlus L I : λ(A:Desc^L I). λ(B:Desc^L I).
+    #                     λ(ihA:(I→U(L))→I→U(L)). λ(ihB:(I→U(L))→I→U(L)).
+    #                     λ(X:I→U(L)). λ(i:I). Sum (ihA X i) (ihB X i)
     #
-    # Closure env [I_val]. Under A: [A, I]. Under B: [B, A, I]. Under ihA:
-    # [ihA, B, A, I]. Under ihB: [ihB, ihA, B, A, I]. Under X: [X, ihB, ihA,
-    # B, A, I]. Under i: [i, X, ihB, ihA, B, A, I]. At i-body: i=0, X=1,
-    # ihB=2, ihA=3, B=4, A=5, I=6.
-    interpOnPlus = I_val: vLam "A" (vDesc vLevelZero I_val) (mkClosure [ I_val ]
-      (term.mkLam "B" (term.mkDesc term.mkLevelZero (term.mkVar 1))
+    # Closure env [I_val L_val]. Under A: [A, I, L]. Under B: [B, A, I, L].
+    # Under ihA: [ihA, B, A, I, L]. Under ihB: [ihB, ihA, B, A, I, L].
+    # Under X: [X, ihB, ihA, B, A, I, L]. Under i: [i, X, ihB, ihA, B, A,
+    # I, L]. At i-body: i=0, X=1, ihB=2, ihA=3, B=4, A=5, I=6, L=7.
+    interpOnPlus = L_val: I_val: vLam "A" (vDesc L_val I_val) (mkClosure [ I_val L_val ]
+      (term.mkLam "B" (term.mkDesc (term.mkVar 2) (term.mkVar 1))
         (term.mkLam "ihA" (term.mkU term.mkLevelZero)
           (term.mkLam "ihB" (term.mkU term.mkLevelZero)
-            (term.mkLam "X" (term.mkPi "_" (term.mkVar 4) (term.mkU term.mkLevelZero))
+            (term.mkLam "X" (term.mkPi "_" (term.mkVar 4) (term.mkU (term.mkVar 6)))
               (term.mkLam "i" (term.mkVar 5)
                 (term.mkSum
                   (term.mkApp (term.mkApp (term.mkVar 3) (term.mkVar 1)) (term.mkVar 0))
                   (term.mkApp (term.mkApp (term.mkVar 2) (term.mkVar 1)) (term.mkVar 0)))))))));
 
-    # interpF fuel I D X i — interpretation of description D at family X,
-    # at target index i. D : Desc I, X : I → U, i : I; result : U.
-    # `interp` runs at universe level zero (its `onArg` / `onPi` bind
-    # `S` at `U(0)`); the descElim spine carries `vLevelZero`.
-    interpF = fuel: I_val: D: X: i:
-      let result = self.vDescElimF fuel vLevelZero (self.interpMotive I_val)
-                     (self.interpOnRet I_val) (self.interpOnArg I_val)
-                     (self.interpOnRec I_val) (self.interpOnPi I_val)
-                     (self.interpOnPlus I_val) D;
-      in self.vAppF fuel (self.vAppF fuel result X) i;
+    # interpF fuel L I D X i — interpretation of description D : Desc^L I
+    # at family X : I → U(L), at target index i. Result inhabits U(L).
+    # The descElim spine carries `L_val` because interp's `onArg` / `onPi`
+    # bind their sort `S` at `U(L)`.
+    #
+    # At L = 0 the on-cases are constructed inline with `[I_val]` envs
+    # and `Lift 0 0 _ A ≡ A` collapse pre-applied. Same Val as the
+    # general path (HOAS↔eval conv via instantiation succeeds either way)
+    # at lower per-call cost than going through the 2-arg `interp*` curry.
+    interpF = fuel: L_val: I_val: D: X: i:
+      if L_val.tag == "VLevelZero" then
+        self.vAppF fuel
+          (self.vAppF fuel
+            (self.vDescElimF fuel vLevelZero
+              (vLam "_" (vDesc vLevelZero I_val) (mkClosure [ I_val ]
+                (term.mkPi "_" (term.mkPi "_" (term.mkVar 1) (term.mkU term.mkLevelZero))
+                  (term.mkPi "_" (term.mkVar 2) (term.mkU term.mkLevelZero)))))
+              (vLam "j" I_val (mkClosure [ I_val ]
+                (term.mkLam "X" (term.mkPi "_" (term.mkVar 1) (term.mkU term.mkLevelZero))
+                  (term.mkLam "i" (term.mkVar 2)
+                    (term.mkEq (term.mkVar 3) (term.mkVar 2) (term.mkVar 0))))))
+              (vLam "S" (vU vLevelZero) (mkClosure [ I_val ]
+                (term.mkLam "T" (term.mkPi "_" (term.mkVar 0) (term.mkDesc term.mkLevelZero (term.mkVar 2)))
+                  (term.mkLam "ih" (term.mkPi "s" (term.mkVar 1)
+                                     (term.mkPi "_" (term.mkPi "_" (term.mkVar 3) (term.mkU term.mkLevelZero))
+                                       (term.mkPi "_" (term.mkVar 4) (term.mkU term.mkLevelZero))))
+                    (term.mkLam "X" (term.mkPi "_" (term.mkVar 3) (term.mkU term.mkLevelZero))
+                      (term.mkLam "i" (term.mkVar 4)
+                        (term.mkSigma "s" (term.mkVar 4)
+                          (term.mkApp (term.mkApp (term.mkApp (term.mkVar 3) (term.mkVar 0))
+                                                  (term.mkVar 2))
+                                      (term.mkVar 1)))))))))
+              (vLam "j" I_val (mkClosure [ I_val ]
+                (term.mkLam "D" (term.mkDesc term.mkLevelZero (term.mkVar 1))
+                  (term.mkLam "ih" (term.mkPi "_" (term.mkPi "_" (term.mkVar 2) (term.mkU term.mkLevelZero))
+                                    (term.mkPi "_" (term.mkVar 3) (term.mkU term.mkLevelZero)))
+                    (term.mkLam "X" (term.mkPi "_" (term.mkVar 3) (term.mkU term.mkLevelZero))
+                      (term.mkLam "i" (term.mkVar 4)
+                        (term.mkSigma "_" (term.mkApp (term.mkVar 1) (term.mkVar 4))
+                          (term.mkApp (term.mkApp (term.mkVar 3) (term.mkVar 2))
+                                      (term.mkVar 1)))))))))
+              (vLam "S" (vU vLevelZero) (mkClosure [ I_val ]
+                (term.mkLam "f" (term.mkPi "_" (term.mkVar 0) (term.mkVar 2))
+                  (term.mkLam "D" (term.mkDesc term.mkLevelZero (term.mkVar 2))
+                    (term.mkLam "ih" (term.mkPi "_" (term.mkPi "_" (term.mkVar 3) (term.mkU term.mkLevelZero))
+                                      (term.mkPi "_" (term.mkVar 4) (term.mkU term.mkLevelZero)))
+                      (term.mkLam "X" (term.mkPi "_" (term.mkVar 4) (term.mkU term.mkLevelZero))
+                        (term.mkLam "i" (term.mkVar 5)
+                          (term.mkSigma "_"
+                            (term.mkPi "s" (term.mkVar 5)
+                              (term.mkApp (term.mkVar 2) (term.mkApp (term.mkVar 5) (term.mkVar 0))))
+                            (term.mkApp (term.mkApp (term.mkVar 3) (term.mkVar 2))
+                                        (term.mkVar 1))))))))))
+              (vLam "A" (vDesc vLevelZero I_val) (mkClosure [ I_val ]
+                (term.mkLam "B" (term.mkDesc term.mkLevelZero (term.mkVar 1))
+                  (term.mkLam "ihA" (term.mkU term.mkLevelZero)
+                    (term.mkLam "ihB" (term.mkU term.mkLevelZero)
+                      (term.mkLam "X" (term.mkPi "_" (term.mkVar 4) (term.mkU term.mkLevelZero))
+                        (term.mkLam "i" (term.mkVar 5)
+                          (term.mkSum
+                            (term.mkApp (term.mkApp (term.mkVar 3) (term.mkVar 1)) (term.mkVar 0))
+                            (term.mkApp (term.mkApp (term.mkVar 2) (term.mkVar 1)) (term.mkVar 0))))))))))
+              D)
+            X)
+          i
+      else
+        let result = self.vDescElimF fuel L_val (self.interpMotive L_val I_val)
+                       (self.interpOnRet L_val I_val) (self.interpOnArg L_val I_val)
+                       (self.interpOnRec L_val I_val) (self.interpOnPi L_val I_val)
+                       (self.interpOnPlus L_val I_val) D;
+        in self.vAppF fuel (self.vAppF fuel result X) i;
 
     # Term-level counterparts of interpMotive / interpOn*. Closed Tms
-    # (interp*Tm_closed) carry I as the outermost binder; the public
-    # `interpTm` applies each to I_tm. The Tms emitted here must remain
-    # structurally equal (under β) to the terms emitted by `interpHoasAt`
-    # in hoas/desc.nix, so that under a stuck outer Desc the motive
-    # produced by `mkAllMotive` is conv-equal to the motive produced by
-    # `allHoasAt`.
-    interpMotiveTm = I_tm: term.mkApp interpMotiveTm_closed I_tm;
-    interpOnRetTm  = I_tm: term.mkApp interpOnRetTm_closed  I_tm;
-    interpOnArgTm  = I_tm: term.mkApp interpOnArgTm_closed  I_tm;
-    interpOnRecTm  = I_tm: term.mkApp interpOnRecTm_closed  I_tm;
-    interpOnPiTm   = I_tm: term.mkApp interpOnPiTm_closed   I_tm;
-    interpOnPlusTm = I_tm: term.mkApp interpOnPlusTm_closed I_tm;
+    # (interp*Tm_closed) carry L and I as the outermost binders; the
+    # public `interpTm` applies each to L_tm and I_tm. The Tms emitted
+    # here must remain structurally equal (under β) to the terms emitted
+    # by `interpHoasAt L` in hoas/desc.nix, so that under a stuck outer
+    # Desc the motive produced by `mkAllMotive` is conv-equal to the
+    # motive produced by `allHoasAt`.
+    interpMotiveTm = L_tm: I_tm: term.mkApp (term.mkApp interpMotiveTm_closed L_tm) I_tm;
+    interpOnRetTm  = L_tm: I_tm: term.mkApp (term.mkApp interpOnRetTm_closed  L_tm) I_tm;
+    interpOnArgTm  = L_tm: I_tm: term.mkApp (term.mkApp interpOnArgTm_closed  L_tm) I_tm;
+    interpOnRecTm  = L_tm: I_tm: term.mkApp (term.mkApp interpOnRecTm_closed  L_tm) I_tm;
+    interpOnPiTm   = L_tm: I_tm: term.mkApp (term.mkApp interpOnPiTm_closed   L_tm) I_tm;
+    interpOnPlusTm = L_tm: I_tm: term.mkApp (term.mkApp interpOnPlusTm_closed L_tm) I_tm;
 
-    # interpTm I_tm D_tm X_tm i_tm : a kernel term that evaluates to
-    # `interp I D X i` (applied to explicit arguments). The descElim
-    # spine carries `level-zero` because interp's onArg / onPi bind
-    # their sort `S` at `U(0)`.
-    interpTm = I_tm: D_tm: X_tm: i_tm:
+    # interpTm L_tm I_tm D_tm X_tm i_tm : a kernel term that evaluates
+    # to `interp L I D X i` (applied to explicit arguments). The descElim
+    # spine carries `L_tm` because interp's onArg / onPi bind their sort
+    # `S` at `U(L)`.
+    interpTm = L_tm: I_tm: D_tm: X_tm: i_tm:
       term.mkApp (term.mkApp
-        (term.mkDescElim term.mkLevelZero
-          (self.interpMotiveTm I_tm) (self.interpOnRetTm I_tm)
-          (self.interpOnArgTm I_tm) (self.interpOnRecTm I_tm)
-          (self.interpOnPiTm I_tm) (self.interpOnPlusTm I_tm)
+        (term.mkDescElim L_tm
+          (self.interpMotiveTm L_tm I_tm) (self.interpOnRetTm L_tm I_tm)
+          (self.interpOnArgTm L_tm I_tm) (self.interpOnRecTm L_tm I_tm)
+          (self.interpOnPiTm L_tm I_tm) (self.interpOnPlusTm L_tm I_tm)
           D_tm)
         X_tm) i_tm;
 
     # All-type motive:
-    #   λ(D : Desc I). Π(P : (i:I) → μ D' i → U(K)). Π(i:I). Π(d:⟦D⟧(μ D') i). U(K)
+    #   λ(D : Desc^L I). Π(P : (i:I) → μ D' i → U(K)). Π(i:I). Π(d:⟦D⟧(μ D') i). U(K)
     # Matches hoas/desc.nix's `allHoasAt` motive. Under stuck Dsub the motive
     # is preserved inside a neutral `desc-elim`, so value-level allTy and
     # HOAS-level allHoasAt must carry the same motive for conv to succeed.
-    # `K_val` is a
-    # Level *value* threaded through the closure env so polymorphic motives
-    # (where the motive's return universe references a bound `Level` variable)
-    # flow through verbatim — the body references K via `mkVar` rather than
-    # baking a Nix-meta integer at macro time.
-    # Closure env = [D', I, K]; applied to Dm yields env = [Dm, D', I, K].
-    # Var indices to D' and I are unchanged from the K-less layout because
-    # K_val is appended at the end of the env list.
-    mkAllMotive = K_val: I_val: D': vLam "_" (vDesc vLevelZero I_val) (mkClosure [ D' I_val K_val ]
+    # `K_val` is the motive's codomain universe (`P j x : U(K)`). `L_val`
+    # is the description's intrinsic level — the K-slot at which `Dsub`'s
+    # `descArg`/`descPi` summands bind their sort `S`. Both are Level
+    # *values* threaded through the closure env so polymorphic motives
+    # (where K or L references a bound `Level` variable) flow through
+    # verbatim. The body references K and L via `mkVar` rather than
+    # baking Nix-meta integers at macro time.
+    # Closure env = [D', I, K, L]; applied to Dm yields env = [Dm, D', I, K, L].
+    # K_val and L_val are appended at the end of the env list, so existing
+    # Var indices to D' and I are unchanged from the prior layout.
+    mkAllMotive = K_val: L_val: I_val: D': vLam "_" (vDesc L_val I_val) (mkClosure [ D' I_val K_val L_val ]
       (term.mkPi "P"
         (term.mkPi "i" (term.mkVar 2)
           (term.mkPi "_" (term.mkMu (term.mkVar 3) (term.mkVar 2) (term.mkVar 0))
             (term.mkU (term.mkVar 5))))
         (term.mkPi "i" (term.mkVar 3)
           (term.mkPi "d"
-            (self.interpTm (term.mkVar 4) (term.mkVar 2)
+            (self.interpTm (term.mkVar 6) (term.mkVar 4) (term.mkVar 3)
               (term.mkLam "_i" (term.mkVar 4)
                 (term.mkMu (term.mkVar 5) (term.mkVar 4) (term.mkVar 0)))
               (term.mkVar 0))
             (term.mkU (term.mkVar 6))))));
 
-    # All-case bodies. Annotations on bound variables are `mkU mkLevelZero` placeholders
-    # (eval doesn't re-check); semantics ride purely on β-reduction of the
-    # closed bodies.
+    # All-case bodies. Annotations on bound variables are `mkU
+    # mkLevelZero` placeholders (eval doesn't re-check; conv on VLam
+    # ignores binder annotations and only compares bodies under fresh
+    # vars); semantics ride purely on β-reduction of the closed bodies.
+    # The `Lift 0 K refl Unit` wrapping at `allOnRet` mirrors the
+    # HOAS-side `LiftAt levelZero K unitPrim`; the smart constructor's
+    # `convLevel` collapse keeps homogeneous-at-zero call sites
+    # byte-identical (`Lift 0 0 _ Unit ≡ Unit`).
 
-    # allOnRet I : λj λP λi λd. Unit
-    allOnRet = I_val: vLam "j" I_val (mkClosure [ I_val ]
+    # allOnRet K I : λj λP λi λd. Lift 0 K refl Unit
+    allOnRet = K_val: I_val: vLam "j" I_val (mkClosure [ I_val K_val ]
       (term.mkLam "P" (term.mkU term.mkLevelZero)
         (term.mkLam "i" (term.mkVar 2)
-          (term.mkLam "d" (term.mkU term.mkLevelZero) term.mkUnit))));
+          (term.mkLam "d" (term.mkU term.mkLevelZero)
+            (term.mkLift term.mkLevelZero (term.mkVar 5) term.mkRefl term.mkUnit)))));
 
-    # allOnArg I : λS λT λihA λP λi λd. ihA (fst d) P i (snd d)
-    allOnArg = I_val: vLam "S" (vU vLevelZero) (mkClosure [ I_val ]
+    # allOnArg K I : λS λT λihA λP λi λd. ihA (fst d) P i (snd d)
+    allOnArg = K_val: I_val: vLam "S" (vU vLevelZero) (mkClosure [ I_val K_val ]
       (term.mkLam "T" (term.mkU term.mkLevelZero)
         (term.mkLam "ihA" (term.mkU term.mkLevelZero)
           (term.mkLam "P" (term.mkU term.mkLevelZero)
@@ -390,8 +495,8 @@ in {
                     (term.mkVar 1))
                   (term.mkSnd (term.mkVar 0)))))))));
 
-    # allOnRec I : λj λD λihA λP λi λd. Σ(_: P j (fst d)). ihA P i (snd d)
-    allOnRec = I_val: vLam "j" I_val (mkClosure [ I_val ]
+    # allOnRec K I : λj λD λihA λP λi λd. Σ(_: P j (fst d)). ihA P i (snd d)
+    allOnRec = K_val: I_val: vLam "j" I_val (mkClosure [ I_val K_val ]
       (term.mkLam "D" (term.mkU term.mkLevelZero)
         (term.mkLam "ihA" (term.mkU term.mkLevelZero)
           (term.mkLam "P" (term.mkU term.mkLevelZero)
@@ -404,11 +509,11 @@ in {
                                           (term.mkVar 2))
                               (term.mkSnd (term.mkVar 1))))))))));
 
-    # allOnPi I : λS λf λD λihA λP λi λd. Σ(_: Π(s:S). P (f s) (fst d s)). ihA P i (snd d)
+    # allOnPi K I : λS λf λD λihA λP λi λd. Σ(_: Π(s:S). P (f s) (fst d s)). ihA P i (snd d)
     #
     # f's type is `Π _:S. I`. Under the Pi's `_` binder the closure env is
-    # [_, S, I], so the codomain `I` is at index 2.
-    allOnPi = I_val: vLam "S" (vU vLevelZero) (mkClosure [ I_val ]
+    # [_, S, I, K], so the codomain `I` is at index 2.
+    allOnPi = K_val: I_val: vLam "S" (vU vLevelZero) (mkClosure [ I_val K_val ]
       (term.mkLam "f" (term.mkPi "_" (term.mkVar 0) (term.mkVar 2))
         (term.mkLam "D" (term.mkU term.mkLevelZero)
           (term.mkLam "ihA" (term.mkU term.mkLevelZero)
@@ -424,30 +529,29 @@ in {
                                             (term.mkVar 2))
                                 (term.mkSnd (term.mkVar 1)))))))))));
 
-    # allOnPlus K I D' : λA λB λihA λihB λP λi λd.
-    #   sumElim (interp A muFam i) (interp B muFam i)
+    # allOnPlus K L I D' : λA λB λihA λihB λP λi λd.
+    #   sumElim (interp L I A muFam i) (interp L I B muFam i)
     #           (λ_. U(K)) (λa. ihA P i a) (λb. ihB P i b) d
     #
-    # Closure env [D' I_val K_val]. At d-body: d=0, i=1, P=2, ihB=3,
-    # ihA=4, B=5, A=6, D'=7, I=8, K=9. The sum-elim left/right carry
-    # proper interp types so that on neutral d the ESumElim frame
-    # conv-equals the frame produced by HOAS allHoasAt.onPlus
-    # (hoas/desc.nix:192-201). The sum-elim motive's body is U(K) —
-    # this IS the universe the All-type result inhabits at each
-    # summand, and must match the HOAS counterpart for conv equality
-    # on stuck ESumElim frames. K_val rides through the env so
-    # polymorphic motive levels are preserved verbatim.
+    # Closure env [D' I_val K_val L_val]. At d-body: d=0, i=1, P=2, ihB=3,
+    # ihA=4, B=5, A=6, D'=7, I=8, K=9, L=10. The sum-elim left/right carry
+    # proper interp types at description-level `L` so that on neutral d
+    # the ESumElim frame conv-equals the frame produced by HOAS
+    # allHoasAt.onPlus. The sum-elim motive's body is U(K) — this IS the
+    # universe the All-type result inhabits at each summand. K_val and
+    # L_val both ride through the env so polymorphic motive / description
+    # levels are preserved verbatim.
     # muFamTm = λ_i. μ I D' _i (under the lambda: I=9, D'=8, _i=0;
-    # K_val sits at the end of the env list, so existing Var indices
-    # to I, D', A, B, i are unchanged from the K-less layout).
-    allOnPlus = K_val: I_val: D':
+    # K_val sits at index 9 and L_val at 10 in the env list, so existing
+    # Var indices to I, D', A, B, i are unchanged from the K-only layout).
+    allOnPlus = K_val: L_val: I_val: D':
       let
-        # At d-body level: I=Var8, D'=Var7, A=Var6, B=Var5, i=Var1
+        # At d-body level: I=Var8, D'=Var7, A=Var6, B=Var5, i=Var1, L=Var10
         allMuFamTm = term.mkLam "_i" (term.mkVar 8)
           (term.mkMu (term.mkVar 9) (term.mkVar 8) (term.mkVar 0));
-        allLInterpTm = self.interpTm (term.mkVar 8) (term.mkVar 6) allMuFamTm (term.mkVar 1);
-        allRInterpTm = self.interpTm (term.mkVar 8) (term.mkVar 5) allMuFamTm (term.mkVar 1);
-      in vLam "A" (vDesc vLevelZero I_val) (mkClosure [ D' I_val K_val ]
+        allLInterpTm = self.interpTm (term.mkVar 10) (term.mkVar 8) (term.mkVar 6) allMuFamTm (term.mkVar 1);
+        allRInterpTm = self.interpTm (term.mkVar 10) (term.mkVar 8) (term.mkVar 5) allMuFamTm (term.mkVar 1);
+      in vLam "A" (vDesc L_val I_val) (mkClosure [ D' I_val K_val L_val ]
       (term.mkLam "B" (term.mkU term.mkLevelZero)
         (term.mkLam "ihA" (term.mkU term.mkLevelZero)
           (term.mkLam "ihB" (term.mkU term.mkLevelZero)
@@ -466,15 +570,16 @@ in {
                         (term.mkVar 4) (term.mkVar 3)) (term.mkVar 2)) (term.mkVar 0)))
                     (term.mkVar 0)))))))));
 
-    # `allTy`'s descElim spine carries `vLevelZero` because `allOnArg`
-    # / `allOnPi` bind `S` at `U(0)` (the All result's *codomain*
-    # universe `K_val` rides through `mkAllMotive` and `allOnPlus`'s
-    # sum-elim motive — independent from the descElim K slot).
-    allTyF = fuel: K_val: I_val: D': D: P: i: d:
-      let result = self.vDescElimF fuel vLevelZero (self.mkAllMotive K_val I_val D')
-                     (self.allOnRet I_val) (self.allOnArg I_val)
-                     (self.allOnRec I_val) (self.allOnPi I_val)
-                     (self.allOnPlus K_val I_val D') D;
+    # `allTy`'s descElim spine carries `L_val` because `allOnArg` /
+    # `allOnPi` bind `S` at `U(L)` (matching HOAS allHoasAt's `S` binders
+    # at `u L`). The All result's *codomain* universe `K_val` rides
+    # through `mkAllMotive` and `allOnPlus`'s sum-elim motive —
+    # independent from the descElim K slot.
+    allTyF = fuel: K_val: L_val: I_val: D': D: P: i: d:
+      let result = self.vDescElimF fuel L_val (self.mkAllMotive K_val L_val I_val D')
+                     (self.allOnRet K_val I_val) (self.allOnArg K_val I_val)
+                     (self.allOnRec K_val I_val) (self.allOnPi K_val I_val)
+                     (self.allOnPlus K_val L_val I_val D') D;
       in self.vAppF fuel
            (self.vAppF fuel (self.vAppF fuel result P) i) d;
 
@@ -500,12 +605,15 @@ in {
       in go D [];
 
     # Everywhere computation motive:
-    #   λ(D : Desc I). Π(P : (i:I) → μ D' i → U).
-    #                  Π(ih : Π(j:I). Π(x:μ D' j). P j x).
-    #                  Π(i:I). Π(d : ⟦D⟧(μ D') i). U
+    #   λ(D : Desc^L I). Π(P : (i:I) → μ D' i → U).
+    #                    Π(ih : Π(j:I). Π(x:μ D' j). P j x).
+    #                    Π(i:I). Π(d : ⟦D⟧(μ D') i). U
     # Result type is a placeholder U (eval doesn't re-check); the actual
-    # computed value inhabits the allTy at the same D.
-    mkEvMotive = I_val: D': vLam "_" (vDesc vLevelZero I_val) (mkClosure [ D' I_val ]
+    # computed value inhabits the allTy at the same D. `L_val` is the
+    # description's intrinsic level — threaded into the inner `interpTm`
+    # call so the d-binder type evaluates to the same descElim spine
+    # the kernel emits at descInd's typing site.
+    mkEvMotive = L_val: I_val: D': vLam "_" (vDesc L_val I_val) (mkClosure [ D' I_val L_val ]
       (term.mkPi "P"
         (term.mkPi "i" (term.mkVar 2)
           (term.mkPi "_" (term.mkMu (term.mkVar 3) (term.mkVar 2) (term.mkVar 0)) (term.mkU term.mkLevelZero)))
@@ -516,7 +624,7 @@ in {
                           (term.mkVar 0))))
           (term.mkPi "i" (term.mkVar 4)
             (term.mkPi "d"
-              (self.interpTm (term.mkVar 5) (term.mkVar 3)
+              (self.interpTm (term.mkVar 6) (term.mkVar 5) (term.mkVar 3)
                 (term.mkLam "_i" (term.mkVar 5)
                   (term.mkMu (term.mkVar 6) (term.mkVar 5) (term.mkVar 0)))
                 (term.mkVar 0))
@@ -591,21 +699,22 @@ in {
                           (term.mkVar 1))
                         (term.mkSnd (term.mkVar 0))))))))))));
 
-    # evOnPlus I D' : λA λB λihEA λihEB λP λih λi λd.
-    #   sumElim (interp A muFam i) (interp B muFam i)
+    # evOnPlus L I D' : λA λB λihEA λihEB λP λih λi λd.
+    #   sumElim (interp L I A muFam i) (interp L I B muFam i)
     #           (λ_. U) (λa. ihEA P ih i a) (λb. ihEB P ih i b) d
     #
-    # Closure env [D' I_val]. At d-body: d=0, i=1, ih=2, P=3, ihEB=4,
-    # ihEA=5, B=6, A=7, D'=8, I=9. Proper interp types in the sum-elim
-    # frame, matching allOnPlus's convention.
-    evOnPlus = I_val: D':
+    # Closure env [D' I_val L_val]. At d-body: d=0, i=1, ih=2, P=3,
+    # ihEB=4, ihEA=5, B=6, A=7, D'=8, I=9, L=10. Proper interp types
+    # at description-level `L` in the sum-elim frame, matching
+    # allOnPlus's convention.
+    evOnPlus = L_val: I_val: D':
       let
-        # At d-body level: I=Var9, D'=Var8, A=Var7, B=Var6, i=Var1
+        # At d-body level: I=Var9, D'=Var8, A=Var7, B=Var6, i=Var1, L=Var10.
         evMuFamTm = term.mkLam "_i" (term.mkVar 9)
           (term.mkMu (term.mkVar 10) (term.mkVar 9) (term.mkVar 0));
-        evLInterpTm = self.interpTm (term.mkVar 9) (term.mkVar 7) evMuFamTm (term.mkVar 1);
-        evRInterpTm = self.interpTm (term.mkVar 9) (term.mkVar 6) evMuFamTm (term.mkVar 1);
-      in vLam "A" (vDesc vLevelZero I_val) (mkClosure [ D' I_val ]
+        evLInterpTm = self.interpTm (term.mkVar 10) (term.mkVar 9) (term.mkVar 7) evMuFamTm (term.mkVar 1);
+        evRInterpTm = self.interpTm (term.mkVar 10) (term.mkVar 9) (term.mkVar 6) evMuFamTm (term.mkVar 1);
+      in vLam "A" (vDesc L_val I_val) (mkClosure [ D' I_val L_val ]
       (term.mkLam "B" (term.mkU term.mkLevelZero)
         (term.mkLam "ihEA" (term.mkU term.mkLevelZero)
           (term.mkLam "ihEB" (term.mkU term.mkLevelZero)
@@ -625,14 +734,15 @@ in {
                           (term.mkVar 5) (term.mkVar 4)) (term.mkVar 3)) (term.mkVar 2)) (term.mkVar 0)))
                       (term.mkVar 0))))))))));
 
-    # `everywhere`'s descElim spine carries `vLevelZero` for the same
-    # reason as `interpF` and `allTyF` — its `evOn*` cases bind `S` at
-    # `U(0)`.
-    everywhereF = fuel: I_val: D': D: P: ih: i: d:
-      let result = self.vDescElimF fuel vLevelZero (self.mkEvMotive I_val D')
+    # `everywhere`'s descElim spine carries `L_val` because its `evOn*`
+    # cases bind `S` at `U(L)` (mirroring the description's intrinsic
+    # level). At L=0 the descElim spine is byte-identical to the prior
+    # `vLevelZero` form.
+    everywhereF = fuel: L_val: I_val: D': D: P: ih: i: d:
+      let result = self.vDescElimF fuel L_val (self.mkEvMotive L_val I_val D')
                      (self.evOnRet I_val) (self.evOnArg I_val)
                      (self.evOnRec I_val) (self.evOnPi I_val)
-                     (self.evOnPlus I_val D') D;
+                     (self.evOnPlus L_val I_val D') D;
       in self.vAppF fuel
            (self.vAppF fuel
              (self.vAppF fuel (self.vAppF fuel result P) ih) i) d;
@@ -653,19 +763,20 @@ in {
     Dret = vDescRet vTt;
   in {
     "interp-ret" = {
-      # ⟦ret tt⟧(λ_:Unit. Nat)(tt) = Eq Unit tt tt
-      expr = (self.interpF self.defaultFuel vUnit Dret X_nat vTt).tag;
+      # ⟦ret tt⟧^0(λ_:Unit. Nat)(tt) = Lift 0 0 _ (Eq Unit tt tt) ≡ Eq Unit tt tt
+      # The mkLift smart constructor collapses idempotently at L=0.
+      expr = (self.interpF self.defaultFuel val.vLevelZero vUnit Dret X_nat vTt).tag;
       expected = "VEq";
     };
     "interp-rec-ret" = {
       # ⟦rec tt (ret tt)⟧(λ_. Nat)(tt) = Σ(_: Nat). Eq Unit tt tt
-      expr = (self.interpF self.defaultFuel vUnit
+      expr = (self.interpF self.defaultFuel val.vLevelZero vUnit
         (vDescRec vTt Dret) X_nat vTt).tag;
       expected = "VSigma";
     };
     "interp-rec-ret-fst" = {
       # first component is X tt β-reduced = Nat
-      expr = (self.interpF self.defaultFuel vUnit
+      expr = (self.interpF self.defaultFuel val.vLevelZero vUnit
         (vDescRec vTt Dret) X_nat vTt).fst.tag;
       expected = "VNat";
     };
@@ -673,50 +784,50 @@ in {
       # ⟦pi Nat (λ_.tt) (ret tt)⟧(λ_. Nat)(tt) = Σ(_: Π(s:Nat). Nat). Eq Unit tt tt
       expr = let
         fLam = vLam "_" vNat (mkClosure [] term.mkTt);
-      in (self.interpF self.defaultFuel vUnit
+      in (self.interpF self.defaultFuel val.vLevelZero vUnit
         (vDescPi vLevelZero vLevelZero vNat vRefl fLam Dret) X_nat vTt).tag;
       expected = "VSigma";
     };
     "interp-pi-ret-fst" = {
       expr = let
         fLam = vLam "_" vNat (mkClosure [] term.mkTt);
-      in (self.interpF self.defaultFuel vUnit
+      in (self.interpF self.defaultFuel val.vLevelZero vUnit
         (vDescPi vLevelZero vLevelZero vNat vRefl fLam Dret) X_nat vTt).fst.tag;
       expected = "VPi";
     };
     "interp-pi-ret-fst-domain" = {
       expr = let
         fLam = vLam "_" vNat (mkClosure [] term.mkTt);
-      in (self.interpF self.defaultFuel vUnit
+      in (self.interpF self.defaultFuel val.vLevelZero vUnit
         (vDescPi vLevelZero vLevelZero vNat vRefl fLam Dret) X_nat vTt).fst.domain.tag;
       expected = "VNat";
     };
     "interp-arg-ret" = {
       # ⟦arg Nat (λ_.ret tt)⟧(λ_. Nat)(tt) = Σ(s:Nat). Eq Unit tt tt
-      expr = (self.interpF self.defaultFuel vUnit
+      expr = (self.interpF self.defaultFuel val.vLevelZero vUnit
         (vDescArg vLevelZero vLevelZero vNat vRefl (mkClosure [] (term.mkDescRet term.mkTt)))
         X_nat vTt).tag;
       expected = "VSigma";
     };
     "interp-arg-ret-fst" = {
-      expr = (self.interpF self.defaultFuel vUnit
+      expr = (self.interpF self.defaultFuel val.vLevelZero vUnit
         (vDescArg vLevelZero vLevelZero vNat vRefl (mkClosure [] (term.mkDescRet term.mkTt)))
         X_nat vTt).fst.tag;
       expected = "VNat";
     };
 
     "allTy-ret" = {
-      # All D' (ret tt) P tt d = Unit
+      # All D' (ret tt) P tt d = Lift 0 0 _ Unit ≡ Unit (idempotent collapse).
       expr = let
         P = vLam "i" vUnit (mkClosure [] (term.mkU term.mkLevelZero));
-      in (self.allTyF self.defaultFuel val.vLevelZero vUnit Dret Dret P vTt vRefl).tag;
+      in (self.allTyF self.defaultFuel val.vLevelZero val.vLevelZero vUnit Dret Dret P vTt vRefl).tag;
       expected = "VUnit";
     };
     "allTy-rec-ret" = {
       # All D' (rec tt (ret tt)) P tt d = Σ(_ : P tt (fst d)). Unit
       expr = let
         P = vLam "i" vUnit (mkClosure [] (term.mkU term.mkLevelZero));
-      in (self.allTyF self.defaultFuel val.vLevelZero vUnit Dret
+      in (self.allTyF self.defaultFuel val.vLevelZero val.vLevelZero vUnit Dret
         (vDescRec vTt Dret) P vTt
         (vPair val.vZero vRefl)).tag;
       expected = "VSigma";

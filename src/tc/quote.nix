@@ -165,6 +165,18 @@ let
                      (T.mkInr leftTm rightTm
                        (buildInner headTms (T.mkPair acc T.mkRefl)))
               ) baseTm (builtins.genList (x: x) n)
+    # Lift primitive — round-trip type-former and introducer. Level-zero
+    # fast-path on `v.l` / `v.m` mirrors the desc-arg / desc-pi shape.
+    else if t == "VLift" then
+      T.mkLift
+        (if v.l.tag == "VLevelZero" then T.mkLevelZero else quote d v.l)
+        (if v.m.tag == "VLevelZero" then T.mkLevelZero else quote d v.m)
+        (quote d v.eq) (quote d v.A)
+    else if t == "VLiftIntro" then
+      T.mkLiftIntro
+        (if v.l.tag == "VLevelZero" then T.mkLevelZero else quote d v.l)
+        (if v.m.tag == "VLevelZero" then T.mkLevelZero else quote d v.m)
+        (quote d v.eq) (quote d v.A) (quote d v.a)
     else if t == "VU" then
       if v.level.tag == "VLevelZero" then mkUZero
       else T.mkU (quote d v.level)
@@ -217,6 +229,14 @@ let
       T.mkDescElim (quote d elim.k) (quote d elim.motive) (quote d elim.onRet)
         (quote d elim.onArg) (quote d elim.onRec) (quote d elim.onPi)
         (quote d elim.onPlus) head
+    # ELiftElim spine frame round-trips to `mkLiftElim l m eq A head`.
+    # Level-zero fast-path on `l` / `m` mirrors the in-quote-rule shape.
+    else if t == "ELiftElim" then
+      T.mkLiftElim
+        (if elim.l.tag == "VLevelZero" then T.mkLevelZero else quote d elim.l)
+        (if elim.m.tag == "VLevelZero" then T.mkLevelZero else quote d elim.m)
+        (quote d elim.eq) (quote d elim.A) head
+    else if t == "ENatToLevel" then T.mkNatToLevel head
     else throw "tc: quoteElim unknown tag '${t}'";
 
   # Normalize: eval then quote
@@ -417,6 +437,98 @@ in mk {
     "quote-ne-desc-elim" = {
       expr = (quote 1 (V.vNe 0 [ (V.eDescElim V.vLevelZero V.vNat V.vZero V.vZero V.vZero V.vZero V.vZero) ])).tag;
       expected = "desc-elim";
+    };
+
+    # Lift primitive — type-former, introducer, and stuck-eliminator
+    # spine frame. Tests use level-zero throughout for the fast-path
+    # singleton; `l ≠ m` cases test the non-collapsed shape.
+    "quote-lift-distinct-levels" = {
+      expr = (quote 0 (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero)
+        V.vRefl V.vUnit)).tag;
+      expected = "lift";
+    };
+    "quote-lift-l-zero-fastpath" = {
+      expr = (quote 0 (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero)
+        V.vRefl V.vUnit)).l.tag;
+      expected = "level-zero";
+    };
+    "quote-lift-A" = {
+      expr = (quote 0 (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero)
+        V.vRefl V.vUnit)).A.tag;
+      expected = "unit";
+    };
+    "quote-lift-intro-distinct-levels" = {
+      expr = (quote 0 (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero)
+        V.vRefl V.vUnit V.vTt)).tag;
+      expected = "lift-intro";
+    };
+    "quote-lift-intro-a" = {
+      expr = (quote 0 (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero)
+        V.vRefl V.vUnit V.vTt)).a.tag;
+      expected = "tt";
+    };
+    "quote-ne-lift-elim" = {
+      # Stuck `lower` on a neutral: VNe(0, [ELiftElim …]) round-trips
+      # to `mkLiftElim l m eq A (Var 0)`.
+      expr = (quote 1 (V.vNe 0
+        [ (V.eLiftElim V.vLevelZero (V.vLevelSuc V.vLevelZero)
+            V.vRefl V.vUnit) ])).tag;
+      expected = "lift-elim";
+    };
+    "quote-ne-lift-elim-l-zero-fastpath" = {
+      expr = (quote 1 (V.vNe 0
+        [ (V.eLiftElim V.vLevelZero (V.vLevelSuc V.vLevelZero)
+            V.vRefl V.vUnit) ])).l.tag;
+      expected = "level-zero";
+    };
+    # nf round-trip on a stuck lower spine — the term that goes in
+    # comes back syntactically equal after eval-then-quote.
+    "nf-lift-elim-stuck-roundtrip" = {
+      expr = let
+        tm = T.mkLiftElim T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
+          T.mkRefl T.mkUnit (T.mkVar 0);
+        env = [ (V.freshVar 0) ];
+      in nf env (nf env tm) == nf env tm;
+      expected = true;
+    };
+    # nf collapses idempotent Lift (`Lift l l _ A` → `A`); the
+    # resulting term tag is `unit`, not `lift`.
+    "nf-lift-idempotent-collapse" = {
+      expr = (nf [] (T.mkLift T.mkLevelZero T.mkLevelZero T.mkRefl T.mkUnit)).tag;
+      expected = "unit";
+    };
+    # nf round-trip on a non-collapsed Lift type — `Lift 0 1 _ Unit`
+    # survives eval+quote unchanged.
+    "nf-lift-distinct-roundtrip" = {
+      expr = let
+        tm = T.mkLift T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
+          T.mkRefl T.mkUnit;
+      in (nf [] tm).tag;
+      expected = "lift";
+    };
+
+    # natToLevel reduces structurally on closed Nats — nf produces
+    # `level-zero` / chained `level-suc` (no surviving `nat-to-level`).
+    "nf-nat-to-level-zero" = {
+      expr = (nf [] (T.mkNatToLevel T.mkZero)).tag;
+      expected = "level-zero";
+    };
+    "nf-nat-to-level-suc-chain" = {
+      expr = (nf [] (T.mkNatToLevel
+        (T.mkSucc (T.mkSucc T.mkZero)))).pred.pred.tag;
+      expected = "level-zero";
+    };
+    "quote-ne-nat-to-level" = {
+      # Stuck `natToLevel` on a Nat-typed neutral round-trips.
+      expr = (quote 1 (V.vNe 0 [ V.eNatToLevel ])).tag;
+      expected = "nat-to-level";
+    };
+    "nf-nat-to-level-stuck-roundtrip" = {
+      expr = let
+        tm = T.mkNatToLevel (T.mkVar 0);
+        env = [ (V.freshVar 0) ];
+      in nf env (nf env tm) == nf env tm;
+      expected = true;
     };
 
     # Roundtrip: eval then quote for desc-pi

@@ -86,7 +86,7 @@ api.mk {
     # build Level expressions that flow into `u`/`descArg`/`descPi`'s
     # level slots. Bound Level variables come from
     # `forall "k" level (k_var: …)`.
-    inherit (self) level levelZero levelSuc levelMax;
+    inherit (self) level levelZero levelSuc levelMax natToLevel;
     # Binding
     inherit (self) forall sigma lam let_;
     # Terms
@@ -103,6 +103,11 @@ api.mk {
     inherit (self) descI desc descIAt descAt muI mu retI recI piI piIAt
                    descRet descArg descArgAt descRec descPi descPiAt
                    descCon descInd descElim;
+    # Lift primitive — Tarski + non-cumulative cross-level transport.
+    # `LiftAt l m A : U(m)` with `l ≤ m`; `liftAt l m A a` /
+    # `lowerAt l m A x` introduce / eliminate. The `eq` witness is
+    # auto-emitted as `mkRefl` by the elaborator.
+    inherit (self) LiftAt liftAt lowerAt;
     # Description-level helpers and prelude descriptions
     inherit (self) interpHoasAt allHoasAt natDesc listDesc sumDesc natDescTm descDesc iso;
     # Fin prelude — indexed family `Fin : Nat → U` with vacuous base at

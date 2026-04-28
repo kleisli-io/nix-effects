@@ -21,11 +21,21 @@ let
   measure = import ./measure.nix { inherit lib; };
   inherit (measure) permilleDelta pctDelta;
 
-  # Max permille delta across every alloc field in `current.allocs` relative
-  # to `baseline.allocs` with the same key.
+  # Fields that track interned-string growth, not workload work. They
+  # rise monotonically with code surface (new tags, new test names, new
+  # binder names) and stay flat across re-runs of the same code, so a
+  # regression here measures "the module got bigger" rather than "the
+  # workload allocates more". Reported in blame for visibility but not
+  # included in the gate's max-fold.
+  codeSizeFields = [ "symbols" "symbolsBytes" ];
+  isCodeSize = k: builtins.elem k codeSizeFields;
+
+  # Max permille delta across every workload alloc field in `current.allocs`
+  # relative to `baseline.allocs` with the same key. Excludes code-size
+  # fields (see `codeSizeFields`).
   maxAllocDeltaPermille = baselineAllocs: currentAllocs:
     let
-      keys = builtins.attrNames currentAllocs;
+      keys = builtins.filter (k: ! isCodeSize k) (builtins.attrNames currentAllocs);
       deltas = map
         (k: permilleDelta (baselineAllocs.${k} or 0) currentAllocs.${k})
         keys;
@@ -34,13 +44,15 @@ let
       else builtins.foldl' (acc: d: if d > acc then d else acc) (builtins.head deltas) (builtins.tail deltas);
 
   # Which alloc fields regressed past tolerance, and by how much. For blame.
+  # Both workload and code-size fields appear here so the report shows the
+  # full picture; only workload fields contribute to gate hard-fail status.
   allocRegressions = tolerance: baselineAllocs: currentAllocs:
     let
       keys = builtins.attrNames currentAllocs;
       entries = map
         (k:
           let d = permilleDelta (baselineAllocs.${k} or 0) currentAllocs.${k};
-          in { field = k; deltaPermille = d; baseline = baselineAllocs.${k} or 0; current = currentAllocs.${k}; })
+          in { field = k; deltaPermille = d; baseline = baselineAllocs.${k} or 0; current = currentAllocs.${k}; codeSize = isCodeSize k; })
         keys;
     in builtins.filter (e: e.deltaPermille > tolerance) entries;
 

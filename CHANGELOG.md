@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`Lift` primitive** — explicit cross-level transport. `Lift l m eq A : U(m)` for `A : U(l)` with bound witness `eq : Eq Level (max l m) m`; introducer `liftAt`, eliminator `lowerAt`. Smart constructor collapses idempotently at `l ≡ m` (`Lift l l _ A ≡ A`, `liftAt l l _ A a ≡ a`, `lowerAt l l _ A x ≡ x`). HOAS surface: `LiftAt` / `liftAt` / `lowerAt`
+- **`natToLevel : Nat → Level`** — structurally reduces on closed Nats (`natToLevel zero ≡ levelZero`, `natToLevel (succ n) ≡ levelSuc (natToLevel n)`); stuck on neutrals. Asymmetric — no `levelToNat` rule
+
+### Changed
+
+- **Per-summand level on `descArg` / `descPi`** with bound witness `eq : Eq Level (max l k) k`. The summand sort `S` may live at level `l` ≤ description level `k`; cross-level transport at every introducer / eliminator is via `Lift`
+
+### Removed
+
+- **`Sub-at-U` structural conv coercion** (CHECK trampoline's universe-cumulativity bridge). The kernel is non-cumulative: a term checked against `U(k)` must have inferred type exactly `U(k)` modulo `convLevel`. Cross-level transport is via explicit `Lift`
+
+### Performance
+
+- L=0 fast-paths in `interpF` (eval-side) and `interpHoasAt` (HOAS-side): when the description level is statically zero, emit the post-collapse form directly without `Lift`-wrap or extra closure-env entries. HOAS↔eval conv preserved (same Val under instantiation; smart constructor collapses Lift at equal levels)
+- `desc-arg` / `desc-pi` eq-slot fast-path: when `(l, k) = (0, 0)` and `tm.eq` is syntactically `refl`, emit `mkRefl` directly without recursing through CHECK
+- Bench gate excludes `symbols` / `symbolsBytes` from the alloc max-fold — these track interned-string growth (new tag names, test names, binder names), not workload work. Reported in blame with `codeSize: true` for visibility
+
 ## [0.10.0] - 2026-04-26
 
 ### Headline changes

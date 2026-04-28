@@ -77,6 +77,15 @@ let
   vMu = I: D: i: { tag = "VMu"; inherit I D i; };            # μ D i — the type at index i : I
   vDescCon = D: i: d: { tag = "VDescCon"; inherit D i d; };  # target index i carried alongside payload
 
+  # Lift primitive. `Lift l m eq A : U(m)` carries the bound witness
+  # `eq : Eq Level (max l m) m` that proves `l ≤ m`. Conv collapses
+  # `Lift l l _ A ≡ A`, `lower _ (lift _ a) ≡ a` (β), `lift _ (lower _
+  # x) ≡ x` (η), and nested-Lift composition. The `eq` slot is
+  # witness-irrelevant — two `vLift`s with matching `l`/`m`/`A` are
+  # conv-equal regardless of the proof carried.
+  vLift      = l: m: eq: A:    { tag = "VLift";      inherit l m eq A; };
+  vLiftIntro = l: m: eq: A: a: { tag = "VLiftIntro"; inherit l m eq A a; };
+
   # Level sort (Tarski). `Level : U(0)`. Expressions built from
   # zero/suc/max; canonicalised at conv time.
   vLevel = { tag = "VLevel"; };
@@ -146,6 +155,15 @@ let
   eDescElim = k: motive: onRet: onArg: onRec: onPi: onPlus:
     { tag = "EDescElim"; inherit k motive onRet onArg onRec onPi onPlus; };
 
+  # `ELiftElim` records a stuck `lower` on a neutral `Lift`-typed value.
+  # The spine entry carries `l`, `m`, `eq`, `A` so a quoted spine round-
+  # trips to `mkLiftElim l m eq A x`.
+  eLiftElim = l: m: eq: A: { tag = "ELiftElim"; inherit l m eq A; };
+
+  # `ENatToLevel` records a stuck `natToLevel` on a Nat-typed neutral.
+  # No payload: the frame is nullary, mirroring `EFst`/`ESnd`.
+  eNatToLevel = { tag = "ENatToLevel"; };
+
 in mk {
   doc = ''
     # fx.tc.value — Value Domain (Val)
@@ -201,12 +219,13 @@ in mk {
     inherit vEq vRefl vFunext;
     inherit vDesc vDescRet vDescArg vDescRec vDescPi vDescPlus vMu vDescCon;
     inherit vU;
+    inherit vLift vLiftIntro;
     inherit vLevel vLevelZero vLevelSuc vLevelMax vLevelLit;
     inherit vString vInt vFloat vAttrs vPath vFunction vAny;
     inherit vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit;
     inherit vOpaqueLam;
     inherit vNe freshVar;
-    inherit eApp eFst eSnd eNatElim eListElim eSumElim eJ eStrEq eDescInd eDescElim;
+    inherit eApp eFst eSnd eNatElim eListElim eSumElim eJ eStrEq eDescInd eDescElim eLiftElim eNatToLevel;
   };
   tests = {
     # Closures
@@ -377,6 +396,36 @@ in mk {
     "edescind-i" = { expr = (eDescInd (vDescRet vTt) vNat vZero vTt).i.tag; expected = "VTt"; };
     "edescelim-tag" = { expr = (eDescElim vLevelZero vNat vZero vZero vZero vZero vZero).tag; expected = "EDescElim"; };
     "edescelim-k" = { expr = (eDescElim vLevelZero vNat vZero vZero vZero vZero vZero).k.tag; expected = "VLevelZero"; };
+
+    # Lift primitive
+    "vlift-tag" = { expr = (vLift vLevelZero vLevelZero vRefl vUnit).tag; expected = "VLift"; };
+    "vlift-l-zero" = {
+      expr = (vLift vLevelZero vLevelZero vRefl vUnit).l.tag;
+      expected = "VLevelZero";
+    };
+    "vlift-m-suc" = {
+      expr = (vLift vLevelZero (vLevelSuc vLevelZero) vRefl vUnit).m.tag;
+      expected = "VLevelSuc";
+    };
+    "vlift-A" = {
+      expr = (vLift vLevelZero vLevelZero vRefl vUnit).A.tag;
+      expected = "VUnit";
+    };
+    "vlift-eq-refl" = {
+      expr = (vLift vLevelZero vLevelZero vRefl vUnit).eq.tag;
+      expected = "VRefl";
+    };
+    "vliftintro-tag" = {
+      expr = (vLiftIntro vLevelZero vLevelZero vRefl vUnit vTt).tag;
+      expected = "VLiftIntro";
+    };
+    "vliftintro-a" = {
+      expr = (vLiftIntro vLevelZero vLevelZero vRefl vUnit vTt).a.tag;
+      expected = "VTt";
+    };
+    "eliftelim-tag" = { expr = (eLiftElim vLevelZero vLevelZero vRefl vUnit).tag; expected = "ELiftElim"; };
+    "eliftelim-l" = { expr = (eLiftElim vLevelZero vLevelZero vRefl vUnit).l.tag; expected = "VLevelZero"; };
+    "enattolevel-tag" = { expr = eNatToLevel.tag; expected = "ENatToLevel"; };
     "vdescplus-tag" = { expr = (vDescPlus (vDescRet vTt) (vDescRet vTt)).tag; expected = "VDescPlus"; };
     "vdescplus-A" = { expr = (vDescPlus (vDescRet vTt) (vDescRet vTt)).A.tag; expected = "VDescRet"; };
     "vdescplus-B" = { expr = (vDescPlus (vDescRet vTt) (vDescRet vTt)).B.tag; expected = "VDescRet"; };

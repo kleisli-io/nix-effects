@@ -337,11 +337,6 @@ in {
       expected = true;
     };
 
-    "check-cumulativity" = {
-      expr = (checkTm ctx0 T.mkNat (vU (V.vLevelSuc V.vLevelZero))).tag;
-      expected = "nat";
-    };
-
     "check-U0-in-U1" = {
       expr = (checkTm ctx0 (T.mkU T.mkLevelZero) (vU (V.vLevelSuc V.vLevelZero))).tag;
       expected = "U";

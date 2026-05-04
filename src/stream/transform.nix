@@ -53,6 +53,44 @@ let
     };
   };
 
+  mapTo = mk {
+    doc = ''
+      Replace every element of a stream with a constant value.
+
+      ```
+      mapTo : a -> Computation (Step r b) -> Computation (Step r a)
+      ```
+    '';
+    value = v: stream: bind stream (step:
+      if step._tag == "Done" then pure step
+      else pure { _tag = "More"; head = v; tail = mapTo v step.tail; });
+    tests = {
+      "mapTo-drops-values" = {
+        expr = let s = mapTo 42 (core.fromList [ 1 2 3 ]);
+               in (bind s (step: if step._tag == "Done" then pure step._tag else pure step.head)).value;
+        expected = 42;
+      };
+    };
+  };
+
+  startWith = mk {
+    doc = ''
+      Prepend a seed value to a stream.
+
+      ```
+      startWith : a -> Computation (Step r a) -> Computation (Step r a)
+      ```
+    '';
+    value = v: stream: fx.stream.combine.concat (core.fromList [ v ]) stream;
+    tests = {
+      "startWith-first-element" = {
+        expr = let s = startWith "init" (core.fromList [ "a" "b" ]);
+               in (fx.stream.reduce.toList s).value;
+        expected = [ "init" "a" "b" ];
+      };
+    };
+  };
+
   scanl = mk {
     doc = ''
       Accumulate a running fold over the stream, yielding each intermediate value.
@@ -70,10 +108,12 @@ let
   };
 
 in mk {
-  doc = "Stream transformations: map, filter, scanl.";
+  doc = "Stream transformations: map, filter, scanl, mapTo, startWith.";
   value = {
     map = smap;
     filter = sfilter;
+    mapTo = mapTo;
+    startWith = startWith;
     inherit scanl;
   };
 }

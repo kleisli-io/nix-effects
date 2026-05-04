@@ -115,7 +115,7 @@ let
   # and the extracted library (for consumers). Each source file is imported
   # exactly once. Source files receive fx = self.lib (the extracted values).
   internals = lib.fix (self:
-    let ctx = { inherit lib api; fx = self.lib; };
+    let ctx = { inherit lib api; fx = self.lib // { public = fx; }; };
     in {
       raw = readSrc ./src ctx;
       lib = api.extractValue self.raw;
@@ -204,15 +204,16 @@ let
       linear = effects.linear;
       scope = effects.scope;
       hasHandler = effects.hasHandler;
+      cycle = effects.cycle;
     };
 
     # Streams (effectful lazy sequences)
     stream = {
       inherit (stream.core) done more fromList iterate range replicate;
-      inherit (stream.transform) map filter scanl;
+      inherit (stream.transform) map filter scanl mapTo startWith;
       inherit (stream.limit) take takeWhile drop;
       inherit (stream.reduce) fold toList length sum any all;
-      inherit (stream.combine) concat interleave zip zipWith;
+      inherit (stream.combine) concat interleave zip zipWith merge;
     };
 
     # Pipeline (typed stage composition with reader/error/acc)

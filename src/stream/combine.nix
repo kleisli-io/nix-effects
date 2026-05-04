@@ -81,9 +81,27 @@ let
           }));
   };
 
+  merge = mk {
+    doc = ''
+      Merge a list of streams sequentially.
+
+      ```
+      merge : [ Computation (Step r a) ] -> Computation (Step r a)
+      ```
+    '';
+    value = ss: builtins.foldl' concat (core.done null) ss;
+    tests = {
+      "merge-two-streams" = {
+        expr = let s = merge [ (core.fromList [ 1 2 ]) (core.fromList [ 3 ]) ];
+               in (fx.stream.reduce.toList s).value;
+        expected = [ 1 2 3 ];
+      };
+    };
+  };
+
 in mk {
-  doc = "Stream combination: concat, interleave, zip, zipWith.";
+  doc = "Stream combination: concat, interleave, zip, zipWith, merge.";
   value = {
-    inherit concat interleave zip zipWith;
+    inherit concat interleave zip zipWith merge;
   };
 }

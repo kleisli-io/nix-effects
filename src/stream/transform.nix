@@ -69,11 +69,38 @@ let
           in pure { _tag = "More"; head = z; tail = scanl f next step.tail; });
   };
 
+  flatMap = mk {
+    doc = ''
+      Apply a function that returns a stream to each element, then flatten.
+
+      ```
+      flatMap : (a -> Computation (Step r b)) -> Computation (Step r a) -> Computation (Step r b)
+      ```
+    '';
+    value = f: stream:
+      bind stream (step:
+        if step._tag == "Done" then pure step
+        else fx.stream.combine.concat (f step.head) (flatMap f step.tail));
+    tests = {
+      "flatMap-expands-elements" = {
+        expr = let s = flatMap (x: core.fromList [ x (x + 1) ]) (core.fromList [ 1 3 ]);
+               in (fx.stream.reduce.toList s).value;
+        expected = [ 1 2 3 4 ];
+      };
+      "flatMap-done" = {
+        expr = let s = flatMap (x: core.fromList [ x ]) (core.done null);
+               in (bind s (step: pure step._tag)).value;
+        expected = "Done";
+      };
+    };
+  };
+
 in mk {
   doc = "Stream transformations: map, filter, scanl.";
   value = {
     map = smap;
     filter = sfilter;
     inherit scanl;
+    inherit flatMap;
   };
 }

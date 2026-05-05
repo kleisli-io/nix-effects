@@ -137,7 +137,7 @@ let
   fx = {
     # Core ADT
     inherit (kernel) pure impure send map seq pipe kleisli;
-    inherit (src.comp) isPure match;
+    inherit (src.comp) isPure isComp match;
 
     # Bind combinators
     bind = {
@@ -209,9 +209,9 @@ let
     # Streams (effectful lazy sequences)
     stream = {
       inherit (stream.core) done more fromList iterate range replicate;
-      inherit (stream.transform) map filter scanl;
+      inherit (stream.transform) map flatMap filter scanl;
       inherit (stream.limit) take takeWhile drop;
-      inherit (stream.reduce) fold toList length sum any all;
+      inherit (stream.reduce) fold toList length sum signal signalOn any all;
       inherit (stream.combine) concat interleave zip zipWith;
     };
 

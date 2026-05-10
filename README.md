@@ -616,16 +616,15 @@ Projects that import nix-effects as a dependency. If your project uses
 nix-effects and you'd like it listed here, open a PR.
 
 - **[den](https://github.com/denful/den)** by [@vic](https://github.com/vic) —
-  an aspect-oriented Nix configuration framework. Users declare parametric
-  *aspects* (functions from a composition context to NixOS / darwin /
-  home-manager modules) and den's pipeline resolves and composes them.
-  den's CI template (`templates/ci/`) exercises `den.lib.aspects.fx.*` —
-  handlers, constraint registry, chain handler — on top of nix-effects'
-  freer-monad runtime.
+  an aspect-oriented Nix configuration framework. Den [uses nix-effects at its core](https://den.denful.dev/explanation/effects) to achieve dependency injection via effect-rotation and scoped-handlers. Den configuration pipeline uses effect-handlers for keeping module-provenance and dedup, dependency-tracing, fleet-graphs, custom Nix classes forwarding, cross-host or cross-aspect configurations, and other advanced features.
+
+- **[ned](https://github.com/denful/ned)** by [@vic](https://github.com/vic)  —
+  Ned is a minimalist kernel built upon nix-effects to bring effectful stream-based Functional-Reactive-Programming into Nix. Ned was born from the experience and knowledge obtained while using nix-effects in Den. Ned is being used to simplify Den's internal subsystems communication and effect-protocols by using cycle-like composition while keeping effects drive state and events.
+
 
 ## Acknowledgments
 
-[nfx](https://github.com/vic/nfx) by Victor Borja (Apache-2.0) shaped the API
+[nfx](https://github.com/vic/nfx) by [Victor Borja](https://github.com/vic) (Apache-2.0) shaped the API
 design of this project. The `adapt` handler combinator, the `mk { doc, value,
 tests }` structured module pattern, and the effect module vocabulary (`state`,
 `acc`, `conditions`, `choice`, streams) all come from nfx. nix-effects builds a

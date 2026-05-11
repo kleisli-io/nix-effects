@@ -194,6 +194,12 @@ let
   mkEverywhereD = level: I: D: K: X: M: ih: i: d:
     { tag = "everywhere-d"; inherit level I D K X M ih i d; };
 
+  # `descDescApp I L : μ⊤(descDesc ⊤ (suc L)) tt` — identity-tagged
+  # invocation of `descDesc` at parameters `(I, L)`. The eval rule
+  # stamps `_canonRef = { id = "descDesc"; I; L; }` on the outer
+  # VDescCon so conv and quote can short-circuit on the tag.
+  mkDescDescApp = I: L: { tag = "desc-desc-app"; inherit I L; };
+
   # -- Lift primitive --
   # Tarski + non-cumulative cross-level transport. `Lift l m eq A : U(m)`
   # is the type of values transported from `A : U(l)` up to `U(m)`,
@@ -327,7 +333,7 @@ in mk {
     inherit mkSquash mkSquashIntro mkSquashElim;
     inherit mkFunext funextTypeTm;
     inherit mkDesc mkDescRet mkDescArg mkDescRec mkDescPi mkDescPlus mkMu mkDescCon mkDescInd mkDescElim;
-    inherit mkInterpD mkAllD mkEverywhereD;
+    inherit mkInterpD mkAllD mkEverywhereD mkDescDescApp;
     inherit mkU;
     inherit mkLift mkLiftIntro mkLiftElim;
     inherit mkLevel mkLevelZero mkLevelSuc mkLevelMax mkLevelLit mkNatToLevel;
@@ -602,6 +608,18 @@ in mk {
       expr = (mkEverywhereD mkLevelZero mkUnit (mkDescRet mkTt) mkLevelZero
                 (mkVar 0) (mkVar 1) (mkVar 7) mkTt mkRefl).ih.idx;
       expected = 7;
+    };
+    "desc-desc-app-tag" = {
+      expr = (mkDescDescApp mkUnit mkLevelZero).tag;
+      expected = "desc-desc-app";
+    };
+    "desc-desc-app-I" = {
+      expr = (mkDescDescApp mkUnit mkLevelZero).I.tag;
+      expected = "unit";
+    };
+    "desc-desc-app-L" = {
+      expr = (mkDescDescApp mkUnit (mkLevelSuc mkLevelZero)).L.tag;
+      expected = "level-suc";
     };
 
     # Lift primitive

@@ -117,6 +117,13 @@ let
     # Non-linear shapes (nil leaves, non-plus D, tree recursion) return null and
     # fall through to the single-layer recursive quote at baseTm below.
     else if t == "VDescCon" then
+      # Canonical-identity short-circuit. A VDescCon carrying
+      # `_canonRef = { id = "descDesc"; I; L; }` round-trips through
+      # `mkDescDescApp` Tm; walking `.d`/`.D` would descend through
+      # `descDesc ⊤ (suc L)` and loop.
+      if v ? _canonRef && v._canonRef.id == "descDesc"
+      then T.mkDescDescApp (quote d v._canonRef.I) (quote d v._canonRef.L)
+      else
       let
         peel = node:
           if node.tag != "VDescCon" then null
@@ -798,6 +805,44 @@ in mk {
       expr = let env1 = [ (V.freshVar 0) ];
       in nf env1 (nf env1 (T.mkSucc (T.mkVar 0))) == nf env1 (T.mkSucc (T.mkVar 0));
       expected = true;
+    };
+
+    # `_canonRef` short-circuit: a tagged VDescCon round-trips via the
+    # `mkDescDescApp` Tm carrying only the canonical `(I, L)` parameters
+    # — `.D` is never forced, so deeply-nested or cyclic `.D` slots are
+    # safe at quote time.
+    "quote-descDescApp-tag-emits-desc-desc-app" = {
+      expr = (quote 0 (V.vDescConTagged
+                vTt vTt V.vRefl
+                { id = "descDesc"; I = V.vUnit; L = V.vLevelZero; })).tag;
+      expected = "desc-desc-app";
+    };
+    "quote-descDescApp-tag-emits-I" = {
+      expr = (quote 0 (V.vDescConTagged
+                vTt vTt V.vRefl
+                { id = "descDesc"; I = V.vUnit; L = V.vLevelZero; })).I.tag;
+      expected = "unit";
+    };
+    "quote-descDescApp-tag-emits-L" = {
+      expr = (quote 0 (V.vDescConTagged
+                vTt vTt V.vRefl
+                { id = "descDesc"; I = V.vUnit; L = (V.vLevelSuc V.vLevelZero); })).L.tag;
+      expected = "level-suc";
+    };
+    "quote-descDescApp-cyclic-D-safe" = {
+      # The `.D` slot points back at the value itself; the tag check
+      # decides quotation without descending. A no-tag value with the
+      # same shape would loop on the trampoline's `peel` walk.
+      expr =
+        let cyclic = let v = {
+              tag = "VDescCon";
+              D = v;
+              i = vTt;
+              d = vTt;
+              _canonRef = { id = "descDesc"; I = V.vUnit; L = V.vLevelZero; };
+            }; in v;
+        in (quote 0 cyclic).tag;
+      expected = "desc-desc-app";
     };
   };
 }

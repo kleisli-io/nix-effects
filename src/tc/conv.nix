@@ -336,35 +336,45 @@ let
       conv d v1.I v2.I && conv d v1.D v2.D && conv d v1.i v2.i
     # §6.6 Desc/μ unfolding. `Desc I k ≡ μ ⊤ (descDesc I k) tt`.
     # Bridges the `Desc`-typed surface name and the descDesc-encoded
-    # μ-form. The kernel-bundled `descDescVal` (closed VLam form of the
-    # prelude `descDesc` term) supplies the expected D under vApp on
-    # v.I and v.level. Symmetric in argument order. Decidable:
+    # μ-form. `mkDescDescAppV` builds the expected D as a `_canonRef`-
+    # tagged value carrying the identity `(descDesc, I, L)` on its
+    # outer cell — see the VDescCon × VDescCon branch below for the
+    # tag short-circuit. Symmetric in argument order. Decidable:
     # descDesc is closed and reduces to a finite tree, so structural
     # `conv` on the result terminates.
     else if t1 == "VDesc" && t2 == "VMu" then
       let
-        expectedD = E.vApp (E.vApp fx.tc.hoas.descDescVal v1.I) v1.level;
+        expectedD = E.mkDescDescAppV v1.I v1.level;
       in conv d V.vUnit v2.I
          && conv d V.vTt v2.i
          && conv d expectedD v2.D
     else if t1 == "VMu" && t2 == "VDesc" then
       let
-        expectedD = E.vApp (E.vApp fx.tc.hoas.descDescVal v2.I) v2.level;
+        expectedD = E.mkDescDescAppV v2.I v2.level;
       in conv d v1.I V.vUnit
          && conv d v1.i V.vTt
          && conv d v1.D expectedD
     else if t1 == "VDescCon" && t2 == "VDescCon" then
+      # Canonical-identity short-circuit. When both sides carry a
+      # `_canonRef = { id; I; L; }` stamp, equality reduces to conv on
+      # the stamp itself. Forcing `.D` here would descend through
+      # `descDesc ⊤ (suc L)` recursively with no termination at any
+      # universe level: Nix structural `==` loops on cyclic VDescCon
+      # values, and `tryEval` cannot recover.
+      if (v1 ? _canonRef) && (v2 ? _canonRef)
+      then
+        v1._canonRef.id == v2._canonRef.id
+        && conv d v1._canonRef.I v2._canonRef.I
+        && conv d v1._canonRef.L v2._canonRef.L
+      else
       # Decode-then-conv fast-path: when both sides primitivise via
       # `tryDecodeToPrim` (ret/rec/plus subset — the per-element targets
       # of the desc-con CHECK trampoline on `natDesc`/`boolDesc`), compare
       # the primitive forms instead of walking the encoded descDesc
-      # cascade per layer. Pre-γ, the per-element conv was O(depth) on
-      # primitive `VDescPlus`/`VDescRet`; post-γ without this path it
-      # walks the 5-summand cascade per element, regressing
-      # `decide-list-N` from ≈0.35 ms/elem to ≈15 ms/elem. Decode is a
-      # bijection on the decodable subset, so the fast-path is sound;
-      # falls through to the structural rule when either side carries
-      # arg/pi (idx∈{1,3}) shapes that cannot primitivise.
+      # cascade per layer. Decode is a bijection on the decodable
+      # subset, so the fast-path is sound; falls through to the
+      # structural rule when either side carries arg/pi (idx∈{1,3})
+      # shapes that cannot primitivise.
       let
         p1 = E.tryDecodeToPrim v1;
         p2 = E.tryDecodeToPrim v2;
@@ -1137,7 +1147,7 @@ in mk {
       # Desc ⊤ 0 ≡ μ ⊤ (descDesc ⊤ 0) tt — prelude slice (k=0, I=⊤).
       expr = let
         lhs = V.vDesc V.vLevelZero V.vUnit;
-        expectedD = E.vApp (E.vApp fx.tc.hoas.descDescVal V.vUnit) V.vLevelZero;
+        expectedD = E.mkDescDescAppV V.vUnit V.vLevelZero;
         rhs = V.vMu V.vUnit expectedD V.vTt;
       in conv 0 lhs rhs;
       expected = true;
@@ -1145,7 +1155,7 @@ in mk {
     "conv-mu-desc-unfold-trivial" = {
       # Symmetric direction: μ ⊤ (descDesc ⊤ 0) tt ≡ Desc ⊤ 0.
       expr = let
-        expectedD = E.vApp (E.vApp fx.tc.hoas.descDescVal V.vUnit) V.vLevelZero;
+        expectedD = E.mkDescDescAppV V.vUnit V.vLevelZero;
         lhs = V.vMu V.vUnit expectedD V.vTt;
         rhs = V.vDesc V.vLevelZero V.vUnit;
       in conv 0 lhs rhs;
@@ -1155,7 +1165,7 @@ in mk {
       # Desc Nat 0 ≡ μ ⊤ (descDesc Nat 0) tt — non-⊤ I slice.
       expr = let
         lhs = V.vDesc V.vLevelZero vNat;
-        expectedD = E.vApp (E.vApp fx.tc.hoas.descDescVal vNat) V.vLevelZero;
+        expectedD = E.mkDescDescAppV vNat V.vLevelZero;
         rhs = V.vMu V.vUnit expectedD V.vTt;
       in conv 0 lhs rhs;
       expected = true;
@@ -1165,7 +1175,7 @@ in mk {
       expr = let
         levelOne = V.vLevelSuc V.vLevelZero;
         lhs = V.vDesc levelOne V.vUnit;
-        expectedD = E.vApp (E.vApp fx.tc.hoas.descDescVal V.vUnit) levelOne;
+        expectedD = E.mkDescDescAppV V.vUnit levelOne;
         rhs = V.vMu V.vUnit expectedD V.vTt;
       in conv 0 lhs rhs;
       expected = true;
@@ -1175,7 +1185,7 @@ in mk {
       # demands I=Nat. Structural conv on the descDesc tree distinguishes.
       expr = let
         lhs = V.vDesc V.vLevelZero vNat;
-        expectedD = E.vApp (E.vApp fx.tc.hoas.descDescVal V.vUnit) V.vLevelZero;
+        expectedD = E.mkDescDescAppV V.vUnit V.vLevelZero;
         rhs = V.vMu V.vUnit expectedD V.vTt;
       in conv 0 lhs rhs;
       expected = false;
@@ -1184,7 +1194,7 @@ in mk {
       # μ Nat (descDesc ⊤ 0) zero ≢ Desc ⊤ 0 — v1's outer I is Nat,
       # not ⊤, so the unfolding's ⊤-slot check fails.
       expr = let
-        expectedD = E.vApp (E.vApp fx.tc.hoas.descDescVal V.vUnit) V.vLevelZero;
+        expectedD = E.mkDescDescAppV V.vUnit V.vLevelZero;
         lhs = V.vMu vNat expectedD vZero;
         rhs = V.vDesc V.vLevelZero V.vUnit;
       in conv 0 lhs rhs;
@@ -1414,6 +1424,70 @@ in mk {
         a = builtins.foldl' (acc: _: vCons vNat vZero acc) (vNil vNat) (builtins.genList (x: x) 5000);
         b = builtins.foldl' (acc: _: vCons vNat vZero acc) (vNil vNat) (builtins.genList (x: x) 4999);
       in conv 0 a b;
+      expected = false;
+    };
+
+    # `_canonRef` short-circuit at VDescCon × VDescCon. Equality reduces
+    # to conv on the carried `(id, I, L)`; `.D` is never forced.
+    "conv-descDescApp-tag-self" = {
+      expr =
+        let v = V.vDescConTagged vTt vTt V.vRefl
+                  { id = "descDesc"; I = V.vUnit; L = V.vLevelZero; };
+        in conv 0 v v;
+      expected = true;
+    };
+    "conv-descDescApp-tag-distinct-id-rejects" = {
+      expr =
+        let v1 = V.vDescConTagged vTt vTt V.vRefl
+                   { id = "alpha"; I = V.vUnit; L = V.vLevelZero; };
+            v2 = V.vDescConTagged vTt vTt V.vRefl
+                   { id = "beta";  I = V.vUnit; L = V.vLevelZero; };
+        in conv 0 v1 v2;
+      expected = false;
+    };
+    "conv-descDescApp-tag-distinct-I-rejects" = {
+      expr =
+        let v1 = V.vDescConTagged vTt vTt V.vRefl
+                   { id = "descDesc"; I = V.vUnit; L = V.vLevelZero; };
+            v2 = V.vDescConTagged vTt vTt V.vRefl
+                   { id = "descDesc"; I = V.vNat;  L = V.vLevelZero; };
+        in conv 0 v1 v2;
+      expected = false;
+    };
+    "conv-descDescApp-tag-distinct-L-rejects" = {
+      expr =
+        let v1 = V.vDescConTagged vTt vTt V.vRefl
+                   { id = "descDesc"; I = V.vUnit; L = V.vLevelZero; };
+            v2 = V.vDescConTagged vTt vTt V.vRefl
+                   { id = "descDesc"; I = V.vUnit; L = V.vLevelSuc V.vLevelZero; };
+        in conv 0 v1 v2;
+      expected = false;
+    };
+    "conv-descDescApp-cyclic-D-self" = {
+      # The `.D` slot points back at the value itself; the tag check
+      # decides equality without descending. A no-tag value with the
+      # same shape would loop on the structural fall-through.
+      expr =
+        let cyclic = let v = {
+              tag = "VDescCon";
+              D = v;
+              i = vTt;
+              d = vTt;
+              _canonRef = { id = "descDesc"; I = V.vUnit; L = V.vLevelZero; };
+            }; in v;
+        in conv 0 cyclic cyclic;
+      expected = true;
+    };
+    "conv-descDescApp-cyclic-D-mismatch-rejects" = {
+      expr =
+        let mk = idStr: let v = {
+              tag = "VDescCon";
+              D = v;
+              i = vTt;
+              d = vTt;
+              _canonRef = { id = idStr; I = V.vUnit; L = V.vLevelZero; };
+            }; in v;
+        in conv 0 (mk "alpha") (mk "beta");
       expected = false;
     };
   };

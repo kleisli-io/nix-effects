@@ -50,7 +50,8 @@ api.mk {
       vNatToLevel vNatToLevelF
       vDescInd vDescElim linearProfile decodeDescCase
       tryDecodeToPrim
-      vInterpD vAllD vEverywhereD;
+      vInterpD vAllD vEverywhereD
+      mkDescDescAppV mkDescDescAppVF;
   };
   tests = partTests;
 }

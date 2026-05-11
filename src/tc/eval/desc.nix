@@ -614,6 +614,18 @@ in {
       in self.vAppF fuel
            (self.vAppF fuel (self.vAppF fuel result P) i) d;
 
+    # Value-level constructor for `descDesc I L`-as-tagged-VDescCon.
+    # Applies `descDescVal` to `I` and `L` via `vAppF`, then stamps
+    # `_canonRef = { id = "descDesc"; I; L; }` on the outer VDescCon.
+    # The tag carries canonical identity so conv/quote on a pair of
+    # tagged VDescCons can decide equality without forcing `.D`, which
+    # otherwise descends through universe levels and diverges.
+    mkDescDescAppVF = fuel: I: L:
+      let
+        raw = self.vAppF fuel
+                (self.vAppF fuel fx.tc.hoas.descDescVal I) L;
+      in raw // { _canonRef = { id = "descDesc"; inherit I L; }; };
+
     # decodeDescCaseF — extract the descDesc summand index and payload
     # from an encoded description. Walks the inr/inl spine in `.d`
     # (constructed by `encodeAt` in hoas/desc.nix:202): each summand `t`

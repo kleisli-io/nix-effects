@@ -113,6 +113,13 @@
     # canonical token.
     __descDesc = { _htag = "desc-desc"; };
 
+    # Identity-tagged HOAS form of `descDesc I L`. Elaborates to the
+    # `desc-desc-app` Tm; its eval rule produces a VDescCon stamped
+    # with `_canonRef = { id = "descDesc"; I; L; }`. Stand-in for
+    # `app (app descDesc I) L` at call sites that need conv/quote to
+    # decide equality on the tag rather than walk `.D`.
+    descDescApp = I: L: { _htag = "desc-desc-app"; inherit I L; };
+
     # Per-(I, k) HOAS encoding context for descDesc-encoded μ-trees.
     # Single source of truth for the descDesc summand layout, the
     # plus-tree spine, the right-associated `encodeTag` pathing, and

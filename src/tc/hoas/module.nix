@@ -120,7 +120,7 @@ api.mk {
     inherit (self) LiftAt liftAt lowerAt
                    LiftAtWithEq liftAtWithEq lowerAtWithEq;
     # Prelude descriptions
-    inherit (self) natDesc listDesc sumDesc natDescTm descDesc descDescTm descDescVal __descDesc;
+    inherit (self) natDesc listDesc sumDesc natDescTm descDesc descDescTm descDescVal __descDesc descDescApp;
     # descDesc-encoded constructor Tms — closed kernel terms that
     # produce `μ ⊤ (descDesc I k) tt` values structurally encoding
     # source descriptions. Each is the pre-elaborated form of the

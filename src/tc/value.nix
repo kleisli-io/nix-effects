@@ -85,6 +85,13 @@ let
   vDescPlus = A: B: { tag = "VDescPlus"; inherit A B; };     # A, B : Desc I — first-class binary coproduct
   vMu = I: D: i: { tag = "VMu"; inherit I D i; };            # μ D i — the type at index i : I
   vDescCon = D: i: d: { tag = "VDescCon"; inherit D i d; };  # target index i carried alongside payload
+  # Tagged variant of `vDescCon`. `_canonRef = { id; I; L }` stamps a
+  # canonical identity on the outer VDescCon. Conv and quote
+  # short-circuit on the tag instead of forcing `.D`, breaking the
+  # universe-level descent that would otherwise loop when `descDesc`'s
+  # own body encodes through itself.
+  vDescConTagged = D: i: d: ref:
+    { tag = "VDescCon"; inherit D i d; _canonRef = ref; };
 
   # `interpD` / `allD` / `everywhereD` — kernel-primitive interpretation
   # / All-witness / everywhere-recursion over Desc. Carry the same slots
@@ -261,7 +268,7 @@ in mk {
     inherit vSum vInl vInr;
     inherit vEq vRefl vFunext;
     inherit vSquash vSquashIntro;
-    inherit vDesc vDescRet vDescArg vDescRec vDescPi vDescPlus vMu vDescCon;
+    inherit vDesc vDescRet vDescArg vDescRec vDescPi vDescPlus vMu vDescCon vDescConTagged;
     inherit vInterpD vAllD vEverywhereD;
     inherit vU;
     inherit vLift vLiftIntro;
@@ -447,6 +454,20 @@ in mk {
     "vdesccon-i" = {
       expr = (vDescCon (vDescRet vTt) vTt vRefl).i.tag;
       expected = "VTt";
+    };
+    "vdesccon-tagged-tag" = {
+      expr = (vDescConTagged (vDescRet vTt) vTt vRefl
+                { id = "descDesc"; I = vUnit; L = vLevelZero; }).tag;
+      expected = "VDescCon";
+    };
+    "vdesccon-tagged-canonref-id" = {
+      expr = (vDescConTagged (vDescRet vTt) vTt vRefl
+                { id = "descDesc"; I = vUnit; L = vLevelZero; })._canonRef.id;
+      expected = "descDesc";
+    };
+    "vdesccon-untagged-has-no-canonref" = {
+      expr = (vDescCon (vDescRet vTt) vTt vRefl) ? _canonRef;
+      expected = false;
     };
     "edescind-tag" = { expr = (eDescInd (vDescRet vTt) vNat vZero vTt).tag; expected = "EDescInd"; };
     "edescind-i" = { expr = (eDescInd (vDescRet vTt) vNat vZero vTt).i.tag; expected = "VTt"; };

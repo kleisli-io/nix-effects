@@ -988,6 +988,23 @@ in {
           else bindP P.DElimLevel (self.check ctx tm.level V.vLevel) (lTm:
             withK (E.eval ctx.env lTm) lTm)
 
+      # descDescApp I L : μ⊤(descDesc ⊤ (suc L)) tt. The result type's
+      # `D` slot is itself the tagged form `descDescApp ⊤ (suc L)`, so
+      # conv/quote on the inferred type already routes through the
+      # tag short-circuit.
+      else if t == "desc-desc-app" then
+        bindP P.AnnType (self.check ctx tm.I vU0) (iTm:
+          bindP P.DElimLevel (self.check ctx tm.L V.vLevel) (lTm:
+            let
+              lVal = E.eval ctx.env lTm;
+              dDescAtSucTm = T.mkDescDescApp T.mkUnit (T.mkLevelSuc lTm);
+              dDescAtSucVal = E.eval ctx.env dDescAtSucTm;
+              ty = V.vMu V.vUnit dDescAtSucVal V.vTt;
+            in pure {
+              term = T.mkDescDescApp iTm lTm;
+              type = ty;
+            }))
+
       # Primitive literals infer their types
       else if t == "string-lit" then pure { term = T.mkStringLit tm.value; type = V.vString; }
       else if t == "int-lit" then pure { term = T.mkIntLit tm.value; type = V.vInt; }

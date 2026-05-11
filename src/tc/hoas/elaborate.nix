@@ -459,6 +459,8 @@ let
     # `nat` → `natDescTm`; consumers emit a single `desc-desc` node
     # instead of the full descDesc HOAS tree.
     else if t == "desc-desc" then self.descDescTm
+    else if t == "desc-desc-app" then
+      T.mkDescDescApp (elaborate depth h.I) (elaborateLevel depth h.L)
     else if t == "unit" then T.mkUnit
     else if t == "string" then T.mkString
     else if t == "int" then T.mkInt

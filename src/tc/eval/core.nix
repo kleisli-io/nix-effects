@@ -458,6 +458,9 @@ in {
         self.vDescElimF f (ev tm.k) (ev tm.motive) (ev tm.onRet) (ev tm.onArg)
           (ev tm.onRec) (ev tm.onPi) (ev tm.onPlus) (ev tm.scrut)
 
+      else if t == "desc-desc-app" then
+        self.mkDescDescAppVF f (ev tm.I) (ev tm.L)
+
       # Kernel-primitive `interpD` / `allD` / `everywhereD`. Level-zero
       # fast-path on `tm.level` (and `tm.K` where present) mirrors the
       # `desc-arg` shape — the prelude's homogeneous-at-zero call sites
@@ -541,6 +544,7 @@ in {
     eval = self.evalF self.defaultFuel;
     instantiate = self.instantiateF self.defaultFuel;
     vApp = self.vAppF self.defaultFuel;
+    mkDescDescAppV = self.mkDescDescAppVF self.defaultFuel;
     vNatElim = self.vNatElimF self.defaultFuel;
     vListElim = self.vListElimF self.defaultFuel;
     vSumElim = self.vSumElimF self.defaultFuel;
@@ -1125,6 +1129,25 @@ in {
         r = eval [] (T.mkNatElim (T.mkLam "n" T.mkNat T.mkNat) T.mkZero step nat1000);
       in r.tag;
       expected = "VSucc";
+    };
+
+    # `desc-desc-app` eval rule stamps `_canonRef = { id; I; L; }` on
+    # the outer Val produced by applying `descDescVal` at `(I, L)`.
+    "eval-descDescApp-has-canonRef" = {
+      expr = (eval [] (T.mkDescDescApp T.mkUnit T.mkLevelZero)) ? _canonRef;
+      expected = true;
+    };
+    "eval-descDescApp-canonRef-id" = {
+      expr = (eval [] (T.mkDescDescApp T.mkUnit T.mkLevelZero))._canonRef.id;
+      expected = "descDesc";
+    };
+    "eval-descDescApp-canonRef-I" = {
+      expr = (eval [] (T.mkDescDescApp T.mkUnit T.mkLevelZero))._canonRef.I.tag;
+      expected = "VUnit";
+    };
+    "eval-descDescApp-canonRef-L" = {
+      expr = (eval [] (T.mkDescDescApp T.mkUnit (T.mkLevelSuc T.mkLevelZero)))._canonRef.L.tag;
+      expected = "VLevelSuc";
     };
   };
 }

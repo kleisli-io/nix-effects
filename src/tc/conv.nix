@@ -334,8 +334,67 @@ let
       conv d v1.A v2.A && conv d v1.B v2.B
     else if t1 == "VMu" && t2 == "VMu" then
       conv d v1.I v2.I && conv d v1.D v2.D && conv d v1.i v2.i
+    # §6.6 Desc/μ unfolding. `Desc I k ≡ μ ⊤ (descDesc I k) tt`.
+    # Bridges the `Desc`-typed surface name and the descDesc-encoded
+    # μ-form. The kernel-bundled `descDescVal` (closed VLam form of the
+    # prelude `descDesc` term) supplies the expected D under vApp on
+    # v.I and v.level. Symmetric in argument order. Decidable:
+    # descDesc is closed and reduces to a finite tree, so structural
+    # `conv` on the result terminates.
+    else if t1 == "VDesc" && t2 == "VMu" then
+      let
+        expectedD = E.vApp (E.vApp fx.tc.hoas.descDescVal v1.I) v1.level;
+      in conv d V.vUnit v2.I
+         && conv d V.vTt v2.i
+         && conv d expectedD v2.D
+    else if t1 == "VMu" && t2 == "VDesc" then
+      let
+        expectedD = E.vApp (E.vApp fx.tc.hoas.descDescVal v2.I) v2.level;
+      in conv d v1.I V.vUnit
+         && conv d v1.i V.vTt
+         && conv d v1.D expectedD
     else if t1 == "VDescCon" && t2 == "VDescCon" then
-      conv d v1.D v2.D && conv d v1.i v2.i && conv d v1.d v2.d
+      # Decode-then-conv fast-path: when both sides primitivise via
+      # `tryDecodeToPrim` (ret/rec/plus subset — the per-element targets
+      # of the desc-con CHECK trampoline on `natDesc`/`boolDesc`), compare
+      # the primitive forms instead of walking the encoded descDesc
+      # cascade per layer. Pre-γ, the per-element conv was O(depth) on
+      # primitive `VDescPlus`/`VDescRet`; post-γ without this path it
+      # walks the 5-summand cascade per element, regressing
+      # `decide-list-N` from ≈0.35 ms/elem to ≈15 ms/elem. Decode is a
+      # bijection on the decodable subset, so the fast-path is sound;
+      # falls through to the structural rule when either side carries
+      # arg/pi (idx∈{1,3}) shapes that cannot primitivise.
+      let
+        p1 = E.tryDecodeToPrim v1;
+        p2 = E.tryDecodeToPrim v2;
+      in
+      if p1 != null && p2 != null
+      then conv d p1 p2
+      else conv d v1.D v2.D && conv d v1.i v2.i && conv d v1.d v2.d
+    # Asymmetric desc-value conv: encoded `VDescCon` vs primitive
+    # `VDescX`. Decode the encoded side via `tryDecodeToPrim` and conv
+    # against the primitive side. Mirrors the type-level VMu↔VDesc
+    # unfolding at value level. Required when CHECK and EVAL produce
+    # different canonical forms for the same primitive Tm: CHECK's
+    # desc-* rules retarget to encoded `descCon …` cascades, while
+    # `eval` on the original primitive `desc-ret`/`desc-arg`/… Tm
+    # produces primitive `VDescX`. Conv between the two must succeed
+    # on the decodable subset (ret/rec/plus); falls through to false
+    # when the encoded shape carries arg/pi (idx∈{1,3}). Decode is a
+    # bijection on the decodable subset, so this is not value-level
+    # conv between primitive and encoded — both sides are primitive
+    # before structural compare.
+    else if t1 == "VDescCon"
+         && (t2 == "VDescRet" || t2 == "VDescArg" || t2 == "VDescRec"
+             || t2 == "VDescPi" || t2 == "VDescPlus") then
+      let p1 = E.tryDecodeToPrim v1; in
+      if p1 != null then conv d p1 v2 else false
+    else if t2 == "VDescCon"
+         && (t1 == "VDescRet" || t1 == "VDescArg" || t1 == "VDescRec"
+             || t1 == "VDescPi" || t1 == "VDescPlus") then
+      let p2 = E.tryDecodeToPrim v2; in
+      if p2 != null then conv d v1 p2 else false
 
     # Lift type-former — structural with witness-irrelevance. The `eq`
     # slot is not compared: two `VLift`s with matching levels and
@@ -358,6 +417,19 @@ let
       conv d v1.a (E.vLiftElimF v1.l v1.m v1.eq v1.A v2)
     else if t1 == "VNe" && t2 == "VLiftIntro" then
       conv d (E.vLiftElimF v2.l v2.m v2.eq v2.A v1) v2.a
+
+    # Propositional truncation. `Squash A` is the type-former; conv on
+    # formers descends into the underlying type. Inhabitants are
+    # definitionally irrelevant: any two `VSquashIntro` values at the
+    # same expected `Squash A` type are equal regardless of payload, and
+    # by the shared-type invariant a stuck `VNe` of `Squash A` shape is
+    # equal to any `VSquashIntro` (the neutral has no other inhabitants
+    # up to definitional equality).
+    else if t1 == "VSquash" && t2 == "VSquash" then
+      conv d v1.A v2.A
+    else if t1 == "VSquashIntro" && t2 == "VSquashIntro" then true
+    else if t1 == "VSquashIntro" && t2 == "VNe" then true
+    else if t1 == "VNe" && t2 == "VSquashIntro" then true
 
     # Opaque lambda: identity on _fnBox (Nix attrset thunk identity) + structural piTy
     else if t1 == "VOpaqueLam" && t2 == "VOpaqueLam" then
@@ -408,10 +480,32 @@ let
       && conv d e1.motive e2.motive && conv d e1.onRet e2.onRet
       && conv d e1.onArg e2.onArg && conv d e1.onRec e2.onRec
       && conv d e1.onPi e2.onPi && conv d e1.onPlus e2.onPlus
+    # EInterpD / EAllD / EEverywhereD spine frames — stuck `interpD` /
+    # `allD` / `everywhereD` applications on a neutral D scrutinee.
+    # Compare slots field-wise (D is the spine head, compared by
+    # `convSp`). Levels delegate to `conv`'s VLevel routing.
+    else if t1 == "EInterpD" then
+      conv d e1.level e2.level && conv d e1.I e2.I
+      && conv d e1.X e2.X && conv d e1.i e2.i
+    else if t1 == "EAllD" then
+      conv d e1.level e2.level && conv d e1.I e2.I
+      && conv d e1.K e2.K && conv d e1.X e2.X
+      && conv d e1.M e2.M && conv d e1.i e2.i && conv d e1.d e2.d
+    else if t1 == "EEverywhereD" then
+      conv d e1.level e2.level && conv d e1.I e2.I
+      && conv d e1.K e2.K && conv d e1.X e2.X
+      && conv d e1.M e2.M && conv d e1.ih e2.ih
+      && conv d e1.i e2.i && conv d e1.d e2.d
     # ELiftElim spine frame — compare l, m, A. The `eq` slot is not
     # compared, mirroring the witness-irrelevance of the type-former.
     else if t1 == "ELiftElim" then
       convLevel e1.l e2.l && convLevel e1.m e2.m && conv d e1.A e2.A
+    # ESquashElim spine frame — structural compare of motive shape (A,B)
+    # and case function. Two stuck `recTrunc` applications agree iff they
+    # agree on metadata; payload irrelevance lives at the value layer
+    # (VSquashIntro/VNe rules above), not on the spine frame itself.
+    else if t1 == "ESquashElim" then
+      conv d e1.A e2.A && conv d e1.B e2.B && conv d e1.f e2.f
     # ENatToLevel is nullary: any two such frames at the same scrutinee
     # are conv-equal.
     else if t1 == "ENatToLevel" then true
@@ -460,6 +554,7 @@ in mk {
   tests = let
     inherit (V) vNat vZero vSucc vPi vLam vSigma vPair
       vList vNil vCons vUnit vTt vSum vInl vInr vEq vRefl vU vNe
+      vSquash vSquashIntro eSquashElim
       mkClosure eApp eFst eSnd eNatElim eListElim eSumElim eJ;
     T = fx.tc.term;
   in {
@@ -987,6 +1082,114 @@ in mk {
         (vNe 0 [ (V.eDescElim (V.vLevelSuc V.vLevelZero) vNat vZero vZero vZero vZero vZero) ]);
       expected = false;
     };
+    # EInterpD / EAllD / EEverywhereD spine frames — stuck `interpD` /
+    # `allD` / `everywhereD` applications on a neutral D scrutinee.
+    # Field-wise compare; mismatch on any slot rejects.
+    "conv-ne-interp-d" = {
+      expr = conv 1
+        (vNe 0 [ (V.eInterpD V.vLevelZero vUnit vNat vTt) ])
+        (vNe 0 [ (V.eInterpD V.vLevelZero vUnit vNat vTt) ]);
+      expected = true;
+    };
+    "conv-ne-interp-d-diff-X" = {
+      expr = conv 1
+        (vNe 0 [ (V.eInterpD V.vLevelZero vUnit vNat vTt) ])
+        (vNe 0 [ (V.eInterpD V.vLevelZero vUnit vUnit vTt) ]);
+      expected = false;
+    };
+    "conv-ne-interp-d-diff-level" = {
+      expr = conv 1
+        (vNe 0 [ (V.eInterpD V.vLevelZero vUnit vNat vTt) ])
+        (vNe 0 [ (V.eInterpD (V.vLevelSuc V.vLevelZero) vUnit vNat vTt) ]);
+      expected = false;
+    };
+    "conv-ne-all-d" = {
+      expr = conv 1
+        (vNe 0 [ (V.eAllD V.vLevelZero vUnit V.vLevelZero vNat vNat vTt vRefl) ])
+        (vNe 0 [ (V.eAllD V.vLevelZero vUnit V.vLevelZero vNat vNat vTt vRefl) ]);
+      expected = true;
+    };
+    "conv-ne-all-d-diff-K" = {
+      expr = conv 1
+        (vNe 0 [ (V.eAllD V.vLevelZero vUnit V.vLevelZero vNat vNat vTt vRefl) ])
+        (vNe 0 [ (V.eAllD V.vLevelZero vUnit (V.vLevelSuc V.vLevelZero) vNat vNat vTt vRefl) ]);
+      expected = false;
+    };
+    "conv-ne-everywhere-d" = {
+      expr = conv 1
+        (vNe 0 [ (V.eEverywhereD V.vLevelZero vUnit V.vLevelZero vNat vNat vTt vTt vRefl) ])
+        (vNe 0 [ (V.eEverywhereD V.vLevelZero vUnit V.vLevelZero vNat vNat vTt vTt vRefl) ]);
+      expected = true;
+    };
+    "conv-ne-everywhere-d-diff-ih" = {
+      expr = conv 1
+        (vNe 0 [ (V.eEverywhereD V.vLevelZero vUnit V.vLevelZero vNat vNat vTt vTt vRefl) ])
+        (vNe 0 [ (V.eEverywhereD V.vLevelZero vUnit V.vLevelZero vNat vNat vUnit vTt vRefl) ]);
+      expected = false;
+    };
+
+    # Desc/μ unfolding. `Desc I k ≡ μ ⊤ (descDesc I k) tt` — the
+    # surface name `Desc` keeps working under the descDesc-encoded
+    # μ-form. Decidable: descDesc is a closed VLam, vApp on v1.I and
+    # v1.level reduces to a finite description tree, and structural
+    # conv on the result terminates.
+    "conv-desc-mu-unfold-trivial" = {
+      # Desc ⊤ 0 ≡ μ ⊤ (descDesc ⊤ 0) tt — prelude slice (k=0, I=⊤).
+      expr = let
+        lhs = V.vDesc V.vLevelZero V.vUnit;
+        expectedD = E.vApp (E.vApp fx.tc.hoas.descDescVal V.vUnit) V.vLevelZero;
+        rhs = V.vMu V.vUnit expectedD V.vTt;
+      in conv 0 lhs rhs;
+      expected = true;
+    };
+    "conv-mu-desc-unfold-trivial" = {
+      # Symmetric direction: μ ⊤ (descDesc ⊤ 0) tt ≡ Desc ⊤ 0.
+      expr = let
+        expectedD = E.vApp (E.vApp fx.tc.hoas.descDescVal V.vUnit) V.vLevelZero;
+        lhs = V.vMu V.vUnit expectedD V.vTt;
+        rhs = V.vDesc V.vLevelZero V.vUnit;
+      in conv 0 lhs rhs;
+      expected = true;
+    };
+    "conv-desc-mu-unfold-Nat-k0" = {
+      # Desc Nat 0 ≡ μ ⊤ (descDesc Nat 0) tt — non-⊤ I slice.
+      expr = let
+        lhs = V.vDesc V.vLevelZero vNat;
+        expectedD = E.vApp (E.vApp fx.tc.hoas.descDescVal vNat) V.vLevelZero;
+        rhs = V.vMu V.vUnit expectedD V.vTt;
+      in conv 0 lhs rhs;
+      expected = true;
+    };
+    "conv-desc-mu-unfold-suc-k" = {
+      # Desc ⊤ 1 ≡ μ ⊤ (descDesc ⊤ 1) tt — non-zero level.
+      expr = let
+        levelOne = V.vLevelSuc V.vLevelZero;
+        lhs = V.vDesc levelOne V.vUnit;
+        expectedD = E.vApp (E.vApp fx.tc.hoas.descDescVal V.vUnit) levelOne;
+        rhs = V.vMu V.vUnit expectedD V.vTt;
+      in conv 0 lhs rhs;
+      expected = true;
+    };
+    "conv-desc-mu-mismatch-encoded-I-rejected" = {
+      # Desc Nat 0 ≢ μ ⊤ (descDesc ⊤ 0) tt — v2.D encodes I=⊤ but v1
+      # demands I=Nat. Structural conv on the descDesc tree distinguishes.
+      expr = let
+        lhs = V.vDesc V.vLevelZero vNat;
+        expectedD = E.vApp (E.vApp fx.tc.hoas.descDescVal V.vUnit) V.vLevelZero;
+        rhs = V.vMu V.vUnit expectedD V.vTt;
+      in conv 0 lhs rhs;
+      expected = false;
+    };
+    "conv-desc-mu-mismatch-mu-I-rejected" = {
+      # μ Nat (descDesc ⊤ 0) zero ≢ Desc ⊤ 0 — v1's outer I is Nat,
+      # not ⊤, so the unfolding's ⊤-slot check fails.
+      expr = let
+        expectedD = E.vApp (E.vApp fx.tc.hoas.descDescVal V.vUnit) V.vLevelZero;
+        lhs = V.vMu vNat expectedD vZero;
+        rhs = V.vDesc V.vLevelZero V.vUnit;
+      in conv 0 lhs rhs;
+      expected = false;
+    };
 
     # Lift primitive — idempotent collapse, structural with
     # witness-irrelevance, eta on stuck neutrals, ELiftElim spine.
@@ -1109,6 +1312,54 @@ in mk {
         (vNe 0 [ (V.eLiftElim V.vLevelZero (V.vLevelSuc V.vLevelZero)
                    vTt vUnit) ]);
       expected = true;
+    };
+
+    # Squash — definitional proof irrelevance. Formers descend on .A;
+    # introducers and stuck neutrals at Squash type are unconditionally
+    # convertible by the shared-type invariant. ESquashElim spine frames
+    # compare structurally on motive shape and case function.
+    "conv-squash-formers-equal" = {
+      expr = conv 0 (vSquash vUnit) (vSquash vUnit);
+      expected = true;
+    };
+    "conv-squash-formers-diff-A" = {
+      expr = conv 0 (vSquash vUnit) (vSquash vNat);
+      expected = false;
+    };
+    "conv-squash-irrelevance" = {
+      # Two distinct introducers at the same Squash type are conv-equal
+      # regardless of payload identity.
+      expr = conv 1 (vSquashIntro vTt) (vSquashIntro (V.freshVar 0));
+      expected = true;
+    };
+    "conv-squash-eta-vne-left" = {
+      # VSquashIntro vs stuck VNe at shared Squash type: irrelevant.
+      expr = conv 1 (vSquashIntro vTt) (V.freshVar 0);
+      expected = true;
+    };
+    "conv-squash-eta-vne-right" = {
+      # Symmetric direction.
+      expr = conv 1 (V.freshVar 0) (vSquashIntro vTt);
+      expected = true;
+    };
+    "conv-ne-squash-elim" = {
+      # Two stuck recTrunc spines with matching motive (A,B) and case
+      # function f convert.
+      expr = let
+        f = vLam "_" vUnit (mkClosure [] T.mkTt);
+      in conv 1
+        (vNe 0 [ (eSquashElim vUnit vUnit f) ])
+        (vNe 0 [ (eSquashElim vUnit vUnit f) ]);
+      expected = true;
+    };
+    "conv-ne-squash-elim-diff-A" = {
+      # Distinct motive types refuse conv on the spine frame.
+      expr = let
+        f = vLam "_" vUnit (mkClosure [] T.mkTt);
+      in conv 1
+        (vNe 0 [ (eSquashElim vUnit vUnit f) ])
+        (vNe 0 [ (eSquashElim vNat vUnit f) ]);
+      expected = false;
     };
 
     # natToLevel — structural Nat→Level reduction; ENatToLevel spine on stuck.

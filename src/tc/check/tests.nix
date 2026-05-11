@@ -67,6 +67,37 @@ in {
       expected = "refl";
     };
 
+    "squash-formation" = {
+      expr = (inferTm ctx0 (T.mkSquash T.mkUnit)).type.tag;
+      expected = "VU";
+    };
+    "squash-formation-level-zero" = {
+      expr = typeLvl (inferTm ctx0 (T.mkSquash T.mkUnit));
+      expected = 0;
+    };
+    "squash-intro-check" = {
+      expr = (checkTm ctx0 (T.mkSquashIntro T.mkTt)
+        (V.vSquash vUnit)).tag;
+      expected = "squash-intro";
+    };
+    "squash-elim-infer" = {
+      # recTrunc Unit Unit (λ_:Unit. squashIntro tt) (squashIntro tt)
+      # infers as Squash Unit.
+      expr = let
+        f = T.mkLam "_" T.mkUnit (T.mkSquashIntro T.mkTt);
+        e = T.mkSquashElim T.mkUnit T.mkUnit f (T.mkSquashIntro T.mkTt);
+      in (inferTm ctx0 e).type.tag;
+      expected = "VSquash";
+    };
+    "squash-elim-motive-rejected" = {
+      # `f : Unit → Unit` is not `Unit → Squash Unit` — INFER must reject.
+      expr = let
+        f = T.mkLam "_" T.mkUnit T.mkTt;
+        e = T.mkSquashElim T.mkUnit T.mkUnit f (T.mkSquashIntro T.mkTt);
+      in (inferTm ctx0 e) ? error;
+      expected = true;
+    };
+
     "check-pair" = {
       expr = (checkTm ctx0 (T.mkPair T.mkZero T.mkTt)
         (vSigma "x" vNat (mkClosure [] T.mkUnit))).tag;
@@ -905,11 +936,19 @@ in {
                  (T.mkDesc (T.mkLevelSuc T.mkLevelZero) T.mkUnit))).type.tag;
       expected = "VDesc";
     };
+    # The desc-arg CHECK rule routes through the encoded
+    # `mkApp ... encodeDescArgAtTm ...` chain; eval must land in
+    # `VDescCon` (the levitated constructor). Asserts the encoding
+    # invariant at the value layer, independent of elaboration Tm shape.
     "check-desc-arg-level-one" = {
-      expr = (checkTm ctx0
-        (T.mkDescArg (T.mkLevelSuc T.mkLevelZero) (T.mkLevelSuc T.mkLevelZero) (T.mkU T.mkLevelZero) T.mkRefl (T.mkDescRet T.mkTt))
-        (V.vDesc (V.vLevelSuc V.vLevelZero) vUnit)).tag;
-      expected = "desc-arg";
+      expr =
+        let
+          E = fx.tc.eval;
+          checked = checkTm ctx0
+            (T.mkDescArg (T.mkLevelSuc T.mkLevelZero) (T.mkLevelSuc T.mkLevelZero) (T.mkU T.mkLevelZero) T.mkRefl (T.mkDescRet T.mkTt))
+            (V.vDesc (V.vLevelSuc V.vLevelZero) vUnit);
+        in (E.eval [] checked).tag;
+      expected = "VDescCon";
     };
 
     "infer-desc-rec" = {
@@ -973,9 +1012,18 @@ in {
     };
 
     "check-desc-con" = {
-      expr = (checkTm ctx0
-        (T.mkDescCon (T.mkDescRet T.mkTt) T.mkTt T.mkRefl)
-        (vMu vUnit (vDescRet vTt) vTt)).tag;
+      expr =
+        let
+          E = fx.tc.eval;
+          H = fx.tc.hoas;
+          encRetVal = E.eval [] (T.mkApp
+            (T.mkApp
+              (T.mkApp H.encodeDescRetTm T.mkUnit)
+              T.mkLevelZero)
+            T.mkTt);
+        in (checkTm ctx0
+              (T.mkDescCon (T.mkDescRet T.mkTt) T.mkTt T.mkRefl)
+              (vMu vUnit encRetVal vTt)).tag;
       expected = "desc-con";
     };
 
@@ -1504,6 +1552,81 @@ in {
         (T.mkDescCon D T.mkTt
           (T.mkPair T.mkZero T.mkRefl)))).type.tag;
       expected = "VNat";
+    };
+
+    # interp-d / all-d / everywhere-d INFER rules (kernel-primitive
+    # interpretation, All-witness, and recursor over Desc).
+    # `interpD ℓ I D X i : U(ℓ)` — synthesises `U(ℓ)`.
+    "infer-interp-d-ret" = {
+      expr = (inferTm ctx0 (T.mkInterpD T.mkLevelZero T.mkUnit
+        (T.mkDescRet T.mkTt)
+        (T.mkLam "_" T.mkUnit T.mkNat)
+        T.mkTt)).type.tag;
+      expected = "VU";
+    };
+    "infer-interp-d-ret-level" = {
+      expr = typeLvl (inferTm ctx0 (T.mkInterpD T.mkLevelZero T.mkUnit
+        (T.mkDescRet T.mkTt)
+        (T.mkLam "_" T.mkUnit T.mkNat)
+        T.mkTt));
+      expected = 0;
+    };
+    "infer-interp-d-rec" = {
+      # interpD 0 ⊤ (rec tt (ret tt)) (λ_:⊤. ℕ) tt : U(0).
+      expr = (inferTm ctx0 (T.mkInterpD T.mkLevelZero T.mkUnit
+        (T.mkDescRec T.mkTt (T.mkDescRet T.mkTt))
+        (T.mkLam "_" T.mkUnit T.mkNat)
+        T.mkTt)).type.tag;
+      expected = "VU";
+    };
+    "infer-interp-d-wrong-X-rejected" = {
+      # X must have type `I → U(ℓ)`. Passing X : I → ℕ should reject.
+      expr = (inferTm ctx0 (T.mkInterpD T.mkLevelZero T.mkUnit
+        (T.mkDescRet T.mkTt)
+        (T.mkLam "_" T.mkUnit T.mkZero)
+        T.mkTt)) ? error;
+      expected = true;
+    };
+
+    # `allD ℓ I D K X M i d : U(K)` — verify result level rides K.
+    # At D=ret tt, ℓ=0: d-binder type is `Eq ⊤ tt tt` (idempotent
+    # collapse of `Lift 0 0 _ (Eq ⊤ tt tt)`), inhabited by `refl`.
+    "infer-all-d-ret" = {
+      expr = (inferTm ctx0 (T.mkAllD T.mkLevelZero T.mkUnit
+        (T.mkDescRet T.mkTt)
+        T.mkLevelZero
+        (T.mkLam "_" T.mkUnit T.mkNat)
+        (T.mkLam "i" T.mkUnit (T.mkLam "x" T.mkNat T.mkUnit))
+        T.mkTt
+        T.mkRefl)).type.tag;
+      expected = "VU";
+    };
+    "infer-all-d-K-level" = {
+      # Result lives at U(K), independent of ℓ. Setting K=0 with the
+      # ret-leaf D yields a U(0) result.
+      expr = typeLvl (inferTm ctx0 (T.mkAllD T.mkLevelZero T.mkUnit
+        (T.mkDescRet T.mkTt)
+        T.mkLevelZero
+        (T.mkLam "_" T.mkUnit T.mkNat)
+        (T.mkLam "i" T.mkUnit (T.mkLam "x" T.mkNat T.mkUnit))
+        T.mkTt
+        T.mkRefl));
+      expected = 0;
+    };
+
+    # `everywhereD ℓ I D K X M ih i d : allD ℓ I D K X M i d`. At
+    # D=ret tt and K=0, allD reduces to `Lift 0 0 _ ⊤` ≡ ⊤ (idempotent
+    # collapse).
+    "infer-everywhere-d-ret" = {
+      expr = (inferTm ctx0 (T.mkEverywhereD T.mkLevelZero T.mkUnit
+        (T.mkDescRet T.mkTt)
+        T.mkLevelZero
+        (T.mkLam "_" T.mkUnit T.mkNat)
+        (T.mkLam "i" T.mkUnit (T.mkLam "x" T.mkNat T.mkUnit))
+        (T.mkLam "j" T.mkUnit (T.mkLam "x" T.mkNat T.mkTt))
+        T.mkTt
+        T.mkRefl)).type.tag;
+      expected = "VUnit";
     };
   };
 }

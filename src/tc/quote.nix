@@ -79,6 +79,8 @@ let
     else if t == "VEq" then T.mkEq (quote d v.type) (quote d v.lhs) (quote d v.rhs)
     else if t == "VRefl" then T.mkRefl
     else if t == "VFunext" then T.mkFunext
+    else if t == "VSquash" then T.mkSquash (quote d v.A)
+    else if t == "VSquashIntro" then T.mkSquashIntro (quote d v.a)
     # Descriptions
     else if t == "VDesc" then
       # Level-zero fast-path: prelude descriptions live at `desc^0`,
@@ -108,7 +110,8 @@ let
     else if t == "VMu" then T.mkMu (quote d v.I) (quote d v.D) (quote d v.i)
     # VDescCon — trampolined for deep recursive chains (5000+ cons/succ layers).
     # Mirrors the eval/check desc-con trampoline at the quote layer: peels a
-    # linear-recursive chain whose outer D = VDescPlus A B and whose "recursive"
+    # linear-recursive chain whose outer D is a plus A B (primitive `VDescPlus`
+    # or encoded `VDescCon` at descDesc summand idx=4) and whose "recursive"
     # summand B has linearProfile [{S_1}..{S_n}] (n ≥ 0 data heads then rec tail).
     # Each peeled layer has payload VInr left right (VPair h_1 (...(VPair rec VRefl))).
     # Non-linear shapes (nil leaves, non-plus D, tree recursion) return null and
@@ -117,22 +120,32 @@ let
       let
         peel = node:
           if node.tag != "VDescCon" then null
-          else if node.D.tag != "VDescPlus" then null
-          else if node.d.tag != "VInr" then null
           else
             let
-              profile = E.linearProfile node.D.B;
-              nFields = if profile == null then 0 else builtins.length profile;
-              collect = k: p: acc:
-                if k == nFields then
-                  if p.tag != "VPair" then null
-                  else if p.snd.tag != "VRefl" then null
-                  else if p.fst.tag != "VDescCon" then null
-                  else { heads = acc; tail = p.fst; }
-                else if p.tag != "VPair" then null
-                else collect (k + 1) p.snd (acc ++ [ p.fst ]);
-            in if profile == null then null
-               else collect 0 node.d.val [];
+              bSide =
+                if node.D.tag == "VDescPlus" then node.D.B
+                else if node.D.tag == "VDescCon" then
+                  let info = E.decodeDescCase node.D; in
+                  if info == null || info.idx != 4 then null
+                  else info.payload.snd.fst
+                else null;
+            in
+            if bSide == null then null
+            else if node.d.tag != "VInr" then null
+            else
+              let
+                profile = E.linearProfile bSide;
+                nFields = if profile == null then 0 else builtins.length profile;
+                collect = k: p: acc:
+                  if k == nFields then
+                    if p.tag != "VPair" then null
+                    else if p.snd.tag != "VRefl" then null
+                    else if p.fst.tag != "VDescCon" then null
+                    else { heads = acc; tail = p.fst; }
+                  else if p.tag != "VPair" then null
+                  else collect (k + 1) p.snd (acc ++ [ p.fst ]);
+              in if profile == null then null
+                 else collect 0 node.d.val [];
         chain = builtins.genericClosure {
           startSet = [{ key = 0; val = v; }];
           operator = item:
@@ -229,6 +242,28 @@ let
       T.mkDescElim (quote d elim.k) (quote d elim.motive) (quote d elim.onRet)
         (quote d elim.onArg) (quote d elim.onRec) (quote d elim.onPi)
         (quote d elim.onPlus) head
+    # `EInterpD` / `EAllD` / `EEverywhereD` round-trip stuck `interpD` /
+    # `allD` / `everywhereD` on a neutral D scrutinee. The frame stores
+    # every slot OTHER than D (the spine head). Level-zero fast-path on
+    # `level` (and `K` where present) emits the cached `T.mkLevelZero`
+    # sentinel.
+    else if t == "EInterpD" then
+      T.mkInterpD
+        (if elim.level.tag == "VLevelZero" then T.mkLevelZero else quote d elim.level)
+        (quote d elim.I) head (quote d elim.X) (quote d elim.i)
+    else if t == "EAllD" then
+      T.mkAllD
+        (if elim.level.tag == "VLevelZero" then T.mkLevelZero else quote d elim.level)
+        (quote d elim.I) head
+        (if elim.K.tag == "VLevelZero" then T.mkLevelZero else quote d elim.K)
+        (quote d elim.X) (quote d elim.M) (quote d elim.i) (quote d elim.d)
+    else if t == "EEverywhereD" then
+      T.mkEverywhereD
+        (if elim.level.tag == "VLevelZero" then T.mkLevelZero else quote d elim.level)
+        (quote d elim.I) head
+        (if elim.K.tag == "VLevelZero" then T.mkLevelZero else quote d elim.K)
+        (quote d elim.X) (quote d elim.M) (quote d elim.ih)
+        (quote d elim.i) (quote d elim.d)
     # ELiftElim spine frame round-trips to `mkLiftElim l m eq A head`.
     # Level-zero fast-path on `l` / `m` mirrors the in-quote-rule shape.
     else if t == "ELiftElim" then
@@ -236,6 +271,8 @@ let
         (if elim.l.tag == "VLevelZero" then T.mkLevelZero else quote d elim.l)
         (if elim.m.tag == "VLevelZero" then T.mkLevelZero else quote d elim.m)
         (quote d elim.eq) (quote d elim.A) head
+    else if t == "ESquashElim" then
+      T.mkSquashElim (quote d elim.A) (quote d elim.B) (quote d elim.f) head
     else if t == "ENatToLevel" then T.mkNatToLevel head
     else throw "tc: quoteElim unknown tag '${t}'";
 
@@ -292,6 +329,32 @@ in mk {
     "quote-tt" = { expr = (quote 0 vTt).tag; expected = "tt"; };
     "quote-refl" = { expr = (quote 0 vRefl).tag; expected = "refl"; };
     "quote-funext" = { expr = (quote 0 V.vFunext).tag; expected = "funext"; };
+    "quote-squash" = { expr = (quote 0 (V.vSquash V.vUnit)).tag; expected = "squash"; };
+    "quote-squash-A" = {
+      expr = (quote 0 (V.vSquash V.vUnit)).A.tag;
+      expected = "unit";
+    };
+    "quote-squash-intro" = {
+      expr = (quote 0 (V.vSquashIntro V.vTt)).tag;
+      expected = "squash-intro";
+    };
+    "quote-squash-intro-a" = {
+      expr = (quote 0 (V.vSquashIntro V.vTt)).a.tag;
+      expected = "tt";
+    };
+    "quote-ne-squash-elim" = {
+      # Stuck `recTrunc` on a neutral round-trips to `mkSquashElim …`.
+      expr = let
+        fLam = V.vLam "_" V.vUnit (mkClosure [] T.mkTt);
+      in (quote 1 (V.vNe 0
+           [ (V.eSquashElim V.vUnit V.vUnit fLam) ])).tag;
+      expected = "squash-elim";
+    };
+    "nf-squash-intro-roundtrip" = {
+      expr = let tm = T.mkSquashIntro T.mkTt; in
+        nf [] (nf [] tm) == nf [] tm;
+      expected = true;
+    };
     "quote-U0" = { expr = (quote 0 (vU V.vLevelZero)).tag; expected = "U"; };
     "quote-U0-level" = {
       expr = (quote 0 (vU V.vLevelZero)).level.tag;
@@ -437,6 +500,37 @@ in mk {
     "quote-ne-desc-elim" = {
       expr = (quote 1 (V.vNe 0 [ (V.eDescElim V.vLevelZero V.vNat V.vZero V.vZero V.vZero V.vZero V.vZero) ])).tag;
       expected = "desc-elim";
+    };
+    "quote-ne-interp-d" = {
+      # Stuck `interpD` on a neutral D round-trips to `mkInterpD`.
+      expr = (quote 1 (V.vNe 0
+        [ (V.eInterpD V.vLevelZero V.vUnit V.vNat V.vTt) ])).tag;
+      expected = "interp-d";
+    };
+    "quote-ne-interp-d-level-zero-fastpath" = {
+      expr = (quote 1 (V.vNe 0
+        [ (V.eInterpD V.vLevelZero V.vUnit V.vNat V.vTt) ])).level.tag;
+      expected = "level-zero";
+    };
+    "quote-ne-all-d" = {
+      expr = (quote 1 (V.vNe 0
+        [ (V.eAllD V.vLevelZero V.vUnit V.vLevelZero V.vNat V.vNat V.vTt V.vRefl) ])).tag;
+      expected = "all-d";
+    };
+    "quote-ne-everywhere-d" = {
+      expr = (quote 1 (V.vNe 0
+        [ (V.eEverywhereD V.vLevelZero V.vUnit V.vLevelZero V.vNat V.vNat V.vNat V.vTt V.vRefl) ])).tag;
+      expected = "everywhere-d";
+    };
+    # Round-trip via `nf` on a stuck `interpD`: the resulting term mirrors
+    # the input shape after eval-then-quote.
+    "nf-interp-d-stuck-roundtrip" = {
+      expr = let
+        tm = T.mkInterpD T.mkLevelZero T.mkUnit (T.mkVar 0)
+          (T.mkLam "_" T.mkUnit T.mkNat) T.mkTt;
+        env = [ (V.freshVar 0) ];
+      in nf env (nf env tm) == nf env tm;
+      expected = true;
     };
 
     # Lift primitive — type-former, introducer, and stuck-eliminator

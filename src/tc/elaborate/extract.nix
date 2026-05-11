@@ -16,6 +16,66 @@ let
   H = fx.tc.hoas;
   E = fx.tc.eval;
   V = fx.tc.value;
+
+  # Encoded-aware description inspection. Each helper accepts either a
+  # primitive `VDescX` Val or an encoded `μ⊤(descDesc) tt`-inhabitant
+  # `VDescCon` Val and projects the field uniformly. `tagOfDesc` returns
+  # the description-constructor name; the field projectors raise on
+  # tag mismatch. `applyArgT` applies an arg / pi description's bound
+  # function (closure in primitive form, VLam in encoded form) to a Val.
+  tagOfDesc = v:
+    if v.tag == "VDescCon" then
+      let info = E.decodeDescCase v; in
+      if info == null then v.tag
+      else if info.idx == 0 then "VDescRet"
+      else if info.idx == 1 then "VDescArg"
+      else if info.idx == 2 then "VDescRec"
+      else if info.idx == 3 then "VDescPi"
+      else if info.idx == 4 then "VDescPlus"
+      else v.tag
+    else v.tag;
+  plusAOf = d:
+    if d.tag == "VDescPlus" then d.A
+    else if d.tag == "VDescCon" then
+      let info = E.decodeDescCase d; in
+      if info != null && info.idx == 4 then info.payload.fst
+      else throw "extract: plusAOf on non-plus"
+    else throw "extract: plusAOf on tag '${d.tag}'";
+  plusBOf = d:
+    if d.tag == "VDescPlus" then d.B
+    else if d.tag == "VDescCon" then
+      let info = E.decodeDescCase d; in
+      if info != null && info.idx == 4 then info.payload.snd.fst
+      else throw "extract: plusBOf on non-plus"
+    else throw "extract: plusBOf on tag '${d.tag}'";
+  argSOf = d:
+    if d.tag == "VDescArg" then d.S
+    else if d.tag == "VDescCon" then
+      let info = E.decodeDescCase d; in
+      if info != null && info.idx == 1 then info.payload.fst
+      else throw "extract: argSOf on non-arg"
+    else throw "extract: argSOf on tag '${d.tag}'";
+  recDOf = d:
+    if d.tag == "VDescRec" then d.D
+    else if d.tag == "VDescCon" then
+      let info = E.decodeDescCase d; in
+      if info != null && info.idx == 2 then info.payload.snd.fst
+      else throw "extract: recDOf on non-rec"
+    else throw "extract: recDOf on tag '${d.tag}'";
+  retJOf = d:
+    if d.tag == "VDescRet" then d.j
+    else if d.tag == "VDescCon" then
+      let info = E.decodeDescCase d; in
+      if info != null && info.idx == 0 then info.payload.fst
+      else throw "extract: retJOf on non-ret"
+    else throw "extract: retJOf on tag '${d.tag}'";
+  applyArgT = d: arg:
+    if d.tag == "VDescArg" then E.instantiate d.T arg
+    else if d.tag == "VDescCon" then
+      let info = E.decodeDescCase d; in
+      if info != null && info.idx == 1 then E.vApp info.payload.snd.fst arg
+      else throw "extract: applyArgT on non-arg"
+    else throw "extract: applyArgT on tag '${d.tag}'";
 in {
   scope = {
     # reifyDesc : Val → HoasTree
@@ -98,24 +158,24 @@ in {
           D = tyVal.D;
           fallback = H.mu (self.reifyDesc D) H.tt;
         in
-          if D.tag != "VDescPlus" then fallback
+          if tagOfDesc D != "VDescPlus" then fallback
           else
-            let A = D.A; B = D.B; in
-            if A.tag == "VDescRet" && A.j.tag == "VTt"
-               && B.tag == "VDescRet" && B.j.tag == "VTt"
+            let A = plusAOf D; B = plusBOf D; in
+            if tagOfDesc A == "VDescRet" && (retJOf A).tag == "VTt"
+               && tagOfDesc B == "VDescRet" && (retJOf B).tag == "VTt"
             then H.bool
-            else if A.tag == "VDescRet" && B.tag == "VDescRec"
-                 && B.D.tag == "VDescRet"
+            else if tagOfDesc A == "VDescRet" && tagOfDesc B == "VDescRec"
+                 && tagOfDesc (recDOf B) == "VDescRet"
             then rawNat
-            else if A.tag == "VDescRet" && B.tag == "VDescArg"
-                 && (let body = E.instantiate B.T V.vTt; in
-                     body.tag == "VDescRec" && body.D.tag == "VDescRet")
-            then rawList (self.reifyType B.S)
-            else if A.tag == "VDescArg" && B.tag == "VDescArg"
-                 && (let bA = E.instantiate A.T V.vTt;
-                         bB = E.instantiate B.T V.vTt; in
-                     bA.tag == "VDescRet" && bB.tag == "VDescRet")
-            then rawSum (self.reifyType A.S) (self.reifyType B.S)
+            else if tagOfDesc A == "VDescRet" && tagOfDesc B == "VDescArg"
+                 && (let body = applyArgT B V.vTt; in
+                     tagOfDesc body == "VDescRec" && tagOfDesc (recDOf body) == "VDescRet")
+            then rawList (self.reifyType (argSOf B))
+            else if tagOfDesc A == "VDescArg" && tagOfDesc B == "VDescArg"
+                 && (let bA = applyArgT A V.vTt;
+                         bB = applyArgT B V.vTt; in
+                     tagOfDesc bA == "VDescRet" && tagOfDesc bB == "VDescRet")
+            then rawSum (self.reifyType (argSOf A)) (self.reifyType (argSOf B))
             else fallback
       else throw "reifyType: unsupported value tag '${t}'";
 
@@ -205,9 +265,9 @@ in {
             v.tag == "VDescCon"
             && v.d.tag == "VInl";
           elemTyVal =
-            if tyVal.tag == "VMu" && tyVal.D.tag == "VDescPlus"
-               && tyVal.D.B.tag == "VDescArg"
-            then tyVal.D.B.S
+            if tyVal.tag == "VMu" && tagOfDesc tyVal.D == "VDescPlus"
+               && tagOfDesc (plusBOf tyVal.D) == "VDescArg"
+            then argSOf (plusBOf tyVal.D)
             else throw "extract: list tyVal must be VMu(plus _ (descArg _ _)), got ${tyVal.tag}";
           chain = builtins.genericClosure {
             startSet = [{ key = 0; inherit val; }];
@@ -244,10 +304,10 @@ in {
             && v.d.tag == "VInr"
             && v.d.val.tag == "VPair";
           armTy = side:
-            if tyVal.tag == "VMu" && tyVal.D.tag == "VDescPlus" then
-              let sub = if side == "L" then tyVal.D.A else tyVal.D.B; in
-              if sub.tag == "VDescArg" then sub.S
-              else throw "extract: sum tyVal has non-sum description (sub-${side}=${sub.tag})"
+            if tyVal.tag == "VMu" && tagOfDesc tyVal.D == "VDescPlus" then
+              let sub = if side == "L" then plusAOf tyVal.D else plusBOf tyVal.D; in
+              if tagOfDesc sub == "VDescArg" then argSOf sub
+              else throw "extract: sum tyVal has non-sum description (sub-${side}=${tagOfDesc sub})"
             else throw "extract: sum tyVal must be VMu(plus _ _), got ${tyVal.tag}";
         in
         if isDescInl val then
@@ -343,59 +403,88 @@ in {
       # "_field0").
       else if t == "mu" then
         let
-          descTyVal = tyVal.D;
+          # Post-γ, monomorphic μ-types' D evaluates to encoded `VDescCon`
+          # (μ⊤(descDesc) inhabitants). The shape predicates below
+          # (`isNatPlusDesc`, `isListPlusDesc`, etc.) are written against
+          # the primitive `VDescPlus`/`VDescRet`/… surface. Decode on entry
+          # so they fire correctly. Falls back to the raw value when the
+          # description has shape we cannot safely primitivise (idx∈{1,3}
+          # — see `eval/desc.nix:tryDecodeToPrimF`); the generic
+          # `pickArm`/`extractFields` path then handles the encoded form
+          # via the same predicates' false-fallthrough.
+          descTyValRaw = tyVal.D;
+          descTyVal =
+            if descTyValRaw.tag == "VDescCon"
+            then let p = E.tryDecodeToPrim descTyValRaw;
+                 in if p != null then p else descTyValRaw
+            else descTyValRaw;
           meta = hoasTy._dtypeMeta or null;
 
           # Description-shape predicates under the plus-coproduct encoding.
+          # All accept either primitive `VDescX` or encoded `VDescCon` shapes
+          # via the module-level `tagOfDesc` / `plusAOf` / `plusBOf` /
+          # `applyArgT` / `argSOf` / `recDOf` / `retJOf` helpers.
           # NatPlus: A=descRet, B=descRec descRet.
           isNatPlusDesc = d:
-            d.tag == "VDescPlus"
-            && d.A.tag == "VDescRet"
-            && d.B.tag == "VDescRec"
-            && d.B.D.tag == "VDescRet";
+            tagOfDesc d == "VDescPlus"
+            && tagOfDesc (plusAOf d) == "VDescRet"
+            && tagOfDesc (plusBOf d) == "VDescRec"
+            && tagOfDesc (recDOf (plusBOf d)) == "VDescRet";
           # ListPlus(elem): A=descRet, B=descArg elem (_: descRec descRet).
           # The inner body is instantiated at VTt (placeholder; the closure
           # ignores its argument for listDesc).
           isListPlusDesc = d:
-            d.tag == "VDescPlus"
-            && d.A.tag == "VDescRet"
-            && d.B.tag == "VDescArg"
-            && (let body = E.instantiate d.B.T V.vTt; in
-                body.tag == "VDescRec" && body.D.tag == "VDescRet");
+            tagOfDesc d == "VDescPlus"
+            && tagOfDesc (plusAOf d) == "VDescRet"
+            && tagOfDesc (plusBOf d) == "VDescArg"
+            && (let body = applyArgT (plusBOf d) V.vTt; in
+                tagOfDesc body == "VDescRec" && tagOfDesc (recDOf body) == "VDescRet");
           # SumPlus(l,r): A=descArg l (_: descRet), B=descArg r (_: descRet).
           isSumPlusDesc = d:
-            d.tag == "VDescPlus"
-            && d.A.tag == "VDescArg"
-            && d.B.tag == "VDescArg"
-            && (let bA = E.instantiate d.A.T V.vTt;
-                    bB = E.instantiate d.B.T V.vTt; in
-                bA.tag == "VDescRet" && bB.tag == "VDescRet");
+            tagOfDesc d == "VDescPlus"
+            && tagOfDesc (plusAOf d) == "VDescArg"
+            && tagOfDesc (plusBOf d) == "VDescArg"
+            && (let bA = applyArgT (plusAOf d) V.vTt;
+                    bB = applyArgT (plusBOf d) V.vTt; in
+                tagOfDesc bA == "VDescRet" && tagOfDesc bB == "VDescRet");
           # BoolPlus shape: D = VDescPlus (VDescRet VTt) (VDescRet VTt).
           # Each summand is a non-recursive retI leaf; val.d is VInl/VInr
           # from plus's kernel-Sum interpretation. Covers both the
           # prelude `boolDesc` and the datatype-macro-generated n=2 spine
           # where both ctors are fieldless.
           isBoolPlusShape = d:
-            d.tag == "VDescPlus"
-            && d.A.tag == "VDescRet" && d.A.j.tag == "VTt"
-            && d.B.tag == "VDescRet" && d.B.j.tag == "VTt";
+            tagOfDesc d == "VDescPlus"
+            && tagOfDesc (plusAOf d) == "VDescRet" && (retJOf (plusAOf d)).tag == "VTt"
+            && tagOfDesc (plusBOf d) == "VDescRet" && (retJOf (plusBOf d)).tag == "VTt";
           # UnitDT shape: bare descRet (n=1).
           isUnitDTShape = d:
-            d.tag == "VDescRet";
+            tagOfDesc d == "VDescRet";
 
           # Generic decomposition for non-prelude shapes. Walks the plus
           # spine to determine the constructor index, then walks the per-arm
           # data spine to extract fields. `pickArm` recurses through nested
-          # VDescPlus layers — VInl commits to the current summand
-          # (d.A), VInr descends into the rest-spine (d.B), advancing
+          # VDescPlus / encoded VDescCon-plus layers — VInl commits to the
+          # current summand, VInr descends into the rest-spine, advancing
           # ctorIdx on every VInr step. `extractFields` recurses through
-          # the per-arm data spine (VDescArg → field, VDescRec → recursive
-          # value, VDescPi → opaque function, VDescRet → terminus).
+          # the per-arm data spine, decoding encoded `VDescCon` nodes via
+          # `E.decodeDescCase` so the same dispatch handles primitive
+          # `VDescX` and encoded shapes uniformly.
           pickArm = idx: dTy: pl:
             if dTy.tag == "VDescPlus" then
               if pl.tag == "VInl" then pickArm idx dTy.A pl.val
               else if pl.tag == "VInr" then pickArm (idx + 1) dTy.B pl.val
               else throw "extract: mu plus-tag is neither VInl/VInr (got ${pl.tag})"
+            else if dTy.tag == "VDescCon" then
+              let info = E.decodeDescCase dTy; in
+              if info != null && info.idx == 4 then
+                # Encoded plus: payload = (encA, (encB, refl)).
+                let encA = info.payload.fst;
+                    encB = info.payload.snd.fst;
+                in
+                if pl.tag == "VInl" then pickArm idx encA pl.val
+                else if pl.tag == "VInr" then pickArm (idx + 1) encB pl.val
+                else throw "extract: mu plus-tag is neither VInl/VInr (got ${pl.tag})"
+              else { ctorIdx = idx; armDesc = dTy; armPayload = pl; }
             else { ctorIdx = idx; armDesc = dTy; armPayload = pl; };
           extractFields = dTy: pl:
             if dTy.tag == "VDescRet" then []
@@ -422,6 +511,45 @@ in {
                   piTyVal = V.vPi "_" dTy.S (V.mkClosure [] (H.elab hoasTy));
                   lamNix = self.extractInner piHoas piTyVal lamVal;
               in [ lamNix ] ++ extractFields dTy.D rest
+            else if dTy.tag == "VDescCon" then
+              # Encoded summand: decode and dispatch on the descDesc
+              # constructor idx (0=ret / 1=arg / 2=rec / 3=pi). Plus
+              # (idx=4) is consumed by `pickArm`, not by `extractFields`.
+              let info = E.decodeDescCase dTy; in
+              if info == null
+              then throw "extract: VDescCon decode returned null in extractFields"
+              else if info.idx == 0 then []
+              else if info.idx == 1 then
+                # arg: payload = (sLifted, (T, refl)). T is a VLam from the
+                # encoder's `lam "x" sLifted (x: app T_user (lowerAt … x))`;
+                # apply via `E.vApp` to step into the encoded sub-D.
+                let sTy = info.payload.fst;
+                    tFn = info.payload.snd.fst;
+                    fieldVal = pl.fst;
+                    rest = pl.snd;
+                    fieldHoas = self.reifyType sTy;
+                    fieldNix = self.extractInner fieldHoas sTy fieldVal;
+                    subDesc = E.vApp tFn fieldVal;
+                in [ fieldNix ] ++ extractFields subDesc rest
+              else if info.idx == 2 then
+                # rec: payload = (j, (encD, refl)).
+                let encD = info.payload.snd.fst;
+                    recVal = pl.fst;
+                    rest = pl.snd;
+                    recNix = self.extractInner hoasTy tyVal recVal;
+                in [ recNix ] ++ extractFields encD rest
+              else if info.idx == 3 then
+                # pi: payload = (sLifted, (f, (encD, refl))). Opaque lambda.
+                let sTy = info.payload.fst;
+                    encD = info.payload.snd.snd.fst;
+                    lamVal = pl.fst;
+                    rest = pl.snd;
+                    domainHoas = self.reifyType sTy;
+                    piHoas = H.forall "_" domainHoas (_: hoasTy);
+                    piTyVal = V.vPi "_" sTy (V.mkClosure [] (H.elab hoasTy));
+                    lamNix = self.extractInner piHoas piTyVal lamVal;
+                in [ lamNix ] ++ extractFields encD rest
+              else throw "extract: VDescCon idx=${toString info.idx} unexpected in extractFields"
             else throw "extract: mu generic decomposition: unsupported VDesc tag '${dTy.tag}'";
 
         in
@@ -435,11 +563,11 @@ in {
         else if isNatPlusDesc descTyVal
         then self.extractInner { _htag = "nat"; } tyVal val
         else if isListPlusDesc descTyVal then
-          let elemTyVal = descTyVal.B.S;
+          let elemTyVal = argSOf (plusBOf descTyVal);
           in self.extractInner { _htag = "list"; elem = self.reifyType elemTyVal; } tyVal val
         else if isSumPlusDesc descTyVal then
-          let leftTyVal = descTyVal.A.S;
-              rightTyVal = descTyVal.B.S;
+          let leftTyVal = argSOf (plusAOf descTyVal);
+              rightTyVal = argSOf (plusBOf descTyVal);
           in self.extractInner {
             _htag = "sum";
             left = self.reifyType leftTyVal;

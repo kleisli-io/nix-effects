@@ -96,20 +96,45 @@ api.mk {
       opaqueLam strEq absurd ann app fst_ snd_;
     # Eliminators
     inherit (self) ind boolElim listElim sumElim j;
+    # Propositional truncation (Squash). `squash A` formation,
+    # `squashIntro a` introduction, `squashElim A B f x` eliminator
+    # restricted to `Squash`-typed motives.
+    inherit (self) squash squashIntro squashElim;
     # Descriptions — types, constructors, eliminators.
     # `descI`/`retI`/`recI`/`piI`/`muI` build `Desc I` / `μ I D i` at an
     # arbitrary index type; `desc`/`descRet`/`descRec`/`descPi`/`mu` are
     # ⊤-slice aliases that specialise I to `Unit`.
     inherit (self) descI desc descIAt descAt muI mu retI recI piI piIAt
-                   descRet descArg descArgAt descRec descPi descPiAt
-                   descCon descInd descElim;
+                   piIWithEq
+                   descRet descArg descArgAt descArgWithEq descRec
+                   descPi descPiAt descPiWithEq
+                   descCon descInd descElim
+                   interpD allD everywhereD
+                   congSuc maxSucDom;
     # Lift primitive — Tarski + non-cumulative cross-level transport.
     # `LiftAt l m A : U(m)` with `l ≤ m`; `liftAt l m A a` /
     # `lowerAt l m A x` introduce / eliminate. The `eq` witness is
-    # auto-emitted as `mkRefl` by the elaborator.
-    inherit (self) LiftAt liftAt lowerAt;
-    # Description-level helpers and prelude descriptions
-    inherit (self) interpHoasAt allHoasAt natDesc listDesc sumDesc natDescTm descDesc iso;
+    # auto-emitted as `mkRefl` by the elaborator. The `*WithEq` variants
+    # take an explicit `eq` term — used when `l`/`m` are level-polymorphic
+    # binders and `convLevel` cannot decide `refl`.
+    inherit (self) LiftAt liftAt lowerAt
+                   LiftAtWithEq liftAtWithEq lowerAtWithEq;
+    # Prelude descriptions
+    inherit (self) natDesc listDesc sumDesc natDescTm descDesc descDescTm descDescVal __descDesc;
+    # descDesc-encoded constructor Tms — closed kernel terms that
+    # produce `μ ⊤ (descDesc I k) tt` values structurally encoding
+    # source descriptions. Each is the pre-elaborated form of the
+    # corresponding `encodeDesc*` HOAS combinator; the shared encoding
+    # context lives in `descEncodingCtx` (a Nix-level helper internal
+    # to `hoas/`).
+    inherit (self) encodeDescRet encodeDescRetTm
+                   encodeDescArg encodeDescArgTm
+                   encodeDescArgAt encodeDescArgAtTm
+                   encodeDescRec encodeDescRecTm
+                   encodeDescPi  encodeDescPiTm
+                   encodeDescPiAt encodeDescPiAtTm
+                   encodeDescPlus encodeDescPlusTm
+                   encodeDescElim encodeDescElimTm encodeDescElimVal;
     # Fin prelude — indexed family `Fin : Nat → U` with vacuous base at
     # `Fin 0` (discharged via `absurdFin0`).
     inherit (self) finDesc fin fzero fsuc finElim absurdFin0;

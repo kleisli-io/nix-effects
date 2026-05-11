@@ -68,9 +68,19 @@ in {
         pure { term = tm; type = self.lookupType ctx tm.idx; }
 
       else if t == "ann" then
+        # `trusted` ann's body is type-correct by construction (kernel-
+        # internal emission only — see `T.mkAnnTrusted`). Skipping the
+        # body re-check eliminates per-layer redundant work on deep
+        # recursive-data CHECK where each layer's element-D ann is the
+        # same encoded description; pre-fix, `infer ctx (ann body type)`
+        # ran `self.check ctx body type` per layer, walking the encoded
+        # encoder cascade ~20ms per layer (~100× regression vs pre-γ
+        # bare canonical bodies).
         bindP P.AnnType (self.checkType ctx tm.type) (aTm:
           let aVal = E.eval ctx.env aTm; in
-          bindP P.AnnTerm (self.check ctx tm.term aVal) (tTm:
+          if tm.trusted or false
+          then pure { term = T.mkAnnTrusted tm.term aTm; type = aVal; }
+          else bindP P.AnnTerm (self.check ctx tm.term aVal) (tTm:
             pure { term = T.mkAnn tTm aTm; type = aVal; }))
 
       else if t == "app" then
@@ -130,16 +140,20 @@ in {
           bindP (P.Case "zero") (self.check ctx tm.base (E.vApp pVal V.vZero)) (zTm:
             let
               # s : Π(k:Nat). P(k) → P(S(k))
-              # De Bruijn arithmetic: closure body is evaluated at depth+1
-              # (binding k).
-              #   depth+1: quote pVal relative to outer ctx extended by k
-              #   Var(0) = k (most recent binding)
-              # Inner Pi "ih" adds another binding at depth+2:
-              #   depth+2: quote pVal relative to ctx extended by k and ih
-              #   Var(0) = ih, Var(1) = k
-              stepTy = V.vPi "k" V.vNat (V.mkClosure ctx.env
-                (T.mkPi "ih" (T.mkApp (Q.quote (ctx.depth + 1) pVal) (T.mkVar 0))
-                  (T.mkApp (Q.quote (ctx.depth + 2) pVal) (T.mkSucc (T.mkVar 1)))));
+              # Capture pVal in the closure env so the body Tms reference
+              # it via Var instead of Q.quote — same mechanism as desc-elim
+              # and sum-elim INFER. pVal can carry stuck VNe spines whose
+              # eDescInd frames embed closures over outer-elim body envs;
+              # quoting and re-embedding under ctx.env+N binders re-evaluates
+              # `Var idx` against slots that aren't μ-elements, throwing
+              # `vDescInd on non-mu`. extEnv layout (idx-from-0): 0:pVal.
+              # ctx.env follows from idx 1.
+              # Inside k-binder (shift +1): Var 0=k, Var 1=pVal.
+              # Inside k+ih  (shift +2):    Var 0=ih, Var 1=k, Var 2=pVal.
+              extEnv = [ pVal ] ++ ctx.env;
+              stepTy = V.vPi "k" V.vNat (V.mkClosure extEnv
+                (T.mkPi "ih" (T.mkApp (T.mkVar 1) (T.mkVar 0))
+                  (T.mkApp (T.mkVar 2) (T.mkSucc (T.mkVar 1)))));
             in bindP (P.Case "succ") (self.check ctx tm.step stepTy) (sTm:
               bindP P.Scrut (self.check ctx tm.scrut V.vNat) (nTm:
                 let retTy = E.vApp pVal (E.eval ctx.env nTm); in
@@ -154,16 +168,24 @@ in {
             bindP (P.Case "nil") (self.check ctx tm.nil (E.vApp pVal (V.vNil aVal))) (nTm:
               let
                 # c : Π(h:A). Π(t:List A). P(t) → P(cons h t)
-                # De Bruijn arithmetic:
-                #   depth+1: h is Var(0)
-                #   depth+2: t is Var(0), h is Var(1)
-                #   depth+3: ih is Var(0), t is Var(1), h is Var(2)
-                # P(cons h t) uses Var(2)=h, Var(1)=t at depth+3
-                consTy = V.vPi "h" aVal (V.mkClosure ctx.env
-                  (T.mkPi "t" (T.mkList (Q.quote (ctx.depth + 1) aVal))
-                    (T.mkPi "ih" (T.mkApp (Q.quote (ctx.depth + 2) pVal) (T.mkVar 0))
-                      (T.mkApp (Q.quote (ctx.depth + 3) pVal)
-                        (T.mkCons (Q.quote (ctx.depth + 3) aVal) (T.mkVar 2) (T.mkVar 1))))));
+                # Capture pVal, aVal in the closure env so the body Tms
+                # reference them via Var instead of Q.quote — same
+                # mechanism as desc-elim and sum-elim INFER. pVal can
+                # carry stuck VNe spines whose eDescInd frames embed
+                # closures over outer-elim body envs; quoting and
+                # re-embedding under ctx.env+N binders re-evaluates
+                # `Var idx` against slots that aren't μ-elements,
+                # throwing `vDescInd on non-mu`. extEnv layout
+                # (idx-from-0): 0:pVal, 1:aVal. ctx.env follows from 2.
+                # Inside h-binder (shift +1):  Var 0=h, Var 1=pVal, Var 2=aVal.
+                # Inside h+t       (shift +2): Var 0=t, Var 1=h, Var 2=pVal, Var 3=aVal.
+                # Inside h+t+ih    (shift +3): Var 0=ih, Var 1=t, Var 2=h, Var 3=pVal, Var 4=aVal.
+                extEnv = [ pVal aVal ] ++ ctx.env;
+                consTy = V.vPi "h" aVal (V.mkClosure extEnv
+                  (T.mkPi "t" (T.mkList (T.mkVar 2))
+                    (T.mkPi "ih" (T.mkApp (T.mkVar 2) (T.mkVar 0))
+                      (T.mkApp (T.mkVar 3)
+                        (T.mkCons (T.mkVar 4) (T.mkVar 2) (T.mkVar 1))))));
               in bindP (P.Case "cons") (self.check ctx tm.cons consTy) (cTm:
                 bindP P.Scrut (self.check ctx tm.scrut (V.vList aVal)) (lTm:
                   let retTy = E.vApp pVal (E.eval ctx.env lTm); in
@@ -178,16 +200,24 @@ in {
             in bindP P.Motive (self.checkMotive ctx tm.motive (self.singleton (V.vSum aVal bVal))) (pR:
               let pTm = pR.term;
                   pVal = E.eval ctx.env pTm;
+                  # Capture pVal, aVal, bVal in the closure env so the
+                  # body Tms reference them by `Var` instead of `Q.quote`.
+                  # `Q.quote pVal` would re-emit any stuck `VNe` spine
+                  # frames as `Var idx` Tms whose semantics break under
+                  # re-eval at a different env shape — same mechanism as
+                  # in desc-elim INFER. extEnv layout (idx-from-0):
+                  # 0:pVal, 1:aVal, 2:bVal. ctx.env follows from idx 3.
+                  # Inside the x-binder body (depth+1):
+                  # Var 1=pVal, Var 2=aVal, Var 3=bVal.
+                  extEnv = [ pVal aVal bVal ] ++ ctx.env;
                   # l : Π(x:A). P(inl x)
-                  # De Bruijn: closure binds x at depth+1. Var(0) = x.
-                  # All quotes at depth+1 to account for the x binding.
-                  lTy = V.vPi "x" aVal (V.mkClosure ctx.env
-                    (T.mkApp (Q.quote (ctx.depth + 1) pVal)
-                      (T.mkInl (Q.quote (ctx.depth + 1) aVal) (Q.quote (ctx.depth + 1) bVal) (T.mkVar 0))));
+                  lTy = V.vPi "x" aVal (V.mkClosure extEnv
+                    (T.mkApp (T.mkVar 1)
+                      (T.mkInl (T.mkVar 2) (T.mkVar 3) (T.mkVar 0))));
                   # r : Π(y:B). P(inr y)
-                  rTy = V.vPi "y" bVal (V.mkClosure ctx.env
-                    (T.mkApp (Q.quote (ctx.depth + 1) pVal)
-                      (T.mkInr (Q.quote (ctx.depth + 1) aVal) (Q.quote (ctx.depth + 1) bVal) (T.mkVar 0))));
+                  rTy = V.vPi "y" bVal (V.mkClosure extEnv
+                    (T.mkApp (T.mkVar 1)
+                      (T.mkInr (T.mkVar 2) (T.mkVar 3) (T.mkVar 0))));
               in bindP (P.Case "inl") (self.check ctx tm.onLeft lTy) (lTm:
                 bindP (P.Case "inr") (self.check ctx tm.onRight rTy) (rTm:
                   bindP P.Scrut (self.check ctx tm.scrut (V.vSum aVal bVal)) (sTm:
@@ -574,7 +604,7 @@ in {
                   # X = λ(_i:I). μ I D _i as a VLam so interp can apply it.
                   muDFunc = V.vLam "_i" iTyVal (V.mkClosure [ dVal iTyVal ]
                     (T.mkMu (T.mkVar 2) (T.mkVar 1) (T.mkVar 0)));
-                  interpTy = E.interp dTy.level iTyVal dVal muDFunc iVal;
+                  interpTy = E.vInterpD dTy.level iTyVal dVal muDFunc iVal;
               in bindP P.MuPayload (self.check ctx tm.d interpTy) (dataTm:
                 pure { term = T.mkDescCon dResult.term iTm dataTm;
                        type = V.vMu iTyVal dVal iVal; })))
@@ -622,73 +652,92 @@ in {
               else
                 let
                   iTyVal = sTy.I;
-                  # `sTy.level`, `iTyVal`, and `kVal` may carry de Bruijn
-                  # `vVar` references to bindings at outer depths. Each
-                  # closure body below adds its own binders before the
-                  # embedded `T.mkDesc` / `T.mkDescArg` / `T.mkDescPi`
-                  # site, so the embedded Tms must be quoted at the
-                  # depth at which they will be evaluated — i.e.,
-                  # `ctx.depth + N` where `N` is the count of preceding
-                  # binders. Quoting at the outer `ctx.depth` (one
-                  # uniform Tm) silently produces wrong indices once
-                  # `N > 0`. `Q.quote` collapses `VLevelZero` /
-                  # constant-headed values to `T.mkLevelZero` /
-                  # constant Tms regardless of depth, so the prelude's
-                  # `L=0`, `I=⊤`, `k=0` instance stays byte-identical
-                  # (no extra Tm allocation when nothing depends on
-                  # depth).
-                  sLev1 = Q.quote (ctx.depth + 1) sTy.level;
-                  sLev2 = Q.quote (ctx.depth + 2) sTy.level;
-                  iTy1  = Q.quote (ctx.depth + 1) iTyVal;
-                  iTy2  = Q.quote (ctx.depth + 2) iTyVal;
-                  kTm3  = Q.quote (ctx.depth + 3) kVal;
-                  kTm4  = Q.quote (ctx.depth + 4) kVal;
                 in bindP P.Motive (self.checkMotive ctx tm.motive (self.singleton (V.vDesc sTy.level iTyVal))) (pR:
                   let
                     pTm = pR.term;
                     pVal = E.eval ctx.env pTm;
-                    pQ1 = Q.quote (ctx.depth + 1) pVal;
-                    pQ2 = Q.quote (ctx.depth + 2) pVal;
-                    pQ3 = Q.quote (ctx.depth + 3) pVal;
-                    pQ4 = Q.quote (ctx.depth + 4) pVal;
+                    # Capture pVal, iTyVal, sTy.level, kVal in the closure
+                    # env so the per-summand type bodies reference them via
+                    # `Var` rather than `Q.quote`. pVal can carry stuck
+                    # `VNe` spines with `eDescInd` frames whose stored
+                    # closures embed `encodeDescElim`'s body env; quoting
+                    # such values at depth `ctx.depth+N` and embedding the
+                    # Tm under a closure with `ctx.env` (size `ctx.depth`)
+                    # plus N binders re-evaluates `Var idx` against env
+                    # slots whose values are not the μ-elements
+                    # `vDescIndF` requires — re-eval throws
+                    # `vDescInd on non-mu`. Capturing as env entries makes
+                    # the Var refs resolve to the exact Vals at re-eval
+                    # time. iTyVal/sTy.level/kVal are captured for the
+                    # same reason: any of them may carry free vars from
+                    # ctx.env that mid-body Q.quote translations would
+                    # mis-index after re-eval under shifted envs.
+                    extEnv = [ pVal iTyVal sTy.level kVal ] ++ ctx.env;
+                    # extEnv layout (idx-from-0): 0:pVal, 1:iTyVal,
+                    # 2:sTy.level, 3:kVal. ctx.env follows from idx 4.
+                    # Inside N binders: Var(N+0)=pVal, Var(N+1)=iTyVal,
+                    # Var(N+2)=sTy.level, Var(N+3)=kVal.
                     # pr : Π(j:I). P (ret j)
-                    prTy = V.vPi "j" iTyVal (V.mkClosure ctx.env
-                      (T.mkApp pQ1 (T.mkDescRet (T.mkVar 0))));
+                    prTy = V.vPi "j" iTyVal (V.mkClosure extEnv
+                      (T.mkApp (T.mkVar 1) (T.mkDescRet (T.mkVar 0))));
                     # pa : Π(S:U(k)). Π(T:S→Desc^L I). (Π(s:S). P (T s)) → P (arg k S T)
-                    paTy = V.vPi "S" (V.vU kVal) (V.mkClosure ctx.env
-                      (T.mkPi "T" (T.mkPi "_" (T.mkVar 0) (T.mkDesc sLev2 iTy2))
+                    paTy = V.vPi "S" (V.vU kVal) (V.mkClosure extEnv
+                      (T.mkPi "T" (T.mkPi "_" (T.mkVar 0) (T.mkDesc (T.mkVar 4) (T.mkVar 3)))
                         (T.mkPi "ih" (T.mkPi "s" (T.mkVar 1)
-                            (T.mkApp pQ3 (T.mkApp (T.mkVar 1) (T.mkVar 0))))
-                          (T.mkApp pQ3
-                            (T.mkDescArg kTm3 kTm3 (T.mkVar 2) T.mkRefl
+                            (T.mkApp (T.mkVar 3) (T.mkApp (T.mkVar 1) (T.mkVar 0))))
+                          (T.mkApp (T.mkVar 3)
+                            (T.mkDescArg (T.mkVar 6) (T.mkVar 6) (T.mkVar 2) T.mkRefl
                               (T.mkApp (T.mkVar 2) (T.mkVar 0)))))));
                     # pe : Π(j:I). Π(D:Desc^L I). P D → P (rec j D)
-                    peTy = V.vPi "j" iTyVal (V.mkClosure ctx.env
-                      (T.mkPi "D" (T.mkDesc sLev1 iTy1)
-                        (T.mkPi "ih" (T.mkApp pQ2 (T.mkVar 0))
-                          (T.mkApp pQ3 (T.mkDescRec (T.mkVar 2) (T.mkVar 1))))));
+                    peTy = V.vPi "j" iTyVal (V.mkClosure extEnv
+                      (T.mkPi "D" (T.mkDesc (T.mkVar 3) (T.mkVar 2))
+                        (T.mkPi "ih" (T.mkApp (T.mkVar 2) (T.mkVar 0))
+                          (T.mkApp (T.mkVar 3) (T.mkDescRec (T.mkVar 2) (T.mkVar 1))))));
                     # pp : Π(S:U(k)). Π(f:S→I). Π(D:Desc^L I). P D → P (pi k S f D)
-                    ppTy = V.vPi "S" (V.vU kVal) (V.mkClosure ctx.env
-                      (T.mkPi "f" (T.mkPi "_" (T.mkVar 0) iTy2)
-                        (T.mkPi "D" (T.mkDesc sLev2 iTy2)
-                          (T.mkPi "ih" (T.mkApp pQ3 (T.mkVar 0))
-                            (T.mkApp pQ4
-                              (T.mkDescPi kTm4 kTm4 (T.mkVar 3) T.mkRefl
+                    ppTy = V.vPi "S" (V.vU kVal) (V.mkClosure extEnv
+                      (T.mkPi "f" (T.mkPi "_" (T.mkVar 0) (T.mkVar 3))
+                        (T.mkPi "D" (T.mkDesc (T.mkVar 4) (T.mkVar 3))
+                          (T.mkPi "ih" (T.mkApp (T.mkVar 3) (T.mkVar 0))
+                            (T.mkApp (T.mkVar 4)
+                              (T.mkDescPi (T.mkVar 7) (T.mkVar 7) (T.mkVar 3) T.mkRefl
                                 (T.mkVar 2) (T.mkVar 1)))))));
                       # pq : Π(A:Desc^L I). Π(B:Desc^L I). P A → P B → P (plus A B)
-                    pqTy = V.vPi "A" (V.vDesc sTy.level iTyVal) (V.mkClosure ctx.env
-                      (T.mkPi "B" (T.mkDesc sLev1 iTy1)
-                        (T.mkPi "ihA" (T.mkApp pQ2 (T.mkVar 1))
-                          (T.mkPi "ihB" (T.mkApp pQ3 (T.mkVar 1))
-                            (T.mkApp pQ4 (T.mkDescPlus (T.mkVar 3) (T.mkVar 2)))))));
+                    pqTy = V.vPi "A" (V.vDesc sTy.level iTyVal) (V.mkClosure extEnv
+                      (T.mkPi "B" (T.mkDesc (T.mkVar 3) (T.mkVar 2))
+                        (T.mkPi "ihA" (T.mkApp (T.mkVar 2) (T.mkVar 1))
+                          (T.mkPi "ihB" (T.mkApp (T.mkVar 3) (T.mkVar 1))
+                            (T.mkApp (T.mkVar 4) (T.mkDescPlus (T.mkVar 3) (T.mkVar 2)))))));
                 in bindP (P.Case "onRet") (self.check ctx tm.onRet prTy) (prTm:
                     bindP (P.Case "onArg") (self.check ctx tm.onArg paTy) (paTm:
                       bindP (P.Case "onRec") (self.check ctx tm.onRec peTy) (peTm:
                         bindP (P.Case "onPi") (self.check ctx tm.onPi ppTy) (ppTm:
                           bindP (P.Case "onPlus") (self.check ctx tm.onPlus pqTy) (pqTm:
-                            let retTy = E.vApp pVal (E.eval ctx.env sResult.term); in
-                            pure { term = T.mkDescElim kTm pTm prTm paTm peTm ppTm pqTm sResult.term;
-                                   type = retTy; })))))));
+                            let scrutVal = E.eval ctx.env sResult.term;
+                                retTy = E.vApp pVal scrutVal;
+                                L_q0 = Q.quote ctx.depth sTy.level;
+                                # Primitive-vs-encoded dispatch happens at
+                                # eval time inside `vDescElimF`: VDescRet/
+                                # Arg/Rec/Pi/Plus walk the primitive
+                                # 5-summand cascade; VDescCon (encoded
+                                # μ⊤(descDesc) form) routes through
+                                # `encodeDescElimVal`; VNe (stuck) emits
+                                # a stuck spine `vNe + [eDescElim ...]`
+                                # per canonical evaluator semantics.
+                                # The typing rule emits one uniform Tm
+                                # regardless of the scrut's typing-time
+                                # shape — the runtime value is what
+                                # determines the elim semantics, so
+                                # deferring dispatch eliminates the
+                                # typing-time / runtime mismatch that
+                                # static dispatch on inferred `scrutVal`
+                                # cannot resolve (a HOAS-bound var stuck
+                                # at typing time can substitute to either
+                                # representation at use site).
+                            in
+                            pure {
+                              term = T.mkDescElim L_q0 pTm prTm paTm peTm ppTm pqTm sResult.term;
+                              type = retTy;
+                            })))))));
         in
           if tm.k.tag == "level-zero"
           then ruleAt V.vLevelZero T.mkLevelZero
@@ -751,17 +800,51 @@ in {
                   else if pR.level.tag == "VLevelZero" then dTy.level
                   else V.vLevelMax dTy.level pR.level;
                 # step : Π(i:I). Π(d : ⟦D⟧(μ D) i). All D P i d → P i (con i d)
-                iVar = V.freshVar ctx.depth;
-                muDFunc1 = V.vLam "_i" iTyVal (V.mkClosure [ dVal iTyVal ]
-                  (T.mkMu (T.mkVar 2) (T.mkVar 1) (T.mkVar 0)));
-                interpTyAtI = E.interp dTy.level iTyVal dVal muDFunc1 iVar;
-                dVar = V.freshVar (ctx.depth + 1);
-                allTyAtI = E.allTy kEff dTy.level iTyVal dVal dVal pVal iVar dVar;
-                retTyAtI = E.vApp (E.vApp pVal iVar) (V.vDescCon dVal iVar dVar);
-                stepTy = V.vPi "i" iTyVal (V.mkClosure ctx.env
-                  (T.mkPi "d" (Q.quote (ctx.depth + 1) interpTyAtI)
-                    (T.mkPi "_" (Q.quote (ctx.depth + 2) allTyAtI)
-                      (Q.quote (ctx.depth + 3) retTyAtI))));
+                #
+                # Uniform construction via kernel-primitive `mkInterpD` /
+                # `mkAllD` Tms. The `vInterpDF` / `vAllDF` dispatchers
+                # handle encoded VDescCon, stuck VNe, and primitive VDescX
+                # shapes uniformly, so D's representation no longer drives
+                # the build strategy.
+                #
+                # extEnv layout (innermost-first): 0:pVal, 1:dVal,
+                # 2:iTyVal, 3:kEff, 4:dTy.level. ctx.env follows from 5.
+                # Inside i-binder body: shift +1 → 0:i, 1:pVal, 2:dVal,
+                # 3:iTyVal, 4:kEff, 5:dLev. Inside i+d body: shift +2.
+                # Inside i+d+_ body: shift +3.
+                stepTy =
+                  let
+                    extEnv = [ pVal dVal iTyVal kEff dTy.level ] ++ ctx.env;
+                    # `λj:I. μ I D j` under the i-binder: j adds +1 to
+                    # all extEnv refs, so iTyVal is at 4 and dVal at 3.
+                    muFamForInterp = T.mkLam "_j"
+                      (T.mkVar 3)
+                      (T.mkMu (T.mkVar 4) (T.mkVar 3) (T.mkVar 0));
+                    interpTyAtTm = T.mkInterpD
+                      (T.mkVar 5)         # ℓ = dTy.level
+                      (T.mkVar 3)         # I = iTyVal
+                      (T.mkVar 2)         # D = dVal
+                      muFamForInterp      # X = λj. μ I D j
+                      (T.mkVar 0);        # i = i-binder
+                    # `λj:I. μ I D j` under the i+d-binder: shift +2.
+                    muFamForAll = T.mkLam "_j"
+                      (T.mkVar 4)
+                      (T.mkMu (T.mkVar 5) (T.mkVar 4) (T.mkVar 0));
+                    allTyAtTm = T.mkAllD
+                      (T.mkVar 6)         # ℓ = dTy.level
+                      (T.mkVar 4)         # I = iTyVal
+                      (T.mkVar 3)         # D = dVal
+                      (T.mkVar 5)         # K = kEff
+                      muFamForAll         # X = λj. μ I D j
+                      (T.mkVar 2)         # M = pVal
+                      (T.mkVar 1)         # i = i-binder
+                      (T.mkVar 0);        # d = d-binder
+                    retTyAtTm = T.mkApp
+                      (T.mkApp (T.mkVar 3) (T.mkVar 2))
+                      (T.mkDescCon (T.mkVar 4) (T.mkVar 2) (T.mkVar 1));
+                  in V.vPi "i" iTyVal (V.mkClosure extEnv
+                    (T.mkPi "d" interpTyAtTm
+                      (T.mkPi "_" allTyAtTm retTyAtTm)));
               in bindP (P.Case "step") (self.check ctx tm.step stepTy) (stepTm:
                 bindP P.MuIndex (self.check ctx tm.i iTyVal) (iTm:
                   let iVal = E.eval ctx.env iTm; in
@@ -770,6 +853,140 @@ in {
                                   (E.eval ctx.env xTm); in
                     pure { term = T.mkDescInd dTm pTm stepTm iTm xTm;
                            type = retTy; })))))
+
+      # interpD ℓ I D X i : U(ℓ) — kernel-primitive interpretation of a
+      # description (CDMM §4.2.3, Table 6.2). The Tm carries explicit
+      # ℓ, I, D, X, i slots; the rule walks the Π-elim chain enforcing
+      # `D : Desc^ℓ I` and `X : I → U(ℓ)` and synthesises `U(ℓ)`.
+      # Reduction lives in `eval/desc.nix:vInterpDF`.
+      else if t == "interp-d" then
+        let
+          ruleAt = lVal: lTm:
+            bindP P.AnnType (self.check ctx tm.I vU0) (iTm:
+              let iVal = E.eval ctx.env iTm; in
+              bindP P.MuDesc (self.check ctx tm.D (V.vDesc lVal iVal)) (dTm:
+                let
+                  # X : I → U(ℓ). Closure env [lVal]; under the binder,
+                  # the body reads lVal at index 1.
+                  xTy = V.vPi "_" iVal (V.mkClosure [ lVal ]
+                    (T.mkU (T.mkVar 1)));
+                in bindP P.Motive (self.check ctx tm.X xTy) (xTm:
+                  bindP P.MuIndex (self.check ctx tm.i iVal) (iIdxTm:
+                    pure {
+                      term = T.mkInterpD lTm iTm dTm xTm iIdxTm;
+                      type = V.vU lVal;
+                    }))));
+        in
+          if tm.level.tag == "level-zero"
+          then ruleAt V.vLevelZero T.mkLevelZero
+          else bindP P.DElimLevel (self.check ctx tm.level V.vLevel) (lTm:
+            ruleAt (E.eval ctx.env lTm) lTm)
+
+      # allD ℓ I D K X M i d : U(K) — kernel-primitive All-witness type
+      # over a description (CDMM §6.1). The d-binder type is computed
+      # via `E.vInterpD`, which routes through the kernel-primitive
+      # dispatcher rather than the legacy HOAS-elaborated cascade.
+      else if t == "all-d" then
+        let
+          ruleAt = lVal: lTm: kVal: kTm:
+            bindP P.AnnType (self.check ctx tm.I vU0) (iTm:
+              let iVal = E.eval ctx.env iTm; in
+              bindP P.MuDesc (self.check ctx tm.D (V.vDesc lVal iVal)) (dTm:
+                let
+                  dVal = E.eval ctx.env dTm;
+                  xTy = V.vPi "_" iVal (V.mkClosure [ lVal ]
+                    (T.mkU (T.mkVar 1)));
+                in bindP (P.Case "X") (self.check ctx tm.X xTy) (xTm:
+                  let
+                    xVal = E.eval ctx.env xTm;
+                    # M : (i:I) → X i → U(K).
+                    # Closure env [kVal, xVal].
+                    # Under i (outer codomain): [i, kVal, xVal] —
+                    #   xVal at idx 2, i at idx 0.
+                    # Under x (inner body): [x, i, kVal, xVal] —
+                    #   kVal at idx 2.
+                    mTy = V.vPi "i" iVal (V.mkClosure [ kVal xVal ]
+                      (T.mkPi "x"
+                        (T.mkApp (T.mkVar 2) (T.mkVar 0))
+                        (T.mkU (T.mkVar 2))));
+                  in bindP P.Motive (self.check ctx tm.M mTy) (mTm:
+                    bindP P.MuIndex (self.check ctx tm.i iVal) (iIdxTm:
+                      let
+                        iIdxVal = E.eval ctx.env iIdxTm;
+                        interpTy = E.vInterpD lVal iVal dVal xVal iIdxVal;
+                      in bindP P.Scrut (self.check ctx tm.d interpTy) (dDataTm:
+                        pure {
+                          term = T.mkAllD lTm iTm dTm kTm xTm mTm iIdxTm dDataTm;
+                          type = V.vU kVal;
+                        }))))));
+          withK = lVal: lTm:
+            if tm.K.tag == "level-zero"
+            then ruleAt lVal lTm V.vLevelZero T.mkLevelZero
+            else bindP P.DElimLevel (self.check ctx tm.K V.vLevel) (kTm:
+              ruleAt lVal lTm (E.eval ctx.env kTm) kTm);
+        in
+          if tm.level.tag == "level-zero"
+          then withK V.vLevelZero T.mkLevelZero
+          else bindP P.DElimLevel (self.check ctx tm.level V.vLevel) (lTm:
+            withK (E.eval ctx.env lTm) lTm)
+
+      # everywhereD ℓ I D K X M ih i d : allD ℓ I D K X M i d — kernel-
+      # primitive recursor producing an `allD` witness from a per-
+      # recursive-position witness `ih : Π(j:I)(x:X j). M j x`.
+      # Result type computed via `E.vAllD`, the kernel-primitive
+      # dispatcher.
+      else if t == "everywhere-d" then
+        let
+          ruleAt = lVal: lTm: kVal: kTm:
+            bindP P.AnnType (self.check ctx tm.I vU0) (iTm:
+              let iVal = E.eval ctx.env iTm; in
+              bindP P.MuDesc (self.check ctx tm.D (V.vDesc lVal iVal)) (dTm:
+                let
+                  dVal = E.eval ctx.env dTm;
+                  xTy = V.vPi "_" iVal (V.mkClosure [ lVal ]
+                    (T.mkU (T.mkVar 1)));
+                in bindP (P.Case "X") (self.check ctx tm.X xTy) (xTm:
+                  let
+                    xVal = E.eval ctx.env xTm;
+                    mTy = V.vPi "i" iVal (V.mkClosure [ kVal xVal ]
+                      (T.mkPi "x"
+                        (T.mkApp (T.mkVar 2) (T.mkVar 0))
+                        (T.mkU (T.mkVar 2))));
+                  in bindP (P.Case "M") (self.check ctx tm.M mTy) (mTm:
+                    let
+                      mVal = E.eval ctx.env mTm;
+                      # ih : Π(j:I)(x:X j). M j x.
+                      # Closure env [xVal, mVal].
+                      # Under j: [j, xVal, mVal] — xVal at idx 1, j at 0.
+                      # Under x: [x, j, xVal, mVal] —
+                      #   mVal at idx 3, j at 1, x at 0.
+                      ihTy = V.vPi "j" iVal (V.mkClosure [ xVal mVal ]
+                        (T.mkPi "x"
+                          (T.mkApp (T.mkVar 1) (T.mkVar 0))
+                          (T.mkApp (T.mkApp (T.mkVar 3) (T.mkVar 1)) (T.mkVar 0))));
+                    in bindP (P.Case "ih") (self.check ctx tm.ih ihTy) (ihTm:
+                      bindP P.MuIndex (self.check ctx tm.i iVal) (iIdxTm:
+                        let
+                          iIdxVal = E.eval ctx.env iIdxTm;
+                          interpTy = E.vInterpD lVal iVal dVal xVal iIdxVal;
+                        in bindP P.Scrut (self.check ctx tm.d interpTy) (dDataTm:
+                          let
+                            dDataVal = E.eval ctx.env dDataTm;
+                            resultTy = E.vAllD lVal iVal dVal kVal xVal mVal iIdxVal dDataVal;
+                          in pure {
+                            term = T.mkEverywhereD lTm iTm dTm kTm xTm mTm ihTm iIdxTm dDataTm;
+                            type = resultTy;
+                          })))))));
+          withK = lVal: lTm:
+            if tm.K.tag == "level-zero"
+            then ruleAt lVal lTm V.vLevelZero T.mkLevelZero
+            else bindP P.DElimLevel (self.check ctx tm.K V.vLevel) (kTm:
+              ruleAt lVal lTm (E.eval ctx.env kTm) kTm);
+        in
+          if tm.level.tag == "level-zero"
+          then withK V.vLevelZero T.mkLevelZero
+          else bindP P.DElimLevel (self.check ctx tm.level V.vLevel) (lTm:
+            withK (E.eval ctx.env lTm) lTm)
 
       # Primitive literals infer their types
       else if t == "string-lit" then pure { term = T.mkStringLit tm.value; type = V.vString; }
@@ -803,7 +1020,28 @@ in {
             let boolVal = V.vMu V.vUnit (V.vDescPlus (V.vDescRet V.vTt) (V.vDescRet V.vTt)) V.vTt;
             in pure { term = T.mkStrEq lhsTm rhsTm; type = boolVal; }))
 
-      else if t == "pi" || t == "sigma" || t == "list" || t == "sum" || t == "eq" || t == "mu" then
+      # `recTrunc A B f x : Squash B` for `f : A → Squash B`,
+      # `x : Squash A`. The motive is restricted to `Squash _` by the
+      # shape of `fTy` — any non-Squash codomain fails the check on `f`.
+      # `bVal` is captured at extEnv index 0 so the closure body
+      # references it via `Var 1` (post-arg-push).
+      else if t == "squash-elim" then
+        bind (self.checkType ctx tm.A) (aTm:
+          bind (self.checkType ctx tm.B) (bTm:
+            let
+              aVal = E.eval ctx.env aTm;
+              bVal = E.eval ctx.env bTm;
+              extEnv = [ bVal ] ++ ctx.env;
+              fTy = V.vPi "_" aVal
+                      (V.mkClosure extEnv (T.mkSquash (T.mkVar 1)));
+              xTy = V.vSquash aVal;
+            in
+            bind (self.check ctx tm.f fTy) (fTm:
+              bind (self.check ctx tm.x xTy) (xTm:
+                pure { term = T.mkSquashElim aTm bTm fTm xTm;
+                       type = V.vSquash bVal; }))))
+
+      else if t == "pi" || t == "sigma" || t == "list" || t == "sum" || t == "eq" || t == "mu" || t == "squash" then
         bind (self.checkTypeLevel ctx tm) (r:
           pure { term = r.term; type = V.vU r.level; })
 

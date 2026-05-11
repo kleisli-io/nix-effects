@@ -151,26 +151,70 @@ in {
             actualLev = if lv == null then V.vLevelZero else lv;
         in pure { term = resTm; level = actualLev; })
       else bind (self.infer ctx dTm) (dResult:
-        let dTy = dResult.type; in
-        if dTy.tag != "VDesc"
-        then send "typeError" {
+        let
+          dTy = dResult.type;
+          # Recognise an encoded description type `μ⊤(descDesc I L) tt`
+          # via the §6.6 conv rule: build `vDesc lev iTyVal` for a
+          # candidate `lev` and ask conv whether it matches `dTy`. Conv
+          # fires the symmetric `VDesc ↔ VMu` unfolding internally —
+          # this is the same mechanism used at conv.nix:344-355. The
+          # candidate-level scan is bounded by the prelude's maximum
+          # description level (descriptions at L ≥ 4 are not exercised
+          # by current prelude code; can extend if pathological cases
+          # emerge).
+          tryDescAtLevel = lev:
+            if C.conv ctx.depth (V.vDesc lev iTyVal) dTy
+            then lev else null;
+          scanLevels = candidates:
+            if candidates == [] then null
+            else
+              let
+                lev = builtins.head candidates;
+                hit = tryDescAtLevel lev;
+              in if hit != null then hit
+                 else scanLevels (builtins.tail candidates);
+          # Common prelude levels in increasing order. L=0 is the
+          # ⊤-slice; L=1 is descDesc itself; L=2/3 cover descriptions
+          # of descriptions of descriptions and similar nesting.
+          candidateLevels =
+            let l0 = V.vLevelZero;
+                l1 = V.vLevelSuc l0;
+                l2 = V.vLevelSuc l1;
+                l3 = V.vLevelSuc l2;
+            in [ l0 l1 l2 l3 ];
+        in
+        if dTy.tag == "VDesc"
+        then if !(C.conv ctx.depth dTy.I iTyVal)
+             then send "typeError" {
+               error = D.mkKernelError {
+                 rule     = "checkDescAtAnyLevel";
+                 msg      = "description index type mismatch";
+                 expected = Q.quote ctx.depth iTyVal;
+                 got      = Q.quote ctx.depth dTy.I;
+               };
+             }
+             else pure { term = dResult.term; level = dTy.level; }
+        else if dTy.tag == "VMu"
+        then
+          let matchedLev = scanLevels candidateLevels; in
+          if matchedLev != null
+          then pure { term = dResult.term; level = matchedLev; }
+          else send "typeError" {
+            error = D.mkKernelError {
+              rule     = "checkDescAtAnyLevel";
+              msg      = "encoded description type does not match expected index";
+              expected = Q.quote ctx.depth iTyVal;
+              got      = Q.quote ctx.depth dTy;
+            };
+          }
+        else send "typeError" {
           error = D.mkKernelError {
             rule     = "checkDescAtAnyLevel";
             msg      = "expected description type";
             expected = { tag = "desc"; };
             got      = Q.quote ctx.depth dTy;
           };
-        }
-        else if !(C.conv ctx.depth dTy.I iTyVal)
-        then send "typeError" {
-          error = D.mkKernelError {
-            rule     = "checkDescAtAnyLevel";
-            msg      = "description index type mismatch";
-            expected = Q.quote ctx.depth iTyVal;
-            got      = Q.quote ctx.depth dTy.I;
-          };
-        }
-        else pure { term = dResult.term; level = dTy.level; });
+        });
     checkTypeLevel = ctx: tm:
       let t = tm.tag; in
       if t == "nat" then pure { term = T.mkNat; level = V.vLevelZero; }
@@ -219,6 +263,11 @@ in {
           bind (self.check ctx tm.lhs aVal) (lTm:
             bind (self.check ctx tm.rhs aVal) (rTm:
               pure { term = T.mkEq ar.term lTm rTm; level = ar.level; })))
+      # `Squash A : U(l)` for `A : U(l)` — propositional truncation
+      # preserves the universe level.
+      else if t == "squash" then
+        bind (self.checkTypeLevel ctx tm.A) (ar:
+          pure { term = T.mkSquash ar.term; level = ar.level; })
       else if t == "desc" then
         # `desc^k I : U(suc k)` — I is a small type, k a level.
         let

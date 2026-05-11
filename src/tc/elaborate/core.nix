@@ -248,57 +248,27 @@ in {
         else if builtins.isFunction value then H.opaqueLam value hoasTy
         else throw "elaborateValue: Pi type expects function, got ${builtins.typeOf value}"
 
-      # μ-form types — covers `H.nat` / `H.bool` / `H.unit` (all
-      # `_htag = "mu"` μ-forms defined in `H`) and any raw `mu D`
-      # construction whose description reifies into one of the five
-      # recognised prelude shapes (bool, unit, nat, list, sum). Under
-      # the plus-coproduct encoding, n>=2 ctor datatypes are plus-trees;
-      # detection inspects `D.A` / `D.B` directly (no bool-tag
-      # instantiation). Element types for list/sum shapes are recovered
-      # via `reifyType` — the lossy fallback when no HOAS surface is
-      # available. The primary path for `H.listOf` / `H.sum` is the
-      # app-branch below, which preserves parameter HOAS directly.
+      # μ-form types — covers `H.nat` / `H.bool` (both `_htag = "mu"` μ-forms
+      # carrying `_dtypeMeta`). Surface dispatch reads constructor field-kind
+      # signatures from metadata, mirroring the "app" branch's pattern for
+      # parametric types. This keeps surface elaboration invariant under the
+      # kernel's choice of description representation (primitive `VDescPlus`
+      # vs encoded `VDescCon`); the elaborator never inspects kernel `D`.
+      # `H.unit` has `_htag = "unit"` and never reaches this branch.
       else if t == "mu" then
-        let
-          tyVal = E.eval [] (H.elab hoasTy);
-          D = tyVal.D;
-        in
-        # Unit shape: a bare retI-only description (`unitDesc = retI
-        # ttPrim`). Route to the scalar "unit" branch — `null ↔ H.tt`.
-        if D.tag == "VDescRet"
-        then self.elaborateValue { _htag = "unit"; } value
-        else if D.tag != "VDescPlus"
-        then throw "elaborateValue: unsupported μ-shape (D.tag=${D.tag})"
+        let meta = hoasTy._dtypeMeta or null; in
+        if meta == null
+        then throw "elaborateValue: 'mu' HOAS node lacks _dtypeMeta; bare `muI` constructions are not value-elaboratable (use H.nat / H.bool, or build via H.datatype / H.datatypeP)"
         else
-          let A = D.A; B = D.B; in
-          # Bool shape: plus of two retI leaves. Route to scalar "bool".
-          if A.tag == "VDescRet" && A.j.tag == "VTt"
-             && B.tag == "VDescRet" && B.j.tag == "VTt"
-          then self.elaborateValue { _htag = "bool"; } value
-          # Nat shape: plus descRet (descRec descRet).
-          else if A.tag == "VDescRet"
-               && B.tag == "VDescRec" && B.D.tag == "VDescRet"
-          then self.elaborateValue { _htag = "nat"; } value
-          # List shape: plus descRet (descArg elem (_: descRec descRet)).
-          else if A.tag == "VDescRet"
-               && B.tag == "VDescArg"
-               && (let body = E.instantiate B.T V.vTt; in
-                   body.tag == "VDescRec" && body.D.tag == "VDescRet")
-          then self.elaborateValue
-                 { _htag = "list"; elem = self.reifyType B.S; }
-                 value
-          # Sum shape: plus (descArg l (_: descRet)) (descArg r (_: descRet)).
-          else if A.tag == "VDescArg"
-               && B.tag == "VDescArg"
-               && (let bA = E.instantiate A.T V.vTt;
-                       bB = E.instantiate B.T V.vTt; in
-                   bA.tag == "VDescRet" && bB.tag == "VDescRet")
-          then self.elaborateValue
-                 { _htag = "sum";
-                   left = self.reifyType A.S;
-                   right = self.reifyType B.S; }
-                 value
-          else throw "elaborateValue: unsupported μ-shape (A=${A.tag}, B=${B.tag})"
+          let
+            fieldKinds = c: map (f: f.kind) c.fields;
+            sigs = map fieldKinds meta.cons;
+            isBoolSig = sigs == [ [] [] ];
+            isNatSig  = sigs == [ [] [ "recAt" ] ];
+          in
+          if isBoolSig then self.elaborateValue { _htag = "bool"; } value
+          else if isNatSig then self.elaborateValue { _htag = "nat"; } value
+          else throw "elaborateValue: μ-shape '${meta.name}' has no scalar value-walker (constructor signatures = ${builtins.toJSON sigs}); list/sum/parametric shapes flow through the 'app' branch"
 
       # App-spine types — `app^k head A1 … Ak` where `head` is a polyField
       # carrying `_dtypeMeta` (e.g. `ListDT.T`/`SumDT.T` from `H.listOf`/
@@ -489,44 +459,23 @@ in {
         if (builtins.isAttrs value && value ? _hoasImpl) || builtins.isFunction value then []
         else [{ inherit path; msg = "expected function, got ${builtins.typeOf value}"; }]
 
-      # μ-form types — mirror the elaborateValue "mu" branch: detect
-      # prelude shape via kernel-description inspection and delegate
-      # to the corresponding bool/unit/nat/list/sum branch.
+      # μ-form types — mirror the elaborateValue "mu" branch. Dispatch on
+      # `_dtypeMeta` constructor signatures so accept/reject parity holds
+      # under any kernel description representation.
       else if t == "mu" then
-        let
-          tyVal = E.eval [] (H.elab hoasTy);
-          D = tyVal.D;
-        in
-        if D.tag == "VDescRet"
-        then self.validateValue path { _htag = "unit"; } value
-        else if D.tag != "VDescPlus"
-        then [{ inherit path; msg = "unsupported μ-shape (D.tag=${D.tag})"; }]
+        let meta = hoasTy._dtypeMeta or null; in
+        if meta == null
+        then [{ inherit path; msg = "'mu' HOAS node lacks _dtypeMeta; bare `muI` constructions are not value-validatable"; }]
         else
-          let A = D.A; B = D.B; in
-          if A.tag == "VDescRet" && A.j.tag == "VTt"
-             && B.tag == "VDescRet" && B.j.tag == "VTt"
-          then self.validateValue path { _htag = "bool"; } value
-          else if A.tag == "VDescRet"
-               && B.tag == "VDescRec" && B.D.tag == "VDescRet"
-          then self.validateValue path { _htag = "nat"; } value
-          else if A.tag == "VDescRet"
-               && B.tag == "VDescArg"
-               && (let body = E.instantiate B.T V.vTt; in
-                   body.tag == "VDescRec" && body.D.tag == "VDescRet")
-          then self.validateValue path
-                 { _htag = "list"; elem = self.reifyType B.S; }
-                 value
-          else if A.tag == "VDescArg"
-               && B.tag == "VDescArg"
-               && (let bA = E.instantiate A.T V.vTt;
-                       bB = E.instantiate B.T V.vTt; in
-                   bA.tag == "VDescRet" && bB.tag == "VDescRet")
-          then self.validateValue path
-                 { _htag = "sum";
-                   left = self.reifyType A.S;
-                   right = self.reifyType B.S; }
-                 value
-          else [{ inherit path; msg = "unsupported μ-shape (A=${A.tag}, B=${B.tag})"; }]
+          let
+            fieldKinds = c: map (f: f.kind) c.fields;
+            sigs = map fieldKinds meta.cons;
+            isBoolSig = sigs == [ [] [] ];
+            isNatSig  = sigs == [ [] [ "recAt" ] ];
+          in
+          if isBoolSig then self.validateValue path { _htag = "bool"; } value
+          else if isNatSig then self.validateValue path { _htag = "nat"; } value
+          else [{ inherit path; msg = "μ-shape '${meta.name}' has no scalar value-walker (constructor signatures = ${builtins.toJSON sigs})"; }]
 
       # App-spine types — mirror of elaborateValue's "app" branch. Peel the
       # spine to the polyField head, read `_dtypeMeta.cons` for shape

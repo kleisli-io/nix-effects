@@ -55,15 +55,15 @@ in {
         inherit (self) retI recI descArg descPi conDesc;
         isUnitI = (I._htag or null) == "unit";
       in
-      if fields == [] then retI (targetIdx prev)
+      if fields == [] then retI I 0 (targetIdx prev)
       else let
         f = builtins.head fields;
         rest = builtins.tail fields;
         k = f.kind;
       in
-        if      k == "data"  then descArg 0 f.type          (v: conDesc I (prev // { ${f.name} = v; }) rest targetIdx)
-        else if k == "dataD" then descArg 0 (f.typeFn prev) (v: conDesc I (prev // { ${f.name} = v; }) rest targetIdx)
-        else if k == "recAt" then recI (f.idxFn prev) (conDesc I prev rest targetIdx)
+        if      k == "data"  then descArg I 0 f.type          (v: conDesc I (prev // { ${f.name} = v; }) rest targetIdx)
+        else if k == "dataD" then descArg I 0 (f.typeFn prev) (v: conDesc I (prev // { ${f.name} = v; }) rest targetIdx)
+        else if k == "recAt" then recI I 0 (f.idxFn prev) (conDesc I prev rest targetIdx)
         else if k == "pi"    then
           if isUnitI
           then descPi 0 f.S (conDesc I prev rest targetIdx)
@@ -84,9 +84,9 @@ in {
     # plus-based shape used by the prelude descriptions (`natDesc` /
     # `listDesc` / `sumDesc` / `boolDesc` at `hoas/desc.nix` and
     # `hoas/combinators.nix`).
-    spineDesc = descs:
+    spineDesc = I: descs:
       let
-        inherit (self) plus spineDesc;
+        inherit (self) plusI spineDesc;
         n = builtins.length descs;
       in
       if n == 0 then throw "datatype: n=0 rejected (use H.void)"
@@ -95,7 +95,7 @@ in {
         let
           D1 = builtins.elemAt descs 0;
           rest = builtins.tail descs;
-        in plus D1 (spineDesc rest);
+        in plusI I 0 D1 (spineDesc I rest);
 
     # payloadTuple xs : Hoas
     # Build a right-nested pair from an ordered list of HOAS terms.
@@ -108,32 +108,65 @@ in {
       if xs == [] then refl
       else pair (builtins.head xs) (payloadTuple (builtins.tail xs));
 
-    # encodeTag I dOuter descsHoas targetIdxVal t payload : Hoas
+    # encodeTagPrim I dOuter descsHoas targetIdxVal t payload : Hoas
     # Wrap `payload` with the (n-1)-deep plus-coproduct prefix committing
     # at position t (0-based) out of n total. Mirrors spineDesc
     # structurally: at every layer the L/R type arguments are the interps
     # of the current summand and the plus-tree of the remaining summands
     # respectively, under the muFam `λi:I. μI I dOuter i`, evaluated at
     # the constructor's `targetIdxVal`. `inlPrim L R` at position t=0;
-    # otherwise `inrPrim L R (encodeTag ... (t-1) (rest) payload)`. n=1
-    # has no prefix. `descsHoas` must have length >= 1; the singleton
-    # case returns `payload` directly.
-    encodeTag = I: dOuter: descsHoas: targetIdxVal: t: payload:
+    # otherwise `inrPrim L R (encodeTagPrim ... (t-1) (rest) payload)`.
+    # n=1 has no prefix. `descsHoas` must have length >= 1; the
+    # singleton case returns `payload` directly.
+    #
+    # Primitive variant — consumed by `descEncodingCtx` and `iso`,
+    # whose `descsHoas` are primitive HOAS descs (descArg/descPiAt/
+    # descRec/descRet built via `*Prim` combinators). The L/R type
+    # slots emit kernel-primitive `interp-d` Tms whose `vInterpDF`
+    # dispatch handles primitive VDescX shapes uniformly (CDMM §4.2.3
+    # Table 6.2). The encoded-surface variant is `encodeTag` below.
+    encodeTagPrim = I: dOuter: descsHoas: targetIdxVal: t: payload:
       let
-        inherit (self) plus inlPrim inrPrim interpHoasAt
-                        muI lam encodeTag;
+        inherit (self) plusPrim inlPrim inrPrim interpD
+                        muI lam encodeTagPrim;
         n = builtins.length descsHoas;
         muFam = lam "_i" I (iArg: muI I dOuter iArg);
-        # Plus-spine of summands starting at index k. Requires
-        # `n - k >= 1`.
         spineAfter = k:
           let remaining = n - k; in
           if remaining == 1 then builtins.elemAt descsHoas k
-          else plus (builtins.elemAt descsHoas k) (spineAfter (k + 1));
-        # `datatype` descriptions live at `desc^0` — every constructor's
-        # arg/pi summands take their sort `S` from `U(0)`. The
-        # `interpHoasAt 0` makes that explicit.
-        interpAt = dH: interpHoasAt 0 I dH muFam targetIdxVal;
+          else plusPrim (builtins.elemAt descsHoas k) (spineAfter (k + 1));
+        interpAt = dH: interpD 0 I dH muFam targetIdxVal;
+      in
+      if n == 1 then payload
+      else
+        let
+          lTy = interpAt (builtins.elemAt descsHoas 0);
+          rTy = interpAt (spineAfter 1);
+          rest = builtins.tail descsHoas;
+        in
+        if t == 0 then inlPrim lTy rTy payload
+        else inrPrim lTy rTy
+               (encodeTagPrim I dOuter rest targetIdxVal (t - 1) payload);
+
+    # encodeTag I dOuter descsHoas targetIdxVal t payload : Hoas
+    # Encoded-surface variant. `descsHoas` are encoded HOAS descs
+    # (built via the unsuffixed combinators); the spine plus-folds
+    # through `plusI I 0`. The per-layer L/R interp emits kernel-
+    # primitive `interp-d` Tms whose `vInterpDF` dispatch handles
+    # encoded VDescCon shapes uniformly via the canonical-form path
+    # (CDMM §4.2.3). Consumed by `_datatypeImpl`'s constructor body
+    # assembly.
+    encodeTag = I: dOuter: descsHoas: targetIdxVal: t: payload:
+      let
+        inherit (self) plusI inlPrim inrPrim interpD
+                        muI lam encodeTag;
+        n = builtins.length descsHoas;
+        muFam = lam "_i" I (iArg: muI I dOuter iArg);
+        spineAfter = k:
+          let remaining = n - k; in
+          if remaining == 1 then builtins.elemAt descsHoas k
+          else plusI I 0 (builtins.elemAt descsHoas k) (spineAfter (k + 1));
+        interpAt = dH: interpD 0 I dH muFam targetIdxVal;
       in
       if n == 1 then payload
       else
@@ -158,11 +191,12 @@ in {
     _datatypeImpl = { I, indexed, name, consList }:
       let
         inherit (self)
-          u forall lam let_ app ann fst_ snd_ pair
+          u forall lam let_ app ann annTrusted
+          fst_ snd_ pair
           ttPrim unitPrim
-          plus sumPrim inlPrim inrPrim sumElimPrim
+          plusI sumPrim inlPrim inrPrim sumElimPrim
           eq refl j
-          muI descI descCon descInd interpHoasAt allHoasAt
+          muI descI descCon descInd interpD allD
           conDesc spineDesc payloadTuple encodeTag;
 
         n = builtins.length consList;
@@ -179,13 +213,15 @@ in {
           in builtins.foldl' step null idxs;
 
         conDescs = map (c: conDesc I {} c.fields c.targetIdx) consList;
-        # The description spine contains bare canonical forms (e.g.,
-        # `retI j` carries a bare canonical j with no infer rule under
-        # bidirectional discipline). `ann _ (descI I)` lets every
-        # consumer (the `mu` type rule, `descCon`'s D, `descInd`'s D)
-        # check the spine in CHECK mode against `Desc I`, where the
-        # bare canonical forms are accepted by the existing check rules.
-        D = ann (spineDesc conDescs) (descI I);
+        # `spineDesc` plus-folds `conDescs` via `plusI I 0` — every
+        # combinator under it (`retI`, `descArg`, `descRec`, `descPi`,
+        # `plusI`) emits encoded HOAS, so the spine elaborates to a
+        # `mkApp` chain over `encodeDescPlus_Tm`/etc. and evaluates to
+        # `VDescCon`. `annTrusted` wraps the closed encoded body with
+        # the kernel `Desc` ascription without re-checking — the body
+        # is well-typed by construction (the encoder lambdas have
+        # known polymorphic types).
+        D = annTrusted (spineDesc I conDescs) (descI I);
         # Bare μ at the constant ⊤ index. The exposed `T` at
         # indexed=false, and the field type of `pi` / `piD` binders
         # (which are only valid at I=⊤ — see conDesc).
@@ -482,20 +518,20 @@ in {
               restD = builtins.tail descs;
               restS = builtins.tail steps;
               restC = builtins.tail cons;
-              restSpine = spineDesc restD;
+              restSpine = spineDesc I restD;
               # Interp types of the two summands at the current iArg:
               # the outer plus's interp reduces to `Sum lInterp rInterp`
               # (kernel Sum), and `payload : Sum lInterp rInterp` is
               # dispatched via `sumElimPrim`.
-              lInterp = interpHoasAt 0 I D1 muFam iArg;
-              rInterp = interpHoasAt 0 I restSpine muFam iArg;
+              lInterp = interpD 0 I D1 muFam iArg;
+              rInterp = interpD 0 I restSpine muFam iArg;
               # Sum-elim motive: each summand inhabits this Pp-target
               # rebuilt through `ctx (inlPrim/inrPrim …)`.
               sumMot = lam "s" (sumPrim lInterp rInterp) (s:
-                forall "rih" (allHoasAt 0 K I D (plus D1 restSpine) Pp iArg s) (_:
+                forall "rih" (allD 0 I (plusI I 0 D1 restSpine) K muFam Pp iArg s) (_:
                   app (app Pp iArg) (descCon D iArg (ctx s))));
               onInl = lam "r" lInterp (r:
-                      lam "rih" (allHoasAt 0 K I D D1 Pp iArg r) (rih:
+                      lam "rih" (allD 0 I D1 K muFam Pp iArg r) (rih:
                         let targetIdx_c1 = c1.targetIdx (prevOfPayload c1 r); in
                         jTransportLeaf targetIdx_c1
                           (local: ctx (inlPrim lInterp rInterp local))
@@ -503,7 +539,7 @@ in {
                           (buildStepApply s1 c1 r rih)));
               ctx' = local: ctx (inrPrim lInterp rInterp local);
               onInr = lam "r" rInterp (r:
-                      lam "rih" (allHoasAt 0 K I D restSpine Pp iArg r) (rih:
+                      lam "rih" (allD 0 I restSpine K muFam Pp iArg r) (rih:
                         dispatchStep K Pp iArg ctx' restD restS restC r rih));
             in app (sumElimPrim lInterp rInterp sumMot onInl onInr payload)
                  payloadIH;
@@ -546,13 +582,13 @@ in {
         # indexed=true — the step function is always `λi:I. λd:⟦D⟧ muFam
         # i. λih:All D D Pp i d. dispatchStep Pp i id conDescs steps cons
         # d ih`. `K` is the motive's codomain universe and flows into
-        # `allHoasAt` so the internal pTy binder accepts a `Pp` whose
+        # `allD` so the internal pTy binder accepts a `Pp` whose
         # codomain lives at U(K). The scrutinee description level `L = 0`
         # — `datatype` constructors all bind their sorts at `U(0)`.
         indStep = K: Pp: steps:
           lam "i" I (iArg:
-          lam "d" (interpHoasAt 0 I D muFam iArg) (d:
-          lam "ih" (allHoasAt 0 K I D D Pp iArg d) (ih:
+          lam "d" (interpD 0 I D muFam iArg) (d:
+          lam "ih" (allD 0 I D K muFam Pp iArg d) (ih:
             dispatchStep K Pp iArg (x: x) conDescs steps consList d ih)));
 
         elimTy = K:

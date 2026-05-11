@@ -21,12 +21,14 @@ let
     vLam vPi vSigma vPair vNat vZero vSucc
     vList vNil vCons
     vUnit vTt vSum vInl vInr vEq vRefl vFunext vU vNe
+    vSquash vSquashIntro
     vLevel vLevelZero vLevelSuc vLevelMax
     vLift vLiftIntro
     vDesc vDescRet vDescArg vDescRec vDescPi vDescPlus vMu vDescCon
     vString vInt vFloat vAttrs vPath vFunction vAny
     vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit
-    eApp eFst eSnd eNatElim eListElim eSumElim eJ eStrEq eLiftElim eNatToLevel;
+    eApp eFst eSnd eNatElim eListElim eSumElim eJ eStrEq eLiftElim eNatToLevel
+    eSquashElim;
 
   # Cached `U(0)` value. `mkU mkLevelZero` produces a term whose `level` is the
   # `level-zero` singleton; evaluating under the U-case returns this
@@ -173,6 +175,16 @@ in {
         vNe eq.level (eq.spine ++ [ (eJ type lhs motive base rhs) ])
       else throw "tc: vJ on non-eq (tag=${eq.tag})";
 
+    # `recTrunc A B f x` for `x : Squash A` returning `Squash B`.
+    # β-reduces on canonical `VSquashIntro a` to `f a`; on stuck `VNe`
+    # appends an `ESquashElim` frame. Throws on any other shape — INFER
+    # rejects `recTrunc` of a non-Squash value before evaluation.
+    vSquashElimF = fuel: A: B: f: x:
+      if x.tag == "VSquashIntro" then self.vAppF fuel f x.a
+      else if x.tag == "VNe"
+      then vNe x.level (x.spine ++ [ (eSquashElim A B f) ])
+      else throw "tc: vSquashElim on non-Squash (tag=${x.tag})";
+
     # Lift type-former. `Lift l m eq A : U(m)` is the type of values of
     # `A : U(l)` transported up to `U(m)`. Conv collapses idempotently
     # when `convLevel l m` (the load-bearing backward-compat rule for
@@ -297,6 +309,11 @@ in {
         self.vJ (ev tm.type) (ev tm.lhs) (ev tm.motive)
           (ev tm.base) (ev tm.rhs) (ev tm.eq)
 
+      else if t == "squash"       then vSquash (ev tm.A)
+      else if t == "squash-intro" then vSquashIntro (ev tm.a)
+      else if t == "squash-elim"  then
+        self.vSquashElimF f (ev tm.A) (ev tm.B) (ev tm.f) (ev tm.x)
+
       # Descriptions
       else if t == "desc" then
         # Level-zero fast-path: the prelude `desc I` (= desc^0 I) is
@@ -347,12 +364,22 @@ in {
           dVal = ev tm.D;
           # Classify plus D. null declines the trampoline; otherwise
           # returns the linear profile and which side (`inl`/`inr`)
-          # carries the recursive summand.
+          # carries the recursive summand. Handles both primitive
+          # `VDescPlus` and encoded `VDescCon` (idx=4 plus summand of
+          # descDesc); for the encoded case the payload's `(A_enc,
+          # (B_enc, refl))` triple supplies the two sub-descriptions.
+          plusSides =
+            if dVal.tag == "VDescPlus" then { A = dVal.A; B = dVal.B; }
+            else if dVal.tag == "VDescCon" then
+              let info = self.decodeDescCaseF dVal; in
+              if info == null || info.idx != 4 then null
+              else { A = info.payload.fst; B = info.payload.snd.fst; }
+            else null;
           classify =
-            if dVal.tag != "VDescPlus" then null
+            if plusSides == null then null
             else
-              let pA = self.linearProfileF f dVal.A;
-                  pB = self.linearProfileF f dVal.B;
+              let pA = self.linearProfileF f plusSides.A;
+                  pB = self.linearProfileF f plusSides.B;
               in if pA != null && pB == null then { profile = pA; side = "inl"; }
                  else if pB != null && pA == null then { profile = pB; side = "inr"; }
                  else null;
@@ -431,6 +458,27 @@ in {
         self.vDescElimF f (ev tm.k) (ev tm.motive) (ev tm.onRet) (ev tm.onArg)
           (ev tm.onRec) (ev tm.onPi) (ev tm.onPlus) (ev tm.scrut)
 
+      # Kernel-primitive `interpD` / `allD` / `everywhereD`. Level-zero
+      # fast-path on `tm.level` (and `tm.K` where present) mirrors the
+      # `desc-arg` shape — the prelude's homogeneous-at-zero call sites
+      # bypass the eval pipeline on a `mkLevelZero` literal.
+      else if t == "interp-d" then
+        self.vInterpDF f
+          (if tm.level.tag == "level-zero" then vLevelZero else ev tm.level)
+          (ev tm.I) (ev tm.D) (ev tm.X) (ev tm.i)
+      else if t == "all-d" then
+        self.vAllDF f
+          (if tm.level.tag == "level-zero" then vLevelZero else ev tm.level)
+          (ev tm.I) (ev tm.D)
+          (if tm.K.tag == "level-zero" then vLevelZero else ev tm.K)
+          (ev tm.X) (ev tm.M) (ev tm.i) (ev tm.d)
+      else if t == "everywhere-d" then
+        self.vEverywhereDF f
+          (if tm.level.tag == "level-zero" then vLevelZero else ev tm.level)
+          (ev tm.I) (ev tm.D)
+          (if tm.K.tag == "level-zero" then vLevelZero else ev tm.K)
+          (ev tm.X) (ev tm.M) (ev tm.ih) (ev tm.i) (ev tm.d)
+
       # Lift primitive. Level-zero fast-path on `tm.l` / `tm.m` mirrors
       # the `desc-arg` / `desc-pi` shape — both slots are most often
       # `mkLevelZero` for the prelude's homogeneous-at-zero call sites,
@@ -497,6 +545,7 @@ in {
     vListElim = self.vListElimF self.defaultFuel;
     vSumElim = self.vSumElimF self.defaultFuel;
     vNatToLevel = self.vNatToLevelF self.defaultFuel;
+    vSquashElim = self.vSquashElimF self.defaultFuel;
   };
 
   tests = let
@@ -616,6 +665,40 @@ in {
     "eval-eq" = { expr = (eval [] (T.mkEq T.mkNat T.mkZero T.mkZero)).tag; expected = "VEq"; };
     "eval-refl" = { expr = (eval [] T.mkRefl).tag; expected = "VRefl"; };
     "eval-funext" = { expr = (eval [] T.mkFunext).tag; expected = "VFunext"; };
+    "eval-squash" = { expr = (eval [] (T.mkSquash T.mkUnit)).tag; expected = "VSquash"; };
+    "eval-squash-A" = { expr = (eval [] (T.mkSquash T.mkUnit)).A.tag; expected = "VUnit"; };
+    "eval-squash-intro" = {
+      expr = (eval [] (T.mkSquashIntro T.mkTt)).tag;
+      expected = "VSquashIntro";
+    };
+    "eval-squash-intro-a" = {
+      expr = (eval [] (T.mkSquashIntro T.mkTt)).a.tag;
+      expected = "VTt";
+    };
+    "eval-squash-elim-beta" = {
+      # recTrunc Unit Unit (λ_:Unit. squashIntro tt) (squashIntro tt) → squashIntro tt
+      expr = let
+        f = T.mkLam "_" T.mkUnit (T.mkSquashIntro T.mkTt);
+        e = T.mkSquashElim T.mkUnit T.mkUnit f (T.mkSquashIntro T.mkTt);
+      in (eval [] e).tag;
+      expected = "VSquashIntro";
+    };
+    "eval-squash-elim-stuck" = {
+      # recTrunc on a stuck VNe leaves an ESquashElim spine frame.
+      expr = let
+        f = T.mkLam "_" T.mkUnit (T.mkSquashIntro T.mkTt);
+        e = T.mkSquashElim T.mkUnit T.mkUnit f (T.mkVar 0);
+      in (eval [ (freshVar 0) ] e).tag;
+      expected = "VNe";
+    };
+    "eval-squash-elim-stuck-spine-tag" = {
+      expr = let
+        f = T.mkLam "_" T.mkUnit (T.mkSquashIntro T.mkTt);
+        e = T.mkSquashElim T.mkUnit T.mkUnit f (T.mkVar 0);
+        r = eval [ (freshVar 0) ] e;
+      in (builtins.head r.spine).tag;
+      expected = "ESquashElim";
+    };
     "eval-j-refl" = {
       # J(Nat, 0, P, base, 0, refl) = base
       expr = (eval [ vNat vZero (freshVar 2) vZero vZero ]
@@ -804,6 +887,70 @@ in {
       expr = (eval [ (freshVar 0) ] (T.mkDescElim T.mkLevelZero
         T.mkUnit T.mkUnit T.mkUnit T.mkUnit T.mkUnit T.mkUnit (T.mkVar 0))).tag;
       expected = "VNe";
+    };
+
+    # interp-d / all-d / everywhere-d Tm dispatch.
+    "eval-interp-d-ret" = {
+      # interpD 0 Unit (descRet tt) (λ_:Unit. Nat) tt = Lift 0 0 _ (Eq Unit tt tt) ≡ Eq Unit tt tt.
+      expr = (eval [] (T.mkInterpD T.mkLevelZero T.mkUnit
+        (T.mkDescRet T.mkTt)
+        (T.mkLam "_" T.mkUnit T.mkNat)
+        T.mkTt)).tag;
+      expected = "VEq";
+    };
+    "eval-interp-d-stuck" = {
+      # interpD on a stuck D produces VNe with EInterpD frame.
+      expr = (eval [ (freshVar 0) ] (T.mkInterpD T.mkLevelZero T.mkUnit
+        (T.mkVar 0) (T.mkLam "_" T.mkUnit T.mkNat) T.mkTt)).tag;
+      expected = "VNe";
+    };
+    "eval-interp-d-stuck-spine-tag" = {
+      expr = let
+        r = eval [ (freshVar 0) ] (T.mkInterpD T.mkLevelZero T.mkUnit
+          (T.mkVar 0) (T.mkLam "_" T.mkUnit T.mkNat) T.mkTt);
+      in (builtins.head r.spine).tag;
+      expected = "EInterpD";
+    };
+    "eval-all-d-ret" = {
+      # allD 0 Unit (descRet tt) 0 X M tt refl = Lift 0 0 _ Unit ≡ Unit.
+      expr = (eval [] (T.mkAllD T.mkLevelZero T.mkUnit
+        (T.mkDescRet T.mkTt) T.mkLevelZero
+        (T.mkLam "_" T.mkUnit T.mkNat)
+        (T.mkLam "i" T.mkUnit (T.mkLam "_" T.mkNat (T.mkU T.mkLevelZero)))
+        T.mkTt T.mkRefl)).tag;
+      expected = "VUnit";
+    };
+    "eval-all-d-stuck-spine-tag" = {
+      expr = let
+        r = eval [ (freshVar 0) ] (T.mkAllD T.mkLevelZero T.mkUnit
+          (T.mkVar 0) T.mkLevelZero
+          (T.mkLam "_" T.mkUnit T.mkNat)
+          (T.mkLam "i" T.mkUnit (T.mkLam "_" T.mkNat (T.mkU T.mkLevelZero)))
+          T.mkTt T.mkRefl);
+      in (builtins.head r.spine).tag;
+      expected = "EAllD";
+    };
+    "eval-everywhere-d-ret" = {
+      # everywhereD 0 Unit (descRet tt) 0 X M ih tt refl
+      #   = liftIntro 0 0 refl Unit tt ≡ tt.
+      expr = (eval [] (T.mkEverywhereD T.mkLevelZero T.mkUnit
+        (T.mkDescRet T.mkTt) T.mkLevelZero
+        (T.mkLam "_" T.mkUnit T.mkNat)
+        (T.mkLam "i" T.mkUnit (T.mkLam "_" T.mkNat (T.mkU T.mkLevelZero)))
+        (T.mkLam "j" T.mkUnit (T.mkLam "x" T.mkNat (T.mkU T.mkLevelZero)))
+        T.mkTt T.mkRefl)).tag;
+      expected = "VTt";
+    };
+    "eval-everywhere-d-stuck-spine-tag" = {
+      expr = let
+        r = eval [ (freshVar 0) ] (T.mkEverywhereD T.mkLevelZero T.mkUnit
+          (T.mkVar 0) T.mkLevelZero
+          (T.mkLam "_" T.mkUnit T.mkNat)
+          (T.mkLam "i" T.mkUnit (T.mkLam "_" T.mkNat (T.mkU T.mkLevelZero)))
+          (T.mkLam "j" T.mkUnit (T.mkLam "x" T.mkNat (T.mkU T.mkLevelZero)))
+          T.mkTt T.mkRefl);
+      in (builtins.head r.spine).tag;
+      expected = "EEverywhereD";
     };
 
     "eval-desc-ind-ret-con" = {

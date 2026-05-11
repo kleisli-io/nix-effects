@@ -50,6 +50,15 @@ let
   vEq = type: lhs: rhs: { tag = "VEq"; inherit type lhs rhs; };
   vRefl = { tag = "VRefl"; };
 
+  # Propositional truncation. `Squash A : U(l)` for `A : U(l)`. Any two
+  # inhabitants of `Squash A` are conv-equal — proof irrelevance is
+  # definitional. Lives at the same universe as `A`; no separate SProp
+  # sort. The `recTrunc` eliminator's motive is restricted to
+  # `Squash`-typed targets so irrelevance does not leak into observable
+  # positions.
+  vSquash      = A: { tag = "VSquash";      inherit A; };
+  vSquashIntro = a: { tag = "VSquashIntro"; inherit a; };
+
   # Function extensionality postulate — zero-payload atomic value.
   vFunext = { tag = "VFunext"; };
 
@@ -76,6 +85,22 @@ let
   vDescPlus = A: B: { tag = "VDescPlus"; inherit A B; };     # A, B : Desc I — first-class binary coproduct
   vMu = I: D: i: { tag = "VMu"; inherit I D i; };            # μ D i — the type at index i : I
   vDescCon = D: i: d: { tag = "VDescCon"; inherit D i d; };  # target index i carried alongside payload
+
+  # `interpD` / `allD` / `everywhereD` — kernel-primitive interpretation
+  # / All-witness / everywhere-recursion over Desc. Carry the same slots
+  # as their Tm counterparts (mirroring `mkInterpD`/`mkAllD`/
+  # `mkEverywhereD` in `term.nix`). Value-level reduction lives in
+  # `eval/desc.nix`; these constructors are surface-form only — canonical
+  # reductions return a different Val (Σ/Sum/Eq/Lift) per the on-cases,
+  # never these tags themselves. They appear quoted only via the
+  # corresponding `eInterpD`/`eAllD`/`eEverywhereD` spine frames on a
+  # neutral D scrutinee.
+  vInterpD = level: I: D: X: i:
+    { tag = "VInterpD"; inherit level I D X i; };
+  vAllD = level: I: D: K: X: M: i: d:
+    { tag = "VAllD"; inherit level I D K X M i d; };
+  vEverywhereD = level: I: D: K: X: M: ih: i: d:
+    { tag = "VEverywhereD"; inherit level I D K X M ih i d; };
 
   # Lift primitive. `Lift l m eq A : U(m)` carries the bound witness
   # `eq : Eq Level (max l m) m` that proves `l ≤ m`. Conv collapses
@@ -155,10 +180,28 @@ let
   eDescElim = k: motive: onRet: onArg: onRec: onPi: onPlus:
     { tag = "EDescElim"; inherit k motive onRet onArg onRec onPi onPlus; };
 
+  # `EInterpD` / `EAllD` / `EEverywhereD` — spine frames recording stuck
+  # `interpD` / `allD` / `everywhereD` applications on a neutral D
+  # scrutinee. The frame stores every slot OTHER than D (which is the
+  # spine head). Quote round-trips a frame to the corresponding
+  # `mkInterpD` / `mkAllD` / `mkEverywhereD` Tm. Conv compares frames
+  # field-wise.
+  eInterpD = level: I: X: i:
+    { tag = "EInterpD"; inherit level I X i; };
+  eAllD = level: I: K: X: M: i: d:
+    { tag = "EAllD"; inherit level I K X M i d; };
+  eEverywhereD = level: I: K: X: M: ih: i: d:
+    { tag = "EEverywhereD"; inherit level I K X M ih i d; };
+
   # `ELiftElim` records a stuck `lower` on a neutral `Lift`-typed value.
   # The spine entry carries `l`, `m`, `eq`, `A` so a quoted spine round-
   # trips to `mkLiftElim l m eq A x`.
   eLiftElim = l: m: eq: A: { tag = "ELiftElim"; inherit l m eq A; };
+
+  # `ESquashElim` records a stuck `recTrunc` on a neutral `Squash`-typed
+  # value. Carries the motive shape (`A`, `B`) and the case function `f`
+  # so a quoted spine round-trips to `mkSquashElim A B f x`.
+  eSquashElim = A: B: f: { tag = "ESquashElim"; inherit A B f; };
 
   # `ENatToLevel` records a stuck `natToLevel` on a Nat-typed neutral.
   # No payload: the frame is nullary, mirroring `EFst`/`ESnd`.
@@ -217,7 +260,9 @@ in mk {
     inherit vUnit vTt;
     inherit vSum vInl vInr;
     inherit vEq vRefl vFunext;
+    inherit vSquash vSquashIntro;
     inherit vDesc vDescRet vDescArg vDescRec vDescPi vDescPlus vMu vDescCon;
+    inherit vInterpD vAllD vEverywhereD;
     inherit vU;
     inherit vLift vLiftIntro;
     inherit vLevel vLevelZero vLevelSuc vLevelMax vLevelLit;
@@ -226,6 +271,8 @@ in mk {
     inherit vOpaqueLam;
     inherit vNe freshVar;
     inherit eApp eFst eSnd eNatElim eListElim eSumElim eJ eStrEq eDescInd eDescElim eLiftElim eNatToLevel;
+    inherit eInterpD eAllD eEverywhereD;
+    inherit eSquashElim;
   };
   tests = {
     # Closures
@@ -258,6 +305,15 @@ in mk {
     "veq-tag" = { expr = (vEq vNat vZero vZero).tag; expected = "VEq"; };
     "vrefl-tag" = { expr = vRefl.tag; expected = "VRefl"; };
     "vfunext-tag" = { expr = vFunext.tag; expected = "VFunext"; };
+    "vsquash-tag" = { expr = (vSquash vUnit).tag; expected = "VSquash"; };
+    "vsquash-A" = { expr = (vSquash vUnit).A.tag; expected = "VUnit"; };
+    "vsquashintro-tag" = { expr = (vSquashIntro vTt).tag; expected = "VSquashIntro"; };
+    "vsquashintro-a" = { expr = (vSquashIntro vTt).a.tag; expected = "VTt"; };
+    "esquashelim-tag" = {
+      expr = (eSquashElim vUnit vUnit
+                (vLam "a" vUnit (mkClosure [] { tag = "tt"; }))).tag;
+      expected = "ESquashElim";
+    };
     "vu-tag" = { expr = (vU vLevelZero).tag; expected = "VU"; };
     "vu-level-zero" = { expr = (vU vLevelZero).level.tag; expected = "VLevelZero"; };
     "vu-level-suc" = { expr = (vU (vLevelSuc vLevelZero)).level.tag; expected = "VLevelSuc"; };
@@ -429,5 +485,45 @@ in mk {
     "vdescplus-tag" = { expr = (vDescPlus (vDescRet vTt) (vDescRet vTt)).tag; expected = "VDescPlus"; };
     "vdescplus-A" = { expr = (vDescPlus (vDescRet vTt) (vDescRet vTt)).A.tag; expected = "VDescRet"; };
     "vdescplus-B" = { expr = (vDescPlus (vDescRet vTt) (vDescRet vTt)).B.tag; expected = "VDescRet"; };
+
+    # interpD / allD / everywhereD value forms
+    "vinterpd-tag" = {
+      expr = (vInterpD vLevelZero vUnit (vDescRet vTt) vNat vTt).tag;
+      expected = "VInterpD";
+    };
+    "vinterpd-D" = {
+      expr = (vInterpD vLevelZero vUnit (vDescRet vTt) vNat vTt).D.tag;
+      expected = "VDescRet";
+    };
+    "valld-tag" = {
+      expr = (vAllD vLevelZero vUnit (vDescRet vTt) vLevelZero vNat vNat vTt vRefl).tag;
+      expected = "VAllD";
+    };
+    "valld-K" = {
+      expr = (vAllD vLevelZero vUnit (vDescRet vTt)
+                (vLevelSuc vLevelZero) vNat vNat vTt vRefl).K.tag;
+      expected = "VLevelSuc";
+    };
+    "veverywhered-tag" = {
+      expr = (vEverywhereD vLevelZero vUnit (vDescRet vTt) vLevelZero
+                vNat vNat vNat vTt vRefl).tag;
+      expected = "VEverywhereD";
+    };
+    "einterpd-tag" = {
+      expr = (eInterpD vLevelZero vUnit vNat vTt).tag;
+      expected = "EInterpD";
+    };
+    "einterpd-level" = {
+      expr = (eInterpD vLevelZero vUnit vNat vTt).level.tag;
+      expected = "VLevelZero";
+    };
+    "ealld-tag" = {
+      expr = (eAllD vLevelZero vUnit vLevelZero vNat vNat vTt vRefl).tag;
+      expected = "EAllD";
+    };
+    "eeverywhered-tag" = {
+      expr = (eEverywhereD vLevelZero vUnit vLevelZero vNat vNat vNat vTt vRefl).tag;
+      expected = "EEverywhereD";
+    };
   };
 }

@@ -48,7 +48,9 @@ api.mk {
       vApp vFst vSnd vNatElim vListElim vSumElim vJ
       vLiftF vLiftIntroF vLiftElimF
       vNatToLevel vNatToLevelF
-      vDescInd vDescElim interp allTy linearProfile;
+      vDescInd vDescElim linearProfile decodeDescCase
+      tryDecodeToPrim
+      vInterpD vAllD vEverywhereD;
   };
   tests = partTests;
 }

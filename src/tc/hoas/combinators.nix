@@ -91,6 +91,34 @@ in {
     # m) zero` via a direct J-transport at motive `natCaseU P Unit`.
     absurd = type: term: self.absurdFin0 type term;
     ann = term: type: { _htag = "ann"; inherit term type; };
+    # `annTrusted` — annotation whose body is guaranteed well-typed by
+    # construction (e.g., the encoded `spineDesc` for a datatype's `D`
+    # field, which is built from kernel-internal encoder lambdas with
+    # known polymorphic types). Elaborates to `T.mkAnnTrusted`, which
+    # `infer`'s ann rule treats as cache-equivalent — skipping the
+    # body re-check that otherwise dominates deep recursive-data CHECK
+    # per-layer cost. Internal use only — not exposed via the public
+    # `H.*` surface.
+    annTrusted = term: type: { _htag = "ann"; inherit term type; trusted = true; };
+    # `annTrustedRetargetedDesc body I` — kernel-internal annotation
+    # whose body is a primitive description spine (built from
+    # `descRet`/`descArg`/`descRec`/`descPi`/`plus`) over index type
+    # `I`. During elaboration the body's primitive desc-* Tm tree is
+    # walked once and retargeted to the encoded `μ⊤(descDesc I 0) tt`
+    # form via the kernel's `encodeDescX` lambdas, then wrapped in
+    # `T.mkAnnTrusted` against `Desc^0 I`. The result evaluates to an
+    # encoded `VDescCon` value uniformly — every downstream consumer
+    # (descCon / descInd CHECK, dispatchStep's substitution into
+    # `interpHoasAtPrim` / `allHoasAtPrim`, encodeDescElim's inner
+    # `descInd c.dDesc scrut`) sees the encoded form. The trust
+    # footprint matches `annTrusted`: the body's well-typedness
+    # follows from the encoder lambdas' verified polymorphic types
+    # (kernel-checked once at encoder definition time at
+    # `hoas/desc.nix`). Used by `hoas/datatype.nix` for the macro
+    # datatype's `D` field. Internal use only — not exposed via the
+    # public `H.*` surface.
+    annTrustedRetargetedDesc = body: I:
+      { _htag = "ann-trusted-retargeted-desc"; inherit body I; };
     app = fn: arg: { _htag = "app"; inherit fn arg; };
     fst_ = pair: { _htag = "fst"; inherit pair; };
     snd_ = pair: { _htag = "snd"; inherit pair; };
@@ -173,6 +201,63 @@ in {
     j = type: lhs: motive: base: rhs: eq_:
       { _htag = "j"; inherit type lhs motive base rhs; eq = eq_; };
 
+    # Propositional truncation. `squash A : U(level-of A)`. Two
+    # `squashIntro _` values inhabiting the same `Squash A` are conv-
+    # equal (definitional irrelevance). `squashElim A B f x : Squash B`
+    # for `f : A → Squash B` and `x : Squash A`; the motive is required
+    # to be a `Squash`-typed target.
+    squash      = A:          { _htag = "squash";       inherit A; };
+    squashIntro = a:          { _htag = "squash-intro"; inherit a; };
+    squashElim  = A: B: f: x: { _htag = "squash-elim";  inherit A B f x; };
+
+    # congSuc : Π(a b : Level). Eq Level a b → Eq Level (suc a) (suc b).
+    # J on `e` at motive `λx _. Eq Level (suc a) (suc x)`; the base
+    # case at x = a is `refl : Eq Level (suc a) (suc a)`.
+    congSuc =
+      let inherit (self) lam forall ann level eq levelSuc j refl;
+      in ann
+        (lam "a" level (a:
+         lam "b" level (b:
+         lam "e" (eq level a b) (e:
+           j level a
+             (lam "x" level (x:
+                lam "_e" (eq level a x) (_:
+                  eq level (levelSuc a) (levelSuc x))))
+             refl
+             b
+             e))))
+        (forall "a" level (a:
+         forall "b" level (b:
+         forall "_" (eq level a b) (_:
+           eq level (levelSuc a) (levelSuc b)))));
+
+    # maxSucDom : Π(a b : Level). Eq Level (max a b) b → Eq Level (max a (suc b)) (suc b).
+    # Lifts a `max-eq-b` bound witness through suc on the right operand.
+    # J on `e` at motive `λx _. Eq Level (max a (suc x)) (suc x)`. Base
+    # case at x = max a b: convLevel reduces both `max a (suc (max a b))`
+    # and `suc (max a b)` to canonical `[{a,1},{b,1}]` (suc-distribution
+    # threads the shift outward and dedup keeps the max shift per base),
+    # so refl typechecks. Used in descDesc's heterogeneous summands to
+    # discharge the inner `descPi` bound witness `Eq Level (max l (suc k)) (suc k)`
+    # from `eq_inner : Eq Level (max l k) k`.
+    maxSucDom =
+      let inherit (self) lam forall ann level eq levelSuc levelMax j refl;
+      in ann
+        (lam "a" level (a:
+         lam "b" level (b:
+         lam "e" (eq level (levelMax a b) b) (e:
+           j level (levelMax a b)
+             (lam "x" level (x:
+                lam "_e" (eq level (levelMax a b) x) (_:
+                  eq level (levelMax a (levelSuc x)) (levelSuc x))))
+             refl
+             b
+             e))))
+        (forall "a" level (a:
+         forall "b" level (b:
+         forall "_" (eq level (levelMax a b) b) (_:
+           eq level (levelMax a (levelSuc b)) (levelSuc b)))));
+
     # Descriptions: types, constructors, and eliminators.
     #
     # `descI`, `retI`, `recI`, `piI`, `muI` build `Desc I` / `μ I D i`
@@ -196,52 +281,113 @@ in {
     muI = I: D: i: { _htag = "mu"; inherit I D i; };
     mu = D: i: self.muI self.unitPrim D i;
 
-    retI = j: { _htag = "desc-ret"; inherit j; };
-    descRet = self.retI self.ttPrim;
+    # ─────────────────────────────────────────────────────────────────
+    # Primitive description constructors (`*Prim` suffix).
+    #
+    # These emit raw `desc-ret`/`desc-arg`/`desc-rec`/`desc-pi`/`desc-plus`
+    # Tm tags — the kernel-primitive shape. They are reserved for the
+    # `descDesc` bootstrap fixed point and the `iso` bridge in
+    # `hoas/desc.nix`: levitation requires SOME primitive surface to
+    # close the encoding's metalanguage, and those two sites are it.
+    #
+    # Every other HOAS-elaborated desc inhabitant flows through the
+    # encoded combinators (`retI`, `descRet`, `descArg`, ...) below,
+    # which emit `desc-*-enc` HOAS tags elaborating to `mkApp` chains
+    # over `encodeDescX` lambdas. Primitive desc values do not flow at
+    # HOAS-elaborated user runtime — only the bootstrap `descDesc` and
+    # the `iso` bridge reference the `*Prim` constructors.
+    # ─────────────────────────────────────────────────────────────────
+    retIPrim = j: { _htag = "desc-ret"; inherit j; };
+    descRetPrim = self.retIPrim self.ttPrim;
 
-    # descArg k S (b: T b) — universe-polymorphic description argument.
-    # `k` is a universe level (Nix-meta `Int` or HOAS Level term); `S`
-    # inhabits `U(k)`; `T` is a Nix function opening a fresh variable.
-    # The leading-Int shape `descArg 0 Nat T` is the common prelude
-    # form; `descArg 1 (u 0) T` carries a universe as its domain.
-    # Homogeneous default: per-summand level `l = k`.
-    descArg = k: S: T: { _htag = "desc-arg"; inherit k S; body = T; };
+    descArgPrim = k: S: T: { _htag = "desc-arg"; inherit k S; body = T; };
 
-    # descArgAt l k S (b: T b) — mixed-level variant. `S : U(l)` with
-    # `l ≤ k` proved by the auto-emitted `refl : Eq Level (max l k) k`
-    # witness (decided via convLevel's semilattice quotient). Use this
-    # when `S`'s natural sort is below the description level — the
-    # load-bearing pattern at descDesc / iso / macro-derived
-    # eliminators at K > 0.
-    descArgAt = l: k: S: T:
+    descArgAtPrim = l: k: S: T:
       { _htag = "desc-arg"; inherit k l S; body = T; };
 
-    recI = j: D: { _htag = "desc-rec"; inherit j D; };
-    descRec = D: self.recI self.ttPrim D;
+    descArgWithEqPrim = l: k: S: eq: T:
+      { _htag = "desc-arg"; inherit k l S eq; body = T; };
 
-    # piI k S f D — `pi` at arbitrary index type with leading level.
-    # Homogeneous default: per-summand level `l = k`.
-    piI = k: S: f: D: { _htag = "desc-pi"; inherit k S f D; };
+    recIPrim = j: D: { _htag = "desc-rec"; inherit j D; };
+    descRecPrim = D: self.recIPrim self.ttPrim D;
 
-    # piIAt l k S f D — mixed-level variant of `piI`. See `descArgAt`.
-    piIAt = l: k: S: f: D: { _htag = "desc-pi"; inherit k l S f D; };
-    # The kernel `desc-pi` infer rule recovers I from the codomain of
-    # `tm.f`, so `f` must be inferable. A bare `lam` is checkable-only in
-    # the bidirectional kernel; the ⊤-slice alias therefore ann-wraps the
-    # constant index function against its explicit type `S → ⊤`, routing
-    # synthesis through CHECK where bare canonical forms are accepted.
+    piIPrim = k: S: f: D: { _htag = "desc-pi"; inherit k S f D; };
+
+    piIAtPrim = l: k: S: f: D: { _htag = "desc-pi"; inherit k l S f D; };
+
+    piIWithEqPrim = l: k: S: f: eq: D:
+      { _htag = "desc-pi"; inherit k l S f eq D; };
+
+    descPiPrim = k: S: D:
+      self.piIPrim k S
+        (self.ann (self.lam "_" S (_: self.ttPrim))
+                  (self.forall "_" S (_: self.unitPrim)))
+        D;
+
+    descPiAtPrim = l: k: S: D:
+      self.piIAtPrim l k S
+        (self.ann (self.lam "_" S (_: self.ttPrim))
+                  (self.forall "_" S (_: self.unitPrim)))
+        D;
+
+    descPiWithEqPrim = l: k: S: eq: D:
+      self.piIWithEqPrim l k S
+        (self.ann (self.lam "_" S (_: self.ttPrim))
+                  (self.forall "_" S (_: self.unitPrim)))
+        eq D;
+
+    # ─────────────────────────────────────────────────────────────────
+    # Encoded description constructors. Every HOAS-elaborated desc
+    # inhabitant flows through these and elaborates to a `mkApp` chain
+    # over `encodeDescX_Tm` lambdas — at runtime the value tag is
+    # `VDescCon` (encoded `μ⊤(descDesc I k) tt` form), never a primitive
+    # `VDescX`. Index type `I` is explicit because the encoders are
+    # parametric in I; the `_htag` strings carry an `-enc` suffix so the
+    # elaborator's primitive desc-* rules do not match.
+    #
+    # ⊤-slice convenience aliases (`descRet`, `descRec`, `descPi`,
+    # `plus`) bake `I = unitPrim` and (where applicable) `k = 0` /
+    # `j = ttPrim` so the prelude descriptions (`natDesc`, `listDesc`,
+    # `sumDesc`, `boolDesc`) compose naturally without re-threading I.
+    # Indexed callers (`absurdFin0`, `eqDesc`, `conDesc`, `spineDesc`,
+    # `encodeTag`) use the full I-explicit forms.
+    # ─────────────────────────────────────────────────────────────────
+    retI    = I: k: j:    { _htag = "desc-ret-enc"; inherit I k j; };
+    descRet = self.retI self.unitPrim 0 self.ttPrim;
+
+    descArg = I: k: S: T: { _htag = "desc-arg-enc"; inherit I k S; body = T; };
+
+    descArgAt = I: l: k: S: T:
+      { _htag = "desc-arg-enc"; inherit I k l S; body = T; };
+
+    descArgWithEq = I: l: k: S: eq: T:
+      { _htag = "desc-arg-enc"; inherit I k l S eq; body = T; };
+
+    recI    = I: k: j: D: { _htag = "desc-rec-enc"; inherit I k j D; };
+    descRec = D: self.recI self.unitPrim 0 self.ttPrim D;
+
+    piI     = I: k: S: f: D: { _htag = "desc-pi-enc"; inherit I k S f D; };
+    piIAt   = I: l: k: S: f: D: { _htag = "desc-pi-enc"; inherit I k l S f D; };
+    piIWithEq = I: l: k: S: f: eq: D:
+      { _htag = "desc-pi-enc"; inherit I k l S f eq D; };
+
     descPi = k: S: D:
-      self.piI k S
+      self.piI self.unitPrim k S
         (self.ann (self.lam "_" S (_: self.ttPrim))
                   (self.forall "_" S (_: self.unitPrim)))
         D;
 
-    # descPiAt l k S D — mixed-level ⊤-slice alias. See `descArgAt`.
     descPiAt = l: k: S: D:
-      self.piIAt l k S
+      self.piIAt self.unitPrim l k S
         (self.ann (self.lam "_" S (_: self.ttPrim))
                   (self.forall "_" S (_: self.unitPrim)))
         D;
+
+    descPiWithEq = l: k: S: eq: D:
+      self.piIWithEq self.unitPrim l k S
+        (self.ann (self.lam "_" S (_: self.ttPrim))
+                  (self.forall "_" S (_: self.unitPrim)))
+        eq D;
 
     # Lift primitive — Tarski + non-cumulative cross-level transport.
     # `LiftAt l m A : U(m)` is the type of values transported from
@@ -257,27 +403,72 @@ in {
     liftAt  = l: m: A: a: { _htag = "lift-intro"; inherit l m A a; };
     lowerAt = l: m: A: x: { _htag = "lift-elim";  inherit l m A x; };
 
+    # Explicit-witness variants. Use when `l` and `m` are level-polymorphic
+    # binders and `convLevel` cannot decide `refl : Eq Level (max l m) m` —
+    # the caller supplies the `eq` term derived in scope (e.g. via
+    # `congSuc`/`maxSucDom`). The elaborator emits `T.mkLift l m eq A`
+    # rather than auto-injecting `T.mkRefl`. For homogeneous `l = m` and
+    # convLevel-decidable bounds, prefer `LiftAt`/`liftAt`/`lowerAt` whose
+    # elaboration skips the eq HOAS subterm.
+    LiftAtWithEq  = l: m: eq: A:    { _htag = "lift";       inherit l m eq A; };
+    liftAtWithEq  = l: m: eq: A: a: { _htag = "lift-intro"; inherit l m eq A a; };
+    lowerAtWithEq = l: m: eq: A: x: { _htag = "lift-elim";  inherit l m eq A x; };
+
     descCon = D: i: d: { _htag = "desc-con"; inherit D i d; };
 
     descInd = D: motive: step: i: scrut:
       { _htag = "desc-ind"; inherit D motive step i scrut; };
-    # `descElim` carries a leading universe level `k` — the universe at
-    # which `onArg` / `onPi` bind their sort `S`. Accepts a Nix-meta
+
+    # Kernel-primitive interpretation/All-witness/everywhere-recursor for
+    # descriptions (CDMM 2010 §4.2.3 + §6.1, Table 6.2). Each elaborates to
+    # a single Tm constructor whose reduction lives in
+    # `eval/desc.nix:vInterpDF`/`vAllDF`/`vEverywhereDF`. The `level` /
+    # `K` slots accept a Nix-meta `Int`, a HOAS `Level` term, or a kernel
+    # `Tm` directly — `elaborate` normalises via `elaborateLevel`.
+    #
+    #   interpD ℓ I D X i           : U(ℓ)
+    #   allD ℓ I D K X M i d        : U(K)
+    #   everywhereD ℓ I D K X M ih i d : allD ℓ I D K X M i d
+    interpD = level: I: D: X: i:
+      { _htag = "interp-d"; inherit level I D X i; };
+    allD = level: I: D: K: X: M: i: d:
+      { _htag = "all-d"; inherit level I D K X M i d; };
+    everywhereD = level: I: D: K: X: M: ih: i: d:
+      { _htag = "everywhere-d"; inherit level I D K X M ih i d; };
+
+    # `descElimPrim` carries a leading universe level `k` — the universe
+    # at which `onArg` / `onPi` bind their sort `S`. Accepts a Nix-meta
     # `Int`, a HOAS Level term (`level`/`levelZero`/`levelSuc`/
     # `levelMax` or a bound `k_var` from `forall "k" level …`), or a
     # kernel `Tm` directly; `elaborate` normalises via `elaborateLevel`.
-    descElim = k: motive: onRet: onArg: onRec: onPi: onPlus: scrut:
+    # Reserved for the `iso` bridge and `descDesc` bootstrap.
+    descElimPrim = k: motive: onRet: onArg: onRec: onPi: onPlus: scrut:
       { _htag = "desc-elim"; inherit k motive onRet onArg onRec onPi onPlus scrut; };
 
-    # First-class binary coproduct of descriptions. `plusI A B : Desc I`
-    # where A, B : Desc I share the same index type. Its `interp` reduces to
-    # a sum of the summands' interpretations (`Sum (⟦A⟧ X i) (⟦B⟧ X i)`),
-    # replacing the Bool-tag-dispatched `descArg bool (boolElim _ A B)`
-    # encoding and eliminating the commuting-conv obligation on `interp ∘
-    # bool-elim`. `plus` is the ⊤-slice alias; at any fixed I both are the
-    # same kernel constructor since `plusI` infers I from A's inferred type.
-    plusI = A: B: { _htag = "desc-plus"; inherit A B; };
-    plus = A: B: self.plusI A B;
+    # `descElim I k L motive onRet onArg onRec onPi onPlus scrut` —
+    # encoded eliminator. `I` is the index type, `k` the universe at
+    # which `onArg`/`onPi` bind their sort `S` (matches the encoder
+    # encoding), `L` the motive codomain universe. Elaborates to a
+    # `mkApp` chain over `encodeDescElimTm`; the kernel runs the
+    # cascade over `descDesc I k`'s plus-tree to dispatch on `scrut`'s
+    # constructor summand.
+    descElim = I: k: L: motive: onRet: onArg: onRec: onPi: onPlus: scrut:
+      { _htag = "desc-elim-enc";
+        inherit I k L motive onRet onArg onRec onPi onPlus scrut; };
+
+    # First-class binary coproduct of descriptions. `plusI I k A B :
+    # Desc^k I` where A, B : Desc^k I share the same index type and
+    # universe. `plus` is the ⊤-slice alias at I=⊤, k=0. Both
+    # elaborate to encoded `mkApp encodeDescPlusTm I k A B` chains —
+    # the resulting `VDescCon` value's interpretation reduces to
+    # kernel `Sum (⟦A⟧ X i) (⟦B⟧ X i)` via `vDescElimF`'s VDescCon
+    # branch, eliminating the commuting-conv obligation on `interp ∘
+    # bool-elim` that the Bool-tag-dispatched `descArg bool (boolElim
+    # _ A B)` encoding would impose.
+    plusIPrim = A: B: { _htag = "desc-plus"; inherit A B; };
+    plusPrim = A: B: self.plusIPrim A B;
+    plusI = I: k: A: B: { _htag = "desc-plus-enc"; inherit I k A B; };
+    plus  = A: B: self.plusI self.unitPrim 0 A B;
 
     # Nat-specific equality lemma. Thin wrapper over `j` at type `Nat`;
     # consumed by `absurdFin0` to compose the ret-leaf `em : Eq Nat (succ
@@ -319,17 +510,17 @@ in {
           lam forall app fst_ snd_
           nat zero succ j natCaseU
           eq refl
-          muI descInd interpHoasAt allHoasAt
+          muI descInd interpD allD
           sumPrim sumElimPrim
           descArg retI recI
           finDesc transNat unitPrim ttPrim;
 
         muFam = lam "i" nat (i: muI nat finDesc i);
 
-        fzeroSum = descArg 0 nat (m_: retI (succ m_));
-        fsucSum  = descArg 0 nat (m_: recI m_ (retI (succ m_)));
-        lInterpAt = iArg_: interpHoasAt 0 nat fzeroSum muFam iArg_;
-        rInterpAt = iArg_: interpHoasAt 0 nat fsucSum  muFam iArg_;
+        fzeroSum = descArg nat 0 nat (m_: retI nat 0 (succ m_));
+        fsucSum  = descArg nat 0 nat (m_: recI nat 0 m_ (retI nat 0 (succ m_)));
+        lInterpAt = iArg_: interpD 0 nat fzeroSum muFam iArg_;
+        rInterpAt = iArg_: interpD 0 nat fsucSum  muFam iArg_;
 
         Q = lam "i" nat (iArg: lam "_" (muI nat finDesc iArg) (_:
               forall "_" (eq nat iArg zero) (_: P)));
@@ -346,8 +537,8 @@ in {
             emz;
 
         step = lam "n" nat (nArg:
-               lam "d" (interpHoasAt 0 nat finDesc muFam nArg) (d:
-               lam "_ih" (allHoasAt 0 0 nat finDesc finDesc Q nArg d) (_:
+               lam "d" (interpD 0 nat finDesc muFam nArg) (d:
+               lam "_ih" (allD 0 nat finDesc 0 muFam Q nArg d) (_:
                  lam "e0" (eq nat nArg zero) (e0:
                    let
                      lInterp = lInterpAt nArg;
@@ -379,16 +570,16 @@ in {
     natCaseU = A: B:
       let
         inherit (self) ann lam forall nat u unitPrim
-                        ttPrim mu descInd interpHoasAt allHoasAt
+                        ttPrim mu descInd interpD allD
                         sumPrim sumElimPrim descRet descRec;
         D = nat.D;
         muFam = lam "_i" unitPrim (iArg: mu D iArg);
         motive = lam "_i" unitPrim (_: lam "_x" (mu D _) (_: u 0));
-        lInterpAt = iArg_: interpHoasAt 0 unitPrim descRet muFam iArg_;
-        rInterpAt = iArg_: interpHoasAt 0 unitPrim (descRec descRet) muFam iArg_;
+        lInterpAt = iArg_: interpD 0 unitPrim descRet muFam iArg_;
+        rInterpAt = iArg_: interpD 0 unitPrim (descRec descRet) muFam iArg_;
         step = lam "_i" unitPrim (iArg:
-               lam "d" (interpHoasAt 0 unitPrim D muFam iArg) (d:
-               lam "_ih" (allHoasAt 0 1 unitPrim D D motive iArg d) (_:
+               lam "d" (interpD 0 unitPrim D muFam iArg) (d:
+               lam "_ih" (allD 0 unitPrim D 1 muFam motive iArg d) (_:
                  let
                    lInterp = lInterpAt iArg;
                    rInterp = rInterpAt iArg;
@@ -426,17 +617,17 @@ in {
     natPredCase = A:
       let
         inherit (self) ann lam forall app nat u unitPrim
-                        fst_ ttPrim mu descInd interpHoasAt allHoasAt
+                        fst_ ttPrim mu descInd interpD allD
                         sumPrim sumElimPrim descRet descRec vec;
         D = nat.D;
         muFam = lam "_i" unitPrim (iArg: mu D iArg);
         motive = lam "_i" unitPrim (_: lam "_x" (mu D _) (_: u 0));
         vA = vec A;
-        lInterpAt = iArg_: interpHoasAt 0 unitPrim descRet muFam iArg_;
-        rInterpAt = iArg_: interpHoasAt 0 unitPrim (descRec descRet) muFam iArg_;
+        lInterpAt = iArg_: interpD 0 unitPrim descRet muFam iArg_;
+        rInterpAt = iArg_: interpD 0 unitPrim (descRec descRet) muFam iArg_;
         step = lam "_i" unitPrim (iArg:
-               lam "d" (interpHoasAt 0 unitPrim D muFam iArg) (d:
-               lam "_ih" (allHoasAt 0 1 unitPrim D D motive iArg d) (_:
+               lam "d" (interpD 0 unitPrim D muFam iArg) (d:
+               lam "_ih" (allD 0 unitPrim D 1 muFam motive iArg d) (_:
                  let
                    lInterp = lInterpAt iArg;
                    rInterp = rInterpAt iArg;
@@ -610,12 +801,29 @@ in {
     # would trigger when `allHoasAt.onPlus` quotes stuck descInd scrutinees
     # under a binder.
     boolDesc =
-      let inherit (self) ann plus retI ttPrim desc; in
-      ann (plus (retI ttPrim) (retI ttPrim)) desc;
+      let inherit (self) ann plus descRet desc; in
+      ann (plus descRet descRet) desc;
 
     bool =
-      let inherit (self) muI unitPrim ttPrim boolDesc; in
-      muI unitPrim boolDesc ttPrim;
+      let
+        inherit (self) muI unitPrim ttPrim boolDesc;
+        # Surface metadata mirroring `_dtypeMeta` attached to macro-generated
+        # `T`s in `datatype.nix:628`. Read by the elaborate-layer surface
+        # dispatch to identify the bool shape without inspecting kernel `D`.
+        # Inline here because `bool` is hand-rolled rather than macro-derived;
+        # retire alongside `boolDesc`/`true_`/`false_`/`boolElim` when bool
+        # is migrated to `datatype "Bool" [(con "false" []) (con "true" [])]`.
+        _dtypeMeta = {
+          name = "Bool";
+          indexed = false;
+          indexTy = unitPrim;
+          cons = [
+            { name = "false"; fields = []; }
+            { name = "true";  fields = []; }
+          ];
+        };
+      in
+      (muI unitPrim boolDesc ttPrim) // { inherit _dtypeMeta; };
 
     true_ =
       let
@@ -665,7 +873,7 @@ in {
           unitPrim ttPrim
           eq j
           sumPrim sumElimPrim inlPrim inrPrim
-          muI descCon descInd interpHoasAt allHoasAt
+          muI descCon descInd interpD allD
           bool boolDesc;
 
         piMotiveTy = forall "_" bool (_: u k);
@@ -682,8 +890,8 @@ in {
           leafTy = i_: eq unitPrim ttPrim i_;
 
           step = lam "_i" unitPrim (iArg:
-                 lam "d" (interpHoasAt 0 unitPrim boolDesc boolMuFam iArg) (d:
-                 lam "_ih" (allHoasAt 0 k unitPrim boolDesc boolDesc motive iArg d) (_:
+                 lam "d" (interpD 0 unitPrim boolDesc boolMuFam iArg) (d:
+                 lam "_ih" (allD 0 unitPrim boolDesc k boolMuFam motive iArg d) (_:
                    let
                      # Sum-elim motive: Q (descCon boolDesc iArg s) for
                      # each Sum inhabitant s. At s = inl/inr e, reduces

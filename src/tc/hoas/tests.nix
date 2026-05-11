@@ -9,6 +9,7 @@ let
   E = fx.tc.eval;
   Q = fx.tc.quote;
   V = fx.tc.value;
+  C = fx.tc.conv;
 
   inherit (self)
     nat bool unit void string int_ float_ attrs path function_ any
@@ -21,12 +22,52 @@ let
     ind boolElim listElim sumElim
     desc descAt mu descRet descArg descRec descPi descCon descElim
     descI descIAt muI retI recI piI plusI plus
-    interpHoasAt allHoasAt natDesc listDesc sumDesc descDesc iso
+    natDesc listDesc sumDesc descDesc __descDesc
+    encodeDescElim
+    ttPrim
     fin fzero fsuc finElim absurdFin0
     natCaseU natPredCase vec vnil vcons vecElim vhead vtail
     eqDesc eqDT reflDT eqToEqDT eqDTToEq eqIsoFwd eqIsoBwd
     field recField piFieldD con datatype datatypeP unitPrim
     elab checkHoas inferHoas natLit;
+
+  isoTy = forall "I" (u 0) (I:
+    forall "k" level (k:
+      let
+        dDescAt = app (app descDesc I) k;
+        muTtAt = mu dDescAt ttPrim;
+        descK = descIAt k I;
+      in
+      sigma "to_" (forall "_" descK (_: muTtAt)) (toV:
+      sigma "from_" (forall "_" muTtAt (_: descK)) (fromV:
+      sigma "toFrom_"
+        (forall "D" descK (D: eq descK (app fromV (app toV D)) D))
+        (_:
+          forall "x" muTtAt (x:
+            eq muTtAt (app toV (app fromV x)) x))))));
+
+  # Identity iso bridge between the surface name `Desc^k I` and the
+  # descDesc-encoded `μ⊤(descDesc I k) tt`. The two presentations name
+  # the same type via the kernel's Desc/μ unfolding conv rule, so the
+  # iso witnesses are identity and the round-trip equalities are refl.
+  # That this term typechecks against `isoTy` is the load-bearing
+  # regression on `descDesc`'s faithfulness as an encoding of `Desc`:
+  # if `descDesc`'s body ever drifts from a faithful 5-summand mirror
+  # of `Desc`'s ret/arg/rec/pi/plus grammar, the conv rule stops
+  # firing for the Σ-component checks and this term fails to elaborate.
+  isoIdentity = ann
+    (lam "I" (u 0) (I:
+     lam "k" level (k:
+      let
+        dDesc = app (app descDesc I) k;
+        muTt = mu dDesc ttPrim;
+        descK = descIAt k I;
+      in
+      pair (lam "D" descK (D: D))
+        (pair (lam "x" muTt (x: x))
+          (pair (lam "D" descK (D: refl))
+            (lam "x" muTt (x: refl)))))))
+    isoTy;
 in {
   scope = {};
   tests = {
@@ -344,11 +385,17 @@ in {
         two   = succ (succ zero);
         three = succ (succ (succ zero));
         five  = succ (succ (succ (succ (succ zero))));
-        addTm = lam "m" nat (m: lam "n" nat (n:
+        # Bidirectional discipline: bare lambdas are not inferable, so a
+        # function value used as an `app` head needs an explicit Π
+        # annotation. Without it, INFER on `app addTm two` would have
+        # to INFER on the lambda head — which is structurally rejected.
+        addTm = ann
+          (lam "m" nat (m: lam "n" nat (n:
                   ind 0 (lam "_" nat (_: nat))
                       n
                       (lam "k" nat (_: lam "ih" nat (ih: succ ih)))
-                      m));
+                      m)))
+          (forall "m" nat (_: forall "n" nat (_: nat)));
         eqTy = eq nat (app (app addTm two) three) five;
       in (checkHoas eqTy refl).tag;
       expected = "refl";
@@ -409,7 +456,7 @@ in {
     # check rule; `k = 0` pins both domains to `U(0)`.
     "integration-desc-wtype-wellformed" = {
       expr = let
-        wDesc = A: B: descArg 0 A (a: descPi 0 (B a) descRet);
+        wDesc = A: B: descArg unit 0 A (a: descPi 0 (B a) descRet);
         wBool = wDesc bool (a:
                   boolElim 1 (lam "_" bool (_: u 0)) unit void a);
       in (checkHoas (u 0) (mu wBool tt)).tag;
@@ -597,229 +644,152 @@ in {
 
     # ----- Description-level acceptance tests -----
 
-    # Acceptance A1: direct descElim on descRet infers motive(descRet).
-    # With motive λ_:Desc. U→U, the result type is a VPi.
-    "desc-elim-direct-infer" = {
-      expr = let
-        motive = lam "_" desc (_: forall "_" (u 0) (_: u 0));
-        # Indexed on-case arities: onRet/onRec bind the index `j`, onPi
-        # binds the index function `f : S → I`. onArg has no index binder
-        # because `descArg` does not carry one.
-        onRet  = lam "j" unit (_:
-                 lam "X" (u 0) (_: unit));
-        onArg  = lam "S" (u 0) (S:
-                 lam "T" (forall "_" S (_: desc)) (_:
-                 lam "ih" (forall "s" S (_: forall "_" (u 0) (_: u 0))) (ih:
-                 lam "X" (u 0) (X':
-                   sigma "s" S (s: app (app ih s) X')))));
-        onRec  = lam "j" unit (_:
-                 lam "D" desc (_:
-                 lam "ih" (forall "_" (u 0) (_: u 0)) (ih:
-                 lam "X" (u 0) (X':
-                   sigma "_" X' (_: app ih X')))));
-        onPi   = lam "S" (u 0) (S:
-                 lam "f" (forall "_" S (_: unit)) (_:
-                 lam "D" desc (_:
-                 lam "ih" (forall "_" (u 0) (_: u 0)) (ih:
-                 lam "X" (u 0) (X':
-                   sigma "_" (forall "_" S (_: X')) (_: app ih X'))))));
-        # `descRet` (= retI tt) is a bare canonical intro: its j = tt has
-        # no infer rule under the bidirectional discipline. The outer `ann
-        # _ desc` routes synthesis through CHECK against `Desc ⊤`, where
-        # `check.nix`'s desc-ret rule accepts bare canonical forms.
-        onPlus = lam "A" desc (_:
-                 lam "B" desc (_:
-                 lam "ihA" (forall "_" (u 0) (_: u 0)) (_:
-                 lam "ihB" (forall "_" (u 0) (_: u 0)) (_:
-                 lam "X" (u 0) (X':
-                   sigma "_" X' (_: X'))))));
-        tm = descElim 0 motive onRet onArg onRec onPi onPlus (ann descRet desc);
-      in (inferHoas tm).type.tag;
-      expected = "VPi";
-    };
-
-    # Motive body at universe level 1 is accepted for both `desc-ind` and
-    # `desc-elim`. `checkMotive` descends the n-lam prefix and validates
-    # the innermost codomain via `checkType`, which accepts any universe
-    # level — the large-elim invariant across both description
-    # eliminators.
-
-    # desc-elim: motive `(D':Desc ⊤) → U(0)` with body `u 0 : U(1)` at the
-    # innermost position. Exercises the universe-polymorphic path
-    # documented at `check/infer.nix:289-294`.
-    "descElim-u1-motive-checks" = {
-      expr = let
-        motive = lam "_" desc (_: u 0);
-        onRet  = lam "j" unit (_: nat);
-        onArg  = lam "S" (u 0) (_:
-                 lam "T" (forall "_" (u 0) (_: desc)) (_:
-                 lam "ih" (forall "s" (u 0) (_: u 0)) (_: nat)));
-        onRec  = lam "j" unit (_:
-                 lam "D" desc (_:
-                 lam "ih" (u 0) (_: nat)));
-        onPi   = lam "S" (u 0) (_:
-                 lam "f" (forall "_" (u 0) (_: unit)) (_:
-                 lam "D" desc (_:
-                 lam "ih" (u 0) (_: nat))));
-        onPlus = lam "A" desc (_:
-                 lam "B" desc (_:
-                 lam "ihA" (u 0) (_:
-                 lam "ihB" (u 0) (_: nat))));
-        tm = descElim 0 motive onRet onArg onRec onPi onPlus (ann descRet desc);
-      in (inferHoas tm).type.tag;
-      expected = "VU";
-    };
-
-    # interpHoasAt 0 ≡ interpF — compare nf of HOAS-elaborated term
-    # against the quoted result of eval.nix's interp at the same D, X.
-
-    # ⟦ret tt⟧(X)(tt) = Eq ⊤ tt tt — under I=⊤, the ret-leaf interpretation
-    # is the propositional-equality witness collapsed by Unit-η.
-    "interpHoasAt-matches-interpF-ret" = {
-      expr = let
-        Xfam = lam "_" unit (_: nat);
-        lhsNf = Q.nf [] (elab (interpHoasAt 0 unit descRet Xfam tt));
-        dVal = E.eval [] (elab descRet);
-        xVal = E.eval [] (elab Xfam);
-        rhsNf = Q.quote 0 (E.interp V.vLevelZero V.vUnit dVal xVal V.vTt);
-      in lhsNf == rhsNf;
-      expected = true;
-    };
-
-    # ⟦rec tt (ret tt)⟧(X)(tt) = Σ(_: X tt). Eq ⊤ tt tt
-    "interpHoasAt-matches-interpF-rec-ret" = {
-      expr = let
-        D = descRec descRet;
-        Xfam = lam "_" unit (_: bool);
-        lhsNf = Q.nf [] (elab (interpHoasAt 0 unit D Xfam tt));
-        rhsNf = Q.quote 0 (E.interp V.vLevelZero V.vUnit
-          (E.eval [] (elab D)) (E.eval [] (elab Xfam)) V.vTt);
-      in lhsNf == rhsNf;
-      expected = true;
-    };
-
-    # ⟦arg bool (b: ret tt)⟧(X)(tt) = Σ(b:Bool). Eq ⊤ tt tt
-    "interpHoasAt-matches-interpF-arg-bool" = {
-      expr = let
-        D = descArg 0 bool (_: descRet);
-        Xfam = lam "_" unit (_: nat);
-        lhsNf = Q.nf [] (elab (interpHoasAt 0 unit D Xfam tt));
-        rhsNf = Q.quote 0 (E.interp V.vLevelZero V.vUnit
-          (E.eval [] (elab D)) (E.eval [] (elab Xfam)) V.vTt);
-      in lhsNf == rhsNf;
-      expected = true;
-    };
-
-    # ⟦pi bool (λ_.tt) (ret tt)⟧(X)(tt) = Σ(_: Bool→X tt). Eq ⊤ tt tt
-    "interpHoasAt-matches-interpF-pi-bool" = {
-      expr = let
-        D = descPi 0 bool descRet;
-        Xfam = lam "_" unit (_: nat);
-        lhsNf = Q.nf [] (elab (interpHoasAt 0 unit D Xfam tt));
-        rhsNf = Q.quote 0 (E.interp V.vLevelZero V.vUnit
-          (E.eval [] (elab D)) (E.eval [] (elab Xfam)) V.vTt);
-      in lhsNf == rhsNf;
-      expected = true;
-    };
-
-    # `descArg k S T : desc^(max kS kT) I` — descArg at level 0 with
-    # body returning desc^0 yields desc^0. Inferred type level matches
-    # `VLevelZero` and the universe-of-the-type is `U(1)`.
+    # descArg at level k=0 with body at level 0 yields a desc-shape
+    # whose post-encoding type is `μ ⊤ (descDesc nat 0) tt`, conv-equal
+    # to `descIAt levelZero nat`. The encoded form makes a direct
+    # `r.type.level` assertion structurally unavailable; conv against
+    # the canonical `descIAt levelZero nat` shape captures the same
+    # invariant. The body's `retI nat 0 zero` threads `zero : nat` so
+    # `j : I = nat` is well-typed.
     "descArg-level-zero-infers-desc-zero" = {
       expr = let
-        r = inferHoas (descArg 0 nat (s: retI (ann tt unit)));
-      in r.type.level.tag;
-      expected = "VLevelZero";
+        r = inferHoas (descArg nat 0 nat (s: retI nat 0 zero));
+        target = E.eval [] (elab (descIAt levelZero nat));
+      in C.conv 0 r.type target;
+      expected = true;
     };
-    # descArg at level 1 (with body returning desc^0) yields desc^1.
-    # The contained `S = u 0 : U(1)` forces the description to live at
-    # universe `suc 1 = U(2)`.
+    # descArg at level k=1 with body at level 1 yields a desc-shape
+    # conv-equal to `descIAt (suc 0) unit`.
     "descArg-level-one-infers-desc-one" = {
       expr = let
-        r = inferHoas (descArg 1 (u 0) (S: retI (ann tt unit)));
-        lev = r.type.level;
-      in lev.tag == "VLevelSuc" && lev.pred.tag == "VLevelZero";
+        r = inferHoas (descArg unit 1 (u 0) (S: retI unit 1 (ann tt unit)));
+        target = E.eval [] (elab (descIAt (levelSuc levelZero) unit));
+      in C.conv 0 r.type target;
       expected = true;
     };
     # Polymorphic descArg: `Π(k:Level). desc^(suc k) ⊤`. Witnesses that
     # the kVar at the descArg's level slot threads through to the
     # inferred result type's level — closing the universe-polymorphism
-    # loop end-to-end.
+    # loop end-to-end. The body's `retI unit (suc k) tt` matches the
+    # outer level so the homogeneous-l descArg form type-checks.
     "descArg-level-polymorphic-checks" = {
       expr = (checkHoas
         (forall "k" level (k: descIAt (levelSuc k) unit))
-        (lam "k" level (k: descArg (levelSuc k) (u k) (S: retI (ann tt unit))))) ? error;
+        (lam "k" level (k: descArg unit (levelSuc k) (u k) (S: retI unit (levelSuc k) (ann tt unit))))) ? error;
       expected = false;
     };
 
-    # descDesc : Π(k:Level). Desc^(suc k) ⊤ — type-checks at the
-    # polymorphic universe-tracking forall (the descArg summand
-    # quantifies over `S : U(k)` with leading level `(suc k)`, which
-    # forces the description to live at `desc^(suc k) ⊤`), and
-    # instantiates cleanly at sample levels k ∈ {0, 1, 2}.
+    # descDesc : Π(I : U(0))(k : Level). Desc^(suc k) ⊤ — type-checks
+    # at the polymorphic universe-tracking forall, and instantiates
+    # cleanly at I = ⊤ and sample levels k ∈ {0, 1, 2}. The arg / pi
+    # summands quantify over `S : U(k)` with leading level `(suc k)`,
+    # forcing the description to live at `desc^(suc k) ⊤`. The ret /
+    # rec summands prefix `descArgAt 0 (suc k) I` to encode the
+    # I-typed leaf index of `descRet I i` / `descRec I i D`.
     "descDesc-type-checks" = {
       expr = (checkHoas
-        (forall "k" level (k: descAt (levelSuc k)))
+        (forall "I" (u 0) (I: forall "k" level (k: descAt (levelSuc k))))
         descDesc) ? error;
       expected = false;
     };
-    "descDesc-at-level-zero" = {
+    "descDesc-at-unit-level-zero" = {
       expr = (checkHoas
         (descAt (levelSuc levelZero))
-        (app descDesc levelZero)).tag;
+        (app (app descDesc unit) levelZero)).tag;
       expected = "app";
     };
-    "descDesc-at-level-one" = {
+    "descDesc-at-unit-level-one" = {
       expr = (checkHoas
         (descAt (levelSuc (levelSuc levelZero)))
-        (app descDesc (levelSuc levelZero))) ? error;
+        (app (app descDesc unit) (levelSuc levelZero))) ? error;
       expected = false;
     };
-    "descDesc-at-level-two" = {
+    "descDesc-at-unit-level-two" = {
       expr = (checkHoas
         (descAt (levelSuc (levelSuc (levelSuc levelZero))))
-        (app descDesc (levelSuc (levelSuc levelZero)))) ? error;
+        (app (app descDesc unit) (levelSuc (levelSuc levelZero)))) ? error;
+      expected = false;
+    };
+    # Instantiate at I = bool, level zero. Verifies the I-thread
+    # accepts non-⊤ index types (the eqDesc-style use case).
+    "descDesc-at-bool-level-zero" = {
+      expr = (checkHoas
+        (descAt (levelSuc levelZero))
+        (app (app descDesc bool) levelZero)) ? error;
       expected = false;
     };
 
-    # ===== iso reduction tests =====
+    # ===== __descDesc reserved identifier =====
     #
-    # `iso : Π(k:Level). Iso (Desc^k ⊤) (μ(descDesc k) tt)` bundles
-    # `to`, `from`, `toFrom`, `fromTo`. With strict equality at the
-    # `descArg`/`descPi` level slot, every inhabitant of `Desc^k` is
-    # homogeneous-k by typing, so the iso is genuinely polymorphic
-    # rather than a section dressed in Π. These tests pin both the
-    # polymorphic type-shape and the round-trip behaviour as
-    # persistent regressions.
+    # Canonical surface name for the prelude description-of-descriptions
+    # term. Elaborates directly to the pre-elaborated `self.descDescTm`
+    # — call sites that emit `__descDesc` references avoid re-walking
+    # the HOAS tree on every use. Type-checks at the same polymorphic
+    # signature as the camelCase `descDesc` since they elaborate to
+    # identical Tms.
+    "elab-__descDesc-equals-descDescTm" = {
+      expr = elab __descDesc == self.descDescTm;
+      expected = true;
+    };
+    "__descDesc-type-checks" = {
+      expr = (checkHoas
+        (forall "I" (u 0) (I: forall "k" level (k: descAt (levelSuc k))))
+        __descDesc) ? error;
+      expected = false;
+    };
+    "__descDesc-at-unit-level-zero" = {
+      expr = (checkHoas
+        (descAt (levelSuc levelZero))
+        (app (app __descDesc unit) levelZero)).tag;
+      expected = "app";
+    };
 
-    # iso elaborates to a polymorphic Π over Level.
+    # ===== iso identity / descDesc-faithfulness regression =====
+    #
+    # `isoIdentity : Π(I:U(0))(k:Level). Iso (Desc^k I) (μ(descDesc I k) tt)`
+    # constructed as identity / refl bundle (see top of file). The
+    # kernel's Desc/μ unfolding conv rule equates the two presentations
+    # definitionally, so the identity witnesses typecheck against
+    # `isoTy` and round-trips collapse to β-η. These tests pin both
+    # the polymorphic type-shape and the conv rule's continued
+    # consistency with `descDesc`'s body — if the encoding drifts,
+    # `isoIdentity` fails to elaborate.
+
     "iso-type-checks-polymorphic" = {
-      expr = (inferHoas iso).type.tag;
+      expr = (inferHoas isoIdentity).type.tag;
       expected = "VPi";
     };
 
-    # iso instantiates at concrete levels — confirms the Π body
-    # normalises to the Σ-bundle (the Iso record) at each k.
+    # Instantiation at I = ⊤ and concrete levels — confirms the Π
+    # body normalises to the Σ-bundle (the Iso record) at each k.
     "iso-at-level-zero-instantiates" = {
-      expr = (inferHoas (app iso levelZero)).type.tag;
+      expr = (inferHoas (app (app isoIdentity unit) levelZero)).type.tag;
       expected = "VSigma";
     };
     "iso-at-level-one-instantiates" = {
-      expr = (inferHoas (app iso (levelSuc levelZero))).type.tag;
+      expr = (inferHoas (app (app isoIdentity unit) (levelSuc levelZero))).type.tag;
       expected = "VSigma";
     };
     "iso-at-level-two-instantiates" = {
-      expr = (inferHoas (app iso (levelSuc (levelSuc levelZero)))).type.tag;
+      expr = (inferHoas (app (app isoIdentity unit) (levelSuc (levelSuc levelZero)))).type.tag;
       expected = "VSigma";
     };
 
-    # Round-trip `from(to D) ≡ D` on prelude descriptions at k=0. Each
-    # exercises a different mix of `descDesc 0`'s plus-coproduct
+    # Instantiation at I ≠ ⊤ — verifies the I-thread accepts non-⊤
+    # index types, the prerequisite for `eqDesc A a : Desc A` round-
+    # tripping through the descDesc encoding.
+    "iso-at-bool-level-zero-instantiates" = {
+      expr = (inferHoas (app (app isoIdentity bool) levelZero)).type.tag;
+      expected = "VSigma";
+    };
+
+    # Round-trip `from(to D) ≡ D` on prelude descriptions at I=⊤, k=0.
+    # Each exercises a different mix of `descDesc ⊤ 0`'s plus-coproduct
     # summands: natDesc hits ret + arg + rec; listDesc hits arg + rec
     # + plus; sumDesc hits arg + plus.
     "iso-roundtrip-natDesc-k0" = {
       expr = let
-        iso0      = app iso levelZero;
+        iso0      = app (app isoIdentity unit) levelZero;
         to0       = fst_ iso0;
         from0     = fst_ (snd_ iso0);
         roundTrip = app from0 (app to0 natDesc);
@@ -828,7 +798,7 @@ in {
     };
     "iso-roundtrip-listDesc-bool-k0" = {
       expr = let
-        iso0      = app iso levelZero;
+        iso0      = app (app isoIdentity unit) levelZero;
         to0       = fst_ iso0;
         from0     = fst_ (snd_ iso0);
         D         = listDesc bool;
@@ -838,7 +808,7 @@ in {
     };
     "iso-roundtrip-sumDesc-nat-bool-k0" = {
       expr = let
-        iso0      = app iso levelZero;
+        iso0      = app (app isoIdentity unit) levelZero;
         to0       = fst_ iso0;
         from0     = fst_ (snd_ iso0);
         D         = sumDesc nat bool;
@@ -847,83 +817,29 @@ in {
       expected = true;
     };
 
+    # Round-trip at I = bool, k = 0. `eqDesc bool true_ : Desc bool` is
+    # a `retI true_` description — the Theorem 6.96 analogue. Exercises
+    # to/from over the I-typed leaf-index encoding without recursion.
+    "iso-roundtrip-eqDesc-bool-k0" = {
+      expr = let
+        isoBool0  = app (app isoIdentity bool) levelZero;
+        to0       = fst_ isoBool0;
+        from0     = fst_ (snd_ isoBool0);
+        D         = eqDesc bool true_;
+        roundTrip = app from0 (app to0 D);
+      in Q.nf [] (elab roundTrip) == Q.nf [] (elab D);
+      expected = true;
+    };
+
     # `toFrom natDesc : Eq (Desc^0 ⊤) (from(to natDesc)) natDesc` —
-    # the proof component of the iso at a concrete input. Asserts
-    # that the recursive proof structure built by `descInd` is
-    # well-typed (the type tag is `VEq`).
+    # the proof component at a concrete input. Asserts the equality
+    # proposition's well-typedness (the type tag is `VEq`).
     "iso-toFrom-natDesc-typechecks" = {
       expr = let
-        iso0    = app iso levelZero;
+        iso0    = app (app isoIdentity unit) levelZero;
         toFrom0 = fst_ (snd_ (snd_ iso0));
       in (inferHoas (app toFrom0 natDesc)).type.tag;
       expected = "VEq";
-    };
-
-    # ⟦natDesc⟧(X)(tt) — exercises the boolElim inside the arg body
-    "interpHoasAt-matches-interpF-natDesc" = {
-      expr = let
-        Xfam = lam "_" unit (_: bool);
-        lhsNf = Q.nf [] (elab (interpHoasAt 0 unit natDesc Xfam tt));
-        rhsNf = Q.quote 0 (E.interp V.vLevelZero V.vUnit
-          (E.eval [] (elab natDesc))
-          (E.eval [] (elab Xfam)) V.vTt);
-      in lhsNf == rhsNf;
-      expected = true;
-    };
-
-    # allHoasAt 0 ≡ allTy — exercises the motive's d-binder annotation
-    # `d : interpHoasAt 0 D (mu Douter)`, which onArg requires so that
-    # `fst_ d` / `snd_ d` inside the body type-check under desc-elim's
-    # paTy rule.
-
-    # All ⊤ natDesc descRet P tt refl = ⊤ (no recursive arg; d : Eq ⊤ tt tt = refl)
-    "allHoasAt-matches-allTy-ret" = {
-      expr = let
-        pHoas = lam "_i" unit (iArg: lam "_" (mu natDesc iArg) (_: u 0));
-        lhsNf = Q.nf [] (elab (allHoasAt 0 0 unit natDesc descRet pHoas tt refl));
-        douter = E.eval [] (elab natDesc);
-        dsub = E.eval [] (elab descRet);
-        pVal = E.eval [] (elab pHoas);
-        dVal = E.eval [] (elab refl);
-        rhsNf = Q.quote 0 (E.allTy V.vLevelZero V.vLevelZero V.vUnit douter dsub pVal V.vTt dVal);
-      in lhsNf == rhsNf;
-      expected = true;
-    };
-
-    # All ⊤ natDesc (rec tt (ret tt)) P tt (zero, refl) exercises onRec.
-    # d : ⟦rec tt (ret tt)⟧(muFam) tt = Σ(_: μnatDesc tt). Eq ⊤ tt tt.
-    "allHoasAt-matches-allTy-rec-ret" = {
-      expr = let
-        pHoas = lam "_i" unit (iArg: lam "_" (mu natDesc iArg) (_: u 0));
-        zeroH = descCon natDesc tt (pair true_ refl);
-        dH = pair zeroH refl;
-        D = descRec descRet;
-        lhsNf = Q.nf [] (elab (allHoasAt 0 0 unit natDesc D pHoas tt dH));
-        douter = E.eval [] (elab natDesc);
-        dsub = E.eval [] (elab D);
-        pVal = E.eval [] (elab pHoas);
-        dVal = E.eval [] (elab dH);
-        rhsNf = Q.quote 0 (E.allTy V.vLevelZero V.vLevelZero V.vUnit douter dsub pVal V.vTt dVal);
-      in lhsNf == rhsNf;
-      expected = true;
-    };
-
-    # All ⊤ natDesc (arg bool (_: ret tt)) P tt (true_, refl) exercises
-    # onArg — the case whose type-checking depends on the motive's
-    # d-binder annotation. d inhabits Σ(b:Bool). Eq ⊤ tt tt.
-    "allHoasAt-matches-allTy-arg-bool-ret" = {
-      expr = let
-        pHoas = lam "_i" unit (iArg: lam "_" (mu natDesc iArg) (_: u 0));
-        D = descArg 0 bool (_: descRet);
-        dH = pair true_ refl;
-        lhsNf = Q.nf [] (elab (allHoasAt 0 0 unit natDesc D pHoas tt dH));
-        douter = E.eval [] (elab natDesc);
-        dsub = E.eval [] (elab D);
-        pVal = E.eval [] (elab pHoas);
-        dVal = E.eval [] (elab dH);
-        rhsNf = Q.quote 0 (E.allTy V.vLevelZero V.vLevelZero V.vUnit douter dsub pVal V.vTt dVal);
-      in lhsNf == rhsNf;
-      expected = true;
     };
 
     # ===== Indexed-description acceptance (I = Nat / I = Bool) =====
@@ -933,15 +849,23 @@ in {
     # Unit.
 
     # `retI 3 : Desc Nat` — j = 3 inhabits I = Nat.
+    # Encoded `retI` checks against `descI nat`; the elaborated Tm is an
+    # `mkApp ... encodeDescRetTm ...` chain whose value evaluates to the
+    # encoded `VDescCon` constructor. Asserts the architectural invariant
+    # at the value layer rather than the elaboration-internal Tm shape.
     "indexed-desc-ret-at-nat-checks" = {
-      expr = (checkHoas (descI nat) (retI (natLit 3))).tag;
-      expected = "desc-ret";
+      expr = let
+        tm = checkHoas (descI nat) (retI nat 0 (natLit 3));
+      in (E.eval [] tm).tag;
+      expected = "VDescCon";
     };
 
     # `recI 2 (retI 3) : Desc Nat` — j = 2, subdesc `retI 3 : Desc Nat`.
     "indexed-desc-rec-at-nat-checks" = {
-      expr = (checkHoas (descI nat) (recI (natLit 2) (retI (natLit 3)))).tag;
-      expected = "desc-rec";
+      expr = let
+        tm = checkHoas (descI nat) (recI nat 0 (natLit 2) (retI nat 0 (natLit 3)));
+      in (E.eval [] tm).tag;
+      expected = "VDescCon";
     };
 
     # `piI 0 Bool (λb. boolElim _ 2 3 b) (retI 4) : Desc Nat` — the index
@@ -952,127 +876,23 @@ in {
                  boolElim 0 (lam "_" bool (_: nat))
                           (natLit 2) (natLit 3) b))
                    (forall "_" bool (_: nat));
-        D = piI 0 bool fAnn (retI (natLit 4));
+        D = piI nat 0 bool fAnn (retI nat 0 (natLit 4));
       in (checkHoas (descI nat) D).tag;
-      expected = "desc-pi";
+      expected = "app";
     };
 
     # Rejection: `retI 3 : Desc Bool` fails — j = 3 is a Nat, not a Bool.
     # The `desc-ret` CHECK rule at check.nix:174-177 threads `ty.I` into
     # the check on `tm.j`, producing a type mismatch.
     "indexed-desc-ret-wrong-index-rejects" = {
-      expr = (checkHoas (descI bool) (retI (natLit 3))) ? error;
+      expr = (checkHoas (descI bool) (retI bool 0 (natLit 3))) ? error;
       expected = true;
     };
 
     # `μ (retI 3 : Desc Nat) 3 : U(0)` — mu at the matching target index.
     "indexed-mu-at-nat-checks" = {
-      expr = (checkHoas (u 0) (muI nat (retI (natLit 3)) (natLit 3))).tag;
+      expr = (checkHoas (u 0) (muI nat (retI nat 0 (natLit 3)) (natLit 3))).tag;
       expected = "mu";
-    };
-
-    # ===== de Bruijn indices under Pi `_` binders =====
-    # The value-level on-cases at `eval/desc.nix` (`interpOnArg`,
-    # `interpOnPi`, `allOnPi`, `evOnPi`) each embed a Pi-domain
-    # annotation whose codomain references the index type `I`. Under
-    # the Pi's `_` binder the closure env is `[_, S, I]`, so references
-    # to `I` must use `Var 2`; `Var 1` resolves to `S`, yielding a
-    # description at the wrong index type and breaking any stuck-scrut
-    # `vDescElim` that relies on these on-cases.
-    #
-    # `vDescElim` fully reduces on a concrete `VDesc*` and drops the
-    # intermediate Pi-domain annotations from its result, so this
-    # invariant is only observable when the scrut is `VNe + eDescElim`
-    # — the frame quotes the motive and on-case VLams as-is. The tests
-    # below force that shape by calling `E.interp` / `E.allTy` on a
-    # bare neutral description (`vNe 0 []`) at `I = ⊤`.
-    #
-    # At `I = ⊤` the index value is `vUnit`, which quotes to the
-    # literal `{tag="unit"}`. A `Var 2` slot in the on-case body
-    # therefore materialises as `{tag="unit"}` after quote; a `Var 1`
-    # slot would resolve to the fresh-Var binding for `S` and quote as
-    # `{tag="var"; idx=1}`.
-    #
-    # Shared setup: build the quoted NF of `interp V.vUnit (vNe 0 []) X
-    # tt` (or the analogous `allTy` call) and navigate to the descElim
-    # node inside the spine.
-
-    # `interpOnArg`: `T`'s Pi annotation is `Π _:S. Desc I`. The
-    # Desc's `I` component must quote to unit, not to a fresh-Var
-    # bound for `S`.
-    "interpOnArg-T-codomain-quotes-to-I" = {
-      expr = let
-        T' = fx.tc.term;
-        Dstuck = V.vNe 0 [];
-        Xfam = V.vLam "_" V.vUnit (V.mkClosure [] T'.mkNat);
-        qt = Q.quote 1 (E.interp V.vLevelZero V.vUnit Dstuck Xfam V.vTt);
-        descElim = qt.fn.fn;
-      in descElim.onArg.body.domain.codomain.I.tag;
-      expected = "unit";
-    };
-
-    # `interpOnPi`: `f`'s Pi annotation is `Π _:S. I`. The codomain
-    # must quote to unit, not to a fresh-Var bound for `S`.
-    "interpOnPi-f-codomain-quotes-to-I" = {
-      expr = let
-        T' = fx.tc.term;
-        Dstuck = V.vNe 0 [];
-        Xfam = V.vLam "_" V.vUnit (V.mkClosure [] T'.mkNat);
-        qt = Q.quote 1 (E.interp V.vLevelZero V.vUnit Dstuck Xfam V.vTt);
-        descElim = qt.fn.fn;
-      in descElim.onPi.body.domain.codomain.tag;
-      expected = "unit";
-    };
-
-    # `allOnPi`: analogous probe via `E.allTy` on a stuck desc. `f`'s
-    # Pi codomain must quote to unit.
-    "allOnPi-f-codomain-quotes-to-I" = {
-      expr = let
-        T' = fx.tc.term;
-        Dstuck = V.vNe 0 [];
-        # P : (i:⊤) → μ Dstuck i → U — use a trivial constant.
-        P = V.vLam "i" V.vUnit (V.mkClosure [] (T'.mkU T'.mkLevelZero));
-        qt = Q.quote 1 (E.allTy V.vLevelZero V.vLevelZero V.vUnit Dstuck Dstuck P V.vTt V.vRefl);
-        descElim = qt.fn.fn.fn;
-      in descElim.onPi.body.domain.codomain.tag;
-      expected = "unit";
-    };
-
-    # `evOnPi` carries the same `Var 2` invariant in the `everywhere`
-    # family. It is exercised indirectly through `vDescIndF` whenever a
-    # datatype elim runs on a neutral motive over a `π` field (e.g.
-    # W-types, `piField`-containing datatypes); a dedicated stuck
-    # `descInd` probe analogous to the three above would pin it
-    # directly.
-
-    # `E.allTy` accepts a non-concrete Level *value* — `mkAllMotive`
-    # threads K through the closure env as a Val, so a level
-    # expression like `max 0 0` (which doesn't reduce to a `VLevelSuc^n
-    # VLevelZero` chain at the value layer) flows through verbatim and
-    # ends up baked into the motive's universe annotation.
-    "allTy-accepts-non-concrete-level" = {
-      expr = let
-        Dstuck = V.vNe 0 [];
-        P = V.vLam "i" V.vUnit (V.mkClosure [] (fx.tc.term.mkU fx.tc.term.mkLevelZero));
-        Kval = V.vLevelMax V.vLevelZero V.vLevelZero;
-        result = E.allTy Kval V.vLevelZero V.vUnit Dstuck Dstuck P V.vTt V.vRefl;
-      in result.tag;
-      expected = "VNe";
-    };
-
-    # The U-annotation embedded in the motive's Σ chain inhabits the
-    # provided level Val verbatim — quoting the stuck allTy result and
-    # navigating to the motive's body universe shows the `VLevelMax`
-    # node faithfully preserved (rather than coerced to a constant).
-    "allTy-non-concrete-level-preserved-in-quote" = {
-      expr = let
-        Dstuck = V.vNe 0 [];
-        P = V.vLam "i" V.vUnit (V.mkClosure [] (fx.tc.term.mkU fx.tc.term.mkLevelZero));
-        Kval = V.vLevelMax V.vLevelZero V.vLevelZero;
-        qt = Q.quote 1 (E.allTy Kval V.vLevelZero V.vUnit Dstuck Dstuck P V.vTt V.vRefl);
-        descElim = qt.fn.fn.fn;
-      in descElim.motive.body.codomain.codomain.codomain.level.tag;
-      expected = "level-max";
     };
 
     # ===== Datatype macro =====
@@ -1094,11 +914,15 @@ in {
         cons = [{ name = "tt"; fields = []; }];
       };
     };
-    # The macro emits D as `ann <spine> desc` so the outer Tm is an `ann`;
-    # `.term` is the raw spine. For a single zero-field con, spine = descRet.
+    # The macro emits D as `ann <spine> desc`; spine elaborates through
+    # the encoded `mkApp ... encodeDescRetTm ...` form. Asserts the
+    # post-encoding value-layer invariant: D evaluates to the encoded
+    # `VDescCon` constructor.
     "datatype-unit-D-elab" = {
-      expr = (elab (datatype "Unit" [ (con "tt" []) ]).D).term.tag;
-      expected = "desc-ret";
+      expr = let
+        D = (datatype "Unit" [ (con "tt" []) ]).D;
+      in (E.eval [] (elab D)).tag;
+      expected = "VDescCon";
     };
     "datatype-unit-T-elab" = {
       expr = (elab (datatype "Unit" [ (con "tt" []) ]).T).tag;
@@ -1186,13 +1010,15 @@ in {
         ];
       };
     };
-    # D = ann (descArg bool (b: boolElim _ descRet descRet b)) desc — the
     # Two zero-field ctors produce a plus-coproduct spineDesc with both
-    # summands degenerate to descRet. ann-wrapper routes D through CHECK;
-    # `.term` is the raw spine.
+    # summands degenerate to descRet. After encoding, the elaborated Tm
+    # is an `mkApp ... encodeDescPlusTm ...` chain; the value-layer
+    # `VDescCon` assertion captures the architectural invariant.
     "datatype-bool-D-elab" = {
-      expr = (elab (datatype "Bool" [ (con "true" []) (con "false" []) ]).D).term.tag;
-      expected = "desc-plus";
+      expr = let
+        D = (datatype "Bool" [ (con "true" []) (con "false" []) ]).D;
+      in (E.eval [] (elab D)).tag;
+      expected = "VDescCon";
     };
     "datatype-bool-T-elab" = {
       expr = (elab (datatype "Bool" [ (con "true" []) (con "false" []) ]).T).tag;
@@ -2200,11 +2026,15 @@ in {
         Tnat = app Tree.T nat;
         leafZero = app (app Tree.leaf nat) zero;
         nodeLL = app (app (app Tree.node nat) leafZero) leafZero;
-        addTm = lam "m" nat (m: lam "n" nat (n:
+        # See `integration-desc-nat-add-2-3`: `app addTm il` requires
+        # `addTm` inferable, hence the explicit Π annotation.
+        addTm = ann
+          (lam "m" nat (m: lam "n" nat (n:
                   ind 0 (lam "_" nat (_: nat))
                       n
                       (lam "k" nat (_: lam "ih" nat (ih: succ ih)))
-                      m));
+                      m)))
+          (forall "m" nat (_: forall "n" nat (_: nat)));
         M = lam "_" Tnat (_: nat);
         sLeaf = lam "v" nat (_: succ zero);
         sNode = lam "l" Tnat (_:
@@ -2272,7 +2102,7 @@ in {
         boolP = lam "s" bool (s:
                   boolElim 1 (lam "_" bool (_: u 0)) unit void s);
         macroD = app (app W.D bool) boolP;
-        manualD = descArg 0 bool (s:
+        manualD = descArg unit 0 bool (s:
                     descPi 0 (app boolP s) descRet);
       in Q.nf [] (elab macroD) == Q.nf [] (elab manualD);
       expected = true;
@@ -2676,7 +2506,7 @@ in {
       # description body, which for the single-ctor refl spine is
       # exactly `retI zero`.
       expr = Q.nf [] (elab (eqDesc nat zero))
-          == Q.nf [] (elab (retI zero));
+          == Q.nf [] (elab (retI nat 0 zero));
       expected = true;
     };
 
@@ -2685,7 +2515,7 @@ in {
       # under nf to the bare `muI nat (retI zero) zero` the hand-written
       # spelling produced directly.
       expr = Q.nf [] (elab (eqDT nat zero zero))
-          == Q.nf [] (elab (muI nat (retI zero) zero));
+          == Q.nf [] (elab (muI nat (retI nat 0 zero) zero));
       expected = true;
     };
 
@@ -2750,6 +2580,19 @@ in {
                   x);
       in (checkHoas ty (eqIsoBwd nat zero zero)).tag;
       expected = "lam";
+    };
+
+    # Cascade onInl bodies in `encodeDescElim` must use saturated
+    # `app` chains. Over-applied forms like
+    # `app (app (app (app onRec j) D) ihD)` leave a curried Nix
+    # lambda where the elaborator expects an HOAS attrset; elab then
+    # throws "not an HOAS node (lambda)" when the body is forced.
+    # The bug hides behind two outer `lam`s, so it only surfaces when
+    # consumers walk the elaborated Tm tree deeply (e.g. extractDocs).
+    "encodeDescElim-elab-deep-forces" = {
+      expr = (builtins.tryEval
+        (builtins.deepSeq (elab encodeDescElim) true)).success;
+      expected = true;
     };
   };
 }

@@ -25,10 +25,11 @@
 let
   term = fx.tc.term;
   val = fx.tc.value;
-  inherit (val) mkClosure vLam vDesc vU vTt vPair vNe
-    vDescRet vDescArg vDescRec vDescPi vNat vUnit vRefl
+  inherit (val) mkClosure vLam vPi vDesc vU vTt vPair vNe
+    vDescRet vDescArg vDescRec vDescPi vDescPlus vNat vUnit vRefl
+    vSigma vSum vEq
     vLevelZero
-    eDescInd eDescElim;
+    eDescInd eDescElim eInterpD eAllD eEverywhereD;
 
   # Closed Tms (no free vars) with `L` as the outermost lambda binder
   # and `I` immediately under. Applied via `mkApp (mkApp ... L_tm) I_tm`
@@ -162,20 +163,22 @@ in {
                 (term.mkMu (term.mkVar 4) (term.mkVar 3) (term.mkVar 0))
                 (term.mkDescInd (term.mkVar 4) (term.mkVar 3) (term.mkVar 2)
                   (term.mkVar 1) (term.mkVar 0))));
-          # `vDescIndF` doesn't carry the description's level (the
-          # `desc-ind` term has no level slot — descInd's typing rule
-          # recovers it from D's inferred type at check time). Pass
-          # `vLevelZero` to `everywhereF`: this produces a stuck
-          # `eDescElim vLevelZero …` frame at L>0 instead of the
-          # description's actual level, but `everywhere` is value-level
-          # only (no HOAS counterpart) and its result is fed directly
-          # into `step` via `vAppF` — `step`'s type was already checked
-          # against the proper L at descInd's typing site, so the
-          # placeholder L here doesn't propagate to a type-correctness
-          # gap. Both HOAS-elaborated and eval-direct paths run through
-          # this same `vDescIndF` code, so they produce identical VNe
-          # values on stuck D.
-          evResult = self.everywhereF f vLevelZero I D D motive ihVal i d;
+          # X family fed to `vEverywhereDF`: λj:I. μ D j — the recursive
+          # children's type. env [I, D]; under j-binder [j, I, D].
+          # j=0, I=1, D=2.
+          muFam = vLam "j" I
+            (mkClosure [ I D ]
+              (term.mkMu (term.mkVar 1) (term.mkVar 2) (term.mkVar 0)));
+          # `vDescIndF` doesn't carry the description's level — `desc-ind`
+          # has no level slot; the typing rule recovers it from D's inferred
+          # type at check time. `vLevelZero` here is a placeholder for the
+          # L and K slots: the result is fed into `step` via `vAppF`, whose
+          # type was already checked against the proper L/K at descInd's
+          # typing site, so the placeholder doesn't propagate to a
+          # type-correctness gap. `vEverywhereDF` dispatches uniformly
+          # across primitive (VDescX) and encoded (VDescCon) shapes via
+          # the per-summand `view`, so D's encoding is irrelevant here.
+          evResult = self.vEverywhereDF f vLevelZero I D vLevelZero muFam motive ihVal i d;
         in self.vAppF f (self.vAppF f (self.vAppF f step i) d) evResult
       else throw "tc: vDescInd on non-mu (tag=${scrut.tag})";
 
@@ -247,7 +250,35 @@ in {
              ihB
 
       else if scrut.tag == "VNe" then
+        # Stuck scrut produces stuck spine; mirrors `vSumElimF`, `vJ`,
+        # `vLiftElimF`, `vDescIndF`. Quote round-trips via the
+        # `EDescElim` frame (quote.nix); conv compares frame slots
+        # structurally.
         vNe scrut.level (scrut.spine ++ [ (eDescElim K_val motive onRet onArg onRec onPi onPlus) ])
+      else if scrut.tag == "VDescCon" then
+        # VDescCon inhabits `μ⊤(descDesc)` (the levitated encoding of
+        # Desc), not `Desc^L I` directly. Routed through `encodeDescElim`'s
+        # closed HOAS Val, which fires `descInd c.dDesc motiveI step
+        # ttPrim scrut` over descDesc's primitive sum tree, walking the
+        # encoded payload and invoking the user's case bodies via the
+        # cascade. The iso between primitive Desc and μ⊤(descDesc)
+        # makes the routing semantically justified for canonical encoded
+        # scruts.
+        #
+        # `motive.domain` recovers I: motive was checked against
+        # `Desc^L I → U` at the desc-elim INFER site, so
+        # `motive.domain.tag == "VDesc"`, `.level == L_val`, `.I ==
+        # I_val`. `K_val == L_val` per the rule's `convLevel kVal
+        # sTy.level` constraint, so it threads to both `encodeDescElim`'s
+        # `k` slot and its motive-codomain `L` slot.
+        if motive.tag != "VLam"
+        then throw "tc: vDescElim on ${scrut.tag} requires VLam motive (got ${motive.tag})"
+        else if motive.domain.tag != "VDesc"
+        then throw "tc: vDescElim on ${scrut.tag} requires VDesc-domained motive (got ${motive.domain.tag})"
+        else let
+          I = motive.domain.I;
+          v = self.vAppF f;
+        in v (v (v (v (v (v (v (v (v (v fx.tc.hoas.encodeDescElimVal I) K_val) K_val) motive) onRet) onArg) onRec) onPi) onPlus) scrut
 
       else throw "tc: vDescElim on non-desc (tag=${scrut.tag})";
 
@@ -583,26 +614,451 @@ in {
       in self.vAppF fuel
            (self.vAppF fuel (self.vAppF fuel result P) i) d;
 
+    # decodeDescCaseF — extract the descDesc summand index and payload
+    # from an encoded description. Walks the inr/inl spine in `.d`
+    # (constructed by `encodeAt` in hoas/desc.nix:202): each summand `t`
+    # of descDesc's 5-case plus tree maps to `t` `inr`s followed by an
+    # `inl` for cases 0..3, and 4 `inr`s with no trailing `inl` for the
+    # terminal case 4 (plus). Returns `{ idx ∈ {0..4}; payload :: Val }`
+    # where `idx` is the summand position (0=ret, 1=arg, 2=rec, 3=pi,
+    # 4=plus) and `payload` is the inner pair tree, or `null` if `dVal`
+    # is not a `VDescCon` or has a malformed selector chain.
+    decodeDescCaseF = dVal:
+      if dVal.tag != "VDescCon" then null
+      else
+        let
+          walk = node: depth:
+            if depth >= 4 then { idx = 4; payload = node; }
+            else if node.tag == "VInl" then { idx = depth; payload = node.val; }
+            else if node.tag == "VInr" then walk node.val (depth + 1)
+            else null;
+        in walk dVal.d 0;
+
     # linearProfile D — recognise the "linear recursive" description shape
     # that the desc-con trampoline decomposes layer-by-layer. Returns either
     # null (non-linear; trampoline declines) or [{ S = VDesc; }]_{i=1..n},
     # the list of data-field types preceding the single rec tail, iff
     # D = descArg S_1 (_. descArg S_2 (_. … descRec j descRet)) for some n ≥ 0.
     #
-    # Shape-only predicate: inspects tags (VDescArg, VDescRec, VDescRet)
-    # and the closure-instantiated false branch of VDescArg. The `j`
-    # fields on VDescRec / VDescRet are not consulted.
+    # Handles both primitive `VDescArg`/`VDescRec`/`VDescRet` shapes and
+    # encoded `VDescCon` shapes (μ-inhabitants of `descDesc`). For encoded
+    # nodes, the summand is identified via `decodeDescCaseF` and the
+    # corresponding payload slots (sLifted/tLifted for arg, j/D for rec)
+    # are walked. At the homogeneous l=k=0 path the `LiftAtWithEq`
+    # idempotent collapse makes `sLifted ≡ S` so the profile entry's
+    # `S` slot is the user's primitive type without a Lift wrapper.
     linearProfileF = fuel: D:
       let
+        # Recognise a terminal `descRet` at either representation. The
+        # encoded form's payload `(j, refl)` is irrelevant to shape-only
+        # classification — only the summand idx is consulted.
+        isRet = nd:
+          if nd.tag == "VDescRet" then true
+          else if nd.tag == "VDescCon" then
+            let info = self.decodeDescCaseF nd; in
+            info != null && info.idx == 0
+          else false;
         go = node: acc:
           if node.tag == "VDescArg" then
             let subD = self.instantiateF fuel node.T vTt; in
             go subD (acc ++ [{ S = node.S; }])
           else if node.tag == "VDescRec" then
-            if node.D.tag == "VDescRet" then acc
+            if isRet node.D then acc else null
+          else if node.tag == "VDescCon" then
+            let info = self.decodeDescCaseF node; in
+            if info == null then null
+            else if info.idx == 1 then
+              let
+                sLifted = info.payload.fst;
+                tLifted = info.payload.snd.fst;
+              in
+                if tLifted.tag != "VLam" then null
+                else
+                  let subD = self.instantiateF fuel tLifted.closure vTt; in
+                  go subD (acc ++ [{ S = sLifted; }])
+            else if info.idx == 2 then
+              let nextD = info.payload.snd.fst; in
+              if isRet nextD then acc else null
             else null
           else null;
       in go D [];
+
+    # tryDecodeToPrimF — recursively reconstruct a primitive `VDescX` Val
+    # from an encoded `VDescCon` (μ⊤(descDesc) inhabitant). Returns null
+    # if any sub-node is a shape we cannot safely primitivise without
+    # losing semantics — currently `idx ∈ {1,3}` (arg / pi), since their
+    # `T` / `f` payloads are stored as VLam closures whose dependence on
+    # the bound argument cannot be inspected without firing the encoded
+    # cascade we are trying to avoid.
+    #
+    # Coverage: ret (idx=0), rec (idx=2), plus (idx=4). Sufficient for
+    # `natDesc` (`plus ret (rec ret)`) and `boolDesc` (`plus ret ret`),
+    # which are the per-element interp targets in the desc-con CHECK
+    # trampoline's recursive checks (each `H.zero : H.nat` triggers
+    # interp on encoded `natDesc`; without the fast-path each call walks
+    # the 5-summand `interpHoasAtVal` cascade at ≈17 ms/call). The outer
+    # `listDesc nat` / `sumDesc l r` interp call (once per top-level
+    # check) hits idx=1 and falls through to the encoded path — no
+    # regression there.
+    #
+    # Fuel-bounded depth defends against pathologically deep
+    # descriptions; the prelude shapes are bounded at ≤3.
+    tryDecodeToPrimF = fuel: D:
+      if fuel <= 0 then null
+      else if D.tag == "VDescRet" || D.tag == "VDescArg"
+           || D.tag == "VDescRec" || D.tag == "VDescPi"
+           || D.tag == "VDescPlus"
+      then D
+      else if D.tag != "VDescCon" then null
+      else
+        let info = self.decodeDescCaseF D; in
+        if info == null then null
+        else
+          # Guard: encoded summand payloads are right-nested VPair trees
+          # terminated by VRefl. A stuck or partially-elaborated payload
+          # (VApp, VLam, VNe under a closure) lacks the `.fst`/`.snd`
+          # accessors. Bail to null so callers fall through to the encoded
+          # `*HoasAtVal` cascade rather than crashing on attribute access.
+          let isPair = v: builtins.isAttrs v && v.tag or null == "VPair"; in
+          if info.idx == 0 then
+            # ret: payload = (j, refl).
+            if !(isPair info.payload) then null
+            else vDescRet info.payload.fst
+          else if info.idx == 2 then
+            # rec: payload = (j, (encD, refl)).
+            if !(isPair info.payload) || !(isPair info.payload.snd) then null
+            else
+              let
+                j = info.payload.fst;
+                Dsub = self.tryDecodeToPrimF (fuel - 1) info.payload.snd.fst;
+              in if Dsub == null then null else vDescRec j Dsub
+          else if info.idx == 4 then
+            # plus: payload = (encA, (encB, refl)).
+            if !(isPair info.payload) || !(isPair info.payload.snd) then null
+            else
+              let
+                A = self.tryDecodeToPrimF (fuel - 1) info.payload.fst;
+                B = self.tryDecodeToPrimF (fuel - 1) info.payload.snd.fst;
+              in if A == null || B == null then null else vDescPlus A B
+          else null;
+
+    # vInterpDF — kernel-primitive interpretation of a description.
+    # Dispatches on D's outer constructor per CDMM §4.2.3:
+    #   interpD L I (descRet j)        X i ⇝ Lift 0 L refl (Eq I j i)
+    #   interpD L I (descArg _ _ S T)  X i ⇝ Σ s:S. interpD L I (T s) X i
+    #   interpD L I (descRec j D)      X i ⇝ Σ _:X j. interpD L I D X i
+    #   interpD L I (descPi _ _ S f D) X i ⇝ Σ _:(Π s:S. X (f s)). interpD L I D X i
+    #   interpD L I (descPlus A B)     X i ⇝ interpD L I A X i ⊎ interpD L I B X i
+    # Encoded `VDescCon` decomposes via `decodeDescCaseF` and dispatches per
+    # summand idx. Sub-Sigma closures emit `mkInterpD` Tms so eval re-enters
+    # this dispatcher when instantiated. Stuck `VNe` D appends an `eInterpD`
+    # frame to the spine.
+    vInterpDF = fuel: L_val: I_val: D: X: i:
+      if fuel <= 0 then throw "normalization budget exceeded"
+      else if D.tag == "VNe" then
+        vNe D.level (D.spine ++ [ (eInterpD L_val I_val X i) ])
+      else
+        let
+          f = fuel - 1;
+          # Normalised summand view across primitive (`VDescX`) and encoded
+          # (`VDescCon`) shapes. Uses the same per-summand slot layout as
+          # `decodeDescCaseF` for the encoded path.
+          view =
+            if D.tag == "VDescRet" then { idx = 0; j = D.j; }
+            else if D.tag == "VDescArg" then
+              { idx = 1; sTy = D.S; tFn = vLam "_" D.S D.T; }
+            else if D.tag == "VDescRec" then
+              { idx = 2; j = D.j; sub = D.D; }
+            else if D.tag == "VDescPi" then
+              { idx = 3; sTy = D.S; fn = D.f; sub = D.D; }
+            else if D.tag == "VDescPlus" then
+              { idx = 4; A = D.A; B = D.B; }
+            else if D.tag == "VDescCon" then
+              let info = self.decodeDescCaseF D; in
+              if info == null then throw "tc: vInterpD on malformed VDescCon"
+              else if info.idx == 0 then { idx = 0; j = info.payload.fst; }
+              else if info.idx == 1 then
+                { idx = 1; sTy = info.payload.fst; tFn = info.payload.snd.fst; }
+              else if info.idx == 2 then
+                { idx = 2; j = info.payload.fst; sub = info.payload.snd.fst; }
+              else if info.idx == 3 then
+                { idx = 3;
+                  sTy = info.payload.fst;
+                  fn  = info.payload.snd.fst;
+                  sub = info.payload.snd.snd.fst; }
+              else if info.idx == 4 then
+                { idx = 4; A = info.payload.fst; B = info.payload.snd.fst; }
+              else throw "tc: vInterpD on VDescCon with unknown summand idx ${toString info.idx}"
+            else throw "tc: vInterpD on non-desc (tag=${D.tag})";
+        in
+        if view.idx == 0 then
+          # Lift 0 L refl (Eq I j i). Idempotent at L = 0 collapses to Eq.
+          self.vLiftF vLevelZero L_val vRefl (vEq I_val view.j i)
+        else if view.idx == 1 then
+          # Σ s:S. interpD L I (T s) X i.
+          # Closure env: [tFn, L, I, X, i]. Under s: [s, tFn, L, I, X, i].
+          # s=0, tFn=1, L=2, I=3, X=4, i=5.
+          let
+            ihClosure = mkClosure [ view.tFn L_val I_val X i ]
+              (term.mkInterpD (term.mkVar 2) (term.mkVar 3)
+                              (term.mkApp (term.mkVar 1) (term.mkVar 0))
+                              (term.mkVar 4) (term.mkVar 5));
+          in vSigma "s" view.sTy ihClosure
+        else if view.idx == 2 then
+          # Σ _:X j. interpD L I D X i.
+          # Sub-D doesn't depend on `_`; closure env carries `sub` as a
+          # bound Val referenced by index. env [L, I, X, i, sub]. Under _:
+          # [_, L, I, X, i, sub]. _=0, L=1, I=2, X=3, i=4, sub=5.
+          let
+            Xj = self.vAppF f X view.j;
+            ihClosure = mkClosure [ L_val I_val X i view.sub ]
+              (term.mkInterpD (term.mkVar 1) (term.mkVar 2) (term.mkVar 5)
+                              (term.mkVar 3) (term.mkVar 4));
+          in vSigma "_" Xj ihClosure
+        else if view.idx == 3 then
+          # Σ _:(Π s:S. X (f s)). interpD L I D X i.
+          # Pi-binder env: [X, fn]. Under s: [s, X, fn]. s=0, X=1, fn=2.
+          # Body Tm: X (fn s) = mkApp X (mkApp fn s).
+          let
+            piTy = vPi "s" view.sTy (mkClosure [ X view.fn ]
+              (term.mkApp (term.mkVar 1)
+                          (term.mkApp (term.mkVar 2) (term.mkVar 0))));
+            ihClosure = mkClosure [ L_val I_val X i view.sub ]
+              (term.mkInterpD (term.mkVar 1) (term.mkVar 2) (term.mkVar 5)
+                              (term.mkVar 3) (term.mkVar 4));
+          in vSigma "_" piTy ihClosure
+        else  # view.idx == 4
+          # interpD L I A X i ⊎ interpD L I B X i. Both sides eager — vSum's
+          # slots are types (Vals), no closure needed.
+          let
+            AInterp = self.vInterpDF f L_val I_val view.A X i;
+            BInterp = self.vInterpDF f L_val I_val view.B X i;
+          in vSum AInterp BInterp;
+
+    # vAllDF — kernel-primitive All-witness type over a description.
+    # Dispatches on D's outer constructor per CDMM §6.1:
+    #   allD L I (descRet j)        K X M i d ⇝ Lift 0 K refl Unit
+    #   allD L I (descArg _ _ S T)  K X M i d ⇝ allD L I (T (fst d)) K X M i (snd d)
+    #   allD L I (descRec j D)      K X M i d ⇝ Σ _:M j (fst d). allD L I D K X M i (snd d)
+    #   allD L I (descPi _ _ S f D) K X M i d ⇝
+    #     Σ _:(Π s:S. M (f s) ((fst d) s)). allD L I D K X M i (snd d)
+    #   allD L I (descPlus A B)     K X M i d ⇝
+    #     case d of inl a → allD L I A K X M i a | inr b → allD L I B K X M i b
+    # Stuck `VNe` d on a canonical `descPlus` D builds a stuck `vSumElim` so
+    # the result's neutral form carries an `ESumElim` frame at d. Stuck `VNe`
+    # D appends an `eAllD` frame to the spine.
+    vAllDF = fuel: L_val: I_val: D: K_val: X: M: i: d:
+      if fuel <= 0 then throw "normalization budget exceeded"
+      else if D.tag == "VNe" then
+        vNe D.level (D.spine ++ [ (eAllD L_val I_val K_val X M i d) ])
+      else
+        let
+          f = fuel - 1;
+          view =
+            if D.tag == "VDescRet" then { idx = 0; j = D.j; }
+            else if D.tag == "VDescArg" then
+              { idx = 1; sTy = D.S; tFn = vLam "_" D.S D.T; }
+            else if D.tag == "VDescRec" then
+              { idx = 2; j = D.j; sub = D.D; }
+            else if D.tag == "VDescPi" then
+              { idx = 3; sTy = D.S; fn = D.f; sub = D.D; }
+            else if D.tag == "VDescPlus" then
+              { idx = 4; A = D.A; B = D.B; }
+            else if D.tag == "VDescCon" then
+              let info = self.decodeDescCaseF D; in
+              if info == null then throw "tc: vAllD on malformed VDescCon"
+              else if info.idx == 0 then { idx = 0; j = info.payload.fst; }
+              else if info.idx == 1 then
+                { idx = 1; sTy = info.payload.fst; tFn = info.payload.snd.fst; }
+              else if info.idx == 2 then
+                { idx = 2; j = info.payload.fst; sub = info.payload.snd.fst; }
+              else if info.idx == 3 then
+                { idx = 3;
+                  sTy = info.payload.fst;
+                  fn  = info.payload.snd.fst;
+                  sub = info.payload.snd.snd.fst; }
+              else if info.idx == 4 then
+                { idx = 4; A = info.payload.fst; B = info.payload.snd.fst; }
+              else throw "tc: vAllD on VDescCon with unknown summand idx ${toString info.idx}"
+            else throw "tc: vAllD on non-desc (tag=${D.tag})";
+        in
+        if view.idx == 0 then
+          self.vLiftF vLevelZero K_val vRefl vUnit
+        else if view.idx == 1 then
+          # Direct unfold (no Sigma): recurse on (T (fst d)) with (snd d).
+          let
+            fstD = self.vFst d;
+            sndD = self.vSnd d;
+            subD = self.vAppF f view.tFn fstD;
+          in self.vAllDF f L_val I_val subD K_val X M i sndD
+        else if view.idx == 2 then
+          # Σ _:M j (fst d). allD L I D K X M i (snd d).
+          # Closure env: [L, I, K, X, M, i, sndD, sub]. Under _:
+          # [_, L, I, K, X, M, i, sndD, sub]. _=0..sub=8.
+          let
+            fstD = self.vFst d;
+            sndD = self.vSnd d;
+            Mjfd = self.vAppF f (self.vAppF f M view.j) fstD;
+            ihClosure = mkClosure [ L_val I_val K_val X M i sndD view.sub ]
+              (term.mkAllD (term.mkVar 1) (term.mkVar 2) (term.mkVar 8)
+                           (term.mkVar 3) (term.mkVar 4) (term.mkVar 5)
+                           (term.mkVar 6) (term.mkVar 7));
+          in vSigma "_" Mjfd ihClosure
+        else if view.idx == 3 then
+          # Σ _:(Π s:S. M (f s) ((fst d) s)). allD L I D K X M i (snd d).
+          # Pi env: [M, fn, fstD]. Under s: [s, M, fn, fstD].
+          # s=0, M=1, fn=2, fstD=3.
+          let
+            fstD = self.vFst d;
+            sndD = self.vSnd d;
+            piTy = vPi "s" view.sTy (mkClosure [ M view.fn fstD ]
+              (term.mkApp
+                (term.mkApp (term.mkVar 1)
+                            (term.mkApp (term.mkVar 2) (term.mkVar 0)))
+                (term.mkApp (term.mkVar 3) (term.mkVar 0))));
+            ihClosure = mkClosure [ L_val I_val K_val X M i sndD view.sub ]
+              (term.mkAllD (term.mkVar 1) (term.mkVar 2) (term.mkVar 8)
+                           (term.mkVar 3) (term.mkVar 4) (term.mkVar 5)
+                           (term.mkVar 6) (term.mkVar 7));
+          in vSigma "_" piTy ihClosure
+        else  # view.idx == 4
+          # case d of inl a → allD L I A …; inr b → allD L I B …
+          if d.tag == "VInl" then
+            self.vAllDF f L_val I_val view.A K_val X M i d.val
+          else if d.tag == "VInr" then
+            self.vAllDF f L_val I_val view.B K_val X M i d.val
+          else if d.tag == "VNe" then
+            # Stuck d: encode as `vSumElim` so the neutral d carries an
+            # `ESumElim` frame. Left/right interp types feed the sum-elim
+            # type slots; on-cases recurse back into vAllDF via mkAllD.
+            let
+              AInterp = self.vInterpDF f L_val I_val view.A X i;
+              BInterp = self.vInterpDF f L_val I_val view.B X i;
+              # Motive: λ_:(AInterp+BInterp). U(K). Constant in scrut, so
+              # the binder type is a placeholder (eval doesn't re-check).
+              motive = vLam "_" (vSum AInterp BInterp) (mkClosure [ K_val ]
+                (term.mkU (term.mkVar 1)));
+              # On-left: λa:AInterp. allD L I A K X M i a.
+              # Closure env: [L, I, K, X, M, i, A]. Under a:
+              # [a, L, I, K, X, M, i, A]. a=0..A=7.
+              onLeftLam = vLam "a" AInterp
+                (mkClosure [ L_val I_val K_val X M i view.A ]
+                  (term.mkAllD (term.mkVar 1) (term.mkVar 2) (term.mkVar 7)
+                               (term.mkVar 3) (term.mkVar 4) (term.mkVar 5)
+                               (term.mkVar 6) (term.mkVar 0)));
+              onRightLam = vLam "b" BInterp
+                (mkClosure [ L_val I_val K_val X M i view.B ]
+                  (term.mkAllD (term.mkVar 1) (term.mkVar 2) (term.mkVar 7)
+                               (term.mkVar 3) (term.mkVar 4) (term.mkVar 5)
+                               (term.mkVar 6) (term.mkVar 0)));
+            in self.vSumElimF f AInterp BInterp motive onLeftLam onRightLam d
+          else throw "tc: vAllD on plus with non-sum d (tag=${d.tag})";
+
+    # vEverywhereDF — kernel-primitive recursor that produces an `allD`
+    # witness from a per-recursive-position witness `ih : Π(j:I)(x:X j). M j x`.
+    # Dispatches on D's outer constructor per CDMM §6.1:
+    #   everywhereD L I (descRet j)        K X M ih i d ⇝ liftIntro 0 K refl Unit tt
+    #   everywhereD L I (descArg _ _ S T)  K X M ih i d ⇝
+    #     everywhereD L I (T (fst d)) K X M ih i (snd d)
+    #   everywhereD L I (descRec j D)      K X M ih i d ⇝
+    #     pair (ih j (fst d)) (everywhereD L I D K X M ih i (snd d))
+    #   everywhereD L I (descPi _ _ S f D) K X M ih i d ⇝
+    #     pair (λs:S. ih (f s) ((fst d) s)) (everywhereD L I D K X M ih i (snd d))
+    #   everywhereD L I (descPlus A B)     K X M ih i d ⇝
+    #     case d of inl a → everywhereD L I A K X M ih i a | inr b → …
+    # Stuck `VNe` D appends an `eEverywhereD` frame to the spine.
+    vEverywhereDF = fuel: L_val: I_val: D: K_val: X: M: ih: i: d:
+      if fuel <= 0 then throw "normalization budget exceeded"
+      else if D.tag == "VNe" then
+        vNe D.level (D.spine ++ [ (eEverywhereD L_val I_val K_val X M ih i d) ])
+      else
+        let
+          f = fuel - 1;
+          view =
+            if D.tag == "VDescRet" then { idx = 0; j = D.j; }
+            else if D.tag == "VDescArg" then
+              { idx = 1; sTy = D.S; tFn = vLam "_" D.S D.T; }
+            else if D.tag == "VDescRec" then
+              { idx = 2; j = D.j; sub = D.D; }
+            else if D.tag == "VDescPi" then
+              { idx = 3; sTy = D.S; fn = D.f; sub = D.D; }
+            else if D.tag == "VDescPlus" then
+              { idx = 4; A = D.A; B = D.B; }
+            else if D.tag == "VDescCon" then
+              let info = self.decodeDescCaseF D; in
+              if info == null then throw "tc: vEverywhereD on malformed VDescCon"
+              else if info.idx == 0 then { idx = 0; j = info.payload.fst; }
+              else if info.idx == 1 then
+                { idx = 1; sTy = info.payload.fst; tFn = info.payload.snd.fst; }
+              else if info.idx == 2 then
+                { idx = 2; j = info.payload.fst; sub = info.payload.snd.fst; }
+              else if info.idx == 3 then
+                { idx = 3;
+                  sTy = info.payload.fst;
+                  fn  = info.payload.snd.fst;
+                  sub = info.payload.snd.snd.fst; }
+              else if info.idx == 4 then
+                { idx = 4; A = info.payload.fst; B = info.payload.snd.fst; }
+              else throw "tc: vEverywhereD on VDescCon with unknown summand idx ${toString info.idx}"
+            else throw "tc: vEverywhereD on non-desc (tag=${D.tag})";
+        in
+        if view.idx == 0 then
+          # Inhabitant of `Lift 0 K refl Unit`. `vLiftIntroF` idempotents at
+          # K=0 to `vTt` directly.
+          self.vLiftIntroF vLevelZero K_val vRefl vUnit vTt
+        else if view.idx == 1 then
+          let
+            fstD = self.vFst d;
+            sndD = self.vSnd d;
+            subD = self.vAppF f view.tFn fstD;
+          in self.vEverywhereDF f L_val I_val subD K_val X M ih i sndD
+        else if view.idx == 2 then
+          let
+            fstD = self.vFst d;
+            sndD = self.vSnd d;
+            ihHere = self.vAppF f (self.vAppF f ih view.j) fstD;
+            evRest = self.vEverywhereDF f L_val I_val view.sub K_val X M ih i sndD;
+          in vPair ihHere evRest
+        else if view.idx == 3 then
+          let
+            fstD = self.vFst d;
+            sndD = self.vSnd d;
+            # λs:S. ih (f s) ((fst d) s). env [ih, fn, fstD]. Under s:
+            # [s, ih, fn, fstD]. s=0, ih=1, fn=2, fstD=3.
+            piLam = vLam "s" view.sTy (mkClosure [ ih view.fn fstD ]
+              (term.mkApp
+                (term.mkApp (term.mkVar 1)
+                            (term.mkApp (term.mkVar 2) (term.mkVar 0)))
+                (term.mkApp (term.mkVar 3) (term.mkVar 0))));
+            evRest = self.vEverywhereDF f L_val I_val view.sub K_val X M ih i sndD;
+          in vPair piLam evRest
+        else  # view.idx == 4
+          if d.tag == "VInl" then
+            self.vEverywhereDF f L_val I_val view.A K_val X M ih i d.val
+          else if d.tag == "VInr" then
+            self.vEverywhereDF f L_val I_val view.B K_val X M ih i d.val
+          else if d.tag == "VNe" then
+            let
+              AInterp = self.vInterpDF f L_val I_val view.A X i;
+              BInterp = self.vInterpDF f L_val I_val view.B X i;
+              # Motive's codomain is allD-at-plus, but eval doesn't re-check
+              # binder annotations — placeholder U(K) preserves shape.
+              motive = vLam "_" (vSum AInterp BInterp) (mkClosure [ K_val ]
+                (term.mkU (term.mkVar 1)));
+              # On-left: λa. everywhereD L I A K X M ih i a. env
+              # [L, I, K, X, M, ih, i, A]. Under a: [a, ...]. a=0..A=8.
+              onLeftLam = vLam "a" AInterp
+                (mkClosure [ L_val I_val K_val X M ih i view.A ]
+                  (term.mkEverywhereD (term.mkVar 1) (term.mkVar 2) (term.mkVar 8)
+                                      (term.mkVar 3) (term.mkVar 4) (term.mkVar 5)
+                                      (term.mkVar 6) (term.mkVar 7) (term.mkVar 0)));
+              onRightLam = vLam "b" BInterp
+                (mkClosure [ L_val I_val K_val X M ih i view.B ]
+                  (term.mkEverywhereD (term.mkVar 1) (term.mkVar 2) (term.mkVar 8)
+                                      (term.mkVar 3) (term.mkVar 4) (term.mkVar 5)
+                                      (term.mkVar 6) (term.mkVar 7) (term.mkVar 0)));
+            in self.vSumElimF f AInterp BInterp motive onLeftLam onRightLam d
+          else throw "tc: vEverywhereD on plus with non-sum d (tag=${d.tag})";
 
     # Everywhere computation motive:
     #   λ(D : Desc^L I). Π(P : (i:I) → μ D' i → U).
@@ -750,10 +1206,25 @@ in {
     # Default-fuel wrappers for desc-owned bindings.
     vDescInd = self.vDescIndF self.defaultFuel;
     vDescElim = self.vDescElimF self.defaultFuel;
-    interp = self.interpF self.defaultFuel;
-    allTy = self.allTyF self.defaultFuel;
-    linearProfile = self.linearProfileF self.defaultFuel;
-    everywhere = self.everywhereF self.defaultFuel;
+    vInterpD = self.vInterpDF self.defaultFuel;
+    vAllD = self.vAllDF self.defaultFuel;
+    vEverywhereD = self.vEverywhereDF self.defaultFuel;
+    # interp / allTy / everywhere dispatch on the description's value tag.
+    # An encoded description inhabits μ⊤(descDesc I L) tt — so its value
+    # tag is VDescCon (canonical form) or VNe (stuck on a neutral); never
+    # VMu (which is the type-of-μ, not an inhabitant). Encoded shapes
+    # route through the HOAS-elaborated *Val closed forms (descInd-over-
+    # descDesc cascade); primitive VDescX shapes use the legacy F-form
+    # machinery (alive while primitives remain). VNe routes through HOAS
+    # so a stuck spine quotes as `mkDescInd …` consistently with the
+    # canonical-form path, preserving the equational theory across stuck
+    # spines.
+    isEncodedDesc = D: D.tag == "VDescCon" || D.tag == "VNe";
+    linearProfile = D: self.linearProfileF self.defaultFuel D;
+    tryDecodeToPrim = D: self.tryDecodeToPrimF self.defaultFuel D;
+    # `decodeDescCaseF` is shape-bounded (max 4 inr's), so the public
+    # binding is a direct alias — no fuel wrapper needed.
+    decodeDescCase = self.decodeDescCaseF;
   };
 
   tests = let
@@ -868,6 +1339,141 @@ in {
       # Bare ret (no rec to peel) — non-linear.
       expr = self.linearProfileF self.defaultFuel (val.vDescRet vTt);
       expected = null;
+    };
+
+    # vInterpDF — kernel-primitive interp dispatch.
+    "vInterpD-ret" = {
+      # interpD 0 Unit (descRet tt) (λ_. Nat) tt = Lift 0 0 _ (Eq Unit tt tt) ≡ Eq Unit tt tt.
+      expr = (self.vInterpD val.vLevelZero vUnit Dret X_nat vTt).tag;
+      expected = "VEq";
+    };
+    "vInterpD-rec" = {
+      # interpD 0 Unit (descRec tt (descRet tt)) X tt = Σ _:Nat. Eq Unit tt tt.
+      expr = (self.vInterpD val.vLevelZero vUnit
+        (val.vDescRec vTt Dret) X_nat vTt).tag;
+      expected = "VSigma";
+    };
+    "vInterpD-rec-fst" = {
+      expr = (self.vInterpD val.vLevelZero vUnit
+        (val.vDescRec vTt Dret) X_nat vTt).fst.tag;
+      expected = "VNat";
+    };
+    "vInterpD-arg" = {
+      expr = (self.vInterpD val.vLevelZero vUnit
+        (val.vDescArg vLevelZero vLevelZero val.vNat vRefl
+          (mkClosure [] (term.mkDescRet term.mkTt)))
+        X_nat vTt).tag;
+      expected = "VSigma";
+    };
+    "vInterpD-arg-fst" = {
+      expr = (self.vInterpD val.vLevelZero vUnit
+        (val.vDescArg vLevelZero vLevelZero val.vNat vRefl
+          (mkClosure [] (term.mkDescRet term.mkTt)))
+        X_nat vTt).fst.tag;
+      expected = "VNat";
+    };
+    "vInterpD-pi" = {
+      # interpD 0 Unit (descPi 0 0 Nat _ (λ_. tt) (descRet tt)) X tt
+      #   = Σ _:(Π s:Nat. X tt). Eq Unit tt tt.
+      expr = let
+        fLam = vLam "_" val.vNat (mkClosure [] term.mkTt);
+      in (self.vInterpD val.vLevelZero vUnit
+        (val.vDescPi vLevelZero vLevelZero val.vNat vRefl fLam Dret)
+        X_nat vTt).tag;
+      expected = "VSigma";
+    };
+    "vInterpD-pi-fst" = {
+      expr = let
+        fLam = vLam "_" val.vNat (mkClosure [] term.mkTt);
+      in (self.vInterpD val.vLevelZero vUnit
+        (val.vDescPi vLevelZero vLevelZero val.vNat vRefl fLam Dret)
+        X_nat vTt).fst.tag;
+      expected = "VPi";
+    };
+    "vInterpD-plus" = {
+      # interpD 0 Unit (descPlus (descRet tt) (descRet tt)) X tt
+      #   = Eq Unit tt tt ⊎ Eq Unit tt tt.
+      expr = (self.vInterpD val.vLevelZero vUnit
+        (val.vDescPlus Dret Dret) X_nat vTt).tag;
+      expected = "VSum";
+    };
+    "vInterpD-stuck" = {
+      # On a stuck D, vInterpD appends an EInterpD frame to the spine.
+      expr = (self.vInterpD val.vLevelZero vUnit (val.freshVar 0) X_nat vTt).tag;
+      expected = "VNe";
+    };
+    "vInterpD-stuck-spine-tag" = {
+      expr = let
+        r = self.vInterpD val.vLevelZero vUnit (val.freshVar 0) X_nat vTt;
+      in (builtins.head r.spine).tag;
+      expected = "EInterpD";
+    };
+
+    # vAllDF — kernel-primitive All-witness type dispatch. Predicate M is
+    # a 2-arg constant lam (i x -> U(0)) at K=0 to keep the test data flat.
+    "vAllD-ret" = {
+      # allD 0 Unit (descRet tt) 0 X M tt d = Lift 0 0 _ Unit ≡ Unit.
+      expr = let
+        M = vLam "i" vUnit (mkClosure [] (term.mkLam "_" val.vNat (term.mkU term.mkLevelZero)));
+      in (self.vAllD val.vLevelZero vUnit Dret val.vLevelZero X_nat M vTt vRefl).tag;
+      expected = "VUnit";
+    };
+    "vAllD-rec" = {
+      # allD 0 Unit (descRec tt (descRet tt)) 0 X M tt (zero, refl)
+      #   = Σ _:M tt zero. Unit.
+      expr = let
+        M = vLam "i" vUnit (mkClosure [] (term.mkLam "_" val.vNat (term.mkU term.mkLevelZero)));
+      in (self.vAllD val.vLevelZero vUnit (val.vDescRec vTt Dret)
+            val.vLevelZero X_nat M vTt
+            (vPair val.vZero vRefl)).tag;
+      expected = "VSigma";
+    };
+    "vAllD-stuck" = {
+      expr = let
+        M = vLam "i" vUnit (mkClosure [] (term.mkLam "_" val.vNat (term.mkU term.mkLevelZero)));
+      in (self.vAllD val.vLevelZero vUnit (val.freshVar 0)
+            val.vLevelZero X_nat M vTt vRefl).tag;
+      expected = "VNe";
+    };
+    "vAllD-stuck-spine-tag" = {
+      expr = let
+        M = vLam "i" vUnit (mkClosure [] (term.mkLam "_" val.vNat (term.mkU term.mkLevelZero)));
+        r = self.vAllD val.vLevelZero vUnit (val.freshVar 0)
+              val.vLevelZero X_nat M vTt vRefl;
+      in (builtins.head r.spine).tag;
+      expected = "EAllD";
+    };
+
+    # vEverywhereDF — kernel-primitive everywhere-recursion dispatch.
+    "vEverywhereD-ret" = {
+      # everywhereD 0 Unit (descRet tt) 0 X M ih tt refl
+      #   = liftIntro 0 0 refl Unit tt ≡ tt.
+      expr = let
+        M = vLam "i" vUnit (mkClosure [] (term.mkLam "_" val.vNat (term.mkU term.mkLevelZero)));
+        ih = vLam "j" vUnit (mkClosure []
+          (term.mkLam "x" val.vNat (term.mkU term.mkLevelZero)));
+      in (self.vEverywhereD val.vLevelZero vUnit Dret val.vLevelZero
+            X_nat M ih vTt vRefl).tag;
+      expected = "VTt";
+    };
+    "vEverywhereD-stuck" = {
+      expr = let
+        M = vLam "i" vUnit (mkClosure [] (term.mkLam "_" val.vNat (term.mkU term.mkLevelZero)));
+        ih = vLam "j" vUnit (mkClosure []
+          (term.mkLam "x" val.vNat (term.mkU term.mkLevelZero)));
+      in (self.vEverywhereD val.vLevelZero vUnit (val.freshVar 0)
+            val.vLevelZero X_nat M ih vTt vRefl).tag;
+      expected = "VNe";
+    };
+    "vEverywhereD-stuck-spine-tag" = {
+      expr = let
+        M = vLam "i" vUnit (mkClosure [] (term.mkLam "_" val.vNat (term.mkU term.mkLevelZero)));
+        ih = vLam "j" vUnit (mkClosure []
+          (term.mkLam "x" val.vNat (term.mkU term.mkLevelZero)));
+        r = self.vEverywhereD val.vLevelZero vUnit (val.freshVar 0)
+              val.vLevelZero X_nat M ih vTt vRefl;
+      in (builtins.head r.spine).tag;
+      expected = "EEverywhereD";
     };
   };
 }

@@ -17,6 +17,17 @@ let
   mkVar = i: { tag = "var"; idx = i; };
   mkLet = name: type: val: body: { tag = "let"; inherit name type val body; };
   mkAnn = term: type: { tag = "ann"; inherit term type; };
+  # `mkAnnTrusted` — kernel-internal annotation whose body is known to
+  # have the annotated type by construction (the elaborator emits it
+  # around encoded descriptions whose well-typedness follows from the
+  # encoder lambdas' polymorphic types). Identical to `mkAnn` at eval/
+  # conv/quote (a `trusted` field is invisible to the structural rules);
+  # `infer` reads `tm.trusted` and skips the body re-check, which would
+  # otherwise dominate per-layer cost in deep recursive-data CHECK
+  # (5000-stress) where each layer's element-D inference fires once per
+  # layer. The HOAS surface does not expose a path to this constructor
+  # — only `hoas/datatype.nix` for the per-datatype `D` annotation.
+  mkAnnTrusted = term: type: { tag = "ann"; inherit term type; trusted = true; };
 
   # -- Functions --
   mkPi = name: domain: codomain: { tag = "pi"; inherit name domain codomain; };
@@ -59,6 +70,15 @@ let
   mkRefl = { tag = "refl"; };
   mkJ = type: lhs: motive: base: rhs: eq:
     { tag = "j"; inherit type lhs motive base rhs eq; };
+
+  # -- Propositional truncation (Squash) --
+  # `Squash A : U(l)` for `A : U(l)`. Inhabitants are definitionally
+  # equal. `recTrunc A B f x : Squash B` for `f : A → Squash B`,
+  # `x : Squash A`; the motive is restricted to `Squash _` at INFER
+  # time so irrelevance cannot escape into a non-`Squash` position.
+  mkSquash      = A:          { tag = "squash";       inherit A; };
+  mkSquashIntro = a:          { tag = "squash-intro"; inherit a; };
+  mkSquashElim  = A: B: f: x: { tag = "squash-elim";  inherit A B f x; };
 
   # -- Function extensionality postulate --
   # Atomic constant whose type is the closed 7-layer Π chain
@@ -137,6 +157,42 @@ let
     tag = "desc-elim";
     inherit k motive onRet onArg onRec onPi onPlus scrut;
   };
+
+  # `interpD ℓ I D X i : U(ℓ)` — kernel-primitive interpretation of a
+  # description. CDMM 2010 Table 6.2 classifies `⟦_⟧` as a meta-theory
+  # primitive; making it a Tm constant (rather than a HOAS macro) keeps
+  # eliminator-application Tms structurally identical between producer
+  # and consumer paths and removes the meta-time Level-ascent recursion
+  # that HOAS macros incur. Reduction rules pattern-match on D's outer
+  # constructor:
+  #   interpD ℓ I (descRet j)        X i ⇝ Lift 0 ℓ refl (Eq I j i)
+  #   interpD ℓ I (descArg _ _ S T)  X i ⇝ Σ s:S. interpD ℓ I (T s) X i
+  #   interpD ℓ I (descRec j D)      X i ⇝ Σ _:X j. interpD ℓ I D X i
+  #   interpD ℓ I (descPi _ _ S f D) X i ⇝ Σ _:(Π s:S. X (f s)). interpD ℓ I D X i
+  #   interpD ℓ I (descPlus A B)     X i ⇝ interpD ℓ I A X i ⊎ interpD ℓ I B X i
+  mkInterpD = level: I: D: X: i:
+    { tag = "interp-d"; inherit level I D X i; };
+
+  # `allD ℓ I D K X M i d : U(K)` — kernel-primitive All-witness type
+  # over a description. Mirrors the per-summand on-cases of CDMM `All`:
+  #   allD ℓ I (descRet j)        K X M i d ⇝ Lift 0 K refl Unit
+  #   allD ℓ I (descArg _ _ S T)  K X M i d ⇝ allD ℓ I (T (fst d)) K X M i (snd d)
+  #   allD ℓ I (descRec j D)      K X M i d ⇝ Σ _:M j (fst d). allD ℓ I D K X M i (snd d)
+  #   allD ℓ I (descPi _ _ S f D) K X M i d ⇝
+  #     Σ _:Π(s:S). M (f s) ((fst d) s). allD ℓ I D K X M i (snd d)
+  #   allD ℓ I (descPlus A B)     K X M i d ⇝
+  #     case d of inl a → allD ℓ I A K X M i a | inr b → allD ℓ I B K X M i b
+  mkAllD = level: I: D: K: X: M: i: d:
+    { tag = "all-d"; inherit level I D K X M i d; };
+
+  # `everywhereD ℓ I D K X M ih i d : allD ℓ I D K X M i d` — kernel-
+  # primitive proof that every recursive subobject in `d` satisfies `M`,
+  # given a witness `ih : Π(j:I)(x:X j). M j x`. Drives the `descInd`
+  # iota:
+  #   descInd D M m (descCon D' tt x) ⇝
+  #     m i x (everywhereD ℓ I D K X (λj.λxv.M xv) ih i x)
+  mkEverywhereD = level: I: D: K: X: M: ih: i: d:
+    { tag = "everywhere-d"; inherit level I D K X M ih i d; };
 
   # -- Lift primitive --
   # Tarski + non-cumulative cross-level transport. `Lift l m eq A : U(m)`
@@ -260,7 +316,7 @@ in mk {
     - `mkStringLit`, `mkIntLit`, `mkFloatLit`, `mkAttrsLit`, `mkPathLit`, `mkFnLit`, `mkAnyLit` — literal values
   '';
   value = {
-    inherit mkVar mkLet mkAnn;
+    inherit mkVar mkLet mkAnn mkAnnTrusted;
     inherit mkPi mkLam mkApp;
     inherit mkSigma mkPair mkFst mkSnd;
     inherit mkNat mkZero mkSucc mkNatElim;
@@ -268,8 +324,10 @@ in mk {
     inherit mkUnit mkTt;
     inherit mkSum mkInl mkInr mkSumElim;
     inherit mkEq mkRefl mkJ;
+    inherit mkSquash mkSquashIntro mkSquashElim;
     inherit mkFunext funextTypeTm;
     inherit mkDesc mkDescRet mkDescArg mkDescRec mkDescPi mkDescPlus mkMu mkDescCon mkDescInd mkDescElim;
+    inherit mkInterpD mkAllD mkEverywhereD;
     inherit mkU;
     inherit mkLift mkLiftIntro mkLiftElim;
     inherit mkLevel mkLevelZero mkLevelSuc mkLevelMax mkLevelLit mkNatToLevel;
@@ -309,6 +367,22 @@ in mk {
     "j-tag" = {
       expr = (mkJ mkNat mkZero (mkVar 0) (mkVar 1) mkZero mkRefl).tag;
       expected = "j";
+    };
+    "squash-tag" = { expr = (mkSquash mkUnit).tag; expected = "squash"; };
+    "squash-A" = { expr = (mkSquash mkUnit).A.tag; expected = "unit"; };
+    "squash-intro-tag" = { expr = (mkSquashIntro mkTt).tag; expected = "squash-intro"; };
+    "squash-intro-a" = { expr = (mkSquashIntro mkTt).a.tag; expected = "tt"; };
+    "squash-elim-tag" = {
+      expr = (mkSquashElim mkUnit mkUnit
+                (mkLam "_" mkUnit (mkSquashIntro mkTt))
+                (mkSquashIntro mkTt)).tag;
+      expected = "squash-elim";
+    };
+    "squash-elim-A" = {
+      expr = (mkSquashElim mkUnit mkUnit
+                (mkLam "_" mkUnit (mkSquashIntro mkTt))
+                (mkSquashIntro mkTt)).A.tag;
+      expected = "unit";
     };
     "U-tag" = { expr = (mkU mkLevelZero).tag; expected = "U"; };
     "U-level-zero" = { expr = (mkU mkLevelZero).level.tag; expected = "level-zero"; };
@@ -481,6 +555,53 @@ in mk {
     "desc-plus-B" = {
       expr = (mkDescPlus (mkDescRet mkTt) (mkDescRet mkTt)).B.tag;
       expected = "desc-ret";
+    };
+
+    # interpD / allD / everywhereD primitives
+    "interp-d-tag" = {
+      expr = (mkInterpD mkLevelZero mkUnit (mkDescRet mkTt) (mkVar 0) mkTt).tag;
+      expected = "interp-d";
+    };
+    "interp-d-level" = {
+      expr = (mkInterpD mkLevelZero mkUnit (mkDescRet mkTt) (mkVar 0) mkTt).level.tag;
+      expected = "level-zero";
+    };
+    "interp-d-I" = {
+      expr = (mkInterpD mkLevelZero mkUnit (mkDescRet mkTt) (mkVar 0) mkTt).I.tag;
+      expected = "unit";
+    };
+    "interp-d-D" = {
+      expr = (mkInterpD mkLevelZero mkUnit (mkDescRet mkTt) (mkVar 0) mkTt).D.tag;
+      expected = "desc-ret";
+    };
+    "interp-d-i" = {
+      expr = (mkInterpD mkLevelZero mkUnit (mkDescRet mkTt) (mkVar 0) mkTt).i.tag;
+      expected = "tt";
+    };
+    "all-d-tag" = {
+      expr = (mkAllD mkLevelZero mkUnit (mkDescRet mkTt) mkLevelZero
+                (mkVar 0) (mkVar 1) mkTt mkRefl).tag;
+      expected = "all-d";
+    };
+    "all-d-K" = {
+      expr = (mkAllD mkLevelZero mkUnit (mkDescRet mkTt) (mkLevelSuc mkLevelZero)
+                (mkVar 0) (mkVar 1) mkTt mkRefl).K.tag;
+      expected = "level-suc";
+    };
+    "all-d-d" = {
+      expr = (mkAllD mkLevelZero mkUnit (mkDescRet mkTt) mkLevelZero
+                (mkVar 0) (mkVar 1) mkTt mkRefl).d.tag;
+      expected = "refl";
+    };
+    "everywhere-d-tag" = {
+      expr = (mkEverywhereD mkLevelZero mkUnit (mkDescRet mkTt) mkLevelZero
+                (mkVar 0) (mkVar 1) (mkVar 2) mkTt mkRefl).tag;
+      expected = "everywhere-d";
+    };
+    "everywhere-d-ih" = {
+      expr = (mkEverywhereD mkLevelZero mkUnit (mkDescRet mkTt) mkLevelZero
+                (mkVar 0) (mkVar 1) (mkVar 7) mkTt mkRefl).ih.idx;
+      expected = 7;
     };
 
     # Lift primitive

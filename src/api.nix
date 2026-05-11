@@ -90,8 +90,13 @@ rec {
         ) {} attrs;
       flat = flatten "" tests;
       results = builtins.mapAttrs (name: test:
-        let actual = test.expr; in
-        { inherit name actual; expected = test.expected; pass = actual == test.expected; }
+        let
+          tried = builtins.tryEval test.expr;
+          ok = tried.success;
+          actual = if ok then tried.value else { __evalFailed = true; };
+          pass = ok && actual == test.expected;
+        in
+        { inherit name actual; expected = test.expected; inherit pass; }
       ) flat;
       passedNames = lib.filterAttrs (_: r: r.pass) results;
       failedNames = lib.filterAttrs (_: r: !r.pass) results;

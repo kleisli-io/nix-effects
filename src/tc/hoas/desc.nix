@@ -14,7 +14,7 @@
 # line up at the actual scrutinee level (zero for the prelude,
 # `levelSuc k` for the descDesc-iso).
 #
-# Principled note on lam annotations: check.nix's check-lam discards the
+# Note on lam annotations: check.nix's check-lam discards the
 # HOAS lam's domain annotation and uses the expected type's domain when
 # descending, so inner case annotations are for READABILITY only. The
 # motive's annotations, by contrast, build paTy / peTy / ppTy in the
@@ -28,7 +28,7 @@
 # I=⊤, call sites write `self.ttPrim` at the index position (the
 # kernel-primitive ⊤-inhabitant, not the HOAS-surface `tt` which is
 # rebindable to a derived descCon).
-{ self, ... }:
+{ self, fx, ... }:
 
 {
   scope = {
@@ -45,279 +45,478 @@
     # Universe-polymorphic descArg/descPi take a leading level; the
     # prelude pins `k = 0` since its domains live in `U(0)`.
     listDesc = elem:
-      let inherit (self) plus descArg descRet descRec; in
-      plus descRet (descArg 0 elem (_: descRec descRet));
+      let inherit (self) plus descArg descRet descRec unitPrim; in
+      plus descRet (descArg unitPrim 0 elem (_: descRec descRet));
 
     # sumDesc l r : Desc ⊤ — inl (arg : l) ⊕ inr (arg : r). Both summands
     # are `descArg _ (_: retI ttPrim)` leaves at the ⊤-slice.
     sumDesc = l: r:
-      let inherit (self) plus descArg descRet; in
-      plus (descArg 0 l (_: descRet)) (descArg 0 r (_: descRet));
+      let inherit (self) plus descArg descRet unitPrim; in
+      plus (descArg unitPrim 0 l (_: descRet)) (descArg unitPrim 0 r (_: descRet));
 
-    # descDesc : Π(k : Level). Desc^(suc k) ⊤ — k-parameterised
-    # description of descriptions. Five summands mirroring the grammar
-    # of `Desc^(suc k) ⊤`:
-    #   ret  — retI ⊤
+    # descDesc : Π(I : U(0))(k : Level). Desc^(suc k) ⊤ — I- and
+    # k-parameterised description-of-descriptions. Five summands
+    # mirroring `Desc I k`'s grammar at the homogeneous-l image:
+    #   ret  — Π(i : I). ⊤
     #   arg  — Π(S : U(k)). Π(T : S → ⊤). ⊤
-    #   rec  — Π(_ : ⊤). ⊤
-    #   pi   — Π(S : U(k)). Π(T : S → ⊤). Π(_ : ⊤). ⊤
+    #   rec  — Π(i : I). Π(_ : ⊤). ⊤
+    #   pi   — Π(S : U(k)). Π(f : S → I). Π(_ : ⊤). ⊤
     #   plus — Π(_ : ⊤). Π(_ : ⊤). ⊤
-    # Every kernel descArg / descPi inside this body announces a
-    # description-level of `suc k` (matching the outer Desc^(suc k)),
-    # but each individual summand's *sort* lives at its natural per-
-    # summand level. The arg / pi summands' first descArg's sort is
-    # `u k : U(suc k)` — homogeneous at the description level. The
-    # inner `descPi` over `S : U(k)` uses the mixed-level form
-    # `descPiAt k (suc k) …`: per-summand level `k`, description level
-    # `suc k`, with the bound witness `refl : Eq Level (max k (suc k))
-    # (suc k)` discharged by the kernel's convLevel semilattice
-    # quotient (`max k (suc k) = suc k`). Replaces the prior
-    # Sub-at-U-mediated coercion of `S : U(k)` into a `U(suc k)` slot.
+    # The ret / rec summands prefix `descArgAt 0 (suc k) I` to carry
+    # the I-typed leaf index of `descRet I i` / `descRec I i D`. The
+    # pi summand carries `descArgAt k (suc k) (S → I) (_f: ...)` to
+    # encode the source's `f : S → I` selector. Bound witnesses
+    # discharge via convLevel: `max 0 (suc k) = suc k`, `max k (suc k)
+    # = suc k`. Heterogeneous formation (per-summand `(l, eq, S:U(l))`)
+    # is allowed by Decision #3 but not encoded here — Steps 1–4 of
+    # plan §T2 operate on the homogeneous-l subset; Step 5 closes the
+    # heterogeneous-elimination gap uniformly via `ind`-over-`descDesc`
+    # plus Lift discipline at case bodies.
     descDesc =
-      let inherit (self) lam forall ann level u plus descAt
-                         descRet descArg descRec descPi descPiAt levelSuc; in
-      ann
-        (lam "k" level (k:
-           let sk = levelSuc k; in
-           plus descRet
-           (plus (descArg sk (u k) (S: descPiAt k sk S descRet))
-           (plus (descRec descRet)
-           (plus (descArg sk (u k) (_: descRec descRet))
-                 (descRec (descRec descRet)))))))
-        (forall "k" level (k: descAt (levelSuc k)));
+      let inherit (self) lam forall annTrusted level levelSuc u
+                         plusPrim descRetPrim descArgPrim descArgAtPrim
+                         descRecPrim descPiAtPrim descAt; in
+      annTrusted
+        (lam "I" (u 0) (I:
+           lam "k" level (k:
+             let sk = levelSuc k; in
+             plusPrim (descArgAtPrim 0 sk I (_i: descRetPrim))
+             (plusPrim (descArgPrim sk (u k) (S: descPiAtPrim k sk S descRetPrim))
+             (plusPrim (descArgAtPrim 0 sk I (_i: descRecPrim descRetPrim))
+             (plusPrim (descArgPrim sk (u k) (S:
+                      descArgAtPrim k sk (forall "_" S (_: I)) (_f:
+                        descRecPrim descRetPrim)))
+                   (descRecPrim (descRecPrim descRetPrim))))))))
+        (forall "I" (u 0) (I:
+          forall "k" level (k: descAt (levelSuc k))));
 
-    # iso : Π(k : Level). Iso (Desc^k ⊤) (μ (descDesc k) tt)
+    # Pre-elaborated natDesc — used by the zero/succ/nat-elim elaborate
+    # branches to avoid re-elaborating on every constructor.
+    natDescTm = self.elab self.natDesc;
+
+    # Pre-elaborated descDesc Tm + its evaluated VLam form. The Val is
+    # consumed by the conv unfolding rule `Desc I k ≡ μ ⊤ (descDesc I
+    # k) tt` (tc/conv.nix): vApp on v.I and v.level reduces it to the
+    # finite description tree the rule compares against. Module init
+    # is cycle-safe — descDesc's body is plain plus / descArg / descRet
+    # / descPi structure with no Lift wraps, so evalF doesn't reach
+    # into convLevel during the initial reduction.
+    descDescTm = self.elab self.descDesc;
+    descDescVal = fx.tc.eval.eval [] self.descDescTm;
+
+    # Reserved surface identifier for the prelude
+    # description-of-descriptions. The elaborator dispatches
+    # `_htag = "desc-desc"` to `self.descDescTm`, so call sites that
+    # emit `__descDesc` references avoid re-walking the descDesc HOAS
+    # tree on every use. The `__` prefix marks the name as
+    # kernel-internal — surface code addresses descDesc through this
+    # canonical token.
+    __descDesc = { _htag = "desc-desc"; };
+
+    # Per-(I, k) HOAS encoding context for descDesc-encoded μ-trees.
+    # Single source of truth for the descDesc summand layout, the
+    # plus-tree spine, the right-associated `encodeTag` pathing, and
+    # the descRet-leaf `Lift 0 (suc k) (Eq ⊤ tt tt)` discipline.
+    # Consumed by the `iso` bundle's `to` side and by the standalone
+    # `encodeDesc{Ret,Arg,Rec,Pi,Plus}` encoders.
     #
-    # Iso A B = Σ(to:A→B). Σ(from:B→A).
-    #             Σ(toFrom:Π(a:A). Eq A (from(to a)) a).
-    #               Π(b:B). Eq B (to(from b)) b
-    #
-    # Bundles four kernel-internal proofs witnessing that, at every
-    # universe level k, the syntactic `Desc^k ⊤` and the descDesc-encoded
-    # μ-type are isomorphic. The encoding/decoding pair commits to a
-    # uniform argI/piI level k throughout the source description; the
-    # reconstruction at recursive positions uses the IH provided by
-    # descElim/descInd directly rather than calling to/from at the
-    # meta level.
-    #
-    # Level alignment: `from` reconstructs `descArg k S T` / `descPi k S
-    # f D`, so the source side of the iso must be `Desc^k ⊤` (level
-    # slot ≥ k). At k=0 this collapses to the prelude `desc = Desc^0 ⊤`.
-    # Both sides inhabit `U(suc k)`: `descDesc k : Desc^(suc k) ⊤` makes
-    # `μ(descDesc k) tt : U(suc k)`; `Desc^k ⊤ : U(suc k)` matches.
-    iso =
+    # Inputs `I : U(0)` and `k : Level` are HOAS terms — typically the
+    # bound variables of an outer `lam "I" ... lam "k" ...` chain. The
+    # returned record's fields close over those terms; reusing the
+    # same record across a single encoder body is fine since each
+    # field is a HOAS expression referencing the same I, k variables.
+    descEncodingCtx = I: kRaw:
       let
-        inherit (self) lam forall sigma ann level levelZero levelSuc
-                       u plus pair fst_ snd_ refl ttPrim unitPrim
-                       eq desc descAt descRet descArg descRec descPi descPiAt
-                       descCon descElim descInd interpHoasAt allHoasAt
-                       sumPrim sumElimPrim inlPrim inrPrim liftAt lowerAt
-                       muI mu app descDesc encodeTag;
+        inherit (self) lam forall app pair refl ttPrim unitPrim
+                       levelZero levelSuc u eq descIAt
+                       descDesc liftAt lowerAt muI mu interpHoasAtPrim
+                       encodeTagPrim;
+        # Bootstrap: descEncodingCtx supplies the *primitive* sub-
+        # descriptions of `descDesc` itself (the description-of-
+        # descriptions). The encoded encoders (`encodeDescRet`, ...)
+        # construct `descCon dDesc tt (encodeAt t payload)` — the
+        # encoding lives at the value level, but the underlying
+        # `dDesc` and its sub-descriptions remain primitive HOAS so
+        # `interpHoasAtPrim` and `encodeTagPrim`'s primitive cascade
+        # can walk them via `descElimPrim`.
+        plus = self.plusPrim;
+        descRet = self.descRetPrim;
+        descArg = self.descArgPrim;
+        descArgAt = self.descArgAtPrim;
+        descRec = self.descRecPrim;
+        descPiAt = self.descPiAtPrim;
+        # `app descDesc I k` is a HOAS app whose `arg` slots flow
+        # through the elaborator's general `app` rule — it does NOT
+        # call `elaborateLevel` on level-shaped args. Callers may pass
+        # `kRaw` as a Nix-meta `Int` (e.g. `0` from `interpHoasAt 0 I
+        # ...`); coerce here so the resulting HOAS app's `arg` is a
+        # `level-zero` / `level-suc` / `level-lit` HOAS form rather
+        # than a raw `Int`.
+        k =
+          if builtins.isInt kRaw
+          then if kRaw == 0 then levelZero
+               else builtins.foldl' (acc: _: levelSuc acc) levelZero
+                      (builtins.genList (x: x) kRaw)
+          else kRaw;
+        sk = levelSuc k;
+        dDesc = app (app descDesc I) k;
+        muTt = mu dDesc ttPrim;
+        muFam = lam "_i" unitPrim (iArg: mu dDesc iArg);
+        dDescL = sk;
+        descK = descIAt k I;
+        conDescs = [
+          (descArgAt 0 sk I (_i: descRet))
+          (descArg sk (u k) (S: descPiAt k sk S descRet))
+          (descArgAt 0 sk I (_i: descRec descRet))
+          (descArg sk (u k) (S:
+             descArgAt k sk (forall "_" S (_: I)) (_f:
+               descRec descRet)))
+          (descRec (descRec descRet))
+        ];
+        spineFrom = i:
+          let n = builtins.length conDescs; remaining = n - i; in
+          if remaining == 1 then builtins.elemAt conDescs i
+          else plus (builtins.elemAt conDescs i) (spineFrom (i + 1));
+        encodeAt = t: payload:
+          encodeTagPrim unitPrim dDesc conDescs ttPrim t payload;
+        interpAt = dH:
+          interpHoasAtPrim dDescL unitPrim dH muFam ttPrim;
+        eqLeafTy = eq unitPrim ttPrim ttPrim;
+        liftLeaf = e: liftAt levelZero dDescL eqLeafTy e;
+        lowerLeaf = x: lowerAt levelZero dDescL eqLeafTy x;
+        liftedRefl = liftLeaf refl;
+      in {
+        inherit dDesc muTt muFam dDescL descK
+                conDescs spineFrom encodeAt interpAt
+                eqLeafTy liftLeaf lowerLeaf liftedRefl sk;
+      };
 
-        # The polymorphic iso type. `dDescAt k` is `app descDesc k`
-        # — the description-of-descriptions specialised at k. The
-        # final two components reference earlier sigma-bound `toV` /
-        # `fromV` so toFrom / fromTo's types pin the iso witness
-        # functions exactly (Σ-η reduces these to the closed `to` /
-        # `from` terms once the bundle is destructed).
-        isoTy = forall "k" level (k:
-          let
-            dDescAt = app descDesc k;
-            muTtAt = mu dDescAt ttPrim;
-            descK = descAt k;
-          in
-          sigma "to_" (forall "_" descK (_: muTtAt)) (toV:
-          sigma "from_" (forall "_" muTtAt (_: descK)) (fromV:
-          sigma "toFrom_"
-            (forall "D" descK (D: eq descK (app fromV (app toV D)) D))
-            (_:
-              forall "x" muTtAt (x:
-                eq muTtAt (app toV (app fromV x)) x)))));
-      in
+    # ─────────────────────────────────────────────────────────────────
+    # descDesc-encoded constructors. Each `encodeDescX` is a closed
+    # HOAS term that, applied to `(I, k, …source-fields…)`, produces a
+    # `μ ⊤ (descDesc I k) tt` value structurally encoding the
+    # corresponding source description. Pre-elaborated to closed Tms
+    # (`encodeDescXTm`) at module init so kernel-level consumers can
+    # apply them via `mkApp` without re-walking the encoder HOAS tree.
+    #
+    # The encoders share `descEncodingCtx I k`'s summand layout with
+    # `iso.to`: a single definition of the encoding shape lives in
+    # `descEncodingCtx`, and both `iso` and the encoders consume it.
+    # Recursive sub-descriptions (the body of `arg`, the tail of
+    # `rec`, the body of `pi`, both summands of `plus`) arrive already
+    # encoded — callers compose by feeding sub-results back in.
+    # ─────────────────────────────────────────────────────────────────
+
+    encodeDescRet =
+      let inherit (self) lam forall ann u level pair descCon ttPrim
+                         descEncodingCtx; in
       ann
-        (lam "k" level (k:
+        (lam "I" (u 0) (I:
+         lam "k" level (k:
+          let c = descEncodingCtx I k; in
+          lam "j" I (j:
+            descCon c.dDesc ttPrim
+              (c.encodeAt 0 (pair j c.liftedRefl))))))
+        (forall "I" (u 0) (I:
+         forall "k" level (k:
+          forall "j" I (_:
+            (descEncodingCtx I k).muTt))));
+
+    encodeDescRetTm = self.elab self.encodeDescRet;
+
+    # encodeDescArgAt : Π(I:U(0))(k l:Level)(eq : Eq Level (max l k) k)
+    #                     (S:U(l))(T:S → μ⊤(descDesc I k)tt).
+    #                   μ ⊤ (descDesc I k) tt
+    # Heterogeneous-l encoder for descArg: S inhabits U(l) with bound
+    # witness `eq : l ≤ k`. The encoded payload's S slot expects U(k),
+    # so S is `LiftAtWithEq l k eq`-wrapped; T's domain (S : U(l)) is
+    # bridged to the lifted form via `lowerAtWithEq`. Idempotent at l=k:
+    # `LiftAt k k refl A ≡ A` collapses via `vLiftF`'s convLevel
+    # idempotency, recovering the homogeneous shape.
+    encodeDescArgAt =
+      let inherit (self) lam forall ann u level levelMax app pair descCon
+                         ttPrim descEncodingCtx eq
+                         LiftAtWithEq lowerAtWithEq; in
+      ann
+        (lam "I" (u 0) (I:
+         lam "k" level (k:
+         lam "l" level (l:
+         lam "eqW" (eq level (levelMax l k) k) (eqW:
+          let c = descEncodingCtx I k; in
+          lam "S" (u l) (S:
+          lam "T" (forall "_" S (_: c.muTt)) (T:
+            let
+              sLifted = LiftAtWithEq l k eqW S;
+              tLifted = lam "x" sLifted (x:
+                          app T (lowerAtWithEq l k eqW S x));
+            in
+            descCon c.dDesc ttPrim
+              (c.encodeAt 1 (pair sLifted (pair tLifted c.liftedRefl))))))))))
+        (forall "I" (u 0) (I:
+         forall "k" level (k:
+         forall "l" level (l:
+         forall "eqW" (eq level (levelMax l k) k) (_:
+          forall "S" (u l) (S:
+          forall "T" (forall "_" S (_: (descEncodingCtx I k).muTt)) (_:
+            (descEncodingCtx I k).muTt)))))));
+
+    encodeDescArgAtTm = self.elab self.encodeDescArgAt;
+
+    # encodeDescArg : Π(I:U(0))(k:Level)(S:U(k))(T:S → μ⊤(descDesc I k)tt).
+    #                 μ ⊤ (descDesc I k) tt
+    # Homogeneous-l specialisation of `encodeDescArgAt` at `l = k` with
+    # `refl : Eq Level (max k k) k` (decided by convLevel idempotency).
+    # `LiftAt k k refl S ≡ S` collapses, so the encoded payload is
+    # equivalent to a direct `(S, T, liftedRefl)` triple.
+    encodeDescArg =
+      let inherit (self) lam forall ann u level app refl
+                         descEncodingCtx encodeDescArgAt; in
+      ann
+        (lam "I" (u 0) (I:
+         lam "k" level (k:
+          let c = descEncodingCtx I k; in
+          lam "S" (u k) (S:
+          lam "T" (forall "_" S (_: c.muTt)) (T:
+            app (app (app (app (app (app encodeDescArgAt I) k) k) refl) S) T)))))
+        (forall "I" (u 0) (I:
+         forall "k" level (k:
+          forall "S" (u k) (S:
+          forall "T" (forall "_" S (_: (descEncodingCtx I k).muTt)) (_:
+            (descEncodingCtx I k).muTt)))));
+
+    encodeDescArgTm = self.elab self.encodeDescArg;
+
+    # encodeDescRec : Π(I:U(0))(k:Level)(j:I)(D:μ⊤(descDesc I k)tt).
+    #                 μ ⊤ (descDesc I k) tt
+    # Encodes a `descRec j D`-shaped source description.
+    encodeDescRec =
+      let inherit (self) lam forall ann u level pair descCon ttPrim
+                         descEncodingCtx; in
+      ann
+        (lam "I" (u 0) (I:
+         lam "k" level (k:
+          let c = descEncodingCtx I k; in
+          lam "j" I (j:
+          lam "D" c.muTt (D:
+            descCon c.dDesc ttPrim
+              (c.encodeAt 2 (pair j (pair D c.liftedRefl))))))))
+        (forall "I" (u 0) (I:
+         forall "k" level (k:
+          forall "j" I (_:
+          forall "D" (descEncodingCtx I k).muTt (_:
+            (descEncodingCtx I k).muTt)))));
+
+    encodeDescRecTm = self.elab self.encodeDescRec;
+
+    # encodeDescPiAt : Π(I:U(0))(k l:Level)(eq : Eq Level (max l k) k)
+    #                    (S:U(l))(f:S→I)(D:μ⊤(descDesc I k)tt).
+    #                  μ ⊤ (descDesc I k) tt
+    # Heterogeneous-l encoder for descPi: S inhabits U(l) with bound
+    # witness `eq : l ≤ k`. The encoded payload's S slot is lifted to
+    # U(k) via `LiftAtWithEq`; the f-selector's domain is bridged via
+    # `lowerAtWithEq`. The body D is a single recursion image (muTt) —
+    # the descPi's recursive position carries one sub-description, not
+    # a function. Idempotent at l=k via `LiftAt k k refl A ≡ A`.
+    encodeDescPiAt =
+      let inherit (self) lam forall ann u level levelMax app pair descCon
+                         ttPrim descEncodingCtx eq
+                         LiftAtWithEq lowerAtWithEq; in
+      ann
+        (lam "I" (u 0) (I:
+         lam "k" level (k:
+         lam "l" level (l:
+         lam "eqW" (eq level (levelMax l k) k) (eqW:
+          let c = descEncodingCtx I k; in
+          lam "S" (u l) (S:
+          lam "f" (forall "_" S (_: I)) (f:
+          lam "D" c.muTt (D:
+            let
+              sLifted = LiftAtWithEq l k eqW S;
+              fLifted = lam "x" sLifted (x:
+                          app f (lowerAtWithEq l k eqW S x));
+            in
+            descCon c.dDesc ttPrim
+              (c.encodeAt 3 (pair sLifted (pair fLifted
+                              (pair D c.liftedRefl))))))))))))
+        (forall "I" (u 0) (I:
+         forall "k" level (k:
+         forall "l" level (l:
+         forall "eqW" (eq level (levelMax l k) k) (_:
+          forall "S" (u l) (S:
+          forall "f" (forall "_" S (_: I)) (_:
+          forall "D" (descEncodingCtx I k).muTt (_:
+            (descEncodingCtx I k).muTt))))))));
+
+    encodeDescPiAtTm = self.elab self.encodeDescPiAt;
+
+    # encodeDescPi : Π(I:U(0))(k:Level)(S:U(k))(f:S→I)
+    #                  (D:μ⊤(descDesc I k)tt). μ ⊤ (descDesc I k) tt
+    # Homogeneous-l specialisation of `encodeDescPiAt` at `l = k` with
+    # `refl : Eq Level (max k k) k`. `LiftAt k k refl S ≡ S` collapses,
+    # recovering the direct `(S, f, D, liftedRefl)` payload shape.
+    encodeDescPi =
+      let inherit (self) lam forall ann u level app refl
+                         descEncodingCtx encodeDescPiAt; in
+      ann
+        (lam "I" (u 0) (I:
+         lam "k" level (k:
+          let c = descEncodingCtx I k; in
+          lam "S" (u k) (S:
+          lam "f" (forall "_" S (_: I)) (f:
+          lam "D" c.muTt (D:
+            app (app (app (app (app (app (app encodeDescPiAt I) k) k) refl) S) f) D))))))
+        (forall "I" (u 0) (I:
+         forall "k" level (k:
+          forall "S" (u k) (S:
+          forall "f" (forall "_" S (_: I)) (_:
+          forall "D" (descEncodingCtx I k).muTt (_:
+            (descEncodingCtx I k).muTt))))));
+
+    encodeDescPiTm = self.elab self.encodeDescPi;
+
+    # encodeDescPlus : Π(I:U(0))(k:Level)(A:μ⊤(descDesc I k)tt)
+    #                    (B:μ⊤(descDesc I k)tt). μ ⊤ (descDesc I k) tt
+    # Encodes a `descPlus A B`-shaped source description.
+    encodeDescPlus =
+      let inherit (self) lam forall ann u level pair descCon ttPrim
+                         descEncodingCtx; in
+      ann
+        (lam "I" (u 0) (I:
+         lam "k" level (k:
+          let c = descEncodingCtx I k; in
+          lam "A" c.muTt (A:
+          lam "B" c.muTt (B:
+            descCon c.dDesc ttPrim
+              (c.encodeAt 4 (pair A (pair B c.liftedRefl))))))))
+        (forall "I" (u 0) (I:
+         forall "k" level (k:
+          forall "A" (descEncodingCtx I k).muTt (_:
+          forall "B" (descEncodingCtx I k).muTt (_:
+            (descEncodingCtx I k).muTt)))));
+
+    encodeDescPlusTm = self.elab self.encodeDescPlus;
+
+    # encodeDescElim : Π(I:U(0))(k:Level)(L:Level)
+    #                    (motive : μ⊤(descDesc I k)tt → U(L))
+    #                    (onRet  : Π(j:I). motive (encodeDescRet I k j))
+    #                    (onArg  : Π(S:U(k))(T:S → μ⊤(descDesc I k)tt)
+    #                              (ih:Π(s:S). motive (T s)).
+    #                              motive (encodeDescArg I k S T))
+    #                    (onRec  : Π(j:I)(D:μ⊤(descDesc I k)tt)
+    #                              (ih:motive D).
+    #                              motive (encodeDescRec I k j D))
+    #                    (onPi   : Π(S:U(k))(f:S→I)(D:μ⊤(descDesc I k)tt)
+    #                              (ih:motive D).
+    #                              motive (encodeDescPi I k S f D))
+    #                    (onPlus : Π(A B:μ⊤(descDesc I k)tt)
+    #                              (ihA:motive A)(ihB:motive B).
+    #                              motive (encodeDescPlus I k A B))
+    #                    (scrut : μ⊤(descDesc I k)tt). motive scrut
+    #
+    # `descInd` over `μ ⊤ (descDesc I k) tt` with a step body that
+    # destructures the descCon payload's right-associated Plus5
+    # structure via a 4-layer `sumElimPrim` cascade. Cascade pattern
+    # mirrors iso's `from`: at each layer the Inl branch dispatches
+    # to the matched summand's user case body, the Inr branch
+    # recurses into the next summand. At depth 4 (plus) the cascade
+    # terminates without a sum — the encoded descCon payload is a
+    # bare pair carrying the two recursive μ-elements.
+    encodeDescElim =
+      let
+        inherit (self) lam forall ann u level pair fst_ snd_ app
+                       descCon descInd sumPrim sumElimPrim
+                       inlPrim inrPrim
+                       ttPrim unitPrim
+                       descEncodingCtx
+                       interpHoasAtPrim allHoasAtPrim
+                       encodeDescRet encodeDescArg encodeDescRec
+                       encodeDescPi encodeDescPlus;
+        # `descEncodingCtx`'s `conDescs` and `spineFrom` emit primitive
+        # `desc-*` HOAS, so the binary plus combining them in the cascade
+        # below must also be primitive. Mirrors `iso` / `interpHoasAt` /
+        # `descEncodingCtx`'s `plus = plusPrim` discipline. The encoded
+        # `self.plus` would yield `desc-plus-enc { A,B = primitive }`,
+        # which leaks primitive descs into `encodeDescPlusTm`'s lam-bound
+        # A/B at evaluation.
+        plus = self.plusPrim;
+
+        # Flat encoder applications used in the result-type ascriptions.
+        encRet  = I: k: j:    app (app (app encodeDescRet I) k) j;
+        encArg  = I: k: S: T: app (app (app (app encodeDescArg I) k) S) T;
+        encRec  = I: k: j: D: app (app (app (app encodeDescRec I) k) j) D;
+        encPi   = I: k: S: f: D:
+                  app (app (app (app (app encodeDescPi I) k) S) f) D;
+        encPlus = I: k: A: B:
+                  app (app (app (app encodeDescPlus I) k) A) B;
+
+        # The full bound-binder body; reused inside both the lam chain
+        # (for the elaborated term) and the forall chain (for ann).
+        bodyOnArgs = I: k: L: motive: onRet: onArg: onRec: onPi: onPlus: scrut:
           let
-            dDesc = app descDesc k;
-            muTt = mu dDesc ttPrim;
-            muFam = lam "_i" unitPrim (iArg: mu dDesc iArg);
+            c = descEncodingCtx I k;
+            # descInd's motive: λ(_i:⊤). λ(x:μ⊤(descDesc I k)i). motive x.
+            # I=⊤ so the index dependence is vacuous — discard `_i`.
+            motiveI = lam "_i" unitPrim (_:
+                      lam "x" c.muTt (x:
+                        app motive x));
 
-            # `dDesc`'s intrinsic level. Its outer `descArg`/`descPi`
-            # K-slots are `levelSuc k` (their domain `u k : U(suc k)`);
-            # the inner `descPi k` body's K-slot is `k` but is dominated
-            # by the outer `levelSuc k` in the `max` lattice. Threaded
-            # into every `interpHoasAt` / `allHoasAt` call for the iso
-            # so descElim's leading K, sort binders in onArg / onPi,
-            # and the `descIAt L I` ann-wrap line up with the actual
-            # scrutinee descArg K-slot at type-check time.
-            dDescL = levelSuc k;
+            # Per-summand case bodies. Receive `ctx` (the outer-payload
+            # accumulator threaded by `cascade`), the matched payload
+            # `r` (or bare `dCur` at depth 4) plus the per-summand
+            # all-IH `rih` (or `ihCur` at depth 4); emit the user case
+            # body applied to its arguments.
+            caseRet = _ctx: r: _rih: app onRet (fst_ r);
 
-            # `Desc^k ⊤` — the source side of the iso. `from`
-            # reconstructs descriptions whose `descArg`/`descPi` slots
-            # carry level `k`, so `from`'s codomain (and hence `to`'s
-            # domain, the toFrom equality's underlying type, and every
-            # internal `desc`-typed annotation in this iso) lives at
-            # `Desc^k ⊤`. At k=0 `descK` ≡ `desc` (the prelude form).
-            descK = descAt k;
+            caseArg = _ctx: r: rih:
+              let
+                S    = fst_ r;
+                T    = fst_ (snd_ r);
+                ihFn = fst_ rih;
+              in app (app (app onArg S) T) ihFn;
 
-            # Per-summand sub-descriptions of `dDesc`. Indices 0..4.
-            # Used by `encodeTag` for `to`'s payload, by the sumElim
-            # cascade for `from` and `fromTo`, and as L/R types in
-            # the sumElim layers via `interpHoasAt`. Mirrors descDesc's
-            # body shape exactly — the inner `descPiAt k (suc k)` form
-            # threads the mixed-level bound witness so `S : U(k)` fits
-            # the description's `Desc^(suc k)` slot via `convLevel`'s
-            # `max k (suc k) = suc k` rather than via Sub-at-U.
-            conDescs = [
-              descRet
-              (descArg (levelSuc k) (u k) (S: descPiAt k (levelSuc k) S descRet))
-              (descRec descRet)
-              (descArg (levelSuc k) (u k) (_: descRec descRet))
-              (descRec (descRec descRet))
-            ];
+            caseRec = _ctx: r: rih:
+              let
+                jVal = fst_ r;
+                D    = fst_ (snd_ r);
+                ihD  = fst_ rih;
+              in app (app (app onRec jVal) D) ihD;
 
-            # Right-spine of conDescs starting at index i (matches
-            # `descDesc`'s right-associated `plus` tree; consumed by
-            # the per-layer L/R type computation in the cascade).
-            spineFrom = i:
-              let n = builtins.length conDescs; remaining = n - i; in
-              if remaining == 1 then builtins.elemAt conDescs i
-              else plus (builtins.elemAt conDescs i) (spineFrom (i + 1));
+            casePi = _ctx: r: rih:
+              let
+                S   = fst_ r;
+                f   = fst_ (snd_ r);
+                D   = fst_ (snd_ (snd_ r));
+                ihD = fst_ rih;
+              in app (app (app (app onPi S) f) D) ihD;
 
-            # Wrap a payload at summand `t` with the inrPrim/inlPrim
-            # chain selecting the t-th summand of `dDesc`'s plus tree.
-            encodeAt = t: payload:
-              encodeTag unitPrim dDesc conDescs ttPrim t payload;
+            # depth 4 — no enclosing sum at this layer; the rest-spine
+            # is the bare descPlus pair `(A, B, leafLifted)`. `ctx` has
+            # already accumulated the four outer `inrPrim` wrappers.
+            casePlus = _ctx: dCur: ihCur:
+              let
+                A   = fst_ dCur;
+                B   = fst_ (snd_ dCur);
+                ihA = fst_ ihCur;
+                ihB = fst_ (snd_ ihCur);
+              in app (app (app (app onPlus A) B) ihA) ihB;
 
-            # Per-layer L/R interp types at iArg=tt. The cascade's
-            # sumElim layers and the All-type at each layer reference
-            # these; they conv-equal the corresponding summand-spine
-            # interpretations under the muFam family. `interpHoasAt`'s
-            # `L = dDescL` matches the K-slot of dDesc's descArg/descPi
-            # summands so descElim's leading k aligns at type-check.
-            interpAt = dH: interpHoasAt dDescL unitPrim dH muFam ttPrim;
-
-            # Lift mediation at the descRet leaf for `L = dDescL = suc k`.
-            # The kernel's `interp`'s `onRet` wraps `Eq I j i` with
-            # `Lift 0 L _` (eval/desc.nix `interpOnRet`); at `L = suc k
-            # > 0` this is a genuine lift cell (no idempotent collapse).
-            # Every value flowing into the descRet-leaf slot of a
-            # descCon payload must inhabit `Lift 0 dDescL _ (Eq Unit
-            # tt tt)`; every leaf-eq projection consumed by `j` (which
-            # check-matches a `VEq`, never a `VLift`) must be lowered.
-            # `iArg = tt` and the descRet's `j = tt` are uniform across
-            # all summands, so the leaf type is invariant.
-            eqLeafTy = eq unitPrim ttPrim ttPrim;
-            liftLeaf = e: liftAt levelZero dDescL eqLeafTy e;
-            lowerLeaf = x: lowerAt levelZero dDescL eqLeafTy x;
-            liftedRefl = liftLeaf refl;
-
-            # =================================================================
-            # to : Desc ⊤ → μ dDesc tt
-            #
-            # descElim cascade with motive `λ_. μ dDesc tt`. Each case
-            # emits `descCon dDesc tt (encodeAt t (payload))` selecting
-            # the t-th summand and packing the IH-derived recursive
-            # image at the recursive positions. descElim's IH supplies
-            # the recursive `to`-image directly — no meta-level recursion.
-            # =================================================================
-            toMotive = lam "_D" descK (_: muTt);
-
-            toOnRet = lam "j" unitPrim (_:
-              descCon dDesc ttPrim (encodeAt 0 liftedRefl));
-
-            toOnArg = lam "S" (u k) (S:
-                      lam "T" (forall "_" S (_: descK)) (_:
-                      lam "ih" (forall "_s" S (_: muTt)) (ih:
-                        descCon dDesc ttPrim
-                          (encodeAt 1 (pair S (pair ih liftedRefl))))));
-
-            toOnRec = lam "j" unitPrim (_:
-                      lam "D" descK (_:
-                      lam "ih" muTt (ih:
-                        descCon dDesc ttPrim
-                          (encodeAt 2 (pair ih liftedRefl)))));
-
-            toOnPi  = lam "S" (u k) (S:
-                      lam "f" (forall "_" S (_: unitPrim)) (_:
-                      lam "D" descK (_:
-                      lam "ih" muTt (ih:
-                        descCon dDesc ttPrim
-                          (encodeAt 3 (pair S (pair ih liftedRefl)))))));
-
-            toOnPlus = lam "A" descK (_:
-                       lam "B" descK (_:
-                       lam "ihA" muTt (ihA:
-                       lam "ihB" muTt (ihB:
-                         descCon dDesc ttPrim
-                           (encodeAt 4 (pair ihA (pair ihB liftedRefl)))))));
-
-            to = ann
-              (lam "D" descK (D:
-                descElim k toMotive
-                  toOnRet toOnArg toOnRec toOnPi toOnPlus
-                  (ann D descK)))
-              (forall "_" descK (_: muTt));
-
-            # =================================================================
-            # from : μ dDesc tt → Desc ⊤
-            #
-            # descInd with constant motive `Q i x = Desc ⊤`. The step
-            # body dispatches on the encoded payload via a 4-layer
-            # `sumElimPrim` cascade matching descDesc's right-associated
-            # plus tree. Each summand reconstructs the corresponding
-            # Desc-form, reading recursive sub-descriptions out of the
-            # IH structure via `fst_`/`snd_` projections. The sumElim
-            # motive at each layer is `Π(rih:All …). desc`, applied to
-            # the corresponding ih branch at the call site so the
-            # per-summand sub-IH flows in with the matching type.
-            # =================================================================
-            fromMotive = lam "_i" unitPrim (_:
-                         lam "_x" muTt (_: descK));
-
-            # Reconstruction at each summand. Receives the matched
-            # payload `r` and the per-summand IH `rih`; emits the
-            # corresponding Desc⊤ form.
-            #
-            #   summand 0 (ret) : `descRet`. ih is Unit; r is the
-            #     leaf-eq witness, irrelevant.
-            #   summand 1 (arg) : `descArg k S (s: app ihFn s)` where
-            #     S = fst r and ihFn : Π(s':S). desc is the head of
-            #     the All-on-descArg-with-descPi-body Σ-chain.
-            #   summand 2 (rec) : `descRec D'` where D' = fst rih is
-            #     the recursive image at the descRec position.
-            #   summand 3 (pi)  : `descPi k S D'` with S = fst r and
-            #     D' = fst rih (the body's recursive image).
-            #   summand 4 (plus): `plus A' B'` with A' = fst rih and
-            #     B' = fst (snd rih) (two recursive images).
-            caseRet = _r: _rih: descRet;
-            caseArg = r: rih:
-              let S = fst_ r;
-                  ihFn = fst_ rih;
-              in descArg k S (s: app ihFn s);
-            caseRec = _r: rih: descRec (fst_ rih);
-            casePi  = r: rih:
-              let S = fst_ r;
-                  D' = fst_ rih;
-              in descPi k S D';
-            casePlus = _r: rih:
-              let A' = fst_ rih;
-                  B' = fst_ (snd_ rih);
-              in plus A' B';
-
-            # Build the dispatch cascade at depth `depthIdx` on the
-            # remaining payload `dCur` and ih `ihCur`. `depthIdx`
-            # ranges over 0..3 (sumElim layers). At depth 4 the
-            # remaining spine has a single leaf (summand 4) and the
-            # branch is taken directly via `casePlus`.
-            fromCascade = depthIdx: dCur: ihCur:
-              if depthIdx == 4
-              then casePlus dCur ihCur
+            # Cascade layer at depthIdx in {0..4}. `dCur` is the encoded
+            # descCon payload at this layer (a Sum at 0..3, a Pair at 4);
+            # `ihCur` is the corresponding All-witness. `ctx` reconstructs
+            # the OUTER payload from this layer's inner shape — at the
+            # outermost call `ctx = id`; at each Inr descent it extends
+            # to wrap one more `inrPrim lTy rTy`. This makes sumMot's
+            # `descCon c.dDesc tt (ctx s)` well-typed at every depth K
+            # because `ctx s : interpAt c.dDesc` by construction.
+            cascade = depthIdx: ctx: dCur: ihCur:
+              if depthIdx == 4 then
+                casePlus ctx dCur ihCur
               else
                 let
-                  curD = builtins.elemAt conDescs depthIdx;
-                  restSpine = spineFrom (depthIdx + 1);
-                  lTy = interpAt curD;
-                  rTy = interpAt restSpine;
+                  curD      = builtins.elemAt c.conDescs depthIdx;
+                  restSpine = c.spineFrom (depthIdx + 1);
+                  lTy       = c.interpAt curD;
+                  rTy       = c.interpAt restSpine;
                   caseFn =
                          if depthIdx == 0 then caseRet
                     else if depthIdx == 1 then caseArg
@@ -325,458 +524,112 @@
                     else                        casePi;
                   sumMot = lam "s" (sumPrim lTy rTy) (s:
                     forall "_rih"
-                      (allHoasAt dDescL dDescL unitPrim dDesc
-                        (plus curD restSpine) fromMotive ttPrim s)
-                      (_: descK));
+                      (allHoasAtPrim c.dDescL c.dDescL unitPrim c.dDesc
+                        (plus curD restSpine) motiveI ttPrim s)
+                      (_: app motive (descCon c.dDesc ttPrim (ctx s))));
                   onInl = lam "r" lTy (r:
                           lam "rih"
-                            (allHoasAt dDescL dDescL unitPrim dDesc curD
-                              fromMotive ttPrim r) (rih:
-                            caseFn r rih));
+                            (allHoasAtPrim c.dDescL c.dDescL unitPrim c.dDesc
+                              curD motiveI ttPrim r) (rih:
+                            caseFn ctx r rih));
+                  ctx' = s_in: ctx (inrPrim lTy rTy s_in);
                   onInr = lam "r" rTy (r:
                           lam "rih"
-                            (allHoasAt dDescL dDescL unitPrim dDesc restSpine
-                              fromMotive ttPrim r) (rih:
-                            fromCascade (depthIdx + 1) r rih));
+                            (allHoasAtPrim c.dDescL c.dDescL unitPrim c.dDesc
+                              restSpine motiveI ttPrim r) (rih:
+                            cascade (depthIdx + 1) ctx' r rih));
                 in
-                app (sumElimPrim lTy rTy sumMot onInl onInr dCur) ihCur;
+                  app (sumElimPrim lTy rTy sumMot onInl onInr dCur) ihCur;
 
-            fromStep = lam "_i" unitPrim (iArg:
-                       lam "d" (interpHoasAt dDescL unitPrim dDesc muFam iArg) (d:
-                       lam "ih" (allHoasAt dDescL dDescL unitPrim dDesc dDesc
-                                   fromMotive iArg d) (ih:
-                         fromCascade 0 d ih)));
-
-            from = ann
-              (lam "x" muTt (x:
-                descInd dDesc fromMotive fromStep ttPrim x))
-              (forall "_" muTt (_: descK));
-
-            # =================================================================
-            # toFrom : Π(D : Desc ⊤). Eq Desc⊤ (from (to D)) D
-            #
-            # descElim cascade with motive `λD. Eq Desc⊤ (from (to D)) D`.
-            # The ret case collapses to `refl` (no recursion); rec/pi/plus
-            # need J-transport along the descElim IH (the kernel's conv
-            # cannot reduce `from (to D)` to `D` for neutral D — only
-            # the IH supplies that propositional equality, and J carries
-            # it up to the wrapped Desc-form). The arg case uses funext
-            # to lift the pointwise IH into a function equality, then
-            # J-transports through the descArg wrapping.
-            # =================================================================
-            toFromMotive = lam "D" descK (D:
-              eq descK (app from (app to D)) D);
-
-            toFromOnRet = lam "j" unitPrim (_: refl);
-
-            # funext lifts the pointwise IH `Π(s:S). Eq Desc⊤
-            # (from (to (T s))) (T s)` to a function equality
-            # `Eq (S→Desc⊤) (λs. from (to (T s))) T`. J then transports
-            # `refl : Eq Desc⊤ (descArg k S fLifted) (descArg k S fLifted)`
-            # along this equality (under motive `λg _. Eq Desc⊤ (descArg
-            # k S fLifted) (descArg k S g)`) to the goal at g = T.
-            toFromOnArg = lam "S" (u k) (S:
-                          lam "T" (forall "_" S (_: descK)) (T:
-                          lam "ih" (forall "s" S (s:
-                                     eq descK (app from (app to (app T s)))
-                                                (app T s))) (ih:
-                            let
-                              fnTy = forall "_" S (_: descK);
-                              fLifted = ann
-                                (lam "s" S (s:
-                                  app from (app to (app T s))))
-                                fnTy;
-                              # `funext`'s second `Level` arg is B's
-                              # codomain universe. B = `λ_:S. descK`
-                              # with `descK = Desc^k ⊤ : U(suc k)`.
-                              # So `k_funext = levelSuc k` (matches the
-                              # universe in which the resulting
-                              # function-level Eq inhabits).
-                              eqFns = app (app (app (app (app (app (app
-                                self.funext k) (levelSuc k)) S)
-                                (lam "_" S (_: descK)))
-                                fLifted) T)
-                                ih;
-                              jMot = lam "g" fnTy (g:
-                                     lam "_e" (eq fnTy fLifted g) (_:
-                                       eq descK
-                                         (descArg k S
-                                            (s_: app fLifted s_))
-                                         (descArg k S
-                                            (s_: app g s_))));
-                            in
-                              self.j fnTy fLifted jMot refl T eqFns)));
-
-            # `from (to (recI j D))` reduces to `descRec (from (to D))`
-            # (caseRec at depthIdx=2). `recI j D` ≡ `descRec D` by
-            # unit-η on j. J on the IH `Eq desc (from (to D)) D` at
-            # motive `λx _. Eq desc (descRec (from (to D))) (descRec x)`
-            # transports refl from x = (from (to D)) to x = D.
-            toFromOnRec = lam "j" unitPrim (_:
-                          lam "D" descK (D:
-                          lam "ih" (eq descK (app from (app to D)) D) (ih:
-                            let
-                              ftD = app from (app to D);
-                              jMot = lam "x" descK (x:
-                                     lam "_e" (eq descK ftD x) (_:
-                                       eq descK (descRec ftD) (descRec x)));
-                            in self.j descK ftD jMot refl D ih)));
-
-            # `from (to (piI k S f D))` reduces to `descPi k S (from (to D))`
-            # (casePi at depthIdx=3); `piI k S f D` ≡ `descPi k S D` by
-            # unit-η on f's codomain. Same J-transport pattern as onRec,
-            # with the wrapping head `descPi k S _`.
-            toFromOnPi  = lam "S" (u k) (S:
-                          lam "f" (forall "_" S (_: unitPrim)) (_:
-                          lam "D" descK (D:
-                          lam "ih" (eq descK (app from (app to D)) D) (ih:
-                            let
-                              ftD = app from (app to D);
-                              jMot = lam "x" descK (x:
-                                     lam "_e" (eq descK ftD x) (_:
-                                       eq descK
-                                         (descPi k S ftD) (descPi k S x)));
-                            in self.j descK ftD jMot refl D ih))));
-
-            # `from (to (plus A B))` reduces to `plus (from (to A))
-            # (from (to B))` (casePlus at depthIdx=4). Two nested
-            # J-transports bridge each summand to its respective IH
-            # target: outer J on ihA along `λa _. Eq desc (plus (fa) (fb)) (plus a fb)`
-            # then on the result combined via inner J on ihB along
-            # `λb _. Eq desc (plus a (fb)) (plus a b)` reaches `plus A B`.
-            toFromOnPlus = lam "A" descK (A:
-                           lam "B" descK (B:
-                           lam "ihA" (eq descK (app from (app to A)) A) (ihA:
-                           lam "ihB" (eq descK (app from (app to B)) B) (ihB:
-                             let
-                               fA = app from (app to A);
-                               fB = app from (app to B);
-                               innerJ = self.j descK fB
-                                 (lam "b" descK (b:
-                                  lam "_e" (eq descK fB b) (_:
-                                    eq descK (plus fA fB) (plus fA b))))
-                                 refl
-                                 B
-                                 ihB;
-                               outerJMot = lam "a" descK (a:
-                                           lam "_e" (eq descK fA a) (_:
-                                             eq descK (plus fA fB) (plus a B)));
-                             in self.j descK fA outerJMot innerJ A ihA))));
-
-            toFrom = lam "D" descK (D:
-              descElim k toFromMotive
-                toFromOnRet toFromOnArg toFromOnRec toFromOnPi toFromOnPlus
-                (ann D descK));
-
-            # =================================================================
-            # fromTo : Π(x : μ dDesc tt). Eq (μ dDesc tt) (to (from x)) x
-            #
-            # descInd with motive `Q i x = Eq (μ dDesc i) (to (from x)) x`.
-            # Step dispatches via 4-layer sumElim cascade following
-            # `from`'s shape, threading a `ctx` payload-reconstruction
-            # function so each layer's motive expresses the goal as
-            # `Eq muTt (to(from(descCon dDesc tt (ctx s)))) (descCon
-            # dDesc tt (ctx s))` — at the leaf, `ctx` produces the
-            # FULL encoded payload, allowing the case body to discharge
-            # the equality at the original descCon target via
-            # J-transports on the leaf-equality witness and (for non-ret
-            # summands) recursive equality IHs supplied by descInd.
-            # =================================================================
-            fromToMotive = lam "_i" unitPrim (iArg:
-                           lam "x" (mu dDesc iArg) (x:
-                             eq (mu dDesc iArg) (app to (app from x)) x));
-
-            # Per-layer goal type at sub-payload `s` reconstructed via
-            # `ctx`: the equality between the to/from-roundtrip of the
-            # full descCon and the original descCon, with the kernel
-            # conv-reducing the LHS at the case body's specific s.
-            fromToTargetAt = ctx: s:
-              eq muTt
-                (app to (app from (descCon dDesc ttPrim (ctx s))))
-                (descCon dDesc ttPrim (ctx s));
-
-            # ret-leaf proof. Payload `r` is the leaf-eq witness
-            # `Eq ⊤ tt ttPrim`. After kernel reduction, `to(from(descCon
-            # dDesc tt (ctx (inlPrim L R r))))` collapses to `descCon
-            # dDesc tt (ctx (inlPrim L R refl))`. J on r at motive
-            # `λ_y e. Eq muTt (descCon dDesc tt (ctx (inlPrim L R refl)))
-            # (descCon dDesc tt (ctx (inlPrim L R e)))` transports refl
-            # from e=refl to e=r.
-            caseRetEq = ctx: r:
-              let
-                lTy0 = interpAt (builtins.elemAt conDescs 0);
-                rTy0 = interpAt (spineFrom 1);
-                wrap = e: ctx (inlPrim lTy0 rTy0 e);
-                jMot = lam "_y" unitPrim (_:
-                       lam "e" (eq unitPrim ttPrim ttPrim) (e:
-                         eq muTt
-                           (descCon dDesc ttPrim (wrap liftedRefl))
-                           (descCon dDesc ttPrim (wrap (liftLeaf e)))));
-              in self.j unitPrim ttPrim jMot refl ttPrim (lowerLeaf r);
-
-            # arg-leaf proof. Payload `r = pair S (pair Tlifted leafEq)`.
-            # The fromTo IH at the descArg+descPi descRet body provides
-            # `pointwiseEq : Π(s:S). Eq muTt (to(from(Tlifted s))) (Tlifted s)`
-            # — `fst rih`. funext lifts to `Eq (S→muTt) (s. to(from(Tlifted s)))
-            # Tlifted`. Compose with J on leafEq via transitivity.
-            caseArgEq = ctx: r: rih:
-              let
-                lTyHere = interpAt (builtins.elemAt conDescs 1);
-                rTyHere = interpAt (spineFrom 2);
-                S = fst_ r;
-                Tlifted = fst_ (snd_ r);
-                leafEq = snd_ (snd_ r);
-                pointwiseEq = fst_ rih;
-                fnTy = forall "_" S (_: muTt);
-                fLifted = lam "s" S (s:
-                  app to (app from (app Tlifted s)));
-                # `funext`'s second `Level` arg is B's codomain
-                # universe. B = `λ_:S. muTt` with `muTt = mu dDesc tt :
-                # U(suc k)` (μ inherits its level from `dDesc`'s `descArg`
-                # `suc k` slot). The funext call therefore takes
-                # `k_funext = levelSuc k = dDescL`, not `levelZero` —
-                # using `levelZero` would mis-promise B's codomain at
-                # U(0) and the kernel rejects the resulting Eq when
-                # the actual `B s` inhabits U(suc k).
-                eqFns = app (app (app (app (app (app (app
-                  self.funext k) dDescL) S)
-                  (lam "_" S (_: muTt)))
-                  fLifted) Tlifted)
-                  pointwiseEq;
-                wrap = fn: e: ctx (inlPrim lTyHere rTyHere
-                  (pair S (pair fn e)));
-                stage1Mot = lam "g" fnTy (g:
-                            lam "_e" (eq fnTy fLifted g) (_:
-                              eq muTt
-                                (descCon dDesc ttPrim (wrap fLifted liftedRefl))
-                                (descCon dDesc ttPrim (wrap g liftedRefl))));
-                stage1 = self.j fnTy fLifted stage1Mot refl Tlifted eqFns;
-                stage2Mot = lam "_y" unitPrim (_:
-                            lam "e" (eq unitPrim ttPrim ttPrim) (e:
-                              eq muTt
-                                (descCon dDesc ttPrim (wrap Tlifted liftedRefl))
-                                (descCon dDesc ttPrim (wrap Tlifted (liftLeaf e)))));
-                stage2 = self.j unitPrim ttPrim stage2Mot refl ttPrim (lowerLeaf leafEq);
-                composeMot = lam "y" muTt (y:
-                             lam "_e" (eq muTt
-                               (descCon dDesc ttPrim (wrap Tlifted liftedRefl)) y)
-                               (_:
-                                 eq muTt
-                                   (descCon dDesc ttPrim (wrap fLifted liftedRefl))
-                                   y));
-              in self.j muTt
-                   (descCon dDesc ttPrim (wrap Tlifted liftedRefl))
-                   composeMot
-                   stage1
-                   (descCon dDesc ttPrim (wrap Tlifted leafEq))
-                   stage2;
-
-            # rec-leaf proof at `depthInChain` (= 2 for our descDesc).
-            # Payload `r = pair Drec leafEq`; IH `rih = pair ihEq unit`
-            # with `ihEq : Eq muTt (to(from Drec)) Drec`. Two J-transports
-            # composed: one on the rec position (via ihEq), one on the
-            # leaf-eq slot.
-            caseRecEq = ctx: depthInChain: r: rih:
-              let
-                curD = builtins.elemAt conDescs depthInChain;
-                restSpine = spineFrom (depthInChain + 1);
-                lTyHere = interpAt curD;
-                rTyHere = interpAt restSpine;
-                Drec = fst_ r;
-                leafEq = snd_ r;
-                ihEq = fst_ rih;
-                ftDrec = app to (app from Drec);
-                wrap = x: e: ctx (inlPrim lTyHere rTyHere (pair x e));
-                stage1Mot = lam "x" muTt (x:
-                            lam "_e" (eq muTt ftDrec x) (_:
-                              eq muTt
-                                (descCon dDesc ttPrim (wrap ftDrec liftedRefl))
-                                (descCon dDesc ttPrim (wrap x liftedRefl))));
-                stage1 = self.j muTt ftDrec stage1Mot refl Drec ihEq;
-                stage2Mot = lam "_y" unitPrim (_:
-                            lam "e" (eq unitPrim ttPrim ttPrim) (e:
-                              eq muTt
-                                (descCon dDesc ttPrim (wrap Drec liftedRefl))
-                                (descCon dDesc ttPrim (wrap Drec (liftLeaf e)))));
-                stage2 = self.j unitPrim ttPrim stage2Mot refl ttPrim (lowerLeaf leafEq);
-                composeMot = lam "y" muTt (y:
-                             lam "_e" (eq muTt
-                               (descCon dDesc ttPrim (wrap Drec liftedRefl)) y)
-                               (_:
-                                 eq muTt
-                                   (descCon dDesc ttPrim (wrap ftDrec liftedRefl))
-                                   y));
-              in self.j muTt
-                   (descCon dDesc ttPrim (wrap Drec liftedRefl))
-                   composeMot
-                   stage1
-                   (descCon dDesc ttPrim (wrap Drec leafEq))
-                   stage2;
-
-            # pi-leaf proof. Payload `r = pair S (pair Drec leafEq)`,
-            # same shape as rec-leaf with an additional descArg-S
-            # prefix in the wrap. `ihEq : Eq muTt (to(from Drec)) Drec`
-            # at `fst rih`.
-            casePiEq = ctx: r: rih:
-              let
-                lTyHere = interpAt (builtins.elemAt conDescs 3);
-                rTyHere = interpAt (spineFrom 4);
-                S = fst_ r;
-                Drec = fst_ (snd_ r);
-                leafEq = snd_ (snd_ r);
-                ihEq = fst_ rih;
-                ftDrec = app to (app from Drec);
-                wrap = x: e: ctx (inlPrim lTyHere rTyHere
-                  (pair S (pair x e)));
-                stage1Mot = lam "x" muTt (x:
-                            lam "_e" (eq muTt ftDrec x) (_:
-                              eq muTt
-                                (descCon dDesc ttPrim (wrap ftDrec liftedRefl))
-                                (descCon dDesc ttPrim (wrap x liftedRefl))));
-                stage1 = self.j muTt ftDrec stage1Mot refl Drec ihEq;
-                stage2Mot = lam "_y" unitPrim (_:
-                            lam "e" (eq unitPrim ttPrim ttPrim) (e:
-                              eq muTt
-                                (descCon dDesc ttPrim (wrap Drec liftedRefl))
-                                (descCon dDesc ttPrim (wrap Drec (liftLeaf e)))));
-                stage2 = self.j unitPrim ttPrim stage2Mot refl ttPrim (lowerLeaf leafEq);
-                composeMot = lam "y" muTt (y:
-                             lam "_e" (eq muTt
-                               (descCon dDesc ttPrim (wrap Drec liftedRefl)) y)
-                               (_:
-                                 eq muTt
-                                   (descCon dDesc ttPrim (wrap ftDrec liftedRefl))
-                                   y));
-              in self.j muTt
-                   (descCon dDesc ttPrim (wrap Drec liftedRefl))
-                   composeMot
-                   stage1
-                   (descCon dDesc ttPrim (wrap Drec leafEq))
-                   stage2;
-
-            # plus-leaf proof (depthIdx==4 in cascade — the LAST
-            # summand sits as the rest-spine without a wrapping plus).
-            # Payload `dCur = pair Aenc (pair Benc leafEq)`; IH `ihCur =
-            # pair ihA (pair ihB unit)` with two recursive equality
-            # witnesses. Three J-transports composed: ihA, ihB, leafEq.
-            casePlusEq = ctx: dCur: ihCur:
-              let
-                Aenc = fst_ dCur;
-                Benc = fst_ (snd_ dCur);
-                leafEq = snd_ (snd_ dCur);
-                ihA = fst_ ihCur;
-                ihB = fst_ (snd_ ihCur);
-                ftA = app to (app from Aenc);
-                ftB = app to (app from Benc);
-                wrap = a: b: e: ctx (pair a (pair b e));
-                stage1Mot = lam "a" muTt (a:
-                            lam "_e" (eq muTt ftA a) (_:
-                              eq muTt
-                                (descCon dDesc ttPrim (wrap ftA ftB liftedRefl))
-                                (descCon dDesc ttPrim (wrap a ftB liftedRefl))));
-                stage1 = self.j muTt ftA stage1Mot refl Aenc ihA;
-                stage2Mot = lam "b" muTt (b:
-                            lam "_e" (eq muTt ftB b) (_:
-                              eq muTt
-                                (descCon dDesc ttPrim (wrap Aenc ftB liftedRefl))
-                                (descCon dDesc ttPrim (wrap Aenc b liftedRefl))));
-                stage2 = self.j muTt ftB stage2Mot refl Benc ihB;
-                stage3Mot = lam "_y" unitPrim (_:
-                            lam "e" (eq unitPrim ttPrim ttPrim) (e:
-                              eq muTt
-                                (descCon dDesc ttPrim (wrap Aenc Benc liftedRefl))
-                                (descCon dDesc ttPrim (wrap Aenc Benc (liftLeaf e)))));
-                stage3 = self.j unitPrim ttPrim stage3Mot refl ttPrim (lowerLeaf leafEq);
-                trans12Mot = lam "y" muTt (y:
-                             lam "_e" (eq muTt
-                               (descCon dDesc ttPrim (wrap Aenc ftB liftedRefl)) y)
-                               (_:
-                                 eq muTt
-                                   (descCon dDesc ttPrim (wrap ftA ftB liftedRefl))
-                                   y));
-                trans12 = self.j muTt
-                            (descCon dDesc ttPrim (wrap Aenc ftB liftedRefl))
-                            trans12Mot
-                            stage1
-                            (descCon dDesc ttPrim (wrap Aenc Benc liftedRefl))
-                            stage2;
-                trans123Mot = lam "y" muTt (y:
-                              lam "_e" (eq muTt
-                                (descCon dDesc ttPrim (wrap Aenc Benc liftedRefl)) y)
-                                (_:
-                                  eq muTt
-                                    (descCon dDesc ttPrim (wrap ftA ftB liftedRefl))
-                                    y));
-              in self.j muTt
-                   (descCon dDesc ttPrim (wrap Aenc Benc liftedRefl))
-                   trans123Mot
-                   trans12
-                   (descCon dDesc ttPrim (wrap Aenc Benc leafEq))
-                   stage3;
-
-            # `allHoasAt`'s motive-codomain `K` for `fromToCascade`.
-            # `fromToMotive`'s codomain is `Eq (μ dDesc iArg) … …`;
-            # `μ dDesc iArg : U(suc k)` carries D's `suc k` level from
-            # `descDesc k`'s descArg sort, so the equality lives at
-            # `U(suc k)`. The motive-codomain `K` and the scrutinee-
-            # description level `L = dDescL = levelSuc k` coincide
-            # numerically here but remain conceptually distinct
-            # parameters in `allHoasAt`'s signature.
-            fromToK = dDescL;
-
-            fromToCascade = depthIdx: ctx: dCur: ihCur:
-              if depthIdx == 4
-              then casePlusEq ctx dCur ihCur
-              else
-                let
-                  curD = builtins.elemAt conDescs depthIdx;
-                  restSpine = spineFrom (depthIdx + 1);
-                  lTy = interpAt curD;
-                  rTy = interpAt restSpine;
-                  sumMot = lam "s" (sumPrim lTy rTy) (s:
-                    forall "_rih"
-                      (allHoasAt dDescL fromToK unitPrim dDesc
-                        (plus curD restSpine) fromToMotive ttPrim s)
-                      (_: fromToTargetAt ctx s));
-                  onInl = lam "r" lTy (r:
-                          lam "rih"
-                            (allHoasAt dDescL fromToK unitPrim dDesc curD
-                              fromToMotive ttPrim r) (rih:
-                            (
-                              if depthIdx == 0
-                              then caseRetEq ctx r
-                              else if depthIdx == 1
-                              then caseArgEq ctx r rih
-                              else if depthIdx == 2
-                              then caseRecEq ctx 2 r rih
-                              else casePiEq ctx r rih
-                            )));
-                  onInr = lam "r" rTy (r:
-                          lam "rih"
-                            (allHoasAt dDescL fromToK unitPrim dDesc restSpine
-                              fromToMotive ttPrim r) (rih:
-                            fromToCascade (depthIdx + 1)
-                              (s_in: ctx (inrPrim lTy rTy s_in)) r rih));
-                in
-                app (sumElimPrim lTy rTy sumMot onInl onInr dCur) ihCur;
-
-            fromToStep = lam "_i" unitPrim (iArg:
-                         lam "d" (interpHoasAt dDescL unitPrim dDesc muFam iArg) (d:
-                         lam "ih" (allHoasAt dDescL fromToK unitPrim dDesc dDesc
-                                     fromToMotive iArg d) (ih:
-                           fromToCascade 0 (s: s) d ih)));
-
-            fromTo = lam "x" muTt (x:
-              descInd dDesc fromToMotive fromToStep ttPrim x);
+            step = lam "_i" unitPrim (iArg:
+                   lam "d" (interpHoasAtPrim c.dDescL unitPrim c.dDesc c.muFam iArg) (d:
+                   lam "ih" (allHoasAtPrim c.dDescL c.dDescL unitPrim c.dDesc
+                                c.dDesc motiveI iArg d) (ih:
+                     cascade 0 (s: s) d ih)));
           in
-          pair to (pair from (pair toFrom fromTo))))
-        isoTy;
+            descInd c.dDesc motiveI step ttPrim scrut;
+      in
+      ann
+        (lam "I" (u 0) (I:
+         lam "k" level (k:
+         lam "L" level (L:
+          let c = descEncodingCtx I k;
+              motiveTy = forall "_" c.muTt (_: u L);
+          in
+          lam "motive" motiveTy (motive:
+          lam "onRet"
+            (forall "j" I (j: app motive (encRet I k j)))
+            (onRet:
+          lam "onArg"
+            (forall "S" (u k) (S:
+             forall "T" (forall "_" S (_: c.muTt)) (T:
+             forall "ih" (forall "_s" S (s: app motive (app T s))) (_:
+               app motive (encArg I k S T)))))
+            (onArg:
+          lam "onRec"
+            (forall "j" I (j:
+             forall "D" c.muTt (D:
+             forall "ih" (app motive D) (_:
+               app motive (encRec I k j D)))))
+            (onRec:
+          lam "onPi"
+            (forall "S" (u k) (S:
+             forall "f" (forall "_" S (_: I)) (f:
+             forall "D" c.muTt (D:
+             forall "ih" (app motive D) (_:
+               app motive (encPi I k S f D))))))
+            (onPi:
+          lam "onPlus"
+            (forall "A" c.muTt (A:
+             forall "B" c.muTt (B:
+             forall "ihA" (app motive A) (_:
+             forall "ihB" (app motive B) (_:
+               app motive (encPlus I k A B))))))
+            (onPlus:
+          lam "scrut" c.muTt (scrut:
+            bodyOnArgs I k L motive onRet onArg onRec onPi onPlus scrut)))))))))))
+        (forall "I" (u 0) (I:
+         forall "k" level (k:
+         forall "L" level (L:
+          let c = descEncodingCtx I k;
+              motiveTy = forall "_" c.muTt (_: u L);
+          in
+          forall "motive" motiveTy (motive:
+          forall "onRet"
+            (forall "j" I (j: app motive (encRet I k j)))
+            (_:
+          forall "onArg"
+            (forall "S" (u k) (S:
+             forall "T" (forall "_" S (_: c.muTt)) (T:
+             forall "ih" (forall "_s" S (s: app motive (app T s))) (_:
+               app motive (encArg I k S T)))))
+            (_:
+          forall "onRec"
+            (forall "j" I (j:
+             forall "D" c.muTt (D:
+             forall "ih" (app motive D) (_:
+               app motive (encRec I k j D)))))
+            (_:
+          forall "onPi"
+            (forall "S" (u k) (S:
+             forall "f" (forall "_" S (_: I)) (f:
+             forall "D" c.muTt (D:
+             forall "ih" (app motive D) (_:
+               app motive (encPi I k S f D))))))
+            (_:
+          forall "onPlus"
+            (forall "A" c.muTt (A:
+             forall "B" c.muTt (B:
+             forall "ihA" (app motive A) (_:
+             forall "ihB" (app motive B) (_:
+               app motive (encPlus I k A B))))))
+            (_:
+          forall "scrut" c.muTt (scrut:
+            app motive scrut)))))))))));
 
-    # Pre-elaborated natDesc — used by the zero/succ/nat-elim elaborate
-    # branches to avoid re-elaborating on every constructor.
-    natDescTm = self.elab self.natDesc;
+    encodeDescElimTm = self.elab self.encodeDescElim;
 
-    # interpHoasAt L I D X i  ≡  ⟦D⟧(X) i  as a closed kernel TERM at
+    # interpHoasAtPrim L I D X i  ≡  ⟦D⟧(X) i  as a closed kernel TERM at
     # description-level `L`.
     #   L : Level       the scrutinee description's K-slot — `descArg L`
     #                   / `descPi L` summands inside `D` bind their sort
@@ -790,9 +643,9 @@
     #   i : I           target index
     # Mirrors eval/desc.nix's interpF structurally — each binder below
     # lines up with a named closure in that file.
-    interpHoasAt = L: I: D: X: i:
+    interpHoasAtPrim = L: I: D: X: i:
       let
-        inherit (self) ann lam forall descIAt descElim sigma app eq u sumPrim;
+        inherit (self) annTrusted lam forall descIAt sigma app eq u sumPrim;
         descLI = descIAt L I;
         iToU = forall "_" I (_: u L);
         # motive : λ(_:Desc^L I). (I → U(L)) → I → U(L)
@@ -865,10 +718,14 @@
       # for `tt`). Ann-wrap D against `Desc^L I` so the scrutinee position
       # stays inferable for every caller — parallels the CHECK-mode rewire
       # of `mu` at `check/type.nix:75-90`. `interp`'s `onArg` / `onPi`
-      # bind `S` at `U(L)`, so the descElim's `k` slot is `L`.
-      in app (app (descElim L motive onRet onArg onRec onPi onPlus (ann D descLI)) X) i;
+      # bind `S` at `U(L)`, so the descElimPrim's `k` slot is `L`.
+      # Bootstrap-only: this primitive interpreter is consumed by
+      # `descDesc`, `iso`, `descEncodingCtx`, and the cascades inside
+      # `interpHoasAt` / `allHoasAt` / `encodeDescElim`. User code at
+      # the encoded surface uses `interpHoasAt` instead.
+      in app (app (self.descElimPrim L motive onRet onArg onRec onPi onPlus (annTrusted D descLI)) X) i;
 
-    # allHoasAt L K I Douter Dsub P i d ≡ All Douter Dsub P i d — the
+    # allHoasAtPrim L K I Douter Dsub P i d ≡ All Douter Dsub P i d — the
     # inductive-hypothesis TYPE for d : ⟦Dsub⟧(μ Douter) i, where
     # P : (i:I) → μ Douter i → U(K).
     #
@@ -887,10 +744,10 @@
     #
     # The motive closes over Douter (and I); the four cases mention
     # Douter only through P's domain shape.
-    allHoasAt = L: K: I: Douter: Dsub: P: i: d:
+    allHoasAtPrim = L: K: I: Douter: Dsub: P: i: d:
       let
-        inherit (self) ann lam forall descIAt descElim sigma app fst_ snd_
-                        u unitPrim mu interpHoasAt sumPrim sumElimPrim;
+        inherit (self) annTrusted lam forall descIAt sigma app fst_ snd_
+                        u unitPrim mu interpHoasAtPrim sumPrim sumElimPrim;
         descLI = descIAt L I;
         # muFam : λi. μ Douter i — the family fed to interpHoasAt as X.
         muFam = lam "_i" I (iArg: mu Douter iArg);
@@ -900,7 +757,7 @@
         motive = lam "_" descLI (Dm:
                  forall "P" pTy (_:
                  forall "i" I (iArg:
-                 forall "d" (interpHoasAt L I Dm muFam iArg) (_: u K))));
+                 forall "d" (interpHoasAtPrim L I Dm muFam iArg) (_: u K))));
         # onRet : λj λP λi λd. Lift 0 K Unit
         # The `All`-result at a `retI` leaf is trivially `Unit`; wrapping
         # in `LiftAt 0 K` lifts the U(0) Unit type to U(K) so the case
@@ -915,20 +772,20 @@
                  lam "ihA" (forall "s" S (s:
                             forall "P" pTy (_:
                             forall "i" I (iArg:
-                            forall "d" (interpHoasAt L I (app T s) muFam iArg) (_: u K))))) (ihA:
+                            forall "d" (interpHoasAtPrim L I (app T s) muFam iArg) (_: u K))))) (ihA:
                  lam "P" pTy (P2:
                  lam "i" I (iArg:
-                 lam "d" (sigma "s" S (s: interpHoasAt L I (app T s) muFam iArg)) (d2:
+                 lam "d" (sigma "s" S (s: interpHoasAtPrim L I (app T s) muFam iArg)) (d2:
                    app (app (app (app ihA (fst_ d2)) P2) iArg) (snd_ d2)))))));
         # onRec : λj λD λihA λP λi λd. Σ(_: P j (fst d)). ihA P i (snd d)
         onRec  = lam "j" I (j:
                  lam "D" descLI (D2:
                  lam "ihA" (forall "P" pTy (_:
                             forall "i" I (iArg:
-                            forall "d" (interpHoasAt L I D2 muFam iArg) (_: u K)))) (ihA:
+                            forall "d" (interpHoasAtPrim L I D2 muFam iArg) (_: u K)))) (ihA:
                  lam "P" pTy (P2:
                  lam "i" I (iArg:
-                 lam "d" (sigma "_" (mu Douter j) (_: interpHoasAt L I D2 muFam iArg)) (d2:
+                 lam "d" (sigma "_" (mu Douter j) (_: interpHoasAtPrim L I D2 muFam iArg)) (d2:
                    sigma "_" (app (app P2 j) (fst_ d2)) (_:
                      app (app (app ihA P2) iArg) (snd_ d2))))))));
         # onPi : λS λf λD λihA λP λi λd.
@@ -938,11 +795,11 @@
                  lam "D" descLI (D2:
                  lam "ihA" (forall "P" pTy (_:
                             forall "i" I (iArg:
-                            forall "d" (interpHoasAt L I D2 muFam iArg) (_: u K)))) (ihA:
+                            forall "d" (interpHoasAtPrim L I D2 muFam iArg) (_: u K)))) (ihA:
                  lam "P" pTy (P2:
                  lam "i" I (iArg:
                  lam "d" (sigma "_" (forall "s" S (s: mu Douter (app f s)))
-                                    (_: interpHoasAt L I D2 muFam iArg)) (d2:
+                                    (_: interpHoasAtPrim L I D2 muFam iArg)) (d2:
                    sigma "_"
                      (forall "s" S (s:
                        app (app P2 (app f s)) (app (fst_ d2) s)))
@@ -953,31 +810,527 @@
                  lam "B" descLI (B:
                  lam "ihA" (forall "P" pTy (_:
                             forall "i" I (iArg:
-                            forall "d" (interpHoasAt L I A muFam iArg) (_: u K)))) (ihA:
+                            forall "d" (interpHoasAtPrim L I A muFam iArg) (_: u K)))) (ihA:
                  lam "ihB" (forall "P" pTy (_:
                             forall "i" I (iArg:
-                            forall "d" (interpHoasAt L I B muFam iArg) (_: u K)))) (ihB:
+                            forall "d" (interpHoasAtPrim L I B muFam iArg) (_: u K)))) (ihB:
                  lam "P" pTy (P2:
                  lam "i" I (iArg:
-                 lam "d" (sumPrim (interpHoasAt L I A muFam iArg)
-                                  (interpHoasAt L I B muFam iArg)) (d2:
-                   sumElimPrim (interpHoasAt L I A muFam iArg)
-                           (interpHoasAt L I B muFam iArg)
-                           (lam "_" (sumPrim (interpHoasAt L I A muFam iArg)
-                                             (interpHoasAt L I B muFam iArg))
+                 lam "d" (sumPrim (interpHoasAtPrim L I A muFam iArg)
+                                  (interpHoasAtPrim L I B muFam iArg)) (d2:
+                   sumElimPrim (interpHoasAtPrim L I A muFam iArg)
+                           (interpHoasAtPrim L I B muFam iArg)
+                           (lam "_" (sumPrim (interpHoasAtPrim L I A muFam iArg)
+                                             (interpHoasAtPrim L I B muFam iArg))
                               (_: u K))
-                           (lam "a" (interpHoasAt L I A muFam iArg) (a:
+                           (lam "a" (interpHoasAtPrim L I A muFam iArg) (a:
                              app (app (app ihA P2) iArg) a))
-                           (lam "b" (interpHoasAt L I B muFam iArg) (b:
+                           (lam "b" (interpHoasAtPrim L I B muFam iArg) (b:
                              app (app (app ihB P2) iArg) b))
                            d2)))))));
-      # Ann-wrap Dsub for the same reason as `interpHoasAt`: `descElim`
-      # infers its scrutinee, and `dispatchStep` feeds bare per-summand
-      # sub-descriptions (`D1`, `restSpine`, `plus D1 restSpine`) whose
-      # leaves carry `tt` at the index position. `allHoasAt`'s onArg /
-      # onPi bind `S` at `U(L)` (the All result's *codomain* universe
-      # `K` lives in the motive, not in S's binding); descElim's `k`
-      # slot is `L`.
-      in app (app (app (descElim L motive onRet onArg onRec onPi onPlus (ann Dsub descLI)) P) i) d;
+      # Bootstrap-only: this primitive interpreter is consumed by
+      # `descDesc`, `iso`, `descEncodingCtx`, and the cascades inside
+      # `interpHoasAt` / `allHoasAt` / `encodeDescElim`. User code at
+      # the encoded surface uses `allHoasAt` instead. The descElimPrim's
+      # `k` slot is `L` (sort universe), motive codomain `U(K)` is
+      # carried by the motive itself.
+      in app (app (app (self.descElimPrim L motive onRet onArg onRec onPi onPlus (annTrusted Dsub descLI)) P) i) d;
+
+    # interpHoasAt L I D X i ≡ ⟦D⟧(X) i for D : μ⊤(descDesc I L) tt.
+    # Implemented via descInd over c.dDesc with a 4-layer sumElimPrim
+    # cascade dispatching depthIdx 0..3 to ret/arg/rec/pi and depthIdx==4
+    # to plus. Each case builds qTy = (I→U(L)) → I → U(L) per
+    # interpHoasAtPrim's onRet/onArg/onRec/onPi/onPlus templates; the
+    # outer body applies the resulting qTy to X then i to land in U(L).
+    interpHoasAt = L: I: D: X: i:
+      let
+        inherit (self) lam forall app pair fst_ snd_ sigma eq u
+                       descInd sumPrim sumElimPrim plusPrim
+                       ttPrim unitPrim
+                       descEncodingCtx
+                       interpHoasAtPrim allHoasAtPrim;
+        plus = plusPrim;
+        c = descEncodingCtx I L;
+        iToU = forall "_" I (_: u L);
+        qTy = forall "_" iToU (_: forall "_" I (_: u L));
+        # descInd motive at I=⊤: λ_i.λx. qTy. Constant in _i,x because
+        # qTy doesn't depend on the scrutinee or its index.
+        motiveI = lam "_i" unitPrim (_:
+                  lam "x" c.muTt (_: qTy));
+
+        # Static L=0 fast-path mirrors interpHoasAtPrim's lIsZero check —
+        # collapses `LiftAt 0 0 (Eq I j i')` to bare `Eq I j i'` at the
+        # descRet leaf.
+        lIsZero =
+          (builtins.isInt L && L == 0)
+          || (builtins.isAttrs L
+              && ((L._htag or null) == "level-zero"
+                  || (L.tag or null) == "level-zero"));
+
+        cascade = depthIdx: dCur: ihCur:
+          if depthIdx == 4 then
+            let A   = fst_ dCur;
+                B   = fst_ (snd_ dCur);
+                ihA = fst_ ihCur;
+                ihB = fst_ (snd_ ihCur);
+            in
+              lam "X" iToU (X':
+              lam "i" I (i':
+                sumPrim (app (app ihA X') i') (app (app ihB X') i')))
+          else
+            let
+              curD      = builtins.elemAt c.conDescs depthIdx;
+              restSpine = c.spineFrom (depthIdx + 1);
+              lTy       = c.interpAt curD;
+              rTy       = c.interpAt restSpine;
+              sumMot = lam "s" (sumPrim lTy rTy) (s:
+                forall "_rih"
+                  (allHoasAtPrim c.dDescL c.dDescL unitPrim c.dDesc
+                    (plus curD restSpine) motiveI ttPrim s)
+                  (_: qTy));
+              onInl = lam "r" lTy (r:
+                      lam "rih"
+                        (allHoasAtPrim c.dDescL c.dDescL unitPrim c.dDesc
+                          curD motiveI ttPrim r) (rih:
+                        if depthIdx == 0 then
+                          let j = fst_ r; in
+                          lam "X" iToU (X':
+                          lam "i" I (i':
+                            if lIsZero
+                            then eq I j i'
+                            else self.LiftAt self.levelZero L (eq I j i')))
+                        else if depthIdx == 1 then
+                          let S    = fst_ r;
+                              T    = fst_ (snd_ r);
+                              ihFn = fst_ rih;
+                          in
+                          lam "X" iToU (X':
+                          lam "i" I (i':
+                            sigma "s" S (s:
+                              app (app (app ihFn s) X') i')))
+                        else if depthIdx == 2 then
+                          let j   = fst_ r;
+                              ihD = fst_ rih;
+                          in
+                          lam "X" iToU (X':
+                          lam "i" I (i':
+                            sigma "_" (app X' j) (_:
+                              app (app ihD X') i')))
+                        else
+                          let S   = fst_ r;
+                              f   = fst_ (snd_ r);
+                              ihD = fst_ rih;
+                          in
+                          lam "X" iToU (X':
+                          lam "i" I (i':
+                            sigma "_" (forall "s" S (s: app X' (app f s)))
+                                      (_: app (app ihD X') i')))));
+              onInr = lam "r" rTy (r:
+                      lam "rih"
+                        (allHoasAtPrim c.dDescL c.dDescL unitPrim c.dDesc
+                          restSpine motiveI ttPrim r) (rih:
+                        cascade (depthIdx + 1) r rih));
+            in
+              app (sumElimPrim lTy rTy sumMot onInl onInr dCur) ihCur;
+
+        step = lam "_i" unitPrim (iArg:
+               lam "d" (interpHoasAtPrim c.dDescL unitPrim c.dDesc c.muFam iArg) (d:
+               lam "ih" (allHoasAtPrim c.dDescL c.dDescL unitPrim c.dDesc
+                            c.dDesc motiveI iArg d) (ih:
+                 cascade 0 d ih)));
+      in
+        app (app (descInd c.dDesc motiveI step ttPrim D) X) i;
+
+    # allHoasAt L K I Douter Dsub P i d ≡ All Douter Dsub P i d for
+    # Dsub : μ⊤(descDesc I L) tt. Mirrors allHoasAtPrim's per-summand
+    # templates, dispatched via descInd-over-descDesc cascade; per-case
+    # bodies build U(K)-typed All-witnesses. Motive's d-binder type uses
+    # interpHoasAtPrim — its elaborated mkDescElim Tm flows through the
+    # desc-* CHECK rules' encoder retarget for constructors, and the
+    # desc-elim INFER rule's §6.6 unfolding for the eliminator scrut.
+    allHoasAt = L: K: I: Douter: Dsub: P: i: d:
+      let
+        inherit (self) lam forall app pair fst_ snd_ sigma
+                       u unitPrim mu
+                       descInd sumPrim sumElimPrim plusPrim inrPrim
+                       ttPrim
+                       descEncodingCtx
+                       interpHoasAtPrim allHoasAtPrim;
+        plus = plusPrim;
+        c = descEncodingCtx I L;
+        muFamOuter = lam "_i" I (iArg: mu Douter iArg);
+        pTy = forall "i" I (iArg:
+              forall "_" (mu Douter iArg) (_: u K));
+
+        # descInd motive at scrut Dm:
+        #   λ_i.λDm. (P:pTy) → (i:I) → (d:⟦Dm⟧(μ Douter) i) → U(K)
+        motiveI = lam "_i" unitPrim (_:
+                  lam "Dm" c.muTt (Dm:
+                    forall "P" pTy (_:
+                    forall "i" I (iArg:
+                    forall "d" (interpHoasAtPrim L I Dm muFamOuter iArg) (_: u K)))));
+
+        # Cascade layer at depthIdx in {0..4}. `dCur` is the matched
+        # descCon payload at this layer (a Sum at 0..3, a Pair at 4);
+        # `ihCur` is the corresponding All-witness. `ctx` reconstructs
+        # the OUTER payload from this layer's inner shape — at the
+        # outermost call `ctx = id`; at each Inr descent it extends to
+        # wrap one more `inrPrim lTy rTy`. This makes sumMot's
+        # `descCon c.dDesc tt (ctx s)` well-typed at every depth K
+        # because `ctx s : interpAt c.dDesc` by construction. Mirrors
+        # `encodeDescElim`'s cascade at `hoas/desc.nix:1281-1312`.
+        cascade = depthIdx: ctx: dCur: ihCur:
+          if depthIdx == 4 then
+            let A   = fst_ dCur;
+                B   = fst_ (snd_ dCur);
+                ihA = fst_ ihCur;
+                ihB = fst_ (snd_ ihCur);
+            in
+              # plus case: λP λi λd. sumElim on d. d : Sum (⟦A⟧) (⟦B⟧) by
+              # interp of plus. Per-branch invokes the corresponding ih.
+              lam "P" pTy (P':
+              lam "i" I (iArg:
+              lam "d" (sumPrim (interpHoasAtPrim L I A muFamOuter iArg)
+                               (interpHoasAtPrim L I B muFamOuter iArg)) (d':
+                sumElimPrim
+                  (interpHoasAtPrim L I A muFamOuter iArg)
+                  (interpHoasAtPrim L I B muFamOuter iArg)
+                  (lam "_" (sumPrim (interpHoasAtPrim L I A muFamOuter iArg)
+                                    (interpHoasAtPrim L I B muFamOuter iArg))
+                     (_: u K))
+                  (lam "a" (interpHoasAtPrim L I A muFamOuter iArg) (a:
+                    app (app (app ihA P') iArg) a))
+                  (lam "b" (interpHoasAtPrim L I B muFamOuter iArg) (b:
+                    app (app (app ihB P') iArg) b))
+                  d')))
+          else
+            let
+              curD      = builtins.elemAt c.conDescs depthIdx;
+              restSpine = c.spineFrom (depthIdx + 1);
+              lTy       = c.interpAt curD;
+              rTy       = c.interpAt restSpine;
+              # Per-summand result type: motive applied to descCon's
+              # encoded summand reconstructed via `ctx`. At depthIdx K,
+              # `s : sumPrim lTy rTy` lives K layers deep in the OUTER
+              # inrPrim chain; `ctx s` rebuilds the canonical OUTER
+              # payload so `descCon c.dDesc tt (ctx s) : muTt` typechecks.
+              qTyAt = s:
+                forall "P" pTy (_:
+                forall "i" I (iArg:
+                forall "d" (interpHoasAtPrim L I
+                              (self.descCon c.dDesc ttPrim (ctx s))
+                              muFamOuter iArg) (_: u K)));
+              sumMot = lam "s" (sumPrim lTy rTy) (s:
+                forall "_rih"
+                  (allHoasAtPrim c.dDescL c.dDescL unitPrim c.dDesc
+                    (plus curD restSpine) motiveI ttPrim s)
+                  (_: qTyAt s));
+              onInl = lam "r" lTy (r:
+                      lam "rih"
+                        (allHoasAtPrim c.dDescL c.dDescL unitPrim c.dDesc
+                          curD motiveI ttPrim r) (rih:
+                        if depthIdx == 0 then
+                          # ret: λP λi λd. Lift 0 K Unit
+                          lam "P" pTy (_:
+                          lam "i" I (_:
+                          lam "d" unitPrim (_:
+                            self.LiftAt self.levelZero K unitPrim)))
+                        else if depthIdx == 1 then
+                          # arg: λP λi λd:Σ(s:S).⟦Ts⟧. ihA (fst d) P i (snd d)
+                          let S    = fst_ r;
+                              T    = fst_ (snd_ r);
+                              ihFn = fst_ rih;
+                          in
+                          lam "P" pTy (P':
+                          lam "i" I (iArg:
+                          lam "d" (sigma "s" S (s:
+                                     interpHoasAtPrim L I (app T s) muFamOuter iArg))
+                            (d':
+                            app (app (app (app ihFn (fst_ d')) P') iArg) (snd_ d'))))
+                        else if depthIdx == 2 then
+                          # rec: λP λi λd:Σ(_:μ Douter j).⟦D2⟧.
+                          #   Σ(_:P j (fst d)). ihD P i (snd d)
+                          let j   = fst_ r;
+                              D2  = fst_ (snd_ r);
+                              ihD = fst_ rih;
+                          in
+                          lam "P" pTy (P':
+                          lam "i" I (iArg:
+                          lam "d" (sigma "_" (mu Douter j)
+                                     (_: interpHoasAtPrim L I D2 muFamOuter iArg)) (d':
+                            sigma "_" (app (app P' j) (fst_ d')) (_:
+                              app (app (app ihD P') iArg) (snd_ d')))))
+                        else
+                          # pi: λP λi λd:Σ(_:Π(s:S).μ Douter (f s)).⟦D2⟧.
+                          #   Σ(_:Π(s:S). P (f s) (fst d s)). ihD P i (snd d)
+                          let S   = fst_ r;
+                              f   = fst_ (snd_ r);
+                              D2  = fst_ (snd_ (snd_ r));
+                              ihD = fst_ rih;
+                          in
+                          lam "P" pTy (P':
+                          lam "i" I (iArg:
+                          lam "d" (sigma "_" (forall "s" S (s: mu Douter (app f s)))
+                                     (_: interpHoasAtPrim L I D2 muFamOuter iArg)) (d':
+                            sigma "_"
+                              (forall "s" S (s:
+                                app (app P' (app f s)) (app (fst_ d') s)))
+                              (_: app (app (app ihD P') iArg) (snd_ d')))))));
+              ctx' = s_in: ctx (inrPrim lTy rTy s_in);
+              onInr = lam "r" rTy (r:
+                      lam "rih"
+                        (allHoasAtPrim c.dDescL c.dDescL unitPrim c.dDesc
+                          restSpine motiveI ttPrim r) (rih:
+                        cascade (depthIdx + 1) ctx' r rih));
+            in
+              app (sumElimPrim lTy rTy sumMot onInl onInr dCur) ihCur;
+
+        step = lam "_i" unitPrim (iArg:
+               lam "d" (interpHoasAtPrim c.dDescL unitPrim c.dDesc c.muFam iArg) (dArg:
+               lam "ih" (allHoasAtPrim c.dDescL c.dDescL unitPrim c.dDesc
+                            c.dDesc motiveI iArg dArg) (ih:
+                 cascade 0 (s: s) dArg ih)));
+      in
+        app (app (app (descInd c.dDesc motiveI step ttPrim Dsub) P) i) d;
+
+    # everywhereHoasAt L K I Douter Dsub P ih i d builds the All-witness
+    # VALUE for d : ⟦Dsub⟧(μ Douter) i for Dsub : μ⊤(descDesc I L) tt.
+    # Mirrors evOnRet/Arg/Rec/Pi/Plus from eval/desc.nix:633-735 in
+    # HOAS — vDescIndF's internal everywhere call routes through this
+    # encoded-aware form. The motive's codomain uses allHoasAt for the
+    # All-witness type — recursive but lazy.
+    everywhereHoasAt = L: K: I: Douter: Dsub: P: ih: i: d:
+      let
+        inherit (self) lam forall app pair fst_ snd_
+                       u unitPrim mu
+                       descInd sumPrim sumElimPrim plus
+                       ttPrim
+                       descEncodingCtx
+                       interpHoasAtPrim allHoasAtPrim allHoasAt;
+        c = descEncodingCtx I L;
+        muFamOuter = lam "_i" I (iArg: mu Douter iArg);
+        pTy = forall "i" I (iArg:
+              forall "_" (mu Douter iArg) (_: u K));
+        ihTy = forall "j" I (j:
+               forall "x" (mu Douter j) (x:
+                 app (app P j) x));
+
+        # descInd motive at scrut Dm:
+        #   λ_i.λDm. (P:pTy) → (ih:ihTy) → (i:I) → (d:⟦Dm⟧). allHoasAt L K I Douter Dm P i d
+        motiveI = lam "_i" unitPrim (_:
+                  lam "Dm" c.muTt (Dm:
+                    forall "P" pTy (Pm:
+                    forall "ih" ihTy (ihm:
+                    forall "i" I (iArg:
+                    forall "d" (interpHoasAtPrim L I Dm muFamOuter iArg) (dm:
+                      allHoasAt L K I Douter Dm Pm iArg dm))))));
+
+        cascade = depthIdx: dCur: ihCur:
+          if depthIdx == 4 then
+            let A    = fst_ dCur;
+                B    = fst_ (snd_ dCur);
+                ihEA = fst_ ihCur;
+                ihEB = fst_ (snd_ ihCur);
+            in
+              # plus case: λP λih λi λd. sumElim on d.
+              lam "P" pTy (P':
+              lam "ih" ihTy (ih':
+              lam "i" I (iArg:
+              lam "d" (sumPrim (interpHoasAtPrim L I A muFamOuter iArg)
+                               (interpHoasAtPrim L I B muFamOuter iArg)) (d':
+                sumElimPrim
+                  (interpHoasAtPrim L I A muFamOuter iArg)
+                  (interpHoasAtPrim L I B muFamOuter iArg)
+                  (lam "_" (sumPrim (interpHoasAtPrim L I A muFamOuter iArg)
+                                    (interpHoasAtPrim L I B muFamOuter iArg))
+                     (s: allHoasAtPrim L K I Douter (plus A B) P' iArg s))
+                  (lam "a" (interpHoasAtPrim L I A muFamOuter iArg) (a:
+                    app (app (app (app ihEA P') ih') iArg) a))
+                  (lam "b" (interpHoasAtPrim L I B muFamOuter iArg) (b:
+                    app (app (app (app ihEB P') ih') iArg) b))
+                  d'))))
+          else
+            let
+              curD      = builtins.elemAt c.conDescs depthIdx;
+              restSpine = c.spineFrom (depthIdx + 1);
+              lTy       = c.interpAt curD;
+              rTy       = c.interpAt restSpine;
+              # Result type at this cascade level — motive applied to
+              # descCon dDesc tt s, i.e., ΠP.Πih.Πi.Π(d:⟦descCon⟧). allHoasAt@scrut.
+              qTyAt = s:
+                forall "P" pTy (Pm:
+                forall "ih" ihTy (_:
+                forall "i" I (iArg:
+                forall "d" (interpHoasAtPrim L I
+                              (self.descCon c.dDesc ttPrim s)
+                              muFamOuter iArg) (dm:
+                  allHoasAt L K I Douter
+                    (self.descCon c.dDesc ttPrim s) Pm iArg dm))));
+              sumMot = lam "s" (sumPrim lTy rTy) (s:
+                forall "_rih"
+                  (allHoasAtPrim c.dDescL c.dDescL unitPrim c.dDesc
+                    (plus curD restSpine) motiveI ttPrim s)
+                  (_: qTyAt s));
+              onInl = lam "r" lTy (r:
+                      lam "rih"
+                        (allHoasAtPrim c.dDescL c.dDescL unitPrim c.dDesc
+                          curD motiveI ttPrim r) (rih:
+                        if depthIdx == 0 then
+                          # ret: λP λih λi λd. tt
+                          lam "P" pTy (_:
+                          lam "ih" ihTy (_:
+                          lam "i" I (_:
+                          lam "d" unitPrim (_: ttPrim))))
+                        else if depthIdx == 1 then
+                          # arg: λP λih λi λd. ihE (fst d) P ih i (snd d)
+                          let S    = fst_ r;
+                              T    = fst_ (snd_ r);
+                              ihE  = fst_ rih;
+                          in
+                          lam "P" pTy (P':
+                          lam "ih" ihTy (ih':
+                          lam "i" I (iArg:
+                          lam "d" (self.sigma "s" S (s:
+                                     interpHoasAtPrim L I (app T s) muFamOuter iArg))
+                            (d':
+                            app (app (app (app (app ihE (fst_ d')) P') ih') iArg)
+                                (snd_ d')))))
+                        else if depthIdx == 2 then
+                          # rec: λP λih λi λd. pair (ih j (fst d)) (ihE P ih i (snd d))
+                          let j   = fst_ r;
+                              D2  = fst_ (snd_ r);
+                              ihE = fst_ rih;
+                          in
+                          lam "P" pTy (P':
+                          lam "ih" ihTy (ih':
+                          lam "i" I (iArg:
+                          lam "d" (self.sigma "_" (mu Douter j)
+                                     (_: interpHoasAtPrim L I D2 muFamOuter iArg)) (d':
+                            pair (app (app ih' j) (fst_ d'))
+                                 (app (app (app (app ihE P') ih') iArg) (snd_ d'))))))
+                        else
+                          # pi: λP λih λi λd.
+                          #   pair (λs:S. ih (f s) (fst d s)) (ihE P ih i (snd d))
+                          let S   = fst_ r;
+                              f   = fst_ (snd_ r);
+                              D2  = fst_ (snd_ (snd_ r));
+                              ihE = fst_ rih;
+                          in
+                          lam "P" pTy (P':
+                          lam "ih" ihTy (ih':
+                          lam "i" I (iArg:
+                          lam "d" (self.sigma "_" (forall "s" S (s: mu Douter (app f s)))
+                                     (_: interpHoasAtPrim L I D2 muFamOuter iArg)) (d':
+                            pair
+                              (lam "s" S (s:
+                                app (app ih' (app f s)) (app (fst_ d') s)))
+                              (app (app (app (app ihE P') ih') iArg) (snd_ d'))))))));
+              onInr = lam "r" rTy (r:
+                      lam "rih"
+                        (allHoasAtPrim c.dDescL c.dDescL unitPrim c.dDesc
+                          restSpine motiveI ttPrim r) (rih:
+                        cascade (depthIdx + 1) r rih));
+            in
+              app (sumElimPrim lTy rTy sumMot onInl onInr dCur) ihCur;
+
+        step = lam "_i" unitPrim (iArg:
+               lam "d" (interpHoasAtPrim c.dDescL unitPrim c.dDesc c.muFam iArg) (dArg:
+               lam "ih" (allHoasAtPrim c.dDescL c.dDescL unitPrim c.dDesc
+                            c.dDesc motiveI iArg dArg) (ihArg:
+                 cascade 0 dArg ihArg)));
+      in
+        app (app (app (app (descInd c.dDesc motiveI step ttPrim Dsub) P) ih) i) d;
+
+    # ─── Closed Tm/Val triples for the new public bindings ───
+    # Pattern parallels descDescTm / descDescVal at desc.nix:809-810.
+    # Each closed form abstracts over all dependencies as outer lams,
+    # then elaborates and evaluates once at module init. Kernel-level
+    # consumers in eval/desc.nix's wrappers apply via vAppF chains.
+
+    interpHoasAtClosed =
+      let inherit (self) lam forall u level ann; in
+      ann
+        (lam "L" level (L:
+         lam "I" (u 0) (I:
+          let c = self.descEncodingCtx I L; in
+          lam "D" c.muTt (D:
+          lam "X" (forall "_" I (_: u L)) (X:
+          lam "i" I (i:
+            self.interpHoasAt L I D X i))))))
+        (forall "L" level (L:
+         forall "I" (u 0) (I:
+          let c = self.descEncodingCtx I L; in
+          forall "D" c.muTt (_:
+          forall "X" (forall "_" I (_: u L)) (_:
+          forall "i" I (_: u L))))));
+
+    interpHoasAtTm = self.elab self.interpHoasAtClosed;
+
+    allHoasAtClosed =
+      let inherit (self) lam forall u level ann mu unitPrim; in
+      ann
+        (lam "L" level (L:
+         lam "K" level (K:
+         lam "I" (u 0) (I:
+          let c = self.descEncodingCtx I L; in
+          lam "Douter" (forall "_" I (_: c.descK)) (Douter:
+          lam "Dsub" c.muTt (Dsub:
+          lam "P" (forall "i" I (iArg:
+                    forall "_" (mu Douter iArg) (_: u K))) (P:
+          lam "i" I (i:
+          lam "d" (self.interpHoasAtPrim L I Dsub
+                    (lam "_i" I (iArg: mu Douter iArg)) i) (d:
+            self.allHoasAt L K I Douter Dsub P i d)))))))))
+        (forall "L" level (L:
+         forall "K" level (K:
+         forall "I" (u 0) (I:
+          let c = self.descEncodingCtx I L; in
+          forall "Douter" (forall "_" I (_: c.descK)) (Douter:
+          forall "Dsub" c.muTt (_:
+          forall "P" (forall "i" I (iArg:
+                       forall "_" (mu Douter iArg) (_: u K))) (_:
+          forall "i" I (_:
+          forall "d" (u 0) (_: u K))))))))); # placeholder for d's interp-type
+
+    allHoasAtTm = self.elab self.allHoasAtClosed;
+
+    everywhereHoasAtClosed =
+      let inherit (self) lam forall u level ann mu unitPrim; in
+      ann
+        (lam "L" level (L:
+         lam "K" level (K:
+         lam "I" (u 0) (I:
+          let c = self.descEncodingCtx I L; in
+          lam "Douter" (forall "_" I (_: c.descK)) (Douter:
+          lam "Dsub" c.muTt (Dsub:
+          lam "P" (forall "i" I (iArg:
+                    forall "_" (mu Douter iArg) (_: u K))) (P:
+          lam "ih" (forall "j" I (j:
+                    forall "x" (mu Douter j) (x:
+                      self.app (self.app P j) x))) (ih:
+          lam "i" I (i:
+          lam "d" (self.interpHoasAtPrim L I Dsub
+                    (lam "_i" I (iArg: mu Douter iArg)) i) (d:
+            self.everywhereHoasAt L K I Douter Dsub P ih i d))))))))))
+        (forall "L" level (L:
+         forall "K" level (K:
+         forall "I" (u 0) (I:
+          let c = self.descEncodingCtx I L; in
+          forall "Douter" (forall "_" I (_: c.descK)) (Douter:
+          forall "Dsub" c.muTt (_:
+          forall "P" (forall "i" I (iArg:
+                       forall "_" (mu Douter iArg) (_: u K))) (Pa:
+          forall "ih" (forall "j" I (j:
+                       forall "x" (mu Douter j) (x:
+                         self.app (self.app Pa j) x))) (_:
+          forall "i" I (_:
+          forall "d" (u 0) (_: u 0))))))))));
+
+    everywhereHoasAtTm = self.elab self.everywhereHoasAtClosed;
+
+    interpHoasAtVal = fx.tc.eval.eval [] self.interpHoasAtTm;
+    allHoasAtVal = fx.tc.eval.eval [] self.allHoasAtTm;
+    everywhereHoasAtVal = fx.tc.eval.eval [] self.everywhereHoasAtTm;
+    encodeDescElimVal = fx.tc.eval.eval [] self.encodeDescElimTm;
   };
 }

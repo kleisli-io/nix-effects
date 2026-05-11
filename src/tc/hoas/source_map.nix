@@ -192,6 +192,29 @@ let
         "DPlusL" = sourceMapOf h.A;
         "DPlusR" = sourceMapOf h.B;
       }
+    else if t == "desc-ret-enc" then
+      SM.node h { "DRetIndex" = sourceMapOf h.j; }
+    else if t == "desc-arg-enc" then
+      SM.node h {
+        "DArgSort" = sourceMapOf h.S;
+        "DArgBody" = sourceMapOf (h.body bodyMarker);
+      }
+    else if t == "desc-rec-enc" then
+      SM.node h {
+        "DRecIndex" = sourceMapOf h.j;
+        "DRecTail"  = sourceMapOf h.D;
+      }
+    else if t == "desc-pi-enc" then
+      SM.node h {
+        "DPiSort" = sourceMapOf h.S;
+        "DPiFn"   = sourceMapOf h.f;
+        "DPiBody" = sourceMapOf h.D;
+      }
+    else if t == "desc-plus-enc" then
+      SM.node h {
+        "DPlusL" = sourceMapOf h.A;
+        "DPlusR" = sourceMapOf h.B;
+      }
     else if t == "mu" then
       SM.node h {
         "Field:I" = sourceMapOf h.I;
@@ -274,19 +297,19 @@ in {
       # -- natDesc = plus descRet (descRec descRet) --
       "natDesc-root-is-desc-plus" = {
         expr = smNat.hoas._htag;
-        expected = "desc-plus";
+        expected = "desc-plus-enc";
       };
       "natDesc-DPlusL-is-desc-ret" = {
         expr = (SMf.descendChain [ P.DPlusL ] smNat).hoas._htag;
-        expected = "desc-ret";
+        expected = "desc-ret-enc";
       };
       "natDesc-DPlusR-is-desc-rec" = {
         expr = (SMf.descendChain [ P.DPlusR ] smNat).hoas._htag;
-        expected = "desc-rec";
+        expected = "desc-rec-enc";
       };
       "natDesc-DPlusR-DRecTail-is-desc-ret" = {
         expr = (SMf.descendChain [ P.DPlusR P.DRecTail ] smNat).hoas._htag;
-        expected = "desc-ret";
+        expected = "desc-ret-enc";
       };
       "natDesc-DPlusL-DRecTail-is-null" = {
         expr = SMf.descendChain [ P.DPlusL P.DRecTail ] smNat;
@@ -296,7 +319,7 @@ in {
       # -- listDesc unit = plus descRet (descArg unit (_: descRec descRet)) --
       "listDesc-DPlusL-is-desc-ret" = {
         expr = (SMf.descendChain [ P.DPlusL ] smList).hoas._htag;
-        expected = "desc-ret";
+        expected = "desc-ret-enc";
       };
       "listDesc-DPlusR-DArgSort-is-elem-type" = {
         expr = (SMf.descendChain [ P.DPlusR P.DArgSort ] smList).hoas._htag;
@@ -304,7 +327,7 @@ in {
       };
       "listDesc-DPlusR-DArgBody-is-desc-rec" = {
         expr = (SMf.descendChain [ P.DPlusR P.DArgBody ] smList).hoas._htag;
-        expected = "desc-rec";
+        expected = "desc-rec-enc";
       };
 
       # -- sumDesc string unit = plus (descArg string (_: descRet))
@@ -319,7 +342,7 @@ in {
       };
       "sumDesc-DPlusL-DArgBody-is-desc-ret" = {
         expr = (SMf.descendChain [ P.DPlusL P.DArgBody ] smSum).hoas._htag;
-        expected = "desc-ret";
+        expected = "desc-ret-enc";
       };
 
       # -- Back-map: Error chain threaded through nestUnder resolves
@@ -333,7 +356,7 @@ in {
             err = D.nestUnder P.DPlusR (D.nestUnder P.DRecTail leafErr);
             hoas = SMf.hoasAtError err smNat;
           in hoas._htag;
-        expected = "desc-ret";
+        expected = "desc-ret-enc";
       };
 
       # -- Binding form: pi "x" unit (_: string) --

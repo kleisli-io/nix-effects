@@ -39,6 +39,8 @@ let
   D = fx.diag.error;
   P = fx.diag.positions;
 
+  H = fx.tc.hoas;
+
   # Hoist fixpoint-resolved rule-body combinators out of the rule
   # dispatch. Each `self.X` is an attribute lookup on the kernel
   # fixpoint; binding once at module init collapses each use site to a
@@ -188,6 +190,12 @@ in {
           };
         }
 
+      # Squash intro: `squashIntro a : Squash A` requires `a : A`.
+      # Conv handles definitional irrelevance among inhabitants.
+      else if t == "squash-intro" && ty.tag == "VSquash" then
+        bind (self.check ctx tm.a ty.A) (aTm:
+          pure (T.mkSquashIntro aTm))
+
       else if t == "let" then
         bind (self.checkType ctx tm.type) (aTm:
           let aVal = E.eval ctx.env aTm; in
@@ -200,7 +208,7 @@ in {
                 depth = ctx.depth + 1;
               };
             in bind (self.check ctx' tm.body ty) (uTm:
-              pure (T.mkLet tm.name aTm tTm uTm))))
+                 pure (T.mkLet tm.name aTm tTm uTm))))
 
       else if t == "string-lit" && ty.tag == "VString" then pure (T.mkStringLit tm.value)
       else if t == "int-lit" && ty.tag == "VInt" then pure (T.mkIntLit tm.value)
@@ -241,7 +249,15 @@ in {
       # type-matching surfaces at the `ret.j` position.
       else if t == "desc-ret" && ty.tag == "VDesc" then
         bindP P.DRetIndex (self.check ctx tm.j ty.I) (jTm:
-          pure (T.mkDescRet jTm))
+          let
+            I_q = Q.quote ctx.depth ty.I;
+            L_q = Q.quote ctx.depth ty.level;
+          in
+            pure (T.mkApp
+                   (T.mkApp
+                     (T.mkApp H.encodeDescRetTm I_q)
+                     L_q)
+                   jTm))
 
       # desc-arg checked against Desc^L I — S : U(l) under the per-
       # summand Level `l`, then the body T is a Desc^L I in the context
@@ -267,15 +283,39 @@ in {
       # static return type matches the runtime scrutinee.
       else if t == "desc-arg" && ty.tag == "VDesc" then
         let
+          I_q = Q.quote ctx.depth ty.I;
+          L_q = Q.quote ctx.depth ty.level;
           sortAt = kVal: lVal:
             bindP P.DArgSort (self.check ctx tm.S (V.vU lVal)) (sTm:
               let sVal = E.eval ctx.env sTm;
                   ctx' = self.extend ctx "_" sVal;
               in bindP P.DArgBody (self.check ctx' tm.T ty) (tTm:
                 let
+                  tLam = T.mkLam "_" sTm tTm;
+                  homogeneous =
+                    tm.k.tag == "level-zero" && tm.l.tag == "level-zero"
+                    && tm.eq.tag == "refl";
                   finish = eqTm:
                     if C.convLevel kVal ty.level
-                    then pure (T.mkDescArg tm.k tm.l sTm eqTm tTm)
+                    then if homogeneous
+                         then pure (T.mkApp
+                                    (T.mkApp
+                                      (T.mkApp
+                                        (T.mkApp H.encodeDescArgTm I_q)
+                                        L_q)
+                                      sTm)
+                                    tLam)
+                         else pure (T.mkApp
+                                    (T.mkApp
+                                      (T.mkApp
+                                        (T.mkApp
+                                          (T.mkApp
+                                            (T.mkApp H.encodeDescArgAtTm I_q)
+                                            L_q)
+                                          tm.l)
+                                        eqTm)
+                                      sTm)
+                                    tLam)
                     else send "typeError" {
                       error = D.mkKernelError {
                         position = P.DArgLevel;
@@ -286,10 +326,7 @@ in {
                       };
                     };
                 in
-                  # Fast-path at l = k = 0 with refl: Eq Level (max 0 0) 0
-                  # ≡ Eq Level 0 0, trivially inhabited by refl. Skip the
-                  # recursive check on tm.eq.
-                  if tm.k.tag == "level-zero" && tm.l.tag == "level-zero" && tm.eq.tag == "refl"
+                  if homogeneous
                   then finish T.mkRefl
                   else bindP P.DArgEq
                          (self.check ctx tm.eq
@@ -313,7 +350,17 @@ in {
       else if t == "desc-rec" && ty.tag == "VDesc" then
         bindP P.DRecIndex (self.check ctx tm.j ty.I) (jTm:
           bindP P.DRecTail (self.check ctx tm.D ty) (dTm:
-            pure (T.mkDescRec jTm dTm)))
+            let
+              I_q = Q.quote ctx.depth ty.I;
+              L_q = Q.quote ctx.depth ty.level;
+            in
+              pure (T.mkApp
+                     (T.mkApp
+                       (T.mkApp
+                         (T.mkApp H.encodeDescRecTm I_q)
+                         L_q)
+                       jTm)
+                     dTm)))
 
       # desc-pi checked against Desc^L I — S : U(l), f : S → I selects
       # the index per branch, and the tail D : Desc^L I continues. f's
@@ -332,6 +379,8 @@ in {
       # for full rationale.
       else if t == "desc-pi" && ty.tag == "VDesc" then
         let
+          I_q = Q.quote ctx.depth ty.I;
+          L_q = Q.quote ctx.depth ty.level;
           sortAt = kVal: lVal:
             bindP P.DPiSort (self.check ctx tm.S (V.vU lVal)) (sTm:
               let sVal = E.eval ctx.env sTm;
@@ -340,9 +389,34 @@ in {
               in bindP P.DPiFn (self.check ctx tm.f fTy) (fTm:
                 bindP P.DPiBody (self.check ctx tm.D ty) (dTm:
                   let
+                    homogeneous =
+                      tm.k.tag == "level-zero" && tm.l.tag == "level-zero"
+                      && tm.eq.tag == "refl";
                     finish = eqTm:
                       if C.convLevel kVal ty.level
-                      then pure (T.mkDescPi tm.k tm.l sTm eqTm fTm dTm)
+                      then if homogeneous
+                           then pure (T.mkApp
+                                       (T.mkApp
+                                         (T.mkApp
+                                           (T.mkApp
+                                             (T.mkApp H.encodeDescPiTm I_q)
+                                             L_q)
+                                           sTm)
+                                         fTm)
+                                       dTm)
+                           else pure (T.mkApp
+                                       (T.mkApp
+                                         (T.mkApp
+                                           (T.mkApp
+                                             (T.mkApp
+                                               (T.mkApp
+                                                 (T.mkApp H.encodeDescPiAtTm I_q)
+                                                 L_q)
+                                               tm.l)
+                                             eqTm)
+                                           sTm)
+                                         fTm)
+                                       dTm)
                       else send "typeError" {
                         error = D.mkKernelError {
                           position = P.DPiLevel;
@@ -353,10 +427,7 @@ in {
                         };
                       };
                   in
-                    # Fast-path at l = k = 0 with refl: Eq Level (max 0 0) 0
-                    # ≡ Eq Level 0 0, trivially inhabited by refl. Skip the
-                    # recursive check on tm.eq.
-                    if tm.k.tag == "level-zero" && tm.l.tag == "level-zero" && tm.eq.tag == "refl"
+                    if homogeneous
                     then finish T.mkRefl
                     else bindP P.DPiEq
                            (self.check ctx tm.eq
@@ -384,19 +455,34 @@ in {
       else if t == "desc-plus" && ty.tag == "VDesc" then
         bindP P.DPlusL (self.check ctx tm.A ty) (aTm:
           bindP P.DPlusR (self.check ctx tm.B ty) (bTm:
-            pure (T.mkDescPlus aTm bTm)))
+            let
+              I_q = Q.quote ctx.depth ty.I;
+              L_q = Q.quote ctx.depth ty.level;
+            in
+              pure (T.mkApp
+                     (T.mkApp
+                       (T.mkApp
+                         (T.mkApp H.encodeDescPlusTm I_q)
+                         L_q)
+                       aTm)
+                     bTm)))
 
       # desc-con checked against Mu — trampolined for deep recursive
       # data (5000+). Peels a homogeneous desc-con chain along its
-      # single recursive position when D = plus A B with exactly one
-      # of A, B linear-recursive (descArg-chain ending in
-      # `descRec descRet`). Payload shape per layer is
-      # `inl/inr lTy rTy (pair f_0 … (pair REC refl))` — n data fields,
-      # the recursive tail, and a refl witness. lTy/rTy are invariant
-      # across layers and captured from the first peel.
+      # single recursive position when D classifies as plus A B with
+      # exactly one of A, B linear-recursive (descArg-chain ending in
+      # `descRec descRet`). Plus may be primitive `VDescPlus` or encoded
+      # `VDescCon` at descDesc summand idx=4; `linearProfile` accepts
+      # both representations and walks the encoded inr-chain when needed.
+      #
+      # Payload at each layer is `inl/inr lTy rTy (pair f_0 … (pair REC refl))`
+      # — n data fields, the recursive tail, and a refl witness for
+      # the ret-leaf equality. lTy/rTy are invariant across layers (D
+      # is shared) and reused from the first peel.
       #
       # Non-linear shapes (tree, mutual recursion, multi-recursive
-      # ctors, non-plus D) fall through to per-layer checking.
+      # ctors, non-plus D) fall through to per-layer checking via the
+      # n=0 degenerate branch.
       #
       # Each layer carries its own target index `i : I` via the 3-arg
       # `mkDescCon D i d`. The trampoline checks `layer.i : I` and
@@ -421,7 +507,8 @@ in {
               got      = Q.quote ctx.depth dVal;
             };
           }
-          else bind (self.check ctx tm.i iTyVal) (topITm:
+          else
+            bind (self.check ctx tm.i iTyVal) (topITm:
             let topIVal = E.eval ctx.env topITm; in
             if !(C.conv ctx.depth topIVal ty.i)
             then send "typeError" {
@@ -435,11 +522,21 @@ in {
             }
             else
               let
+                # Classify ty.D as plus(A, B) with one linear-recursive
+                # side. `plusSides` extracts the two summands from either
+                # primitive `VDescPlus` or encoded `VDescCon` (idx=4).
+                plusSides =
+                  if ty.D.tag == "VDescPlus" then { A = ty.D.A; B = ty.D.B; }
+                  else if ty.D.tag == "VDescCon" then
+                    let info = E.decodeDescCase ty.D; in
+                    if info == null || info.idx != 4 then null
+                    else { A = info.payload.fst; B = info.payload.snd.fst; }
+                  else null;
                 classify =
-                  if ty.D.tag != "VDescPlus" then null
+                  if plusSides == null then null
                   else
-                    let pA = E.linearProfile ty.D.A;
-                        pB = E.linearProfile ty.D.B;
+                    let pA = E.linearProfile plusSides.A;
+                        pB = E.linearProfile plusSides.B;
                     in if pA != null && pB == null then { profile = pA; side = "inl"; }
                        else if pB != null && pA == null then { profile = pB; side = "inr"; }
                        else null;
@@ -488,7 +585,7 @@ in {
                   else T.mkInr topPeel.lTm topPeel.rTm innerTm;
               in bind (self.check ctx base.i iTyVal) (baseITm:
                 let baseIVal = E.eval ctx.env baseITm;
-                    interpTyBase = E.interp dInfo.level iTyVal ty.D muDFunc baseIVal;
+                    interpTyBase = E.vInterpD dInfo.level iTyVal ty.D muDFunc baseIVal;
                 in bind (self.check ctx base.d interpTyBase) (baseDataTm:
                   let baseTm = T.mkDescCon dTm baseITm baseDataTm; in
                   builtins.foldl' (accComp: k:
@@ -503,7 +600,7 @@ in {
                             h = builtins.head remaining;
                             rest = builtins.tail remaining;
                           in bind (self.check ctx h.head h.S) (hTm:
-                            checkHeads rest (accTms ++ [hTm]));
+                               checkHeads rest (accTms ++ [hTm]));
                       tasks = builtins.genList (j:
                         { head = builtins.elemAt heads j;
                           S = (builtins.elemAt profile j).S;

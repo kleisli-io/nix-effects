@@ -3,7 +3,8 @@
 let
   inherit (fx) pure bind run handle;
   inherit (fx.effects) state error reader;
-  inherit (fx.sugar) do letM;
+  inherit (fx.sugar) do steps letM;
+  inherit (fx.kernel) kleisli;
 
   statePatternDesugared = {
     expr =
@@ -17,14 +18,20 @@ let
     expected = 1;
   };
 
+  # statePatternDo now tests the NEW composable `do` (Kleisli arrow).
+  # The old sequencing behavior moved to `steps`.
   statePatternDo = {
     expr =
       let
-        comp = do [
-          (_: state.get)
-          (n: state.put (n + 1))
-          (_: state.get)
+        # NEW `do` returns a Kleisli arrow (a -> M b), not a Computation.
+        # Apply it to `null` to get the Computation, then handle it.
+        pipeline = do [
+          (x: x)                    # identity Kleisli, auto-lifted to pure
+          (_: state.get)            # read state
+          (n: state.put (n + 1))    # update state
+          (_: state.get)            # read state again
         ];
+        comp = pipeline null;
         result = handle { handlers = state.handler; state = 0; } comp;
       in result.value;
     expected = 1;
@@ -49,8 +56,9 @@ let
               (bind state.get (n:
                 bind (state.put (n + 1)) (_:
                   bind state.get (n2: pure n2))));
+        # NEW `do` is composable Kleisli arrow.
         s = handle { handlers = state.handler; state = 10; }
-              (do [ (_: state.get) (n: state.put (n + 1)) (_: state.get) ]);
+              ((do [ (_: state.get) (n: state.put (n + 1)) (_: state.get) ]) null);
       in { ds = d.state; ss = s.state; dv = d.value; sv = s.value; };
     expected = { ds = 11; ss = 11; dv = 11; sv = 11; };
   };
@@ -69,11 +77,13 @@ let
   errorPatternDo = {
     expr =
       let
-        comp = do [
+        # NEW `do` with error effects. Apply to null to get Computation.
+        pipeline = do [
           (_: error.raiseWith "parser" "unexpected token")
           (_: error.raiseWith "parser" "missing semicolon")
           (_: pure "ok")
         ];
+        comp = pipeline null;
         result = handle { handlers = error.collecting; state = []; } comp;
       in builtins.length result.state;
     expected = 2;
@@ -109,13 +119,65 @@ let
   };
 
   doEmpty = {
-    expr = (run (do []) {} null).value;
-    expected = null;
+    expr = (run (do [] 42) {} null).value;
+    expected = 42;
   };
 
   doSingleton = {
-    expr = (run (do [ (_: pure 42) ]) {} null).value;
+    expr = (run (do [ (x: pure (x + 1)) ] 41) {} null).value;
     expected = 42;
+  };
+
+  # doAutoLift: plain functions are auto-lifted to Kleisli arrows
+  doAutoLift = {
+    expr = (run (do [ (x: x + 1) (x: x * 2) ] 20) {} null).value;
+    expected = 42;  # (20 + 1) * 2 = 42
+  };
+
+  # doMixed: plain and monadic functions compose uniformly
+  doMixed = {
+    expr = (run (do [ (x: x + 1) (x: pure (x * 2)) ] 20) {} null).value;
+    expected = 42;
+  };
+
+  # doComposable: kleisli composition of two `do` pipelines equals one merged pipeline
+  doComposable = {
+    expr =
+      let
+        p1 = do [ (x: x + 1) ];
+        p2 = do [ (x: x * 2) ];
+        # Two pipelines composed via kleisli should equal one merged pipeline:
+        composed = kleisli p1 p2 20;
+        merged = do [ (x: x + 1) (x: x * 2) ] 20;
+      in (run composed {} null).value == (run merged {} null).value;
+    expected = true;
+  };
+
+  # doPointFree: `do` enables point-free style (data-last)
+  doPointFree = {
+    expr =
+      let
+        inc = do [ (x: x + 1) ];
+        double = do [ (x: x * 2) ];
+        # Map over a list without lambda
+        results = map inc [ 1 2 3 ];
+        result_values = map (r: (run r {} null).value) results;
+      in result_values;
+    expected = [ 2 3 4 ];
+  };
+
+  # stepsSequences: `steps` (old `do`) sequences effects, discards values
+  stepsSequences = {
+    expr =
+      let
+        comp = steps [
+          (_: state.get)
+          (n: state.put (n + 10))
+          (_: state.get)
+        ];
+        result = handle { handlers = state.handler; state = 5; } comp;
+      in result.value;
+    expected = 15;
   };
 
   divAssociativityTest = {
@@ -142,15 +204,15 @@ let
 
   reexportsPresent = {
     expr = builtins.all (k: fx.sugar ? ${k})
-      [ "pure" "bind" "run" "handle" "map" "seq" "pipe" "kleisli" "do" "letM" ];
+      [ "pure" "bind" "run" "handle" "map" "seq" "pipe" "kleisli" "do" "steps" "letM" ];
     expected = true;
   };
 
   withSugarTest = {
     expr =
       let s = fx.sugar; in with s;
-        (run (do [ (_: pure 1) (x: pure (x + 1)) (x: pure (x * 10)) ]) {} null).value;
-    expected = 20;
+        (run (do [ (_: pure 1) (x: pure (x + 1)) (x: pure (x * 10)) ] null) {} null).value;
+    expected = 20;  # (1 + 1) * 10 = 20
   };
 
   fullSugarWith = {
@@ -179,18 +241,29 @@ let
     expected = 10;
   };
 
+  # combinatorsOnly now tests the NEW `do` (composable Kleisli)
+  # and `steps` (old sequencing behavior)
   combinatorsOnly = {
     expr =
       let
-        inherit (fx.sugar) do letM;
-        comp = do [
+        inherit (fx.sugar) do steps letM;
+        # NEW `do`: composable Kleisli pipeline
+        comp_do = (do [
+          (_: state.get)
+          (n: state.put (n * 3))
+          (_: state.get)
+        ]) null;
+        result_do = handle { handlers = state.handler; state = 4; } comp_do;
+        
+        # OLD `steps`: sequences effects (renamed from `do`)
+        comp_steps = steps [
           (_: state.get)
           (n: state.put (n * 3))
           (_: state.get)
         ];
-        result = handle { handlers = state.handler; state = 4; } comp;
-      in result.value;
-    expected = 12;
+        result_steps = handle { handlers = state.handler; state = 4; } comp_steps;
+      in { do_result = result_do.value; steps_result = result_steps.value; };
+    expected = { do_result = 12; steps_result = 12; };
   };
 
   typesOnly = {
@@ -241,7 +314,7 @@ let
             statePatternEquivState
             errorPatternDesugared errorPatternDo
             readerPatternDesugared readerPatternLetM
-            doEmpty doSingleton
+            doEmpty doSingleton doAutoLift doMixed doComposable doPointFree stepsSequences
             divAssociativityTest
             divNotTopLevel divUnderOperators
             reexportsPresent

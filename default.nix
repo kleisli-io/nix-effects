@@ -256,12 +256,17 @@ let
       value = if builtins.isAttrs value then prefixTests value else value;
     });
 
-  # Normalize integration tests: some are booleans, some are { expr; expected; }.
-  # Wrap booleans as { expr; expected = true; }, pass through existing pairs.
+  # Normalize integration tests without forcing boolean leaves while building
+  # the nix-unit namespace. Mixed boolean/{ expr; expected; } tests cannot be
+  # shape-checked eagerly without evaluating the boolean tests.
   normalizeTest = value:
-    if builtins.isAttrs value && value ? expr && value ? expected
-    then value
-    else { expr = value; expected = true; };
+    {
+      expr =
+        if builtins.isAttrs value && value ? expr && value ? expected
+        then value.expr == value.expected
+        else value;
+      expected = true;
+    };
   nixUnitTests = {
     # Inline tests: { expr; expected; } pairs, prefixed for nix-unit
     inline = prefixTests inlineTests;

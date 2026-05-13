@@ -37,7 +37,7 @@ let
     else { head = node; inherit args; };
 
   # Tm-level tag encoding via the first-class plus coproduct. Wraps
-  # `payloadTm` with (n-1)-deep nested `mkInl L R …` / `mkInr L R …`
+  # `payloadTm` with (n-1)-deep nested `mkBootInl L R …` / `mkBootInr L R …`
   # committing at position i out of n total. Mirrors the HOAS
   # `encodeTag` but operates on elaborated terms. `lTms`/`rTms` are
   # parallel lists of layer-k L/R type Tms — `lTms[k]` = interp of
@@ -50,24 +50,96 @@ let
       let lTm = builtins.elemAt lTms 0;
           rTm = builtins.elemAt rTms 0;
       in
-      if i == 0 then T.mkInl lTm rTm payloadTm
-      else T.mkInr lTm rTm
-             (encodeTagTm
-                (_listDrop 1 lTms) (_listDrop 1 rTms)
-                (i - 1) (n - 1) payloadTm);
+      if i == 0 then T.mkBootInl lTm rTm payloadTm
+      else T.mkBootInr lTm rTm
+	             (encodeTagTm
+	                (_listDrop 1 lTms) (_listDrop 1 rTms)
+	                (i - 1) (n - 1) payloadTm);
+
+  elaborateDescRef = depth: ref:
+    ref // {
+      I = elaborate depth ref.I;
+      level = elaborateLevel depth ref.level;
+      params = map (elaborate depth) (ref.params or []);
+    };
+
+  elaborateDescConCert = depth: cert:
+    cert // {
+      ref = elaborateDescRef depth cert.ref;
+      target = elaborate depth cert.target;
+    };
+
+  appSpine = h:
+    let
+      go = node: args:
+        if builtins.isAttrs node && node ? _htag && node._htag == "app"
+        then go node.fn ([ node.arg ] ++ args)
+        else { head = node; inherit args; };
+    in go h [];
+
+  hoasWhnf = h:
+    if builtins.isAttrs h && h ? _htag && h._htag == "app" then
+      let fn = hoasWhnf h.fn; in
+      if builtins.isAttrs fn && fn ? _htag && fn._htag == "lam"
+      then hoasWhnf (fn.body h.arg)
+      else h // { inherit fn; }
+    else h;
+
+  eqDTView = h:
+    let spine = appSpine (hoasWhnf h); in
+    if builtins.isAttrs spine.head
+       && spine.head ? _dtypeMeta
+       && (spine.head._dtypeMeta.name or null) == "Eq"
+       && builtins.length spine.args == 3
+    then {
+      A = builtins.elemAt spine.args 0;
+      a = builtins.elemAt spine.args 1;
+      b = builtins.elemAt spine.args 2;
+    }
+    else null;
+
+  elaborateForCheck = depth: hoasTy: hoasTm:
+    let
+      whTy = hoasWhnf hoasTy;
+      eqView = eqDTView whTy;
+    in
+    if builtins.isAttrs hoasTm
+       && hoasTm ? _htag
+       && hoasTm._htag == "refl"
+       && eqView != null
+    then elaborate depth (self.reflDT eqView.A eqView.a)
+    else if builtins.isAttrs whTy
+            && whTy ? _htag
+            && whTy._htag == "sigma"
+            && builtins.isAttrs hoasTm
+            && hoasTm ? _htag
+            && hoasTm._htag == "pair"
+    then
+      T.mkPair
+        (elaborateForCheck depth whTy.fst hoasTm.fst)
+        (elaborateForCheck depth (whTy.body hoasTm.fst) hoasTm.snd)
+    else if builtins.isAttrs whTy
+            && whTy ? _htag
+            && whTy._htag == "pi"
+            && builtins.isAttrs hoasTm
+            && hoasTm ? _htag
+            && hoasTm._htag == "lam"
+    then
+      let marker = self.mkMarker depth; in
+      T.mkLam hoasTm.name (elaborate depth whTy.domain)
+        (elaborateForCheck (depth + 1) (whTy.body marker) (hoasTm.body marker))
+    else elaborate depth hoasTm;
 
   # Build per-layer L/R interp Tm lists for a plus-spine of n summands
   # over index type `I`. Given the outer mu's description HOAS
   # `dHoasOuter`, the target index HOAS `targetIdxVal`, and the
   # per-summand HOAS descriptions `descsHoas`, emits
-  #   lTms[k] = mkInterpD 0 I (descsHoas[k]) muFam targetIdxVal
-  #   rTms[k] = mkInterpD 0 I (spineAfter (k+1)) muFam targetIdxVal  (k in 0..n-2)
+  #   lTms[k] = mkInterpD level I (descsHoas[k]) muFam targetIdxVal
+  #   rTms[k] = mkInterpD level I (spineAfter (k+1)) muFam targetIdxVal  (k in 0..n-2)
   # where `muFam = λi:I. μ I dHoasOuter i`. Used by the datatype-macro
-  # flatten path (with `I`/`targetIdxVal` read off the ctor spec) and by
-  # the direct scalar paths (zero/succ/nil/cons/inl/inr) which pass
-  # `self.unitPrim` / `self.ttPrim` since all kernel scalars are
-  # ⊤-indexed. n must be >= 1.
-  buildTagInterpTms = depth: I: dHoasOuter: targetIdxVal: descsHoas:
+  # flatten path with `I`/`targetIdxVal` read off the ctor spec.
+  # n must be >= 1.
+  buildTagInterpTms = depth: level: I: dHoasOuter: targetIdxVal: descsHoas:
     let
       n = builtins.length descsHoas;
       muFam = self.lam "_i" I (iArg:
@@ -76,94 +148,21 @@ let
       spineAfter = k:
         let remaining = n - k; in
         if remaining == 1 then builtins.elemAt descsHoas k
-        else self.plusI I 0 (builtins.elemAt descsHoas k) (spineAfter (k + 1));
+        else self.plusI I level (builtins.elemAt descsHoas k) (spineAfter (k + 1));
       interpTm = dHoas:
         elaborate depth
-          (self.interpD 0 I dHoas muFam targetIdxVal);
+          (self.interpD level I dHoas muFam targetIdxVal);
     in {
       lTms = builtins.genList (k: interpTm (builtins.elemAt descsHoas k)) n;
       rTms = builtins.genList (k: interpTm (spineAfter (k + 1)))
                (if n >= 2 then n - 1 else 0);
     };
 
-  # Syntactic retarget of a primitive desc-* Tm tree to the encoded
-  # `μ⊤(descDesc I 0) tt` form. Mirrors what the desc-* CHECK rules in
-  # `check.nix:241-462` produce per node, but precomputed once at the
-  # elaboration of `annTrustedRetargetedDesc` (the kernel-internal
-  # annotation used for the macro datatype's `D` at
-  # `hoas/datatype.nix:190`).
-  #
-  # Homogeneous-zero specialisation: every desc-arg / desc-pi inside
-  # `spineDesc conDescs` carries `k = l = 0`, `eq = refl` by
-  # construction (conDesc emits `descArg 0` / `descPi 0`), so we always
-  # emit the homogeneous encoders (`encodeDescArgTm` /
-  # `encodeDescPiTm`). `I_q` is the elaborated index Tm, threaded
-  # unchanged through every layer because the macro `I` is closed (no
-  # `mkVar` references).
-  #
-  # `desc-arg`'s body Tm arrives at depth + 1 (elaborate's desc-arg
-  # branch elaborates `h.body marker` under the marker binder). The
-  # encoded encoder takes the body as a `T : S → muTt` lambda, so we
-  # wrap the recursively-retargeted body in `mkLam "_" sTm bodyR` —
-  # binder count is preserved, mkVar references inside resolve to the
-  # same encoded-lam binder as they did to the implicit `desc-arg`
-  # binder.
-  #
-  # Non-canonical Tm tags pass through unchanged. In the
-  # `annTrustedRetargetedDesc` use case the walker only sees the five
-  # canonical desc-* shapes (conDesc / spineDesc construct nothing
-  # else); the fallback is defensive rather than load-bearing.
-  retargetSpineDescTm = I_q: tm:
-    let t = tm.tag or null; in
-    if t == "desc-ret" then
-      T.mkApp (T.mkApp (T.mkApp self.encodeDescRetTm I_q) T.mkLevelZero) tm.j
-    else if t == "desc-arg" then
-      let bodyR = retargetSpineDescTm I_q tm.T;
-          tLam = T.mkLam "_" tm.S bodyR;
-      in T.mkApp
-           (T.mkApp
-             (T.mkApp
-               (T.mkApp self.encodeDescArgTm I_q)
-               T.mkLevelZero)
-             tm.S)
-           tLam
-    else if t == "desc-rec" then
-      let dR = retargetSpineDescTm I_q tm.D; in
-      T.mkApp
-        (T.mkApp
-          (T.mkApp
-            (T.mkApp self.encodeDescRecTm I_q)
-            T.mkLevelZero)
-          tm.j)
-        dR
-    else if t == "desc-pi" then
-      let dR = retargetSpineDescTm I_q tm.D; in
-      T.mkApp
-        (T.mkApp
-          (T.mkApp
-            (T.mkApp
-              (T.mkApp self.encodeDescPiTm I_q)
-              T.mkLevelZero)
-            tm.S)
-          tm.f)
-        dR
-    else if t == "desc-plus" then
-      let aR = retargetSpineDescTm I_q tm.A;
-          bR = retargetSpineDescTm I_q tm.B;
-      in T.mkApp
-           (T.mkApp
-             (T.mkApp
-               (T.mkApp self.encodeDescPlusTm I_q)
-               T.mkLevelZero)
-             aR)
-           bR
-    else tm;
-
   # Classify a field list into a chain-flatten profile, or null if
   # neither shape applies.
-  #   - "saturated": all fields are plain data (no rec). Emits a single
-  #     flat `desc-con` whose payload is the right-nested pair of the
-  #     data field Tms terminated with `tt`. No chain-walking.
+  #   - "saturated": all fields are non-recursive. Emits a single flat
+  #     `desc-con` whose payload is the right-nested pair of field Tms
+  #     terminated with `tt`. No chain-walking.
   #   - "recursive": exactly one rec at the tail, every other field data.
   #     Walks a chain along the rec arg via `genericClosure` and emits a
   #     layered `desc-con` pyramid with a shared dTm across layers.
@@ -175,19 +174,25 @@ let
   ctorShape = fields:
     let
       n = builtins.length fields;
+      isData = f: f.kind == "data" || f.kind == "dataD";
+      isNonRec = f: f.kind != "recAt";
       initsAllData = nInits:
         builtins.foldl'
-          (ok: j: ok && (builtins.elemAt fields j).kind == "data")
+          (ok: j: ok && isData (builtins.elemAt fields j))
           true
           (builtins.genList (x: x) nInits);
-      allData = n >= 1 && initsAllData n;
+      allNonRec =
+        n >= 1 && builtins.foldl'
+          (ok: j: ok && isNonRec (builtins.elemAt fields j))
+          true
+          (builtins.genList (x: x) n);
       lastRec =
         n >= 1
         && (builtins.elemAt fields (n - 1)).kind == "recAt"
         && initsAllData (n - 1);
     in
       if lastRec then { kind = "recursive"; }
-      else if allData then { kind = "saturated"; }
+      else if allNonRec then { kind = "saturated"; }
       else null;
 
   # Macro-constructor chain flattening.
@@ -203,7 +208,7 @@ let
   # shape.
   #
   # Chain-flatten precondition: one of two shapes per `ctorShape`:
-  #   - "saturated": every field is `data`. Emits one flat `desc-con`.
+  #   - "saturated": no field is recursive. Emits one flat `desc-con`.
   #   - "recursive": exactly one `rec` at the tail, every other field
   #     `data`. Aligns with the kernel's desc-con trampoline acceptance
   #     condition via `linearProfile`. Walks the chain along the rec tail.
@@ -259,6 +264,7 @@ let
     if builtins.length fieldArgs != nFields || shape == null then null
     else let
       dTm = elaborate depth mono.dHoas;
+      descLevel = mono.descLevel or 0;
       ctorIdx = mono.ctorIndex;
       nCtors = mono.nCtors;
       I = mono.I;
@@ -274,6 +280,21 @@ let
           if f.kind == "data" || f.kind == "dataD"
           then acc // { ${f.name} = builtins.elemAt args idx; }
           else acc) {} (builtins.genList (x: x) (builtins.length args));
+      payloadArgsOf = args:
+        let
+          go = idx: prev:
+            if idx == builtins.length args then []
+            else
+              let
+                f = builtins.elemAt mono.fields idx;
+                arg = builtins.elemAt args idx;
+                payload = self.fieldPayloadValue I mono.dHoas descLevel f prev arg;
+                prev' =
+                  if f.kind == "data" || f.kind == "dataD"
+                  then prev // { ${f.name} = arg; }
+                  else prev;
+              in [ payload ] ++ go (idx + 1) prev';
+        in go 0 {};
       # Under the ⊤-sugar path (`datatype` / `datatypeP`), every
       # `targetIdx` is `_: ttPrim` regardless of `prev`, so the tags
       # are invariant across chain layers and can be shared. Detect
@@ -283,33 +304,44 @@ let
       isUnitI = (I._htag or null) == "unit";
       sharedTags =
         if isUnitI && nCtors >= 2
-        then buildTagInterpTms depth I mono.dHoas self.ttPrim mono.conDescs
+        then buildTagInterpTms depth descLevel I mono.dHoas self.ttPrim mono.conDescs
         else null;
       mkTags = targetIdxHoas:
         if sharedTags != null then sharedTags
         else if nCtors >= 2
-        then buildTagInterpTms depth I mono.dHoas targetIdxHoas mono.conDescs
+        then buildTagInterpTms depth descLevel I mono.dHoas targetIdxHoas mono.conDescs
         else { lTms = []; rTms = []; };
     in
     if shape.kind == "saturated" then
-      # No recursion: build one payload from the data field Tms.
+      # No recursion: build one payload from the field Tms.
       #   descCon dTm tIdx (encodeTag i n (pair d_0 (pair d_1 (… (pair d_{n-1} refl) …))))
       # The innermost payload component inhabits `Eq I j i` at the
       # ret-leaf with `j = targetIdx prev`; refl witnesses it.
       let
-        dataTms = map (a: elaborate depth a) fieldArgs;
         prev = prevOfArgs fieldArgs;
         targetIdxHoas = mono.targetIdx prev;
         targetIdxTm = elaborate depth targetIdxHoas;
+        dataTms = map (a: elaborate depth a) (payloadArgsOf fieldArgs);
+        leafTm = elaborate depth (self.payloadLeafAt I descLevel targetIdxHoas);
         tags = mkTags targetIdxHoas;
         payload = builtins.foldl'
           (acc: j:
             let d = builtins.elemAt dataTms (nFields - 1 - j);
             in T.mkPair d acc)
-          T.mkRefl
+          leafTm
           (builtins.genList (x: x) nFields);
-      in T.mkDescCon dTm targetIdxTm
-           (encodeTagTm tags.lTms tags.rTms ctorIdx nCtors payload)
+          cert =
+            if mono ? descRef then {
+              kind = "datatype-con-payload";
+              ref = elaborateDescRef depth mono.descRef;
+              target = targetIdxTm;
+              ctor = ctorIdx;
+              fieldCount = nFields;
+            } else null;
+          payloadTm = encodeTagTm tags.lTms tags.rTms ctorIdx nCtors payload;
+      in if cert == null
+         then T.mkDescCon dTm targetIdxTm payloadTm
+         else T.mkDescConWithCert dTm targetIdxTm payloadTm cert
     else
       let
         recArg = builtins.elemAt fieldArgs (nFields - 1);
@@ -364,20 +396,31 @@ let
         # `j = targetIdx prev` for this layer.
         buildLayer = nonRecHoasArgs: accTm:
           let
-            nonRecTms = map (a: elaborate depth a) nonRecHoasArgs;
             prev = prevOfArgs nonRecHoasArgs;
             targetIdxHoas = mono.targetIdx prev;
             targetIdxTm = elaborate depth targetIdxHoas;
+            nonRecTms = map (a: elaborate depth a) (payloadArgsOf nonRecHoasArgs);
+            leafTm = elaborate depth (self.payloadLeafAt I descLevel targetIdxHoas);
             tags = mkTags targetIdxHoas;
-            innerMost = T.mkPair accTm T.mkRefl;
+            innerMost = T.mkPair accTm leafTm;
             payloadInner = builtins.foldl'
               (acc: j:
                 let f = builtins.elemAt nonRecTms (builtins.length nonRecTms - 1 - j);
                 in T.mkPair f acc)
               innerMost
               (builtins.genList (x: x) (builtins.length nonRecTms));
-          in T.mkDescCon dTm targetIdxTm
-               (encodeTagTm tags.lTms tags.rTms ctorIdx nCtors payloadInner);
+              cert =
+                if mono ? descRef then {
+                  kind = "datatype-con-payload";
+                  ref = elaborateDescRef depth mono.descRef;
+                  target = targetIdxTm;
+                  ctor = ctorIdx;
+                  fieldCount = builtins.length nonRecHoasArgs + 1;
+                } else null;
+              payloadTm = encodeTagTm tags.lTms tags.rTms ctorIdx nCtors payloadInner;
+          in if cert == null
+             then T.mkDescCon dTm targetIdxTm payloadTm
+             else T.mkDescConWithCert dTm targetIdxTm payloadTm cert;
       in
       # Fold inward-to-outward: step idx=0 wraps baseTm with the
       # innermost layer's non-rec args, step idx=1 with the next layer
@@ -478,38 +521,24 @@ let
     else if t == "level-suc" then T.mkLevelSuc (elaborateLevel depth h.pred)
     else if t == "level-max" then
       T.mkLevelMax (elaborateLevel depth h.lhs) (elaborateLevel depth h.rhs)
-    # Asymmetric Nat→Level bridge. `n` accepts either a Nix-meta `Int`
-    # (built into a primitive `suc^n zero` Nat term) or a HOAS term that
-    # already elaborates to a primitive `Nat`. The kernel primitive
-    # `Nat`/`zero`/`succ` is required here because `natToLevel`'s eval
-    # rule dispatches on `VZero`/`VSucc` directly; the HOAS surface
-    # `nat`/`zero`/`succ` produce μ-encoded Naturals and are not
-    # accepted by the bridge.
-    else if t == "nat-to-level" then
-      T.mkNatToLevel (
-        if builtins.isInt h.n
-        then builtins.foldl' (acc: _: T.mkSucc acc)
-               T.mkZero (builtins.genList (x: x) (if h.n < 0 then 0 else h.n))
-        else elaborate depth h.n)
-    # `listOf elem` is the description-based fixpoint `mu (listDesc elem) tt`.
+    # Raw list tags are used by value extraction; public `listOf` is an
+    # app spine over `ListDT.T`.
     else if t == "list" then T.mkMu T.mkUnit (elaborate depth (self.listDesc h.elem)) T.mkTt
-    # `sum l r` is the description-based fixpoint `mu (sumDesc l r) tt`.
+    # Raw sum tags are used by value extraction; public `sum` is an app
+    # spine over `SumDT.T`.
     else if t == "sum" then T.mkMu T.mkUnit (elaborate depth (self.sumDesc h.left h.right)) T.mkTt
-    # Kernel-primitive `sum-prim`/`inl-prim`/`inr-prim` — used by
-    # `interpHoasAt`/`allHoasAt` for `plus`'s interpretation, matching
-    # `eval/desc.nix`'s kernel `Sum` output token-for-token so conv between
-    # HOAS-side and value-side `interp` values succeeds on plus descriptions.
-    else if t == "sum-prim" then T.mkSum (elaborate depth h.L) (elaborate depth h.R)
-    else if t == "inl-prim" then
-      T.mkInl (elaborate depth h.L) (elaborate depth h.R) (elaborate depth h.term)
-    else if t == "inr-prim" then
-      T.mkInr (elaborate depth h.L) (elaborate depth h.R) (elaborate depth h.term)
-    else if t == "sum-elim-prim" then
-      T.mkSumElim (elaborate depth h.left) (elaborate depth h.right)
+    # Private bootstrap coproduct used by descPlus interpretation.
+    else if t == "boot-sum" then T.mkBootSum (elaborate depth h.L) (elaborate depth h.R)
+    else if t == "boot-inl" then
+      T.mkBootInl (elaborate depth h.L) (elaborate depth h.R) (elaborate depth h.term)
+    else if t == "boot-inr" then
+      T.mkBootInr (elaborate depth h.L) (elaborate depth h.R) (elaborate depth h.term)
+    else if t == "boot-sum-elim" then
+      T.mkBootSumElim (elaborate depth h.left) (elaborate depth h.right)
         (elaborate depth h.motive) (elaborate depth h.onLeft)
         (elaborate depth h.onRight) (elaborate depth h.scrut)
-    else if t == "eq" then
-      T.mkEq (elaborate depth h.type) (elaborate depth h.lhs) (elaborate depth h.rhs)
+    else if t == "boot-eq" then
+      T.mkBootEq (elaborate depth h.type) (elaborate depth h.lhs) (elaborate depth h.rhs)
 
     # -- Compound types (sugar for nested sigma/sum) --
     else if t == "record" then
@@ -583,42 +612,10 @@ let
       ) baseElab (builtins.genList (x: x) n)
 
     # -- Non-binding terms --
-    # `zero` = `descCon natDesc tt (inlPrim L R refl)` — the plus-based
-    # natDesc's `inl` summand is `descRet`, whose interp at I=⊤ is the
-    # leaf-equality `Eq ⊤ tt tt`. L/R are closed interps: L = Eq ⊤ tt tt,
-    # R = Σ (μnat tt) (_: Eq ⊤ tt tt).
-    else if t == "zero" then
-      let
-        tags = buildTagInterpTms depth self.unitPrim self.natDesc self.ttPrim
-                 [ self.descRet (self.descRec self.descRet) ];
-      in
-      T.mkDescCon self.natDescTm T.mkTt
-        (encodeTagTm tags.lTms tags.rTms 0 2 T.mkRefl)
-    # `succ n` = `descCon natDesc tt (inrPrim L R (pair n refl))` —
-    # the plus-based natDesc's `inr` summand is `descRec descRet`,
-    # whose interp is `Σ (μnat tt) (_: Eq ⊤ tt tt)`.
-    # Trampolined for deep naturals (5000+) with shared lTms/rTms
-    # across layers.
-    else if t == "succ" then
-      let
-        chain = builtins.genericClosure {
-          startSet = [{ key = 0; val = h; }];
-          operator = item:
-            if builtins.isAttrs item.val && item.val ? _htag && item.val._htag == "succ"
-            then [{ key = item.key + 1; val = item.val.pred; }]
-            else [];
-        };
-        n = builtins.length chain - 1;
-        base = (builtins.elemAt chain n).val;
-        tags = buildTagInterpTms depth self.unitPrim self.natDesc self.ttPrim
-                 [ self.descRet (self.descRec self.descRet) ];
-      in builtins.foldl' (acc: _:
-        T.mkDescCon self.natDescTm T.mkTt
-          (encodeTagTm tags.lTms tags.rTms 1 2
-             (T.mkPair acc T.mkRefl))
-      ) (elaborate depth base) (builtins.genList (x: x) n)
     else if t == "tt" then T.mkTt
-    else if t == "refl" then T.mkRefl
+    else if t == "boot-refl" then T.mkBootRefl
+    else if t == "refl" then
+      throw "hoas.elaborate: public refl requires an expected Eq type; use checkHoas or reflDT"
     else if t == "funext" then T.mkFunext
     else if t == "string-lit" then T.mkStringLit h.value
     else if t == "int-lit" then T.mkIntLit h.value
@@ -627,91 +624,22 @@ let
     else if t == "path-lit" then T.mkPathLit
     else if t == "fn-lit" then T.mkFnLit
     else if t == "any-lit" then T.mkAnyLit
-    # `nil elem` = `descCon (listDesc elem) tt (inlPrim L R refl)` —
-    # the plus-based `listDesc elem`'s `inl` summand is `descRet`;
-    # L = Eq ⊤ tt tt,
-    # R = Σ elem (_: Σ (μlist tt) (_: Eq ⊤ tt tt)).
-    else if t == "nil" then
-      let
-        dHoas = self.listDesc h.elem;
-        tags = buildTagInterpTms depth self.unitPrim dHoas self.ttPrim
-                 [ self.descRet
-                   (self.descArg self.unitPrim 0 h.elem (_: self.descRec self.descRet)) ];
-      in
-      T.mkDescCon (elaborate depth dHoas) T.mkTt
-        (encodeTagTm tags.lTms tags.rTms 0 2 T.mkRefl)
-    # `cons elem head tail` = `descCon (listDesc elem) tt
-    #   (inrPrim L R (pair head (pair tail refl)))`.
-    # Trampolined for deep lists (5000+ elements). The outer
-    # `listDesc elem` is elaborated ONCE for the chain; lTms/rTms are
-    # computed ONCE and shared across all emitted desc-cons. The
-    # check/eval desc-con trampolines use reference identity on D to
-    # peel homogeneous chains.
-    else if t == "cons" then
-      let
-        chain = builtins.genericClosure {
-          startSet = [{ key = 0; val = h; }];
-          operator = item:
-            if builtins.isAttrs item.val && item.val ? _htag && item.val._htag == "cons"
-            then [{ key = item.key + 1; val = item.val.tail; }]
-            else [];
-        };
-        n = builtins.length chain - 1;
-        base = (builtins.elemAt chain n).val;
-        dHoas = self.listDesc h.elem;
-        dTm = elaborate depth dHoas;
-        tags = buildTagInterpTms depth self.unitPrim dHoas self.ttPrim
-                 [ self.descRet
-                   (self.descArg self.unitPrim 0 h.elem (_: self.descRec self.descRet)) ];
-      in builtins.foldl' (acc: i:
-        let node = (builtins.elemAt chain (n - 1 - i)).val; in
-        T.mkDescCon dTm T.mkTt
-          (encodeTagTm tags.lTms tags.rTms 1 2
-             (T.mkPair (elaborate depth node.head)
-               (T.mkPair acc T.mkRefl)))
-      ) (elaborate depth base) (builtins.genList (x: x) n)
     else if t == "pair" then
       T.mkPair (elaborate depth h.fst) (elaborate depth h.snd)
-    # `inl l r a` = `descCon (sumDesc l r) tt (inlPrim L R (pair a refl))` —
-    # the plus-based `sumDesc l r`'s summands are both
-    # `descArg _ (_: descRet)`, so each summand's interp is
-    # `Σ arm (_: Eq ⊤ tt tt)`.
-    else if t == "inl" then
-      let
-        dHoas = self.sumDesc h.left h.right;
-        tags = buildTagInterpTms depth self.unitPrim dHoas self.ttPrim
-                 [ (self.descArg self.unitPrim 0 h.left  (_: self.descRet))
-                   (self.descArg self.unitPrim 0 h.right (_: self.descRet)) ];
-      in
-      T.mkDescCon (elaborate depth dHoas) T.mkTt
-        (encodeTagTm tags.lTms tags.rTms 0 2
-           (T.mkPair (elaborate depth h.term) T.mkRefl))
-    # `inr l r b` = `descCon (sumDesc l r) tt (inrPrim L R (pair b refl))` —
-    # mirror of `inl`.
-    else if t == "inr" then
-      let
-        dHoas = self.sumDesc h.left h.right;
-        tags = buildTagInterpTms depth self.unitPrim dHoas self.ttPrim
-                 [ (self.descArg self.unitPrim 0 h.left  (_: self.descRet))
-                   (self.descArg self.unitPrim 0 h.right (_: self.descRet)) ];
-      in
-      T.mkDescCon (elaborate depth dHoas) T.mkTt
-        (encodeTagTm tags.lTms tags.rTms 1 2
-           (T.mkPair (elaborate depth h.term) T.mkRefl))
     else if t == "opaque-lam" then
       T.mkOpaqueLam h._fnBox (elaborate depth h.piHoas)
     else if t == "str-eq" then
       T.mkStrEq (elaborate depth h.lhs) (elaborate depth h.rhs)
     else if t == "ann" then
       if h.trusted or false
-      then T.mkAnnTrusted (elaborate depth h.term) (elaborate depth h.type)
+      then
+        let
+          term = elaborate depth h.term;
+          type = elaborate depth h.type;
+        in if h ? _descRef
+           then T.mkAnnTrustedWithDescRef term type (elaborateDescRef depth h._descRef)
+           else T.mkAnnTrusted term type
       else T.mkAnn (elaborate depth h.term) (elaborate depth h.type)
-    else if t == "ann-trusted-retargeted-desc" then
-      let bodyTm = elaborate depth h.body;
-          iTm = elaborate depth h.I;
-          retargeted = retargetSpineDescTm iTm bodyTm;
-          typeTm = T.mkDesc T.mkLevelZero iTm;
-      in T.mkAnnTrusted retargeted typeTm
     # Macro constructor fallback: elaborate as the annotated lam cascade.
     # Saturated chain applications are recognised in the `app` branch
     # below and emit flat `desc-con` Tms without touching this branch.
@@ -731,37 +659,19 @@ let
     else if t == "desc" then
       T.mkDesc (if h ? k then elaborateLevel depth h.k else T.mkLevelZero)
         (elaborate depth h.I)
-    else if t == "desc-ret" then T.mkDescRet (elaborate depth h.j)
-    else if t == "desc-arg" then
-      let marker = self.mkMarker depth;
-          kTm = elaborateLevel depth h.k;
-          lTm = if h ? l then elaborateLevel depth h.l else kTm;
-          eqTm = if h ? eq then elaborate depth h.eq else T.mkRefl;
-      in T.mkDescArg kTm lTm (elaborate depth h.S) eqTm
-           (elaborate (depth + 1) (h.body marker))
-    else if t == "desc-rec" then
-      T.mkDescRec (elaborate depth h.j) (elaborate depth h.D)
-    else if t == "desc-pi" then
-      let kTm = elaborateLevel depth h.k;
-          lTm = if h ? l then elaborateLevel depth h.l else kTm;
-          eqTm = if h ? eq then elaborate depth h.eq else T.mkRefl;
-      in T.mkDescPi kTm lTm (elaborate depth h.S) eqTm (elaborate depth h.f)
-        (elaborate depth h.D)
-    else if t == "desc-plus" then
-      T.mkDescPlus (elaborate depth h.A) (elaborate depth h.B)
     else if t == "mu" then
       T.mkMu (elaborate depth h.I) (elaborate depth h.D) (elaborate depth h.i)
     else if t == "desc-con" then
-      T.mkDescCon (elaborate depth h.D) (elaborate depth h.i) (elaborate depth h.d)
+      let
+        D = elaborate depth h.D;
+        i = elaborate depth h.i;
+        d = elaborate depth h.d;
+      in if h ? _descConCert
+         then T.mkDescConWithCert D i d (elaborateDescConCert depth h._descConCert)
+         else T.mkDescCon D i d
     else if t == "desc-ind" then
       T.mkDescInd (elaborate depth h.D) (elaborate depth h.motive)
         (elaborate depth h.step) (elaborate depth h.i) (elaborate depth h.scrut)
-    else if t == "desc-elim" then
-      T.mkDescElim (elaborateLevel depth h.k)
-        (elaborate depth h.motive) (elaborate depth h.onRet)
-        (elaborate depth h.onArg) (elaborate depth h.onRec)
-        (elaborate depth h.onPi) (elaborate depth h.onPlus) (elaborate depth h.scrut)
-
     # Kernel-primitive `interpD` / `allD` / `everywhereD` Tms (CDMM
     # §4.2.3 + §6.1). The `level` / `K` slots accept any Level encoding
     # (Nix-int, HOAS Level term, or kernel Tm) via `elaborateLevel`.
@@ -830,7 +740,7 @@ let
                     (T.mkApp self.encodeDescArgAtTm iTm)
                     kTm)
                   lTm)
-                T.mkRefl)
+                T.mkBootRefl)
               sTm)
             tLam
         else
@@ -889,7 +799,7 @@ let
                       (T.mkApp self.encodeDescPiAtTm iTm)
                       kTm)
                     lTm)
-                  T.mkRefl)
+                  T.mkBootRefl)
                 sTm)
               fTm)
             dTm
@@ -948,39 +858,54 @@ let
 
     # -- Lift primitive --
     # The bound witness `eq : Eq Level (max l m) m` is auto-emitted as
-    # `T.mkRefl` when absent; the kernel CHECK rule decides `convLevel
+    # `T.mkBootRefl` when absent; the kernel CHECK rule decides `convLevel
     # (max l m) m` via the semilattice quotient. The HOAS `*WithEq`
     # variants pass an explicit eq term (used when `l`/`m` are level-
     # polymorphic binders and `convLevel` cannot decide `refl`). Same
     # bound-witness shape as desc-arg.
     else if t == "lift" then
       T.mkLift (elaborateLevel depth h.l) (elaborateLevel depth h.m)
-        (if h ? eq then elaborate depth h.eq else T.mkRefl)
+        (if h ? eq then elaborate depth h.eq else T.mkBootRefl)
         (elaborate depth h.A)
     else if t == "lift-intro" then
       T.mkLiftIntro (elaborateLevel depth h.l) (elaborateLevel depth h.m)
-        (if h ? eq then elaborate depth h.eq else T.mkRefl)
+        (if h ? eq then elaborate depth h.eq else T.mkBootRefl)
         (elaborate depth h.A) (elaborate depth h.a)
     else if t == "lift-elim" then
       T.mkLiftElim (elaborateLevel depth h.l) (elaborateLevel depth h.m)
-        (if h ? eq then elaborate depth h.eq else T.mkRefl)
+        (if h ? eq then elaborate depth h.eq else T.mkBootRefl)
         (elaborate depth h.A) (elaborate depth h.x)
 
     # -- Eliminators --
-    # Nat/List/Sum eliminators route through the macro-generated
-    # `NatDT.elim` / `ListDT.elim` / `SumDT.elim` (see hoas/datatype.nix's
-    # dispatchStep), which produce `descInd` spines directly; no dedicated
-    # `nat-elim` / `list-elim` / `sum-elim` HOAS tag is emitted. The
-    # kernel `nat-elim` primitive type-checks its scrutinee against
-    # `V.vNat`, which HOAS `nat = NatDT.T = μ NatDT.D tt` never produces —
-    # a bridging HOAS tag would be structurally unusable. User-level
-    # motive-universe escape hatches (e.g. `natCaseU`'s `Nat → U(0)`
-    # requiring motive at universe 1) go via `descInd` directly on the
-    # macro's `D` (see combinators.nix:natCaseU). The Bool eliminator is
-    # derived as `descInd boolDesc` with a `sumElimPrim`-dispatching step
-    # (combinators.nix:boolElim) — no dedicated HOAS tag.
+    # Generated datatype eliminators route through the macro-generated
+    # `*.elim` terms, which produce `descInd` spines directly. User-level
+    # motive-universe escape hatches go through `descInd` on the datatype
+    # description, not through dedicated kernel eliminator tags.
     else if t == "j" then
-      T.mkJ (elaborate depth h.type) (elaborate depth h.lhs)
+      let
+        headTm = elaborate depth (self.EqDT.elim 0);
+        typeTm = elaborate depth h.type;
+        lhsTm = elaborate depth h.lhs;
+        motiveTm = elaborate depth h.motive;
+        baseTy = self.app (self.app h.motive h.lhs) (self.reflDT h.type h.lhs);
+        baseTm = elaborateForCheck depth baseTy h.base;
+        rhsTm = elaborate depth h.rhs;
+        eqTm = elaborateForCheck depth (self.eq h.type h.lhs h.rhs) h.eq;
+      in
+      T.mkApp
+        (T.mkApp
+          (T.mkApp
+            (T.mkApp
+              (T.mkApp
+                (T.mkApp headTm typeTm)
+                lhsTm)
+              motiveTm)
+            baseTm)
+          rhsTm)
+        eqTm
+
+    else if t == "boot-j" then
+      T.mkBootJ (elaborate depth h.type) (elaborate depth h.lhs)
         (elaborate depth h.motive) (elaborate depth h.base)
         (elaborate depth h.rhs) (elaborate depth h.eq)
 
@@ -1025,7 +950,7 @@ in {
         ty = if builtins.isAttrs tyResult && tyResult ? error
              then tyRaw
              else tyResult.term;
-        tm  = self.elab hoasTm;
+        tm = elaborateForCheck 0 hoasTy hoasTm;
         vTy = E.eval [] ty;
         r   = if builtins.isAttrs tyResult && tyResult ? error
               then tyResult

@@ -44,6 +44,7 @@ let
       done
 
       [[ -d "$bench_dir" ]]           || { echo "bench dir not found: $bench_dir" >&2; exit 2; }
+      bench_dir="$(realpath "$bench_dir")"
       [[ -d "$bench_dir/workloads" ]] || { echo "workloads dir not found: $bench_dir/workloads" >&2; exit 2; }
       [[ -f "$bench_dir/budgets.toml" ]] || { echo "budgets.toml not found: $bench_dir/budgets.toml" >&2; exit 2; }
 

@@ -34,50 +34,13 @@ let
       T.mkSigma v.name (quote d v.fst)
         (quote (d + 1) (E.instantiate v.closure (V.freshVar d)))
     else if t == "VPair" then T.mkPair (quote d v.fst) (quote d v.snd)
-    else if t == "VNat" then T.mkNat
-    else if t == "VZero" then T.mkZero
-    # VSucc — trampolined for deep naturals (S^5000+)
-    else if t == "VSucc" then
-      let
-        chain = builtins.genericClosure {
-          startSet = [{ key = 0; val = v; }];
-          operator = item:
-            if item.val.tag == "VSucc"
-            then [{ key = item.key + 1; val = item.val.pred; }]
-            else [];
-        };
-        n = builtins.length chain - 1;
-        base = (builtins.elemAt chain n).val;
-      in builtins.foldl' (acc: _: T.mkSucc acc) (quote d base) (builtins.genList (x: x) n)
-    else if t == "VList" then T.mkList (quote d v.elem)
-    else if t == "VNil" then T.mkNil (quote d v.elem)
-    # VCons — trampolined for deep lists (5000+ elements)
-    # Note: elemTm is taken from the outermost node and reused for all chain
-    # nodes. This is correct for well-typed values (all elem types are identical)
-    # but would produce wrong type annotations for ill-typed VCons chains.
-    else if t == "VCons" then
-      let
-        chain = builtins.genericClosure {
-          startSet = [{ key = 0; val = v; }];
-          operator = item:
-            if item.val.tag == "VCons"
-            then [{ key = item.key + 1; val = item.val.tail; }]
-            else [];
-        };
-        n = builtins.length chain - 1;
-        base = (builtins.elemAt chain n).val;
-        elemTm = quote d v.elem;
-      in builtins.foldl' (acc: i:
-        let node = (builtins.elemAt chain (n - 1 - i)).val; in
-        T.mkCons elemTm (quote d node.head) acc
-      ) (quote d base) (builtins.genList (x: x) n)
     else if t == "VUnit" then T.mkUnit
     else if t == "VTt" then T.mkTt
-    else if t == "VSum" then T.mkSum (quote d v.left) (quote d v.right)
-    else if t == "VInl" then T.mkInl (quote d v.left) (quote d v.right) (quote d v.val)
-    else if t == "VInr" then T.mkInr (quote d v.left) (quote d v.right) (quote d v.val)
-    else if t == "VEq" then T.mkEq (quote d v.type) (quote d v.lhs) (quote d v.rhs)
-    else if t == "VRefl" then T.mkRefl
+    else if t == "VBootSum" then T.mkBootSum (quote d v.left) (quote d v.right)
+    else if t == "VBootInl" then T.mkBootInl (quote d v.left) (quote d v.right) (quote d v.val)
+    else if t == "VBootInr" then T.mkBootInr (quote d v.left) (quote d v.right) (quote d v.val)
+    else if t == "VBootEq" then T.mkBootEq (quote d v.type) (quote d v.lhs) (quote d v.rhs)
+    else if t == "VBootRefl" then T.mkBootRefl
     else if t == "VFunext" then T.mkFunext
     else if t == "VSquash" then T.mkSquash (quote d v.A)
     else if t == "VSquashIntro" then T.mkSquashIntro (quote d v.a)
@@ -89,31 +52,12 @@ let
       if v.level.tag == "VLevelZero"
       then T.mkDesc T.mkLevelZero (quote d v.I)
       else T.mkDesc (quote d v.level) (quote d v.I)
-    else if t == "VDescRet" then T.mkDescRet (quote d v.j)
-    # Level-zero fast-path at the new `k` slot: when `v.k` is the
-    # `VLevelZero` singleton, emit the cached `T.mkLevelZero` sentinel
-    # directly — skips a recursive quote descent into the level value.
-    else if t == "VDescArg" then
-      T.mkDescArg
-        (if v.k.tag == "VLevelZero" then T.mkLevelZero else quote d v.k)
-        (if v.l.tag == "VLevelZero" then T.mkLevelZero else quote d v.l)
-        (quote d v.S)
-        (quote d v.eq)
-        (quote (d + 1) (E.instantiate v.T (V.freshVar d)))
-    else if t == "VDescRec" then T.mkDescRec (quote d v.j) (quote d v.D)
-    else if t == "VDescPi" then
-      T.mkDescPi
-        (if v.k.tag == "VLevelZero" then T.mkLevelZero else quote d v.k)
-        (if v.l.tag == "VLevelZero" then T.mkLevelZero else quote d v.l)
-        (quote d v.S) (quote d v.eq) (quote d v.f) (quote d v.D)
-    else if t == "VDescPlus" then T.mkDescPlus (quote d v.A) (quote d v.B)
     else if t == "VMu" then T.mkMu (quote d v.I) (quote d v.D) (quote d v.i)
     # VDescCon — trampolined for deep recursive chains (5000+ cons/succ layers).
     # Mirrors the eval/check desc-con trampoline at the quote layer: peels a
-    # linear-recursive chain whose outer D is a plus A B (primitive `VDescPlus`
-    # or encoded `VDescCon` at descDesc summand idx=4) and whose "recursive"
+    # linear-recursive chain whose outer D has plus-view shape and whose "recursive"
     # summand B has linearProfile [{S_1}..{S_n}] (n ≥ 0 data heads then rec tail).
-    # Each peeled layer has payload VInr left right (VPair h_1 (...(VPair rec VRefl))).
+    # Each peeled layer has payload VBootInr left right (VPair h_1 (...(VPair rec VBootRefl))).
     # Non-linear shapes (nil leaves, non-plus D, tree recursion) return null and
     # fall through to the single-layer recursive quote at baseTm below.
     else if t == "VDescCon" then
@@ -129,16 +73,11 @@ let
           if node.tag != "VDescCon" then null
           else
             let
-              bSide =
-                if node.D.tag == "VDescPlus" then node.D.B
-                else if node.D.tag == "VDescCon" then
-                  let info = E.decodeDescCase node.D; in
-                  if info == null || info.idx != 4 then null
-                  else info.payload.snd.fst
-                else null;
+              view = E.descView node.D;
+              bSide = if view != null && view.idx == 4 then view.B else null;
             in
             if bSide == null then null
-            else if node.d.tag != "VInr" then null
+            else if node.d.tag != "VBootInr" then null
             else
               let
                 profile = E.linearProfile bSide;
@@ -146,7 +85,7 @@ let
                 collect = k: p: acc:
                   if k == nFields then
                     if p.tag != "VPair" then null
-                    else if p.snd.tag != "VRefl" then null
+                    else if p.snd.tag != "VBootRefl" then null
                     else if p.fst.tag != "VDescCon" then null
                     else { heads = acc; tail = p.fst; }
                   else if p.tag != "VPair" then null
@@ -166,7 +105,7 @@ let
       in if n == 0 then baseTm
          else
            let
-             # All layers share D and the VInr wrapper's left/right type args
+             # All layers share D and the VBootInr wrapper's left/right type args
              # (they are interp-of-D.{A,B} which depends only on D, shared
              # across layers). Quote once; reuse in the fold.
              outerD   = quote d v.D;
@@ -182,8 +121,8 @@ let
                     else T.mkPair (builtins.head hs)
                                   (buildInner (builtins.tail hs) tail);
                 in T.mkDescCon outerD (quote d layer.i)
-                     (T.mkInr leftTm rightTm
-                       (buildInner headTms (T.mkPair acc T.mkRefl)))
+                     (T.mkBootInr leftTm rightTm
+                       (buildInner headTms (T.mkPair acc T.mkBootRefl)))
               ) baseTm (builtins.genList (x: x) n)
     # Lift primitive — round-trip type-former and introducer. Level-zero
     # fast-path on `v.l` / `v.m` mirrors the desc-arg / desc-pi shape.
@@ -232,23 +171,15 @@ let
     if t == "EApp" then T.mkApp head (quote d elim.arg)
     else if t == "EFst" then T.mkFst head
     else if t == "ESnd" then T.mkSnd head
-    else if t == "ENatElim" then
-      T.mkNatElim (quote d elim.motive) (quote d elim.base) (quote d elim.step) head
-    else if t == "EListElim" then
-      T.mkListElim (quote d elim.elem) (quote d elim.motive) (quote d elim.onNil) (quote d elim.onCons) head
-    else if t == "ESumElim" then
-      T.mkSumElim (quote d elim.left) (quote d elim.right) (quote d elim.motive)
+    else if t == "EBootSumElim" then
+      T.mkBootSumElim (quote d elim.left) (quote d elim.right) (quote d elim.motive)
         (quote d elim.onLeft) (quote d elim.onRight) head
-    else if t == "EJ" then
-      T.mkJ (quote d elim.type) (quote d elim.lhs) (quote d elim.motive)
+    else if t == "EBootJ" then
+      T.mkBootJ (quote d elim.type) (quote d elim.lhs) (quote d elim.motive)
         (quote d elim.base) (quote d elim.rhs) head
     else if t == "EStrEq" then T.mkStrEq head (quote d elim.arg)
     else if t == "EDescInd" then
       T.mkDescInd (quote d elim.D) (quote d elim.motive) (quote d elim.step) (quote d elim.i) head
-    else if t == "EDescElim" then
-      T.mkDescElim (quote d elim.k) (quote d elim.motive) (quote d elim.onRet)
-        (quote d elim.onArg) (quote d elim.onRec) (quote d elim.onPi)
-        (quote d elim.onPlus) head
     # `EInterpD` / `EAllD` / `EEverywhereD` round-trip stuck `interpD` /
     # `allD` / `everywhereD` on a neutral D scrutinee. The frame stores
     # every slot OTHER than D (the spine head). Level-zero fast-path on
@@ -280,7 +211,6 @@ let
         (quote d elim.eq) (quote d elim.A) head
     else if t == "ESquashElim" then
       T.mkSquashElim (quote d elim.A) (quote d elim.B) (quote d elim.f) head
-    else if t == "ENatToLevel" then T.mkNatToLevel head
     else throw "tc: quoteElim unknown tag '${t}'";
 
   # Normalize: eval then quote
@@ -309,8 +239,8 @@ in mk {
 
     ## Trampolining
 
-    VSucc and VCons chains are quoted iteratively via `genericClosure`
-    for O(1) stack depth on deep values (5000+ elements).
+    Linear VDescCon chains are quoted iteratively via `genericClosure`
+    for O(1) stack depth on deep generated data (5000+ elements).
 
     ## Binder Quotation
 
@@ -319,9 +249,15 @@ in mk {
   '';
   value = { inherit quote quoteSp quoteElim nf lvl2Ix; };
   tests = let
-    inherit (V) vNat vZero vSucc vPi vLam vSigma vPair
-      vList vNil vCons vUnit vTt vSum vInl vInr vEq vRefl vU vNe
-      mkClosure eApp eFst eSnd eNatElim eListElim eSumElim eJ;
+    inherit (V) vPi vLam vSigma vPair
+      vUnit vTt vBootSum vBootInl vBootInr vBootEq vBootRefl vU vNe
+      mkClosure eApp eFst eSnd eBootSumElim eBootJ;
+    H = fx.tc.hoas;
+    encRet = H.elab (H.retI H.unit 0 H.tt);
+    encArg = H.elab (H.descArg H.unit 0 H.nat (_: H.retI H.unit 0 H.tt));
+    encRec = H.elab (H.recI H.unit 0 H.tt (H.retI H.unit 0 H.tt));
+    encPi = H.elab (H.descPi 0 H.nat (H.retI H.unit 0 H.tt));
+    encRetVal = E.eval [] encRet;
   in {
     # -- Level to index --
     "lvl2ix-0" = { expr = lvl2Ix 1 0; expected = 0; };
@@ -329,12 +265,9 @@ in mk {
     "lvl2ix-2" = { expr = lvl2Ix 3 2; expected = 0; };
 
     # -- Simple values --
-    "quote-nat" = { expr = (quote 0 vNat).tag; expected = "nat"; };
-    "quote-zero" = { expr = (quote 0 vZero).tag; expected = "zero"; };
-    "quote-succ" = { expr = (quote 0 (vSucc vZero)).tag; expected = "succ"; };
     "quote-unit" = { expr = (quote 0 vUnit).tag; expected = "unit"; };
     "quote-tt" = { expr = (quote 0 vTt).tag; expected = "tt"; };
-    "quote-refl" = { expr = (quote 0 vRefl).tag; expected = "refl"; };
+    "quote-refl" = { expr = (quote 0 vBootRefl).tag; expected = "boot-refl"; };
     "quote-funext" = { expr = (quote 0 V.vFunext).tag; expected = "funext"; };
     "quote-squash" = { expr = (quote 0 (V.vSquash V.vUnit)).tag; expected = "squash"; };
     "quote-squash-A" = {
@@ -403,14 +336,11 @@ in mk {
     "quote-any-lit" = { expr = (quote 0 V.vAnyLit).tag; expected = "any-lit"; };
 
     # -- Compound values --
-    "quote-pair" = { expr = (quote 0 (vPair vZero vTt)).tag; expected = "pair"; };
-    "quote-list" = { expr = (quote 0 (vList vNat)).tag; expected = "list"; };
-    "quote-nil" = { expr = (quote 0 (vNil vNat)).tag; expected = "nil"; };
-    "quote-cons" = { expr = (quote 0 (vCons vNat vZero (vNil vNat))).tag; expected = "cons"; };
-    "quote-sum" = { expr = (quote 0 (vSum vNat vUnit)).tag; expected = "sum"; };
-    "quote-inl" = { expr = (quote 0 (vInl vNat vUnit vZero)).tag; expected = "inl"; };
-    "quote-inr" = { expr = (quote 0 (vInr vNat vUnit vTt)).tag; expected = "inr"; };
-    "quote-eq" = { expr = (quote 0 (vEq vNat vZero vZero)).tag; expected = "eq"; };
+    "quote-pair" = { expr = (quote 0 (vPair vTt vTt)).tag; expected = "pair"; };
+    "quote-boot-sum" = { expr = (quote 0 (vBootSum vUnit vUnit)).tag; expected = "boot-sum"; };
+    "quote-boot-inl" = { expr = (quote 0 (vBootInl vUnit vUnit vTt)).tag; expected = "boot-inl"; };
+    "quote-boot-inr" = { expr = (quote 0 (vBootInr vUnit vUnit vTt)).tag; expected = "boot-inr"; };
+    "quote-eq" = { expr = (quote 0 (vBootEq vUnit vTt vTt)).tag; expected = "boot-eq"; };
 
     # -- Neutrals --
     "quote-var" = {
@@ -428,8 +358,8 @@ in mk {
       expected = 2;
     };
     "quote-ne-app" = {
-      # x applied to 0: VNe(0, [EApp VZero]) at depth 1 → App(Var(0), Zero)
-      expr = (quote 1 (vNe 0 [ (eApp vZero) ])).tag;
+      # x applied to tt: VNe(0, [EApp VTt]) at depth 1 → App(Var(0), Tt)
+      expr = (quote 1 (vNe 0 [ (eApp vTt) ])).tag;
       expected = "app";
     };
     "quote-ne-fst" = {
@@ -440,93 +370,69 @@ in mk {
       expr = (quote 1 (vNe 0 [ eSnd ])).tag;
       expected = "snd";
     };
-    "quote-ne-nat-elim" = {
-      expr = (quote 1 (vNe 0 [ (eNatElim vNat vZero vZero) ])).tag;
-      expected = "nat-elim";
-    };
-    "quote-ne-list-elim" = {
-      expr = (quote 1 (vNe 0 [ (eListElim vNat vNat vZero vZero) ])).tag;
-      expected = "list-elim";
-    };
-    "quote-ne-sum-elim" = {
-      expr = (quote 1 (vNe 0 [ (eSumElim vNat vUnit vNat vZero vZero) ])).tag;
-      expected = "sum-elim";
+    "quote-ne-boot-sum-elim" = {
+      expr = (quote 1 (vNe 0 [ (eBootSumElim vUnit vUnit vUnit vTt vTt) ])).tag;
+      expected = "boot-sum-elim";
     };
     "quote-ne-j" = {
-      expr = (quote 1 (vNe 0 [ (eJ vNat vZero vNat vZero vZero) ])).tag;
-      expected = "j";
+      expr = (quote 1 (vNe 0 [ (eBootJ vUnit vTt vUnit vTt vTt) ])).tag;
+      expected = "boot-j";
     };
 
     # -- Descriptions (indexed) --
     "quote-desc" = { expr = (quote 0 (V.vDesc V.vLevelZero V.vUnit)).tag; expected = "desc"; };
-    "quote-desc-ret" = { expr = (quote 0 (V.vDescRet V.vTt)).tag; expected = "desc-ret"; };
+    "quote-desc-ret" = { expr = (nf [] encRet).tag; expected = "desc-con"; };
     "quote-desc-arg" = {
-      expr = (quote 0 (V.vDescArg V.vLevelZero V.vLevelZero V.vNat V.vRefl (V.mkClosure [] (T.mkDescRet T.mkTt)))).tag;
-      expected = "desc-arg";
-    };
-    "quote-desc-arg-k-zero-fastpath" = {
-      expr = (quote 0 (V.vDescArg V.vLevelZero V.vLevelZero V.vNat V.vRefl (V.mkClosure [] (T.mkDescRet T.mkTt)))).k.tag;
-      expected = "level-zero";
+      expr = (nf [] encArg).tag;
+      expected = "desc-con";
     };
     "quote-desc-rec" = {
-      expr = (quote 0 (V.vDescRec V.vTt (V.vDescRet V.vTt))).tag;
-      expected = "desc-rec";
+      expr = (nf [] encRec).tag;
+      expected = "desc-con";
     };
     "quote-desc-pi" = {
-      expr = let f = V.vLam "_" V.vNat (V.mkClosure [] T.mkTt); in
-        (quote 0 (V.vDescPi V.vLevelZero V.vLevelZero V.vNat V.vRefl f (V.vDescRet V.vTt))).tag;
-      expected = "desc-pi";
+      expr = (nf [] encPi).tag;
+      expected = "desc-con";
     };
     "quote-desc-pi-S" = {
-      expr = let f = V.vLam "_" V.vNat (V.mkClosure [] T.mkTt); in
-        (quote 0 (V.vDescPi V.vLevelZero V.vLevelZero V.vNat V.vRefl f (V.vDescRet V.vTt))).S.tag;
-      expected = "nat";
+      expr = (E.descView (E.eval [] (nf [] encPi))).sTy.tag;
+      expected = "VMu";
     };
     "quote-desc-pi-D" = {
-      expr = let f = V.vLam "_" V.vNat (V.mkClosure [] T.mkTt); in
-        (quote 0 (V.vDescPi V.vLevelZero V.vLevelZero V.vNat V.vRefl f (V.vDescRet V.vTt))).D.tag;
-      expected = "desc-ret";
-    };
-    "quote-desc-pi-k-zero-fastpath" = {
-      expr = let f = V.vLam "_" V.vNat (V.mkClosure [] T.mkTt); in
-        (quote 0 (V.vDescPi V.vLevelZero V.vLevelZero V.vNat V.vRefl f (V.vDescRet V.vTt))).k.tag;
-      expected = "level-zero";
+      expr = (E.descView (E.descView (E.eval [] (nf [] encPi))).sub).idx;
+      expected = 0;
     };
     "quote-mu" = {
-      expr = (quote 0 (V.vMu V.vUnit (V.vDescRet V.vTt) V.vTt)).tag;
+      expr = (quote 0 (V.vMu V.vUnit encRetVal V.vTt)).tag;
       expected = "mu";
     };
     "quote-desc-con" = {
-      expr = (quote 0 (V.vDescCon (V.vDescRet V.vTt) V.vTt V.vRefl)).tag;
+      expr = (quote 0 (V.vDescCon encRetVal V.vTt V.vBootRefl)).tag;
       expected = "desc-con";
     };
     "quote-ne-desc-ind" = {
-      expr = (quote 1 (V.vNe 0 [ (V.eDescInd (V.vDescRet V.vTt) V.vNat V.vZero V.vTt) ])).tag;
+      expr = (quote 1 (V.vNe 0 [ (V.eDescInd encRetVal V.vUnit V.vTt V.vTt) ])).tag;
       expected = "desc-ind";
-    };
-    "quote-ne-desc-elim" = {
-      expr = (quote 1 (V.vNe 0 [ (V.eDescElim V.vLevelZero V.vNat V.vZero V.vZero V.vZero V.vZero V.vZero) ])).tag;
-      expected = "desc-elim";
     };
     "quote-ne-interp-d" = {
       # Stuck `interpD` on a neutral D round-trips to `mkInterpD`.
       expr = (quote 1 (V.vNe 0
-        [ (V.eInterpD V.vLevelZero V.vUnit V.vNat V.vTt) ])).tag;
+        [ (V.eInterpD V.vLevelZero V.vUnit V.vUnit V.vTt) ])).tag;
       expected = "interp-d";
     };
     "quote-ne-interp-d-level-zero-fastpath" = {
       expr = (quote 1 (V.vNe 0
-        [ (V.eInterpD V.vLevelZero V.vUnit V.vNat V.vTt) ])).level.tag;
+        [ (V.eInterpD V.vLevelZero V.vUnit V.vUnit V.vTt) ])).level.tag;
       expected = "level-zero";
     };
     "quote-ne-all-d" = {
       expr = (quote 1 (V.vNe 0
-        [ (V.eAllD V.vLevelZero V.vUnit V.vLevelZero V.vNat V.vNat V.vTt V.vRefl) ])).tag;
+        [ (V.eAllD V.vLevelZero V.vUnit V.vLevelZero V.vUnit V.vUnit V.vTt V.vBootRefl) ])).tag;
       expected = "all-d";
     };
     "quote-ne-everywhere-d" = {
       expr = (quote 1 (V.vNe 0
-        [ (V.eEverywhereD V.vLevelZero V.vUnit V.vLevelZero V.vNat V.vNat V.vNat V.vTt V.vRefl) ])).tag;
+        [ (V.eEverywhereD V.vLevelZero V.vUnit V.vLevelZero V.vUnit V.vUnit V.vUnit V.vTt V.vBootRefl) ])).tag;
       expected = "everywhere-d";
     };
     # Round-trip via `nf` on a stuck `interpD`: the resulting term mirrors
@@ -534,7 +440,7 @@ in mk {
     "nf-interp-d-stuck-roundtrip" = {
       expr = let
         tm = T.mkInterpD T.mkLevelZero T.mkUnit (T.mkVar 0)
-          (T.mkLam "_" T.mkUnit T.mkNat) T.mkTt;
+          (T.mkLam "_" T.mkUnit T.mkUnit) T.mkTt;
         env = [ (V.freshVar 0) ];
       in nf env (nf env tm) == nf env tm;
       expected = true;
@@ -545,27 +451,27 @@ in mk {
     # singleton; `l ≠ m` cases test the non-collapsed shape.
     "quote-lift-distinct-levels" = {
       expr = (quote 0 (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero)
-        V.vRefl V.vUnit)).tag;
+        V.vBootRefl V.vUnit)).tag;
       expected = "lift";
     };
     "quote-lift-l-zero-fastpath" = {
       expr = (quote 0 (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero)
-        V.vRefl V.vUnit)).l.tag;
+        V.vBootRefl V.vUnit)).l.tag;
       expected = "level-zero";
     };
     "quote-lift-A" = {
       expr = (quote 0 (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero)
-        V.vRefl V.vUnit)).A.tag;
+        V.vBootRefl V.vUnit)).A.tag;
       expected = "unit";
     };
     "quote-lift-intro-distinct-levels" = {
       expr = (quote 0 (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero)
-        V.vRefl V.vUnit V.vTt)).tag;
+        V.vBootRefl V.vUnit V.vTt)).tag;
       expected = "lift-intro";
     };
     "quote-lift-intro-a" = {
       expr = (quote 0 (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero)
-        V.vRefl V.vUnit V.vTt)).a.tag;
+        V.vBootRefl V.vUnit V.vTt)).a.tag;
       expected = "tt";
     };
     "quote-ne-lift-elim" = {
@@ -573,13 +479,13 @@ in mk {
       # to `mkLiftElim l m eq A (Var 0)`.
       expr = (quote 1 (V.vNe 0
         [ (V.eLiftElim V.vLevelZero (V.vLevelSuc V.vLevelZero)
-            V.vRefl V.vUnit) ])).tag;
+            V.vBootRefl V.vUnit) ])).tag;
       expected = "lift-elim";
     };
     "quote-ne-lift-elim-l-zero-fastpath" = {
       expr = (quote 1 (V.vNe 0
         [ (V.eLiftElim V.vLevelZero (V.vLevelSuc V.vLevelZero)
-            V.vRefl V.vUnit) ])).l.tag;
+            V.vBootRefl V.vUnit) ])).l.tag;
       expected = "level-zero";
     };
     # nf round-trip on a stuck lower spine — the term that goes in
@@ -587,7 +493,7 @@ in mk {
     "nf-lift-elim-stuck-roundtrip" = {
       expr = let
         tm = T.mkLiftElim T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
-          T.mkRefl T.mkUnit (T.mkVar 0);
+          T.mkBootRefl T.mkUnit (T.mkVar 0);
         env = [ (V.freshVar 0) ];
       in nf env (nf env tm) == nf env tm;
       expected = true;
@@ -595,7 +501,7 @@ in mk {
     # nf collapses idempotent Lift (`Lift l l _ A` → `A`); the
     # resulting term tag is `unit`, not `lift`.
     "nf-lift-idempotent-collapse" = {
-      expr = (nf [] (T.mkLift T.mkLevelZero T.mkLevelZero T.mkRefl T.mkUnit)).tag;
+      expr = (nf [] (T.mkLift T.mkLevelZero T.mkLevelZero T.mkBootRefl T.mkUnit)).tag;
       expected = "unit";
     };
     # nf round-trip on a non-collapsed Lift type — `Lift 0 1 _ Unit`
@@ -603,83 +509,57 @@ in mk {
     "nf-lift-distinct-roundtrip" = {
       expr = let
         tm = T.mkLift T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
-          T.mkRefl T.mkUnit;
+          T.mkBootRefl T.mkUnit;
       in (nf [] tm).tag;
       expected = "lift";
     };
 
-    # natToLevel reduces structurally on closed Nats — nf produces
-    # `level-zero` / chained `level-suc` (no surviving `nat-to-level`).
-    "nf-nat-to-level-zero" = {
-      expr = (nf [] (T.mkNatToLevel T.mkZero)).tag;
-      expected = "level-zero";
-    };
-    "nf-nat-to-level-suc-chain" = {
-      expr = (nf [] (T.mkNatToLevel
-        (T.mkSucc (T.mkSucc T.mkZero)))).pred.pred.tag;
-      expected = "level-zero";
-    };
-    "quote-ne-nat-to-level" = {
-      # Stuck `natToLevel` on a Nat-typed neutral round-trips.
-      expr = (quote 1 (V.vNe 0 [ V.eNatToLevel ])).tag;
-      expected = "nat-to-level";
-    };
-    "nf-nat-to-level-stuck-roundtrip" = {
-      expr = let
-        tm = T.mkNatToLevel (T.mkVar 0);
-        env = [ (V.freshVar 0) ];
-      in nf env (nf env tm) == nf env tm;
-      expected = true;
-    };
-
     # Roundtrip: eval then quote for desc-pi
     "nf-desc-pi" = {
-      expr = (nf [] (T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt))).tag;
-      expected = "desc-pi";
+      expr = (nf [] encPi).tag;
+      expected = "desc-con";
     };
     "nf-desc-pi-roundtrip" = {
-      expr = let D = T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt); in
-        nf [] (nf [] D) == nf [] D;
+      expr = nf [] (nf [] encPi) == nf [] encPi;
       expected = true;
     };
 
     # -- Binders (Pi, Lam, Sigma) --
     "quote-pi" = {
-      # Π(x:Nat).Nat — closure body is just Nat (no variable reference)
-      expr = (quote 0 (vPi "x" vNat (mkClosure [] T.mkNat))).tag;
+      # Π(x:Unit).Unit — closure body is just Unit (no variable reference)
+      expr = (quote 0 (vPi "x" vUnit (mkClosure [] T.mkUnit))).tag;
       expected = "pi";
     };
     "quote-lam-identity" = {
-      # λ(x:Nat).x — closure body is Var(0)
-      expr = let r = quote 0 (vLam "x" vNat (mkClosure [] (T.mkVar 0))); in r.body.tag;
+      # λ(x:Unit).x — closure body is Var(0)
+      expr = let r = quote 0 (vLam "x" vUnit (mkClosure [] (T.mkVar 0))); in r.body.tag;
       expected = "var";
     };
     "quote-lam-identity-idx" = {
       # The body Var(0) should quote to index 0
-      expr = let r = quote 0 (vLam "x" vNat (mkClosure [] (T.mkVar 0))); in r.body.idx;
+      expr = let r = quote 0 (vLam "x" vUnit (mkClosure [] (T.mkVar 0))); in r.body.idx;
       expected = 0;
     };
     "quote-sigma" = {
-      expr = (quote 0 (vSigma "x" vNat (mkClosure [] T.mkUnit))).tag;
+      expr = (quote 0 (vSigma "x" vUnit (mkClosure [] T.mkUnit))).tag;
       expected = "sigma";
     };
 
     # -- Roundtrip: eval then quote --
-    "nf-zero" = { expr = (nf [] T.mkZero).tag; expected = "zero"; };
-    "nf-succ-zero" = { expr = (nf [] (T.mkSucc T.mkZero)).pred.tag; expected = "zero"; };
+    "nf-tt" = { expr = (nf [] T.mkTt).tag; expected = "tt"; };
     "nf-app-id" = {
-      # nf([], (λx.x) 0) = 0
-      expr = (nf [] (T.mkApp (T.mkLam "x" T.mkNat (T.mkVar 0)) T.mkZero)).tag;
-      expected = "zero";
+      # nf([], (λx.x) tt) = tt
+      expr = (nf [] (T.mkApp (T.mkLam "x" T.mkUnit (T.mkVar 0)) T.mkTt)).tag;
+      expected = "tt";
     };
     "nf-let" = {
-      # nf([], let x:Nat=0 in x) = 0
-      expr = (nf [] (T.mkLet "x" T.mkNat T.mkZero (T.mkVar 0))).tag;
-      expected = "zero";
+      # nf([], let x:Unit=tt in x) = tt
+      expr = (nf [] (T.mkLet "x" T.mkUnit T.mkTt (T.mkVar 0))).tag;
+      expected = "tt";
     };
     "nf-fst-pair" = {
-      expr = (nf [] (T.mkFst (T.mkPair T.mkZero T.mkTt))).tag;
-      expected = "zero";
+      expr = (nf [] (T.mkFst (T.mkPair T.mkTt T.mkTt))).tag;
+      expected = "tt";
     };
 
     # -- nf as a semantic-equivalence check --
@@ -694,86 +574,71 @@ in mk {
     # primitive level rather than being inferred from downstream tests.
 
     "nf-gate-equal-let-transparent" = {
-      # let x:Nat = zero in succ x  ==nf==  succ zero
-      expr = nf [] (T.mkLet "x" T.mkNat T.mkZero (T.mkSucc (T.mkVar 0)))
-          == nf [] (T.mkSucc T.mkZero);
+      # let x:String = "a" in x  ==nf==  "a"
+      expr = nf [] (T.mkLet "x" T.mkString (T.mkStringLit "a") (T.mkVar 0))
+          == nf [] (T.mkStringLit "a");
       expected = true;
     };
     "nf-gate-equal-beta-matches-let" = {
-      # (λT:U0. λn:Nat. n) Nat zero  ==nf==  let T:U0=Nat in let n:Nat=zero in n
+      # (λx:String. λy:String. y) "a" "b"  ==nf==  let x:String="a" in let y:String="b" in y
       # Nested β-redex chain and nested let scaffold converge on the
-      # same nf form. Both reduce to `zero`.
+      # same nf form. Both reduce to `"b"`.
       expr = nf [] (T.mkApp
-                      (T.mkApp (T.mkLam "T" (T.mkU T.mkLevelZero)
-                                (T.mkLam "n" T.mkNat (T.mkVar 0)))
-                               T.mkNat)
-                      T.mkZero)
-          == nf [] (T.mkLet "T" (T.mkU T.mkLevelZero) T.mkNat
-                      (T.mkLet "n" T.mkNat T.mkZero (T.mkVar 0)));
+                      (T.mkApp (T.mkLam "x" T.mkString
+                                (T.mkLam "y" T.mkString (T.mkVar 0)))
+                               (T.mkStringLit "a"))
+                      (T.mkStringLit "b"))
+          == nf [] (T.mkLet "x" T.mkString (T.mkStringLit "a")
+                      (T.mkLet "y" T.mkString (T.mkStringLit "b") (T.mkVar 0)));
       expected = true;
     };
     "nf-gate-unequal-different-values" = {
-      # let x:Nat = zero in succ x         -- nf = succ zero
-      # let x:Nat = zero in succ (succ x)  -- nf = succ (succ zero)
+      # let x:String = "a" in x  -- nf = "a"
+      # let x:String = "b" in x  -- nf = "b"
       # Guards against nf-equality collapsing under let-normalization.
-      expr = nf [] (T.mkLet "x" T.mkNat T.mkZero (T.mkSucc (T.mkVar 0)))
-          == nf [] (T.mkLet "x" T.mkNat T.mkZero
-                      (T.mkSucc (T.mkSucc (T.mkVar 0))));
+      expr = nf [] (T.mkLet "x" T.mkString (T.mkStringLit "a") (T.mkVar 0))
+          == nf [] (T.mkLet "x" T.mkString (T.mkStringLit "b") (T.mkVar 0));
       expected = false;
     };
     "nf-gate-unequal-distinct-after-beta" = {
-      # (λf:Nat→Nat. f zero) (λx:Nat. x)        -- β → zero
-      # (λf:Nat→Nat. f zero) (λx:Nat. succ x)   -- β → succ zero
+      # (λf:String→String. f "a") (λx:String. x)   -- β → "a"
+      # (λf:String→String. f "a") (λx:String. "b") -- β → "b"
       # Higher-order: two applications differing only in the function
       # argument must nf to distinct forms once β fires.
       expr = let
-        applyAtZero = g: T.mkApp
-          (T.mkLam "f" (T.mkPi "_" T.mkNat T.mkNat)
-            (T.mkApp (T.mkVar 0) T.mkZero))
+        applyAtA = g: T.mkApp
+          (T.mkLam "f" (T.mkPi "_" T.mkString T.mkString)
+            (T.mkApp (T.mkVar 0) (T.mkStringLit "a")))
           g;
-        identityNat = T.mkLam "x" T.mkNat (T.mkVar 0);
-        succFn      = T.mkLam "x" T.mkNat (T.mkSucc (T.mkVar 0));
-      in nf [] (applyAtZero identityNat)
-      == nf [] (applyAtZero succFn);
+        identityString = T.mkLam "x" T.mkString (T.mkVar 0);
+        constantB      = T.mkLam "x" T.mkString (T.mkStringLit "b");
+      in nf [] (applyAtA identityString)
+      == nf [] (applyAtA constantB);
       expected = false;
     };
 
     # Stress tests — stack safety
-    "quote-cons-5000" = {
-      expr = let
-        deep = builtins.foldl' (acc: _: V.vCons V.vNat V.vZero acc) (V.vNil V.vNat) (builtins.genList (x: x) 5000);
-      in (quote 0 deep).tag;
-      expected = "cons";
-    };
-    "quote-succ-5000" = {
-      expr = let
-        deep = builtins.foldl' (acc: _: V.vSucc acc) V.vZero (builtins.genList (x: x) 5000);
-      in (quote 0 deep).tag;
-      expected = "succ";
-    };
     # Exercises the VDescCon trampoline on a 5000-deep plus-encoded list cons
-    # chain. Outer D is VDescPlus whose B summand matches linearProfile [{S=Nat}];
-    # each layer's payload is VInr L R (VPair head (VPair rec VRefl)). The
+    # chain. Outer D is generated listDesc whose B summand matches linearProfile [{S=Nat}];
+    # each layer's payload is VBootInr L R (VPair head (VPair rec VBootRefl)). The
     # placeholder left/right type args only need to roundtrip structurally —
     # soundness is covered by the eval/check desc-con trampoline tests.
     "quote-descCon-5000" = {
       expr = let
         unit = V.vUnit;
         tt = V.vTt;
-        listDescVal = V.vDescPlus
-          (V.vDescRet tt)
-          (V.vDescArg V.vLevelZero V.vLevelZero V.vNat V.vRefl
-            (V.mkClosure [ ] (T.mkDescRec T.mkTt (T.mkDescRet T.mkTt))));
-        leftTy  = V.vEq unit tt tt;
+        listDescVal = E.eval [] (H.elab (H.listDesc H.nat));
+        leftTy  = V.vBootEq unit tt tt;
         rightTy = V.vU V.vLevelZero;
+        zeroVal = E.eval [] (H.elab H.zero);
         nilLayer = V.vDescCon listDescVal tt
-          (V.vInl leftTy rightTy V.vRefl);
+          (V.vBootInl leftTy rightTy V.vBootRefl);
         consLayer = head_: tail_:
           V.vDescCon listDescVal tt
-            (V.vInr leftTy rightTy
-              (V.vPair head_ (V.vPair tail_ V.vRefl)));
+            (V.vBootInr leftTy rightTy
+              (V.vPair head_ (V.vPair tail_ V.vBootRefl)));
         deep = builtins.foldl'
-          (acc: _: consLayer V.vZero acc)
+          (acc: _: consLayer zeroVal acc)
           nilLayer
           (builtins.genList (x: x) 5000);
       in (quote 0 deep).tag;
@@ -803,7 +668,8 @@ in mk {
     # Roundtrip idempotency with non-empty env
     "nf-under-binder-roundtrip" = {
       expr = let env1 = [ (V.freshVar 0) ];
-      in nf env1 (nf env1 (T.mkSucc (T.mkVar 0))) == nf env1 (T.mkSucc (T.mkVar 0));
+      in nf env1 (nf env1 (T.mkFst (T.mkPair (T.mkVar 0) T.mkTt)))
+        == nf env1 (T.mkFst (T.mkPair (T.mkVar 0) T.mkTt));
       expected = true;
     };
 
@@ -813,19 +679,19 @@ in mk {
     # safe at quote time.
     "quote-descDescApp-tag-emits-desc-desc-app" = {
       expr = (quote 0 (V.vDescConTagged
-                vTt vTt V.vRefl
+                vTt vTt V.vBootRefl
                 { id = "descDesc"; I = V.vUnit; L = V.vLevelZero; })).tag;
       expected = "desc-desc-app";
     };
     "quote-descDescApp-tag-emits-I" = {
       expr = (quote 0 (V.vDescConTagged
-                vTt vTt V.vRefl
+                vTt vTt V.vBootRefl
                 { id = "descDesc"; I = V.vUnit; L = V.vLevelZero; })).I.tag;
       expected = "unit";
     };
     "quote-descDescApp-tag-emits-L" = {
       expr = (quote 0 (V.vDescConTagged
-                vTt vTt V.vRefl
+                vTt vTt V.vBootRefl
                 { id = "descDesc"; I = V.vUnit; L = (V.vLevelSuc V.vLevelZero); })).L.tag;
       expected = "level-suc";
     };

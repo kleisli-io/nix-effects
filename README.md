@@ -4,8 +4,18 @@
 [![CI](https://github.com/kleisli-io/nix-effects/actions/workflows/flake-check.yml/badge.svg)](https://github.com/kleisli-io/nix-effects/actions/workflows/flake-check.yml)
 [![Release](https://img.shields.io/github/v/release/kleisli-io/nix-effects)](https://github.com/kleisli-io/nix-effects/releases)
 
-A freer-monad effect layer in pure Nix, with a dependent type checker
-on top of it.
+A pure Nix toolkit for effectful programs, typed validation, verified
+boundaries, and description-backed DSLs.
+
+Programs describe what they need. Handlers decide policy. Types,
+datatypes, and proofs describe the structure that generic tools can
+validate, interpret, extract, or document.
+
+Everything runs at `nix eval` time.
+
+**[Documentation](https://docs.kleisli.io/nix-effects)**
+
+## Small example
 
 Validation is a `typeCheck` effect. A validator walks a nested record
 and sends `typeCheck` at every leaf; the handler decides what happens
@@ -62,124 +72,67 @@ broke.
 
 Recursion in the kernel and the effect interpreter goes through a
 trampoline built on `builtins.genericClosure` (Nix's only iterative
-primitive) with `deepSeq` on the dedup key to break thunk chains. Call
-stack stays O(1); 1M operations evaluate in roughly 3 seconds. See
+primitive). Call stack stays O(1) for the interpreter loop. See
 [`book/src/trampoline.md`](book/src/trampoline.md).
-
-Everything runs at `nix eval` time.
-
-**[Documentation](https://docs.kleisli.io/nix-effects)**
 
 ## Table of contents
 
-- [Features](#features)
+- [Small example](#small-example)
+- [What you can build](#what-you-can-build)
+- [Core concepts](#core-concepts)
 - [Quick start](#quick-start)
-- [Dependent types](#dependent-types)
 - [Effects](#effects)
-- [Streams](#streams)
+- [Typed boundaries](#typed-boundaries)
+- [Datatypes and descriptions](#datatypes-and-descriptions)
+- [Streams and pipelines](#streams-and-pipelines)
+- [Syntax sugar](#syntax-sugar)
 - [API reference](#api-reference)
 - [How it works](#how-it-works)
 - [Known limitations](#known-limitations)
-- [Documentation MCP Server](#documentation-mcp-server)
 - [Testing](#testing)
+- [Documentation MCP server](#documentation-mcp-server)
 - [Formal foundations](#formal-foundations)
 - [Used by](#used-by)
 - [Acknowledgments](#acknowledgments)
 - [License](#license)
 
-## Features
+## What you can build
 
-### Effects layer
+- **Typed validators.** Validate nested Nix values with exact blame paths
+  and choose fail-fast, collecting, or logging policy with handlers.
+- **Effectful pipelines.** Model eval-time workflows with state, errors,
+  scoped context, accumulation, nondeterminism, restarts, and streams.
+- **Description-backed DSLs.** Define domain shapes once, then interpret
+  them as derivations, descriptors, documentation, schemas, tests, graphs,
+  or dashboards.
+- **Verified boundaries.** Check proofs or implementations against kernel
+  types before extracting ordinary Nix functions.
+- **Generic datatype tooling.** Write consumers over datatype descriptions
+  instead of repeating per-type traversal and validation code.
 
-- **Freer monad with FTCQueue** — O(1) `bind` via catenable queue snoc
-  (Kiselyov & Ishii 2015)
-- **Trampolined interpreter** — O(1) call-stack depth built on
-  `builtins.genericClosure` with `deepSeq`-broken thunk chains;
-  100k operations in the test suite, 1M in ~3s manually
-- **Handler semantics** — `resume`/`abort` following Plotkin & Pretnar (2009);
-  handlers may return a computation as their `resume` and have its
-  effects spliced into the pending continuation
-- **Selective handler rotation** (`fx.rotate`) — handles matching effects
-  and forwards unknown ones outward (Kyo-style law
-  `handle(t1, suspend(t2, i, k), f) = suspend(t2, i, x → handle(t1, k(x), f))`)
-- **Scoped handlers** (`fx.effects.scope`) — `run`, `runWith`, and `stateful`
-  install handlers over a subcomputation with optional state hiding
-- **State composition via lenses** — `fx.adapt` and `fx.adaptHandlers`
-  lift handlers over component state into handlers over parent state
-- **Built-in effects** — `state`, `reader`, `writer`, `acc` (accumulation),
-  `choice` (nondeterminism), `error`, `conditions` (Common-Lisp-style
-  restarts), `typecheck` (blame-tracking validation), `linear` (graded
-  linear resource tracking)
-- **Streams** — effectful lazy sequences with `map`, `filter`, `take`,
-  `takeWhile`, `fold`, `scanl`, `zip`, `zipWith`, `interleave`, etc.
+## Core concepts
 
-### Type system and MLTT kernel
+- **Computations** are freer-monad values. `pure` returns a value, `send`
+  requests an effect, `bind` sequences work, and `run` interprets the tree.
+- **Handlers** own operational policy. The same computation can abort,
+  resume, collect errors, hide scoped state, or route unknown effects
+  outward depending on the handler.
+- **Typed boundaries** connect runtime Nix values to the MLTT kernel.
+  Guards decide simple cases, validators emit `typeCheck` effects with
+  blame context, and verified HOAS terms can be extracted as plain Nix.
+- **Descriptions** are reusable datatype shapes. The public inductive
+  prelude and user datatypes share the same description-backed macro
+  surface, so generic tools can inspect and consume datatype structure.
+- **Streams and pipelines** are effectful programs too. They compose with
+  the same `bind`, handler, and trampoline machinery as validation.
 
-- **Primitives** — `String`, `Int`, `Bool`, `Float`, `Attrs`, `Path`,
-  `Function`, `Null`, `Unit`, `Any`
-- **Compound types** — `Record`, `ListOf`, `Maybe`, `Either`, `Variant`,
-  `Vector`
-- **Dependent types** — `Pi` (dependent function), `Sigma` (dependent
-  pair), `DepRecord`, `Certified` (Σ with a Boolean witness — see
-  [Known limitations](#known-limitations))
-- **Identity types with `J` elimination** — `sym`, `trans`, `cong`,
-  `transport` derived from `J`; `Refl` as the sole introduction form
-- **Inductive types via a description universe** — `Desc` and `μ` as
-  kernel primitives; `Nat`, `List`, `Sum`, and `Unit` rebuilt as HOAS
-  descriptions on top, so further inductives don't require kernel changes
-- **Datatype macro layer** — declare single- or multi-constructor
-  datatypes directly in HOAS with `datatype` / `datatypeP` + `field`,
-  `fieldD`, `piField`, `piFieldD`, `recField`. Dependent fields see
-  prior fields by name (`prev.op`, `prev.comp`), poly parameters thread
-  through a `paramPi` binder. Chains of saturated or linear-recursive
-  constructors flatten to flat `desc-con` terms at elaboration time,
-  so 5000-element lists type-check without blowing the stack.
-  `Nat`, `List`, and `Sum` are themselves built through the macro;
-  user datatypes use exactly the same surface
-  (see [`apps/category-theory/`](apps/category-theory/) for a guided tour)
-- **Refinement types** — narrow any type with a predicate;
-  combinators `allOf`, `anyOf`, `negate`; helpers `positive`,
-  `nonNegative`, `inRange`, `nonEmpty`, `matching`
-  (Freeman & Pfenning 1991; cf. Rondon et al. 2008)
-- **Linear/Affine/Graded types** — resource tracking with exact,
-  ≤-bounded, or =k-bounded usage counts
-- **Cumulative universes** — `Type_0 .. Type_4` (and `typeAt n` for
-  any n), level computed from typing derivation for kernel-backed types
-- **Bidirectional type checking with NbE** — normalization by evaluation,
-  `check`/`infer` split, HOAS elaboration
-  (Dunfield & Krishnaswami 2021)
-- **Proof terms and verified extraction** — `fx.types.hoas` combinators
-  build proof terms; `fx.types.extract` and `verifyAndExtract` produce
-  plain Nix callables from verified HOAS bodies
-- **Polarity-aware elaboration** — positive types (Sigma, Sum, Nat)
-  elaborate structurally; negative types (Pi) elaborate opaquely with
-  a domain-check trust boundary (`mkOpaqueLam`)
-- **Typecheck effect with blame context** — `.validate` sends `typeCheck`
-  effects carrying a path-qualified `context` field, so the same
-  validator runs under strict, collecting, or logging handlers without
-  rewriting
+### Examples in this repository
 
-### Applications
-
-- **Category theory library** (`apps/category-theory/`) — a guided tour
-  of the MLTT kernel and the datatype macro layer. Five chapters that
-  build on each other:
-  1. `combinators.nix` — `sym`/`trans`/`cong` derived from `J`.
-  2. `arithmetic.nix` — `add` on `Nat` with seven verified properties
-     including commutativity.
-  3. `algebra.nix` — `Monoid` and `Category` as macro-generated
-     datatypes (single-constructor, named fields, dependent law
-     fields); instances `natAddMonoid` and `natCategory`; the
-     theorem that composition in `natCategory` is commutative,
-     stated through `natCategory.comp`.
-  4. `functor.nix` — `MonoidHom` and `Functor` as two more macro
-     datatypes; the doubling map packaged as both a monoid
-     homomorphism (`doubleHom`) and an endofunctor on `natCategory`
-     (`doubleFunctor`), showing the same map through two lenses.
-  5. `yoneda.nix` — Yoneda's lemma as an equivalence of types, with
-     both round-trip proofs (by J-based path induction).
+- **Category theory library** (`apps/category-theory/`) shows proofs,
+  arithmetic, algebraic structures, functors, and Yoneda through the HOAS
+  and datatype surface.
 - **Expression interpreter and build simulator** (`apps/interp/`,
-  `apps/build-sim/`) — effect-layer benchmarks at scale
+  `apps/build-sim/`) exercise the effect layer at scale.
 
 ## Quick start
 
@@ -204,90 +157,6 @@ let
   pkgs = import <nixpkgs> {};
   fx = import ./path/to/nix-effects { lib = pkgs.lib; };
 in ...
-```
-
-## Dependent types
-
-Every type is grounded in an MLTT type-checking kernel. The guard (`check`)
-is derived from the kernel's `decide` procedure. The verifier (`validate`)
-sends `typeCheck` effects through the freer monad for blame tracking. You
-choose the error policy by choosing the handler.
-
-### Primitives
-
-```nix
-fx.types.String   fx.types.Int    fx.types.Bool
-fx.types.Float    fx.types.Attrs  fx.types.Path
-fx.types.Function fx.types.Null   fx.types.Unit  fx.types.Any
-```
-
-Each wraps a `builtins.is*` check:
-
-```nix
-fx.types.String.check "hello"  # true
-fx.types.Int.check "hello"     # false
-```
-
-### Constructors
-
-Build compound types from simpler ones:
-
-```nix
-# Record with typed fields (open — extra fields allowed)
-PersonT = Record { name = String; age = Int; };
-PersonT.check { name = "Alice"; age = 30; }  # true
-
-# Homogeneous list
-(ListOf Int).check [ 1 2 3 ]  # true
-
-# Optional value
-(Maybe String).check null     # true
-(Maybe String).check "hello"  # true
-
-# Tagged union (two branches)
-(Either Int String).check { _tag = "Left"; value = 42; }   # true
-
-# Tagged union (open)
-(Variant { circle = Float; rect = Attrs; }).check { _tag = "circle"; value = 5.0; }  # true
-```
-
-`ListOf` sends per-element `typeCheck` effects with indexed context
-(`List[Int][0]`, `List[Int][1]`, ...) so handlers report exactly which
-element failed. `Record` sends per-field effects (`Record{age, name}.age`)
-and delegates to each field type's `.validate`, so nested Records and
-ListOf fields decompose recursively. `Variant` delegates to the active
-branch's `.validate`.
-
-### Refinement types
-
-Narrow any type with a predicate (Freeman & Pfenning 1991; cf. Rondon et al. 2008):
-
-```nix
-Nat = refined "Nat" Int (x: x >= 0);
-Port = refined "Port" Int (x: x >= 1 && x <= 65535);
-NonEmpty = refined "NonEmptyString" String (s: builtins.stringLength s > 0);
-
-# Predicate combinators
-refined "Safe" String (allOf [ (s: s != "") (s: !(builtins.elem s blocked)) ])
-refined "Either" Int (anyOf [ (x: x < 0) (x: x > 100) ])
-```
-
-Built-in refinements: `positive`, `nonNegative`, `inRange`, `nonEmpty`, `matching`.
-
-### Universe hierarchy
-
-Types themselves have types, stratified to prevent accidental paradoxes
-(universe levels are enforced by the kernel's `checkTypeLevel`; see [Known limitations](#known-limitations)):
-
-```nix
-Type_0  # Type of value types (Int, String, ...)
-Type_1  # Type of Type_0
-Type_2  # Type of Type_1
-# typeAt n works for any n; Type_0 through Type_4 are convenience aliases.
-# 4 is arbitrary — for NixOS configuration you'll rarely need more than Type_1.
-
-(typeAt 0).check Int    # true — Int lives at universe 0
-level Int               # 0
 ```
 
 ## Effects
@@ -355,8 +224,136 @@ If both are present, `abort` takes priority.
 | `conditions` | `signal`, `warn` | Common Lisp-style restarts |
 | `typecheck` | *sent by `type.validate`* | Type validation with blame |
 | `linear` | `acquire`, `consume`, `release` | Graded linear resource tracking |
+| `scope` | `run`, `runWith`, `stateful`, `provide`, `val` | Scoped handlers |
+| `hasHandler` | `hasHandler` | Runtime handler presence check |
 
-## Streams
+## Typed boundaries
+
+Every type is grounded in an MLTT type-checking kernel. The guard (`check`)
+is derived from the kernel's `decide` procedure. The verifier (`validate`)
+sends `typeCheck` effects through the freer monad for blame tracking. You
+choose the error policy by choosing the handler.
+
+### First-order types
+
+```nix
+fx.types.String   fx.types.Int    fx.types.Bool
+fx.types.Float    fx.types.Attrs  fx.types.Path
+fx.types.Function fx.types.Null   fx.types.Unit  fx.types.Any
+```
+
+Each wraps a `builtins.is*` check:
+
+```nix
+fx.types.String.check "hello"  # true
+fx.types.Int.check "hello"     # false
+```
+
+### Constructors
+
+Build compound types from simpler ones:
+
+```nix
+# Record with typed fields (open — extra fields allowed)
+PersonT = Record { name = String; age = Int; };
+PersonT.check { name = "Alice"; age = 30; }  # true
+
+# Homogeneous list
+(ListOf Int).check [ 1 2 3 ]  # true
+
+# Optional value
+(Maybe String).check null     # true
+(Maybe String).check "hello"  # true
+
+# Tagged union (two branches)
+(Either Int String).check { _tag = "Left"; value = 42; }   # true
+
+# Tagged union (open)
+(Variant { circle = Float; rect = Attrs; }).check { _tag = "circle"; value = 5.0; }  # true
+```
+
+`ListOf` sends per-element `typeCheck` effects with indexed context
+(`List[Int][0]`, `List[Int][1]`, ...) so handlers report exactly which
+element failed. `Record` sends per-field effects (`Record{age, name}.age`)
+and delegates to each field type's `.validate`, so nested Records and
+ListOf fields decompose recursively. `Variant` delegates to the active
+branch's `.validate`.
+
+### Refinement types
+
+Narrow any type with a predicate (Freeman & Pfenning 1991; cf. Rondon et al. 2008):
+
+```nix
+Nat = refined "Nat" Int (x: x >= 0);
+Port = refined "Port" Int (x: x >= 1 && x <= 65535);
+NonEmpty = refined "NonEmptyString" String (s: builtins.stringLength s > 0);
+
+# Predicate combinators
+refined "Safe" String (allOf [ (s: s != "") (s: !(builtins.elem s blocked)) ])
+refined "Either" Int (anyOf [ (x: x < 0) (x: x > 100) ])
+```
+
+Built-in refinements: `positive`, `nonNegative`, `inRange`, `nonEmpty`, `matching`.
+
+### Dependent and proof terms
+
+`Pi` encodes dependent functions, `Sigma` dependent pairs, and `DepRecord`
+dependent records. Identity types expose `Refl` and `J`; `sym`, `trans`,
+`cong`, and `transport` are derived from `J`.
+
+`fx.types.hoas` builds proof terms. `fx.types.extract` and
+`verifyAndExtract` check a HOAS body at the boundary and return an ordinary
+Nix callable when verification succeeds.
+
+### Universe levels
+
+Types themselves have types, stratified to prevent accidental paradoxes.
+The kernel is non-cumulative: moving data across universe levels is explicit
+via `LiftAt`, `liftAt`, and `lowerAt`:
+
+```nix
+Type_0  # Type of value types (Int, String, ...)
+Type_1  # Type of Type_0
+Type_2  # Type of Type_1
+# typeAt n works for any n; Type_0 through Type_4 are convenience aliases.
+# 4 is arbitrary — for NixOS configuration you'll rarely need more than Type_1.
+
+(typeAt 0).check Int    # true — Int lives at universe 0
+level Int               # 0
+```
+
+For kernel-backed types, levels are computed from the typing derivation.
+Transport across levels is represented in the term language instead of hidden
+behind cumulative subtyping.
+
+### Usage-checked values
+
+`Linear`, `Affine`, and `Graded` types track resource usage with exact,
+bounded, or graded counts.
+
+## Datatypes and descriptions
+
+Descriptions are reusable datatype shapes. `Desc` and `μ` provide the
+generic induction boundary; the public inductive prelude (`Nat`, `List`,
+`Sum`, `Bool`, `Eq`, `Fin`, `Vec`, `W`) and user-defined datatypes share
+the same description-backed macro surface.
+
+The datatype macro lets you declare single- or multi-constructor datatypes
+directly in HOAS with `datatype`, `datatypeP`, `datatypeI`, `datatypePI`,
+`conI`, `field`, `fieldD`, `piField`, `piFieldD`, `recField`, and
+`recFieldAt`. Dependent fields see prior fields by name (`prev.op`,
+`prev.comp`), parameters thread through a `paramPi` binder, and indexed
+families can compute their target index.
+
+Chains of saturated or linear-recursive constructors flatten to flat
+`desc-con` terms at elaboration time, so deeply nested generated lists and
+natural numbers remain stack-safe.
+
+The category theory library in [`apps/category-theory/`](apps/category-theory/)
+uses the same surface for arithmetic proofs, algebraic structures, functors,
+and Yoneda's lemma.
+
+## Streams and pipelines
 
 Effectful lazy sequences. Each step yields `Done` (finished) or `More`
 (element + continuation):
@@ -369,11 +366,12 @@ result = fx.run
 # result.value = 55 (1² + 2² + 3² + 4² + 5²)
 ```
 
-Available: `fromList`, `iterate`, `range`, `replicate`, `map`, `filter`,
-`scanl`, `take`, `takeWhile`, `drop`, `fold`, `toList`, `length`, `sum`,
-`any`, `all`, `concat`, `interleave`, `zip`, `zipWith`.
+Available: `fromList`, `iterate`, `range`, `replicate`, `map`, `flatMap`,
+`filter`, `scanl`, `take`, `takeWhile`, `drop`, `fold`, `toList`, `length`,
+`sum`, `signal`, `signalOn`, `any`, `all`, `concat`, `interleave`, `zip`,
+`zipWith`.
 
-## Sugar
+## Syntax sugar
 
 `fx.sugar` is an opt-in syntax layer. `do` and `letM` replace nested
 `bind` chains; `__div` (behind `fx.sugar.operators`) lets you write
@@ -388,7 +386,7 @@ and forward-compatibility notes.
 The `fx` attrset is the entire public API:
 
 ```
-fx.pure         fx.impure       fx.isPure       fx.match
+fx.pure         fx.impure       fx.isPure       fx.isComp      fx.match
 fx.send         fx.bind         fx.map          fx.seq
 fx.pipe         fx.kleisli
 fx.run          fx.handle       fx.adapt        fx.adaptHandlers
@@ -419,14 +417,15 @@ fx.effects.get      fx.effects.put      fx.effects.modify   fx.effects.gets
 fx.effects.state    fx.effects.error    fx.effects.typecheck
 fx.effects.conditions  fx.effects.reader  fx.effects.writer
 fx.effects.acc      fx.effects.choice
-fx.effects.linear
+fx.effects.linear   fx.effects.scope     fx.effects.hasHandler
 
 fx.stream.done      fx.stream.more      fx.stream.fromList
 fx.stream.iterate   fx.stream.range     fx.stream.replicate
-fx.stream.map       fx.stream.filter    fx.stream.scanl
+fx.stream.map       fx.stream.flatMap   fx.stream.filter    fx.stream.scanl
 fx.stream.take      fx.stream.takeWhile fx.stream.drop
 fx.stream.fold      fx.stream.toList    fx.stream.length
-fx.stream.sum       fx.stream.any       fx.stream.all
+fx.stream.sum       fx.stream.signal    fx.stream.signalOn
+fx.stream.any       fx.stream.all
 fx.stream.concat    fx.stream.interleave  fx.stream.zip  fx.stream.zipWith
 
 fx.types.hoas                           fx.types.verified
@@ -469,7 +468,7 @@ the continuation queue inline via recursive `applyQueue`, and produces the
 next computation node — one genericClosure step per effect.
 `deepSeq` on the handler state in the `key` field breaks thunk chains
 that would otherwise blow memory. Test suite validates 100,000 operations;
-manual runs confirm 1,000,000 operations in ~3 seconds with constant memory.
+deep pure bind chains use the iterative queue path.
 
 ## Known limitations
 

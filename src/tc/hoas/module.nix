@@ -1,9 +1,9 @@
 # fx.tc.hoas — HOAS surface combinators module head.
 #
 # Public export assembly. `self` is the disjoint-union fixpoint of
-# `combinators.nix` (kernel-primitive HOAS nodes + binding forms +
-# descriptions + eliminator wrappers), `desc.nix` (interpHoasAt / allHoasAt
-# helpers + prelude descriptions), `datatype.nix` (datatype macro +
+# `combinators.nix` (core HOAS nodes + binding forms +
+# descriptions + eliminator wrappers), `desc.nix` (prelude descriptions and
+# descDesc encoders), `datatype.nix` (datatype macro +
 # prelude instances + surface forwarders), and `elaborate.nix` (HOAS → Tm
 # elaborator + kernel-checker convenience wrappers); `partTests` is the
 # aggregated test map.
@@ -32,7 +32,7 @@ api.mk {
     - `string`, `int_`, `float_`, `attrs`, `path`, `function_`, `any` — primitive types
     - `listOf : Hoas → Hoas` — List(elem)
     - `sum : Hoas → Hoas → Hoas` — Sum(left, right)
-    - `eq : Hoas → Hoas → Hoas → Hoas` — Eq(type, lhs, rhs)
+    - `eq : Hoas → Hoas → Hoas → Hoas` — generated EqDT(type, lhs, rhs)
     - `u : Int → Hoas` — Universe at level
     - `forall : String → Hoas → (Hoas → Hoas) → Hoas` — Π-type (Nix lambda for body)
     - `sigma : String → Hoas → (Hoas → Hoas) → Hoas` — Σ-type
@@ -47,18 +47,18 @@ api.mk {
 
     - `lam : String → Hoas → (Hoas → Hoas) → Hoas` — λ-abstraction
     - `let_ : String → Hoas → Hoas → (Hoas → Hoas) → Hoas` — let binding
-    - `zero`, `succ`, `true_`, `false_`, `tt`, `refl` — intro forms
+    - `zero`, `succ`, `true_`, `false_`, `tt`, `refl` — intro forms; `refl` is check-mode only
     - `nil`, `cons`, `pair`, `inl`, `inr` — data constructors
     - `stringLit`, `intLit`, `floatLit`, `attrsLit`, `pathLit`, `fnLit`, `anyLit` — primitive literals
     - `absurd`, `ann`, `app`, `fst_`, `snd_` — elimination/annotation
 
     ## Eliminators
 
-    - `ind` — NatElim(motive, base, step, scrut)
+    - `ind` — generated natural eliminator adapter
     - `boolElim` — (k : Level) → (Q : bool → U(k)) → Q true_ → Q false_ → (b : bool) → Q b
-    - `listElim` — ListElim(elem, motive, onNil, onCons, scrut)
-    - `sumElim` — SumElim(left, right, motive, onLeft, onRight, scrut)
-    - `j` — J(type, lhs, motive, base, rhs, eq)
+    - `listElim` — generated list eliminator adapter
+    - `sumElim` — generated sum eliminator adapter
+    - `j` — EqDT eliminator adapter with J-shaped arguments
 
     ## Elaboration
 
@@ -79,7 +79,7 @@ api.mk {
   value = {
     # Types
     inherit (self)
-      nat bool unit void string int_ float_ attrs path function_ any listOf sum eq u
+      nat bool unit void w string int_ float_ attrs path function_ any listOf sum sumAt eq u
       record maybe variant;
     # Level sort and its constructors. `level` is the universe-level
     # type former (inhabits U(0)); `levelZero`/`levelSuc`/`levelMax`
@@ -91,11 +91,11 @@ api.mk {
     inherit (self) forall sigma lam let_;
     # Terms
     inherit (self)
-      zero succ true_ false_ tt nil cons pair inl inr refl
+      zero succ true_ false_ tt nil cons pair inl inr inlAt inrAt sup refl
       stringLit intLit floatLit attrsLit pathLit fnLit anyLit
       opaqueLam strEq absurd ann app fst_ snd_;
     # Eliminators
-    inherit (self) ind boolElim listElim sumElim j;
+    inherit (self) ind boolElim listElim sumElim sumElimAt j;
     # Propositional truncation (Squash). `squash A` formation,
     # `squashIntro a` introduction, `squashElim A B f x` eliminator
     # restricted to `Squash`-typed motives.
@@ -108,13 +108,14 @@ api.mk {
                    piIWithEq
                    descRet descArg descArgAt descArgWithEq descRec
                    descPi descPiAt descPiWithEq
+                   plusI plus
                    descCon descInd descElim
                    interpD allD everywhereD
                    congSuc maxSucDom;
     # Lift primitive — Tarski + non-cumulative cross-level transport.
     # `LiftAt l m A : U(m)` with `l ≤ m`; `liftAt l m A a` /
     # `lowerAt l m A x` introduce / eliminate. The `eq` witness is
-    # auto-emitted as `mkRefl` by the elaborator. The `*WithEq` variants
+    # auto-emitted as `mkBootRefl` by the elaborator. The `*WithEq` variants
     # take an explicit `eq` term — used when `l`/`m` are level-polymorphic
     # binders and `convLevel` cannot decide `refl`.
     inherit (self) LiftAt liftAt lowerAt
@@ -141,18 +142,20 @@ api.mk {
     # Vec prelude — indexed family `Vec A : Nat → U`. `vhead` / `vtail`
     # extract head / tail of a non-empty vector via `natCaseU`- /
     # `natPredCase`-motives over `vecElim`. `natPredCase` dispatches the
-    # succ-case result type on the payload's predecessor field via
-    # `sumElimPrim` on the plus-summand.
+    # succ-case result type through the private plus-summand eliminator.
     inherit (self) natCaseU natPredCase vecDesc vec vnil vcons vecElim vhead vtail;
-    # Eq-as-description — the kernel-primitive `Eq` derived as an
-    # inductive family over a single retI-only description.
-    # `eqIsoFwd` / `eqIsoBwd` prove the iso with the primitive.
+    # Eq-as-description — public equality as an indexed datatype over a
+    # single retI-only description. The iso helpers bridge to the private
+    # bootstrap identity used by descRet.
     inherit (self) eqDesc eqDT reflDT eqToEqDT eqDTToEq eqIsoFwd eqIsoBwd;
     # Datatype macro
     inherit (self)
-      field fieldD recField recFieldAt piField piFieldD
+      field fieldD fieldAt fieldDAt fieldAtWithEq fieldDAtWithEq
+      recField recFieldAt
+      piField piFieldD piFieldAt piFieldDAt piFieldAtWithEq piFieldDAtWithEq
       con conI
-      datatype datatypeI datatypeP datatypePI;
+      datatype datatypeAt datatypeI datatypeP datatypePAt datatypePI;
+    inherit (self) WDT wDesc wElim;
     # Elaboration
     inherit (self) elaborate elab reifyLevel;
     # HOAS surface → SourceMap walker, and the pair-producing `elab2`

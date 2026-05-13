@@ -252,8 +252,8 @@ in {
       # carrying `_dtypeMeta`). Surface dispatch reads constructor field-kind
       # signatures from metadata, mirroring the "app" branch's pattern for
       # parametric types. This keeps surface elaboration invariant under the
-      # kernel's choice of description representation (primitive `VDescPlus`
-      # vs encoded `VDescCon`); the elaborator never inspects kernel `D`.
+      # kernel's encoded description representation; the elaborator never
+      # inspects kernel `D`.
       # `H.unit` has `_htag = "unit"` and never reaches this branch.
       else if t == "mu" then
         let meta = hoasTy._dtypeMeta or null; in
@@ -297,16 +297,21 @@ in {
             builtins.length m.cons == 2
             && fieldKinds (builtins.elemAt m.cons 0) == [ "data" ]
             && fieldKinds (builtins.elemAt m.cons 1) == [ "data" ];
+          sumArgs =
+            if meta != null && isSumShape meta && builtins.length args == 2
+            then { left = builtins.elemAt args 0; right = builtins.elemAt args 1; }
+            else if meta != null && isSumShape meta && builtins.length args == 3
+            then { left = builtins.elemAt args 1; right = builtins.elemAt args 2; }
+            else null;
         in
         if meta == null
         then throw "elaborateValue: app head carries no _dtypeMeta (non-datatype app has no value-walker)"
         else if isListShape meta && builtins.length args == 1
         then self.elaborateValue { _htag = "list"; elem = builtins.elemAt args 0; } value
-        else if isSumShape meta && builtins.length args == 2
+        else if sumArgs != null
         then self.elaborateValue {
           _htag = "sum";
-          left = builtins.elemAt args 0;
-          right = builtins.elemAt args 1;
+          inherit (sumArgs) left right;
         } value
         else throw "elaborateValue: app-form datatype '${meta.name}' has no dedicated walker (shape: ${builtins.toJSON (map fieldKinds meta.cons)})"
 
@@ -500,6 +505,12 @@ in {
             builtins.length m.cons == 2
             && fieldKinds (builtins.elemAt m.cons 0) == [ "data" ]
             && fieldKinds (builtins.elemAt m.cons 1) == [ "data" ];
+          sumArgs =
+            if meta != null && isSumShape meta && builtins.length args == 2
+            then { left = builtins.elemAt args 0; right = builtins.elemAt args 1; }
+            else if meta != null && isSumShape meta && builtins.length args == 3
+            then { left = builtins.elemAt args 1; right = builtins.elemAt args 2; }
+            else null;
         in
         if meta == null
         then [{ inherit path; msg = "app head carries no _dtypeMeta (non-datatype app has no value-walker)"; }]
@@ -507,11 +518,10 @@ in {
         then self.validateValue path
                { _htag = "list"; elem = builtins.elemAt args 0; }
                value
-        else if isSumShape meta && builtins.length args == 2
+        else if sumArgs != null
         then self.validateValue path {
           _htag = "sum";
-          left = builtins.elemAt args 0;
-          right = builtins.elemAt args 1;
+          inherit (sumArgs) left right;
         } value
         else [{ inherit path; msg = "app-form datatype '${meta.name}' has no dedicated walker"; }]
 
@@ -670,11 +680,11 @@ in {
     };
     "elab-val-zero" = {
       expr = let e = H.elab (elaborateValue H.nat 0); in "${e.tag}/${e.d.tag}";
-      expected = "desc-con/inl";
+      expected = "desc-con/boot-inl";
     };
     "elab-val-nat-3" = {
       expr = let e = H.elab (elaborateValue H.nat 3); in "${e.tag}/${e.d.tag}";
-      expected = "desc-con/inr";
+      expected = "desc-con/boot-inr";
     };
     "elab-val-unit" = {
       expr = (H.elab (elaborateValue H.unit null)).tag;
@@ -682,21 +692,21 @@ in {
     };
     "elab-val-nil" = {
       expr = let t = H.elab (elaborateValue (H.listOf H.nat) []); in "${t.tag}/${t.d.tag}";
-      expected = "desc-con/inl";
+      expected = "desc-con/boot-inl";
     };
     "elab-val-cons" = {
       expr = let t = H.elab (elaborateValue (H.listOf H.nat) [0 1]); in "${t.tag}/${t.d.tag}";
-      expected = "desc-con/inr";
+      expected = "desc-con/boot-inr";
     };
     "elab-val-inl" = {
       expr = let t = H.elab (elaborateValue (H.sum H.nat H.bool) { _tag = "Left"; value = 0; }); in
         "${t.tag}/${t.d.tag}";
-      expected = "desc-con/inl";
+      expected = "desc-con/boot-inl";
     };
     "elab-val-inr" = {
       expr = let t = H.elab (elaborateValue (H.sum H.nat H.bool) { _tag = "Right"; value = true; }); in
         "${t.tag}/${t.d.tag}";
-      expected = "desc-con/inr";
+      expected = "desc-con/boot-inr";
     };
     "elab-val-pair" = {
       expr = (H.elab (elaborateValue (H.sigma "x" H.nat (_: H.bool)) { fst = 0; snd = true; })).tag;
@@ -930,7 +940,7 @@ in {
         ty = H.sigma "x" H.bool (x:
           let e = H.elab x;
               dt = if e.tag == "desc-con" && e ? d then e.d.tag else null;
-          in if dt == "inl" then H.nat
+          in if dt == "boot-inl" then H.nat
              else H.bool);
         # fst=true means snd should be Nat, but we pass a bool
         val = { fst = true; snd = false; };
@@ -944,7 +954,7 @@ in {
         ty = H.sigma "x" H.bool (x:
           let e = H.elab x;
               dt = if e.tag == "desc-con" && e ? d then e.d.tag else null;
-          in if dt == "inl" then H.nat
+          in if dt == "boot-inl" then H.nat
              else H.bool);
         val = { fst = true; snd = 42; };
       in validateValue "$" ty val;
@@ -957,7 +967,7 @@ in {
         ty = H.sigma "x" H.bool (x:
           let e = H.elab x;
               dt = if e.tag == "desc-con" && e ? d then e.d.tag else null;
-          in if dt == "inl" then H.nat
+          in if dt == "boot-inl" then H.nat
              else H.bool);
         # fst=true → snd should be Nat, but we pass a string
         val = { fst = true; snd = "wrong"; };

@@ -3,7 +3,7 @@
 # `check : Ctx → Tm → Val → Computation Tm` verifies that `tm` has type
 # `ty` and returns an elaborated term. The dispatch handles introduction
 # forms against their corresponding type formers (Lam/Pi, Pair/Sigma,
-# Zero/Nat, etc.) and falls through to synthesis for anything not
+# Unit, Sum, Desc/Mu, etc.) and falls through to synthesis for anything not
 # matched, using `conv` to compare the inferred type against the
 # expected one (sub rule, with cumulativity for universes).
 #
@@ -17,11 +17,9 @@
 # Π-chain matching the expected domains and validate the innermost
 # codomain is a universe.
 #
-# The Succ and Cons branches trampoline over `builtins.genericClosure`
-# to handle deep chains without stack pressure (§11.3). The `desc-con`
-# branch peels homogeneous recursive-data chains along their single
-# recursive position when the outer description is a plus-coproduct
-# `A ⊕ B` with exactly one linear-recursive summand.
+# The `desc-con` branch peels homogeneous recursive-data chains along
+# their single recursive position when the outer description is a
+# plus-coproduct `A ⊕ B` with exactly one linear-recursive summand.
 { self, fx, ... }:
 
 let
@@ -39,7 +37,28 @@ let
   D = fx.diag.error;
   P = fx.diag.positions;
 
-  H = fx.tc.hoas;
+  evalDescRef = env: ref:
+    ref // {
+      I = E.eval env ref.I;
+      level = E.eval env ref.level;
+      params = map (E.eval env) (ref.params or []);
+    };
+
+  listConv = depth: xs: ys:
+    builtins.length xs == builtins.length ys
+    && builtins.foldl'
+      (ok: i: ok && C.conv depth (builtins.elemAt xs i) (builtins.elemAt ys i))
+      true
+      (builtins.genList (i: i) (builtins.length xs));
+
+  descRefConv = depth: r1: r2:
+    (r1.kind or null) == (r2.kind or null)
+    && (r1.arity or null) == (r2.arity or null)
+    && (r1.indexed or null) == (r2.indexed or null)
+    && (r1.constructors or []) == (r2.constructors or [])
+    && C.conv depth r1.I r2.I
+    && C.conv depth r1.level r2.level
+    && listConv depth (r1.params or []) (r2.params or []);
 
   # Hoist fixpoint-resolved rule-body combinators out of the rule
   # dispatch. Each `self.X` is an attribute lookup on the kernel
@@ -47,6 +66,10 @@ let
   # plain variable reference, eliminating the repeated lookup in deep
   # rule-descent loops.
   bindP = self.bindP;
+
+  sameSyntax = a: b:
+    let r = builtins.tryEval (a == b); in
+    r.success && r.value;
 in {
   scope = {
     # Build a 1-layer non-dependent domain chain from a single domain Val.
@@ -124,63 +147,22 @@ in {
           bind (self.check ctx tm.snd bTy) (b':
             pure (T.mkPair a' b')))
 
-      else if t == "zero" && ty.tag == "VNat" then pure T.mkZero
-
-      # Succ trampolined for large naturals (S^10000+): peel Succ layers,
-      # check the base once, fold mkSucc back.
-      else if t == "succ" && ty.tag == "VNat" then
-        let
-          chain = builtins.genericClosure {
-            startSet = [{ key = 0; val = tm; }];
-            operator = item:
-              if item.val.tag == "succ"
-              then [{ key = item.key + 1; val = item.val.pred; }]
-              else [];
-          };
-          n = builtins.length chain - 1;
-          base = (builtins.elemAt chain n).val;
-        in bind (self.check ctx base V.vNat) (base':
-          pure (builtins.foldl' (acc: _: T.mkSucc acc) base' (builtins.genList (x: x) n)))
-
-      else if t == "nil" && ty.tag == "VList" then
-        pure (T.mkNil (Q.quote ctx.depth ty.elem))
-
-      # Cons trampolined for deep lists (5000+ elements).
-      else if t == "cons" && ty.tag == "VList" then
-        let
-          elemTy = ty.elem;
-          elemTm = Q.quote ctx.depth elemTy;
-          chain = builtins.genericClosure {
-            startSet = [{ key = 0; val = tm; }];
-            operator = item:
-              if item.val.tag == "cons"
-              then [{ key = item.key + 1; val = item.val.tail; }]
-              else [];
-          };
-          n = builtins.length chain - 1;
-          base = (builtins.elemAt chain n).val;
-        in bind (self.check ctx base ty) (baseTm:
-          builtins.foldl' (accComp: i:
-            let node = (builtins.elemAt chain (n - 1 - i)).val; in
-            bind accComp (acc:
-              bind (self.check ctx node.head elemTy) (h':
-                pure (T.mkCons elemTm h' acc)))
-          ) (pure baseTm) (builtins.genList (x: x) n))
-
       else if t == "tt" && ty.tag == "VUnit" then pure T.mkTt
 
-      else if t == "inl" && ty.tag == "VSum" then
+      else if t == "boot-inl" && ty.tag == "VBootSum" then
         bind (self.check ctx tm.term ty.left) (v':
-          pure (T.mkInl (Q.quote ctx.depth ty.left) (Q.quote ctx.depth ty.right) v'))
+          pure (T.mkBootInl (Q.quote ctx.depth ty.left) (Q.quote ctx.depth ty.right) v'))
 
-      else if t == "inr" && ty.tag == "VSum" then
+      else if t == "boot-inr" && ty.tag == "VBootSum" then
         bind (self.check ctx tm.term ty.right) (v':
-          pure (T.mkInr (Q.quote ctx.depth ty.left) (Q.quote ctx.depth ty.right) v'))
+          pure (T.mkBootInr (Q.quote ctx.depth ty.left) (Q.quote ctx.depth ty.right) v'))
 
       # Refl checked against Eq — verify lhs ≡ rhs.
-      else if t == "refl" && ty.tag == "VEq" then
-        if C.conv ctx.depth ty.lhs ty.rhs
-        then pure T.mkRefl
+      else if t == "boot-refl" && ty.tag == "VBootEq" then
+        if ty.lhs.tag == "VTt" && ty.rhs.tag == "VTt"
+        then pure T.mkBootRefl
+        else if C.conv ctx.depth ty.lhs ty.rhs
+        then pure T.mkBootRefl
         else send "typeError" {
           error = D.mkKernelError {
             rule     = "refl";
@@ -244,236 +226,12 @@ in {
             }
           else pure (T.mkOpaqueLam tm._fnBox piTyTm))
 
-      # desc-ret checked against Desc I — j must inhabit the index type.
-      # `bindP P.DRetIndex` tags the sub-check so a failure inside j's
-      # type-matching surfaces at the `ret.j` position.
-      else if t == "desc-ret" && ty.tag == "VDesc" then
-        bindP P.DRetIndex (self.check ctx tm.j ty.I) (jTm:
-          let
-            I_q = Q.quote ctx.depth ty.I;
-            L_q = Q.quote ctx.depth ty.level;
-          in
-            pure (T.mkApp
-                   (T.mkApp
-                     (T.mkApp H.encodeDescRetTm I_q)
-                     L_q)
-                   jTm))
-
-      # desc-arg checked against Desc^L I — S : U(l) under the per-
-      # summand Level `l`, then the body T is a Desc^L I in the context
-      # extended by `_ : S` (T is the closure body, not a lambda; the
-      # binding is materialised at eval time via `mkClosure env tm.T`).
-      # The bound witness `eq : Eq Level (max l k) k` proves `l ≤ k`
-      # decidably via the `convLevel` semilattice quotient. Sub-
-      # delegations are wrapped in `bindP` so a sub-term failure
-      # inherits the descent coordinate (`arg.k`, `arg.S`, `arg.eq`,
-      # or `arg.T`) at the caller site.
-      #
-      # `Desc^L I` is the type of homogeneous-L descriptions: every
-      # `descArg` / `descPi` constructor inside must bind its sort at a
-      # per-summand level `l ≤ L`. CHECK propagates `ty` (= `Desc^L I`)
-      # into T so any nested arg / pi constructors recurse through this
-      # same rule and inherit the description-level equality constraint.
-      # The local `kVal ≡ L` check rejects constructors whose announced
-      # description-level does not match the surrounding `Desc^L`: this
-      # is distinct from the per-summand bound `l ≤ k` proved by `eq`.
-      # The eliminator (`desc-elim`) relies on the description-level
-      # invariant — its case bodies bind their sort at the leading
-      # `K` slot, and that slot is checked against `sTy.level` so the
-      # static return type matches the runtime scrutinee.
-      else if t == "desc-arg" && ty.tag == "VDesc" then
-        let
-          I_q = Q.quote ctx.depth ty.I;
-          L_q = Q.quote ctx.depth ty.level;
-          sortAt = kVal: lVal:
-            bindP P.DArgSort (self.check ctx tm.S (V.vU lVal)) (sTm:
-              let sVal = E.eval ctx.env sTm;
-                  ctx' = self.extend ctx "_" sVal;
-              in bindP P.DArgBody (self.check ctx' tm.T ty) (tTm:
-                let
-                  tLam = T.mkLam "_" sTm tTm;
-                  homogeneous =
-                    tm.k.tag == "level-zero" && tm.l.tag == "level-zero"
-                    && tm.eq.tag == "refl";
-                  finish = eqTm:
-                    if C.convLevel kVal ty.level
-                    then if homogeneous
-                         then pure (T.mkApp
-                                    (T.mkApp
-                                      (T.mkApp
-                                        (T.mkApp H.encodeDescArgTm I_q)
-                                        L_q)
-                                      sTm)
-                                    tLam)
-                         else pure (T.mkApp
-                                    (T.mkApp
-                                      (T.mkApp
-                                        (T.mkApp
-                                          (T.mkApp
-                                            (T.mkApp H.encodeDescArgAtTm I_q)
-                                            L_q)
-                                          tm.l)
-                                        eqTm)
-                                      sTm)
-                                    tLam)
-                    else send "typeError" {
-                      error = D.mkKernelError {
-                        position = P.DArgLevel;
-                        rule     = "desc-arg";
-                        msg      = "desc-arg: argument level must equal description level";
-                        expected = Q.quote ctx.depth ty.level;
-                        got      = Q.quote ctx.depth kVal;
-                      };
-                    };
-                in
-                  if homogeneous
-                  then finish T.mkRefl
-                  else bindP P.DArgEq
-                         (self.check ctx tm.eq
-                           (V.vEq V.vLevel (V.vLevelMax lVal kVal) kVal))
-                         finish));
-          withL = kVal:
-            if tm.l.tag == "level-zero"
-            then sortAt kVal V.vLevelZero
-            else bindP P.DArgSort (self.check ctx tm.l V.vLevel) (lTm:
-              sortAt kVal (E.eval ctx.env lTm));
-        in
-          if tm.k.tag == "level-zero"
-          then withL V.vLevelZero
-          else bindP P.DArgLevel (self.check ctx tm.k V.vLevel) (kTm:
-            withL (E.eval ctx.env kTm))
-
-      # desc-rec checked against Desc I — j : I picks the recursive
-      # child's index, and the tail D : Desc I continues the description.
-      # `bindP P.DRecIndex` and `bindP P.DRecTail` tag the two sub-
-      # delegations so failures carry the descent coordinate.
-      else if t == "desc-rec" && ty.tag == "VDesc" then
-        bindP P.DRecIndex (self.check ctx tm.j ty.I) (jTm:
-          bindP P.DRecTail (self.check ctx tm.D ty) (dTm:
-            let
-              I_q = Q.quote ctx.depth ty.I;
-              L_q = Q.quote ctx.depth ty.level;
-            in
-              pure (T.mkApp
-                     (T.mkApp
-                       (T.mkApp
-                         (T.mkApp H.encodeDescRecTm I_q)
-                         L_q)
-                       jTm)
-                     dTm)))
-
-      # desc-pi checked against Desc^L I — S : U(l), f : S → I selects
-      # the index per branch, and the tail D : Desc^L I continues. f's
-      # Pi type is built with a non-dependent codomain quoting ty.I at
-      # the closure-body depth. Five sub-delegations: `DPiLevel` for
-      # the description-level argument, `DPiSort` for the per-summand
-      # domain sort, `DPiEq` for the bound witness, `DPiFn` for the
-      # index selector, `DPiBody` for the tail description.
-      #
-      # Like `desc-arg`, soundness requires `kVal ≡ L`: every
-      # `descPi` constructor inside `Desc^L I` announces a
-      # description-level matching L. The bound witness
-      # `eq : Eq Level (max l k) k` proves the per-summand `l ≤ k`.
-      # The recursive check on the tail `D : Desc^L I` propagates the
-      # description-level constraint downward. See the desc-arg rule
-      # for full rationale.
-      else if t == "desc-pi" && ty.tag == "VDesc" then
-        let
-          I_q = Q.quote ctx.depth ty.I;
-          L_q = Q.quote ctx.depth ty.level;
-          sortAt = kVal: lVal:
-            bindP P.DPiSort (self.check ctx tm.S (V.vU lVal)) (sTm:
-              let sVal = E.eval ctx.env sTm;
-                  fTy = V.vPi "_" sVal (V.mkClosure ctx.env
-                    (Q.quote (ctx.depth + 1) ty.I));
-              in bindP P.DPiFn (self.check ctx tm.f fTy) (fTm:
-                bindP P.DPiBody (self.check ctx tm.D ty) (dTm:
-                  let
-                    homogeneous =
-                      tm.k.tag == "level-zero" && tm.l.tag == "level-zero"
-                      && tm.eq.tag == "refl";
-                    finish = eqTm:
-                      if C.convLevel kVal ty.level
-                      then if homogeneous
-                           then pure (T.mkApp
-                                       (T.mkApp
-                                         (T.mkApp
-                                           (T.mkApp
-                                             (T.mkApp H.encodeDescPiTm I_q)
-                                             L_q)
-                                           sTm)
-                                         fTm)
-                                       dTm)
-                           else pure (T.mkApp
-                                       (T.mkApp
-                                         (T.mkApp
-                                           (T.mkApp
-                                             (T.mkApp
-                                               (T.mkApp
-                                                 (T.mkApp H.encodeDescPiAtTm I_q)
-                                                 L_q)
-                                               tm.l)
-                                             eqTm)
-                                           sTm)
-                                         fTm)
-                                       dTm)
-                      else send "typeError" {
-                        error = D.mkKernelError {
-                          position = P.DPiLevel;
-                          rule     = "desc-pi";
-                          msg      = "desc-pi: argument level must equal description level";
-                          expected = Q.quote ctx.depth ty.level;
-                          got      = Q.quote ctx.depth kVal;
-                        };
-                      };
-                  in
-                    if homogeneous
-                    then finish T.mkRefl
-                    else bindP P.DPiEq
-                           (self.check ctx tm.eq
-                             (V.vEq V.vLevel (V.vLevelMax lVal kVal) kVal))
-                           finish)));
-          withL = kVal:
-            if tm.l.tag == "level-zero"
-            then sortAt kVal V.vLevelZero
-            else bindP P.DPiSort (self.check ctx tm.l V.vLevel) (lTm:
-              sortAt kVal (E.eval ctx.env lTm));
-        in
-          if tm.k.tag == "level-zero"
-          then withL V.vLevelZero
-          else bindP P.DPiLevel (self.check ctx tm.k V.vLevel) (kTm:
-            withL (E.eval ctx.env kTm))
-
-      # desc-plus checked against Desc I — both summands share the same
-      # index type. Mirrors the desc-ret/arg/rec/pi CHECK rules so that
-      # `plus A B` is accepted by the bidirectional kernel whenever A or
-      # B carries a check-only leaf (e.g. `retI tt` where `tt` has no
-      # infer rule). Without this rule the check-mode path falls through
-      # to subsumption + infer, and infer on `plus` recursively requires
-      # `A` to be inferable, which fails for ret-only summands.
-      # `bindP P.DPlusL` / `P.DPlusR` tag the two summand sub-checks.
-      else if t == "desc-plus" && ty.tag == "VDesc" then
-        bindP P.DPlusL (self.check ctx tm.A ty) (aTm:
-          bindP P.DPlusR (self.check ctx tm.B ty) (bTm:
-            let
-              I_q = Q.quote ctx.depth ty.I;
-              L_q = Q.quote ctx.depth ty.level;
-            in
-              pure (T.mkApp
-                     (T.mkApp
-                       (T.mkApp
-                         (T.mkApp H.encodeDescPlusTm I_q)
-                         L_q)
-                       aTm)
-                     bTm)))
-
       # desc-con checked against Mu — trampolined for deep recursive
       # data (5000+). Peels a homogeneous desc-con chain along its
       # single recursive position when D classifies as plus A B with
       # exactly one of A, B linear-recursive (descArg-chain ending in
-      # `descRec descRet`). Plus may be primitive `VDescPlus` or encoded
-      # `VDescCon` at descDesc summand idx=4; `linearProfile` accepts
-      # both representations and walks the encoded inr-chain when needed.
+      # `descRec descRet`). Plus is read through the private desc-view;
+      # `linearProfile` accepts both primitive and encoded descriptions.
       #
       # Payload at each layer is `inl/inr lTy rTy (pair f_0 … (pair REC refl))`
       # — n data fields, the recursive tail, and a refl witness for
@@ -494,10 +252,53 @@ in {
         in bind (self.checkDescAtAnyLevel ctx tm.D iTyVal) (dInfo:
           let dTm = dInfo.term;
               dVal = E.eval ctx.env dTm;
+              cert = tm._descConCert or null;
+              certRef = if cert == null then null else evalDescRef ctx.env cert.ref;
+              certHasTarget = cert != null && (cert ? target);
+              certTargetIsIndex =
+                certHasTarget && sameSyntax cert.target tm.i;
+              certTargetVal =
+                if !certHasTarget || certTargetIsIndex then null
+                else E.eval ctx.env cert.target;
+              certMatchesDesc =
+                cert != null
+                && (cert.kind or null) == "datatype-con-payload"
+                && dVal ? _descRef
+                && ty.D ? _descRef
+                && descRefConv ctx.depth dVal._descRef ty.D._descRef
+                && descRefConv ctx.depth certRef ty.D._descRef;
+              certConstructors =
+                if certRef == null then [] else certRef.constructors or [];
+              certCtor = if cert == null then null else cert.ctor or null;
+              certCtorShape =
+                if builtins.isInt certCtor
+                   && certCtor >= 0
+                   && certCtor < builtins.length certConstructors
+                then builtins.elemAt certConstructors certCtor
+                else null;
+              certFieldKinds =
+                if certCtorShape == null then []
+                else certCtorShape.fieldKinds or [];
+              certHasNoRec =
+                builtins.foldl'
+                  (ok: kind: ok && kind != "recAt")
+                  true
+                  certFieldKinds;
+              payloadMatchesCtor = ctor: arity: payload:
+                if arity == 1 then true
+                else if ctor == 0 then payload.tag == "boot-inl"
+                else payload.tag == "boot-inr"
+                     && payloadMatchesCtor (ctor - 1) (arity - 1) payload.term;
+              certNonRecursiveShape =
+                certMatchesDesc
+                && certCtorShape != null
+                && (cert.fieldCount or (-1)) == builtins.length certFieldKinds
+                && certHasNoRec
+                && payloadMatchesCtor certCtor (builtins.length certConstructors) tm.d;
               muDFunc = V.vLam "_i" iTyVal (V.mkClosure [ dVal iTyVal ]
                 (T.mkMu (T.mkVar 2) (T.mkVar 1) (T.mkVar 0)));
           in
-          if !(C.conv ctx.depth dVal ty.D)
+          if !(certMatchesDesc || C.conv ctx.depth dVal ty.D)
           then send "typeError" {
             error = D.mkKernelError {
               position = P.MuDesc;
@@ -508,7 +309,11 @@ in {
             };
           }
           else
-            bind (self.check ctx tm.i iTyVal) (topITm:
+            bind (
+              if iTyVal.tag == "VUnit" && tm.i.tag == "tt"
+              then pure T.mkTt
+              else self.check ctx tm.i iTyVal
+            ) (topITm:
             let topIVal = E.eval ctx.env topITm; in
             if !(C.conv ctx.depth topIVal ty.i)
             then send "typeError" {
@@ -521,16 +326,19 @@ in {
               };
             }
             else
+              if certNonRecursiveShape
+                 && (certTargetIsIndex || (certHasTarget && C.conv ctx.depth certTargetVal topIVal))
+              then
+                let interpTy = E.vInterpD dInfo.level iTyVal ty.D muDFunc topIVal; in
+                bind (self.check ctx tm.d interpTy) (dataTm:
+                  pure (T.mkDescConWithCert dTm topITm dataTm cert))
+              else
               let
-                # Classify ty.D as plus(A, B) with one linear-recursive
-                # side. `plusSides` extracts the two summands from either
-                # primitive `VDescPlus` or encoded `VDescCon` (idx=4).
+                # Classify ty.D as plus(A, B) with one linear-recursive side.
                 plusSides =
-                  if ty.D.tag == "VDescPlus" then { A = ty.D.A; B = ty.D.B; }
-                  else if ty.D.tag == "VDescCon" then
-                    let info = E.decodeDescCase ty.D; in
-                    if info == null || info.idx != 4 then null
-                    else { A = info.payload.fst; B = info.payload.snd.fst; }
+                  let view = E.descView ty.D; in
+                  if view != null && view.idx == 4
+                  then { A = view.A; B = view.B; }
                   else null;
                 classify =
                   if plusSides == null then null
@@ -547,51 +355,63 @@ in {
                   else C.conv ctx.depth (E.eval ctx.env d2Tm) dVal;
                 collectPairs = inner:
                   let
+                    isRetLeaf = p:
+                      p.tag == "boot-refl"
+                      || (p.tag == "lift-intro" && p.a.tag == "boot-refl");
                     collect = k: p: acc:
                       if k == nFields then
                         if p.tag != "pair" then null
-                        else if p.snd.tag != "refl" then null
+                        else if !(isRetLeaf p.snd) then null
                         else if p.fst.tag != "desc-con" then null
-                        else { heads = acc; tail = p.fst; }
+                        else { heads = acc; tail = p.fst; leaf = p.snd; }
                       else
                         if p.tag != "pair" then null
                         else collect (k + 1) p.snd (acc ++ [p.fst]);
                   in collect 0 inner [];
                 walkPayload = payload:
                   if classify == null then null
-                  else if payload.tag != classify.side then null
                   else
-                    let inner = collectPairs payload.term; in
+                    let
+                      sv = E.sumPayloadTmView payload;
+                      inner =
+                        if sv == null || sv.side != classify.side
+                        then null
+                        else collectPairs sv.value;
+                    in
                     if inner == null then null
-                    else inner // { lTm = payload.left; rTm = payload.right; };
+                    else inner // { rebuild = sv.rebuild; };
                 peel = node:
                   if classify == null then null
                   else if node.tag != "desc-con" then null
                   else if !(sameD node.D) then null
                   else walkPayload node.d;
                 chain = builtins.genericClosure {
-                  startSet = [{ key = 0; val = tm; }];
+                  startSet = [{ key = 0; val = tm; peeled = peel tm; }];
                   operator = item:
-                    let peeled = peel item.val; in
-                    if peeled == null then []
-                    else [{ key = item.key + 1; val = peeled.tail; }];
+                    if item.peeled == null then []
+                    else
+                      let val = item.peeled.tail; in
+                      [{ key = item.key + 1; inherit val; peeled = peel val; }];
                 };
                 n = builtins.length chain - 1;
                 base = (builtins.elemAt chain n).val;
-                topPeel = if n >= 1 then peel tm else null;
+                topPeel = if n >= 1 then (builtins.elemAt chain 0).peeled else null;
                 wrapPayload = innerTm:
-                  if classify.side == "inl"
-                  then T.mkInl topPeel.lTm topPeel.rTm innerTm
-                  else T.mkInr topPeel.lTm topPeel.rTm innerTm;
-              in bind (self.check ctx base.i iTyVal) (baseITm:
+                  topPeel.rebuild innerTm;
+              in bind (
+                if iTyVal.tag == "VUnit" && base.i.tag == "tt"
+                then pure T.mkTt
+                else self.check ctx base.i iTyVal
+              ) (baseITm:
                 let baseIVal = E.eval ctx.env baseITm;
                     interpTyBase = E.vInterpD dInfo.level iTyVal ty.D muDFunc baseIVal;
                 in bind (self.check ctx base.d interpTyBase) (baseDataTm:
                   let baseTm = T.mkDescCon dTm baseITm baseDataTm; in
                   builtins.foldl' (accComp: k:
                     let
-                      layer = (builtins.elemAt chain (n - 1 - k)).val;
-                      peeled = peel layer;
+                      layerItem = builtins.elemAt chain (n - 1 - k);
+                      layer = layerItem.val;
+                      peeled = layerItem.peeled;
                       heads = peeled.heads;
                       checkHeads = remaining: accTms:
                         if remaining == [] then pure accTms
@@ -610,11 +430,15 @@ in {
                         else T.mkPair (builtins.head hTms)
                                       (buildInner (builtins.tail hTms) innerTail);
                     in bind accComp (acc:
-                      bind (self.check ctx layer.i iTyVal) (layerITm:
+                      bind (
+                        if iTyVal.tag == "VUnit" && layer.i.tag == "tt"
+                        then pure T.mkTt
+                        else self.check ctx layer.i iTyVal
+                      ) (layerITm:
                         bind (checkHeads tasks []) (hTms:
                           pure (T.mkDescCon dTm layerITm
                             (wrapPayload
-                              (buildInner hTms (T.mkPair acc T.mkRefl)))))))
+                              (buildInner hTms (T.mkPair acc peeled.leaf)))))))
                   ) (pure baseTm) (builtins.genList (x: x) n)))))
 
       # Sub rule (§7.4): fall through to synthesis + structural conv.

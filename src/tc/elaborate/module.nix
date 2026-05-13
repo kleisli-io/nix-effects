@@ -38,8 +38,8 @@ api.mk {
     ## Value Extraction
 
     - `extract : Hoas → Val → NixValue` — reverse of `elaborateValue`.
-      Converts kernel values back to Nix values. VZero→0, VSucc^n→n,
-      VCons chain→list, VInl/VInr→tagged union.
+      Converts kernel values back to Nix values. Generated Nat/List
+      `VDescCon` chains become Nix ints/lists; generated sums become tagged unions.
       Pi extraction wraps the VLam as a Nix function with boundary conversion.
       Opaque types (Attrs, Path, Function, Any) throw — kernel discards payloads.
     - `extractInner : Hoas → Val → Val → NixValue` — three-argument extraction

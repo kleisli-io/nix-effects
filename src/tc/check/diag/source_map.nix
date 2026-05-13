@@ -130,7 +130,7 @@ in {
       P = fx.diag.positions;
       D = fx.diag.error;
 
-      # Sample SourceMap: desc-arg at the root with sort/body children,
+      # Sample SourceMap: description-argument root with sort/body children,
       # each a leaf carrying a distinctive hoas tag for identification.
       smDescArg = node "outer" {
         "DArgSort" = leaf "sort-hoas";

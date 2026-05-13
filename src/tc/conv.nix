@@ -113,6 +113,22 @@ let
         && builtins.all (i: summandEq (builtins.elemAt sa i) (builtins.elemAt sb i))
              (builtins.genList (i: i) (builtins.length sa)));
 
+  listConv = d: xs: ys:
+    builtins.length xs == builtins.length ys
+    && builtins.foldl'
+      (ok: i: ok && conv d (builtins.elemAt xs i) (builtins.elemAt ys i))
+      true
+      (builtins.genList (i: i) (builtins.length xs));
+
+  descRefConv = d: r1: r2:
+    (r1.kind or null) == (r2.kind or null)
+    && (r1.arity or null) == (r2.arity or null)
+    && (r1.indexed or null) == (r2.indexed or null)
+    && (r1.constructors or []) == (r2.constructors or [])
+    && conv d r1.I r2.I
+    && convLevel r1.level r2.level
+    && listConv d (r1.params or []) (r2.params or []);
+
   # Pi-eta η-reduction detector. Recognises closures of shape `λx. f x`
   # where `f` does not reference the bound `x` — i.e., body is
   # `app (var k) (var 0)` with `k ≥ 1`, so `f = closure.env[k-1]` (env
@@ -152,11 +168,9 @@ let
     else if t2 == "VLiftIntro" && convLevel v2.l v2.m then conv d v1 v2.a
 
     # §6.1 Structural rules — simple values
-    else if t1 == "VNat" && t2 == "VNat" then true
     else if t1 == "VUnit" && t2 == "VUnit" then true
-    else if t1 == "VZero" && t2 == "VZero" then true
     else if t1 == "VTt" && t2 == "VTt" then true
-    else if t1 == "VRefl" && t2 == "VRefl" then true
+    else if t1 == "VBootRefl" && t2 == "VBootRefl" then true
     else if t1 == "VFunext" && t2 == "VFunext" then true
     else if t1 == "VU" && t2 == "VU" then
       # Fast-path: both levels are the `VLevelZero` singleton — skip
@@ -188,19 +202,6 @@ let
     else if t1 == "VPathLit" && t2 == "VPathLit" then true
     else if t1 == "VFnLit" && t2 == "VFnLit" then true
     else if t1 == "VAnyLit" && t2 == "VAnyLit" then true
-    # VSucc — trampolined for deep naturals (S^5000+)
-    else if t1 == "VSucc" && t2 == "VSucc" then
-      let
-        chain = builtins.genericClosure {
-          startSet = [{ key = 0; a = v1; b = v2; }];
-          operator = item:
-            if item.a.tag == "VSucc" && item.b.tag == "VSucc"
-            then [{ key = item.key + 1; a = item.a.pred; b = item.b.pred; }]
-            else [];
-        };
-        last = builtins.elemAt chain (builtins.length chain - 1);
-      in conv d last.a last.b
-
     # §6.2 Binding forms — compare under binders with fresh var
     else if t1 == "VPi" && t2 == "VPi" then
       conv d v1.domain v2.domain
@@ -250,7 +251,7 @@ let
       conv d v1.fst v2.fst && conv d v1.snd v2.snd
     # §6.3a Sigma-eta: ⟨fst x, snd x⟩ ≡ x for a neutral x.
     # The rule only fires against a neutral RHS: concrete non-pair values
-    # of other types (VLam, VU, VZero, ...) cannot convert with a VPair,
+    # of other types (VLam, VU, VUnit, ...) cannot convert with a VPair,
     # so matching them against a VPair harmlessly falls through to `false`.
     else if t1 == "VPair" && t2 == "VNe" then
       conv d v1.fst (E.vFst v2) && conv d v1.snd (E.vSnd v2)
@@ -262,34 +263,13 @@ let
     # only inhabitant is tt.
     else if t1 == "VTt" && t2 == "VNe" then true
     else if t1 == "VNe" && t2 == "VTt" then true
-    else if t1 == "VList" && t2 == "VList" then conv d v1.elem v2.elem
-    else if t1 == "VNil" && t2 == "VNil" then conv d v1.elem v2.elem
-    # VCons — trampolined: peel tails iteratively, check elem+head per level
-    else if t1 == "VCons" && t2 == "VCons" then
-      let
-        chain = builtins.genericClosure {
-          startSet = [{ key = 0; a = v1; b = v2; }];
-          operator = item:
-            if item.a.tag == "VCons" && item.b.tag == "VCons"
-            then [{ key = item.key + 1; a = item.a.tail; b = item.b.tail; }]
-            else [];
-        };
-        last = builtins.elemAt chain (builtins.length chain - 1);
-      in builtins.foldl' (acc: item:
-        acc && (
-          if item.a.tag == "VCons" && item.b.tag == "VCons"
-          then conv d item.a.elem item.b.elem && conv d item.a.head item.b.head
-          else true
-        )
-      ) true chain
-      && conv d last.a last.b
-    else if t1 == "VSum" && t2 == "VSum" then
+    else if t1 == "VBootSum" && t2 == "VBootSum" then
       conv d v1.left v2.left && conv d v1.right v2.right
-    else if t1 == "VInl" && t2 == "VInl" then
+    else if t1 == "VBootInl" && t2 == "VBootInl" then
       conv d v1.left v2.left && conv d v1.right v2.right && conv d v1.val v2.val
-    else if t1 == "VInr" && t2 == "VInr" then
+    else if t1 == "VBootInr" && t2 == "VBootInr" then
       conv d v1.left v2.left && conv d v1.right v2.right && conv d v1.val v2.val
-    else if t1 == "VEq" && t2 == "VEq" then
+    else if t1 == "VBootEq" && t2 == "VBootEq" then
       conv d v1.type v2.type && conv d v1.lhs v2.lhs && conv d v1.rhs v2.rhs
 
     # Descriptions
@@ -301,37 +281,6 @@ let
        then true
        else convLevel v1.level v2.level)
       && conv d v1.I v2.I
-    else if t1 == "VDescRet" && t2 == "VDescRet" then conv d v1.j v2.j
-    else if t1 == "VDescArg" && t2 == "VDescArg" then
-      # Level-zero fast-path at the `k` and `l` slots: the prelude's
-      # pre-existing `arg S T` sites all carry `k = 0` and `l = 0`, so
-      # skip the full `convLevel` pipeline when both sides are the
-      # `VLevelZero` singleton. The `eq` slot is structurally compared
-      # — for the homogeneous-default `vRefl` carried by current
-      # prelude code this is a tag-tag match.
-      (if v1.k.tag == "VLevelZero" && v2.k.tag == "VLevelZero"
-       then true
-       else convLevel v1.k v2.k)
-      && (if v1.l.tag == "VLevelZero" && v2.l.tag == "VLevelZero"
-          then true
-          else convLevel v1.l v2.l)
-      && conv d v1.S v2.S
-      && conv d v1.eq v2.eq
-      && conv (d + 1) (E.instantiate v1.T (V.freshVar d))
-                      (E.instantiate v2.T (V.freshVar d))
-    else if t1 == "VDescRec" && t2 == "VDescRec" then
-      conv d v1.j v2.j && conv d v1.D v2.D
-    else if t1 == "VDescPi" && t2 == "VDescPi" then
-      (if v1.k.tag == "VLevelZero" && v2.k.tag == "VLevelZero"
-       then true
-       else convLevel v1.k v2.k)
-      && (if v1.l.tag == "VLevelZero" && v2.l.tag == "VLevelZero"
-          then true
-          else convLevel v1.l v2.l)
-      && conv d v1.S v2.S && conv d v1.eq v2.eq
-      && conv d v1.f v2.f && conv d v1.D v2.D
-    else if t1 == "VDescPlus" && t2 == "VDescPlus" then
-      conv d v1.A v2.A && conv d v1.B v2.B
     else if t1 == "VMu" && t2 == "VMu" then
       conv d v1.I v2.I && conv d v1.D v2.D && conv d v1.i v2.i
     # §6.6 Desc/μ unfolding. `Desc I k ≡ μ ⊤ (descDesc I k) tt`.
@@ -366,45 +315,93 @@ let
         v1._canonRef.id == v2._canonRef.id
         && conv d v1._canonRef.I v2._canonRef.I
         && conv d v1._canonRef.L v2._canonRef.L
+      else if (v1 ? _descRef) && (v2 ? _descRef)
+              && descRefConv d v1._descRef v2._descRef
+      then true
       else
-      # Decode-then-conv fast-path: when both sides primitivise via
-      # `tryDecodeToPrim` (ret/rec/plus subset — the per-element targets
-      # of the desc-con CHECK trampoline on `natDesc`/`boolDesc`), compare
-      # the primitive forms instead of walking the encoded descDesc
-      # cascade per layer. Decode is a bijection on the decodable
-      # subset, so the fast-path is sound; falls through to the
-      # structural rule when either side carries arg/pi (idx∈{1,3})
-      # shapes that cannot primitivise.
-      let
-        p1 = E.tryDecodeToPrim v1;
-        p2 = E.tryDecodeToPrim v2;
-      in
-      if p1 != null && p2 != null
-      then conv d p1 p2
-      else conv d v1.D v2.D && conv d v1.i v2.i && conv d v1.d v2.d
-    # Asymmetric desc-value conv: encoded `VDescCon` vs primitive
-    # `VDescX`. Decode the encoded side via `tryDecodeToPrim` and conv
-    # against the primitive side. Mirrors the type-level VMu↔VDesc
-    # unfolding at value level. Required when CHECK and EVAL produce
-    # different canonical forms for the same primitive Tm: CHECK's
-    # desc-* rules retarget to encoded `descCon …` cascades, while
-    # `eval` on the original primitive `desc-ret`/`desc-arg`/… Tm
-    # produces primitive `VDescX`. Conv between the two must succeed
-    # on the decodable subset (ret/rec/plus); falls through to false
-    # when the encoded shape carries arg/pi (idx∈{1,3}). Decode is a
-    # bijection on the decodable subset, so this is not value-level
-    # conv between primitive and encoded — both sides are primitive
-    # before structural compare.
-    else if t1 == "VDescCon"
-         && (t2 == "VDescRet" || t2 == "VDescArg" || t2 == "VDescRec"
-             || t2 == "VDescPi" || t2 == "VDescPlus") then
-      let p1 = E.tryDecodeToPrim v1; in
-      if p1 != null then conv d p1 v2 else false
-    else if t2 == "VDescCon"
-         && (t1 == "VDescRet" || t1 == "VDescArg" || t1 == "VDescRec"
-             || t1 == "VDescPi" || t1 == "VDescPlus") then
-      let p2 = E.tryDecodeToPrim v2; in
-      if p2 != null then conv d v1 p2 else false
+        let
+          classifyD = D:
+            let view = E.descView D; in
+            if view == null || view.idx != 4 then null
+            else
+              let pA = E.linearProfile view.A;
+                  pB = E.linearProfile view.B;
+              in if pA != null && pB == null then { profile = pA; side = "VBootInl"; }
+                 else if pB != null && pA == null then { profile = pB; side = "VBootInr"; }
+                 else null;
+          classify = classifyD v1.D;
+          nFields = if classify == null then 0 else builtins.length classify.profile;
+          isRetLeaf = p:
+            p.tag == "VBootRefl"
+            || (p.tag == "VLiftIntro" && p.a.tag == "VBootRefl");
+          sameD = D:
+            if (D ? _descRef) && (v1.D ? _descRef)
+            then descRefConv d D._descRef v1.D._descRef
+            else conv d D v1.D;
+          collectPairs = p:
+            let
+              collect = k: node: acc:
+                if k == nFields then
+                  if node.tag != "VPair" then null
+                  else if !(isRetLeaf node.snd) then null
+                  else if node.fst.tag != "VDescCon" then null
+                  else { heads = acc; tail = node.fst; leaf = node.snd; }
+                else if node.tag != "VPair" then null
+                else collect (k + 1) node.snd (acc ++ [ node.fst ]);
+            in collect 0 p [];
+          peel = node:
+            if classify == null then null
+            else if node.tag != "VDescCon" then null
+            else if !(sameD node.D) then null
+            else if node.d.tag != classify.side then null
+            else
+              let inner = collectPairs node.d.val; in
+              if inner == null then null
+              else inner;
+          chain = builtins.genericClosure {
+            startSet = [{ key = 0; a = v1; b = v2; pa = peel v1; pb = peel v2; }];
+            operator = item:
+              if item.pa == null || item.pb == null then []
+              else
+                let a = item.pa.tail; b = item.pb.tail; in
+                [{ key = item.key + 1; inherit a b; pa = peel a; pb = peel b; }];
+          };
+          n = builtins.length chain - 1;
+          base = builtins.elemAt chain n;
+          basePeelA = base.pa;
+          basePeelB = base.pb;
+          layerConv = item:
+            let pa = item.pa; pb = item.pb; in
+            if pa == null || pb == null then false
+            else
+              # `peel` already proved both layer descriptions match the
+              # same outer D; transitivity gives the per-layer D match.
+              # The boot-sum arm types are determined by that D.
+              let
+                indexOk =
+                  if item.a.i.tag == "VTt" && item.b.i.tag == "VTt"
+                  then true
+                  else conv d item.a.i item.b.i;
+                leafOk =
+                  if pa.leaf.tag == "VBootRefl" && pb.leaf.tag == "VBootRefl"
+                  then true
+                  else conv d pa.leaf pb.leaf;
+                headsOk =
+                  if builtins.length pa.heads == 0 && builtins.length pb.heads == 0
+                  then true
+                  else listConv d pa.heads pb.heads;
+              in indexOk && leafOk && headsOk;
+        in
+          if classify == null || n == 0 then
+            conv d v1.D v2.D && conv d v1.i v2.i && conv d v1.d v2.d
+          else if (basePeelA == null) != (basePeelB == null) then false
+          else
+            builtins.foldl' (ok: i:
+              ok && layerConv (builtins.elemAt chain i)
+            ) true (builtins.genList (i: i) n)
+            && conv d base.a.D base.b.D
+            && conv d base.a.i base.b.i
+            && conv d base.a.d base.b.d
 
     # Lift type-former — structural with witness-irrelevance. The `eq`
     # slot is not compared: two `VLift`s with matching levels and
@@ -468,16 +465,11 @@ let
     else if t1 == "EApp" then conv d e1.arg e2.arg
     else if t1 == "EFst" then true
     else if t1 == "ESnd" then true
-    else if t1 == "ENatElim" then
-      conv d e1.motive e2.motive && conv d e1.base e2.base && conv d e1.step e2.step
-    else if t1 == "EListElim" then
-      conv d e1.elem e2.elem && conv d e1.motive e2.motive
-      && conv d e1.onNil e2.onNil && conv d e1.onCons e2.onCons
-    else if t1 == "ESumElim" then
+    else if t1 == "EBootSumElim" then
       conv d e1.left e2.left && conv d e1.right e2.right
       && conv d e1.motive e2.motive && conv d e1.onLeft e2.onLeft
       && conv d e1.onRight e2.onRight
-    else if t1 == "EJ" then
+    else if t1 == "EBootJ" then
       conv d e1.type e2.type && conv d e1.lhs e2.lhs
       && conv d e1.motive e2.motive && conv d e1.base e2.base
       && conv d e1.rhs e2.rhs
@@ -485,11 +477,6 @@ let
     else if t1 == "EDescInd" then
       conv d e1.D e2.D && conv d e1.motive e2.motive
       && conv d e1.step e2.step && conv d e1.i e2.i
-    else if t1 == "EDescElim" then
-      conv d e1.k e2.k
-      && conv d e1.motive e2.motive && conv d e1.onRet e2.onRet
-      && conv d e1.onArg e2.onArg && conv d e1.onRec e2.onRec
-      && conv d e1.onPi e2.onPi && conv d e1.onPlus e2.onPlus
     # EInterpD / EAllD / EEverywhereD spine frames — stuck `interpD` /
     # `allD` / `everywhereD` applications on a neutral D scrutinee.
     # Compare slots field-wise (D is the spine head, compared by
@@ -516,9 +503,6 @@ let
     # (VSquashIntro/VNe rules above), not on the spine frame itself.
     else if t1 == "ESquashElim" then
       conv d e1.A e2.A && conv d e1.B e2.B && conv d e1.f e2.f
-    # ENatToLevel is nullary: any two such frames at the same scrutinee
-    # are conv-equal.
-    else if t1 == "ENatToLevel" then true
     else false;
 
 in mk {
@@ -551,8 +535,9 @@ in mk {
 
     ## Trampolining
 
-    VSucc and VCons chains use `genericClosure` to avoid stack overflow
-    on S^5000 or cons^5000 comparisons.
+    Deep ordinary data is represented by generated `VDescCon` values.
+    Conversion stays structural except for explicitly documented
+    eta/unfolding rules.
 
     ## No Eta
 
@@ -562,20 +547,38 @@ in mk {
   '';
   value = { inherit conv convSp convElim normLevel convLevel; };
   tests = let
-    inherit (V) vNat vZero vSucc vPi vLam vSigma vPair
-      vList vNil vCons vUnit vTt vSum vInl vInr vEq vRefl vU vNe
+    inherit (V) vPi vLam vSigma vPair
+      vUnit vTt vBootSum vBootInl vBootInr vBootEq vBootRefl vU vNe
       vSquash vSquashIntro eSquashElim
-      mkClosure eApp eFst eSnd eNatElim eListElim eSumElim eJ;
+      mkClosure eApp eFst eSnd eBootSumElim eBootJ;
     T = fx.tc.term;
+    H = fx.tc.hoas;
+    elabVal = h: E.eval [] (H.elab h);
+    natTyVal = elabVal H.nat;
+    zeroVal = elabVal H.zero;
+    succZeroVal = elabVal (H.succ H.zero);
+    unitFn = S: H.ann (H.lam "_" S (_: H.tt)) (H.forall "_" S (_: H.unit));
+    retUnitVal = elabVal (H.retI H.unit 0 H.tt);
+    retNatZeroVal = elabVal (H.retI H.nat 0 H.zero);
+    retNatSuccVal = elabVal (H.retI H.nat 0 (H.succ H.zero));
+    argNatVal = elabVal (H.descArg H.unit 0 H.nat (_: H.retI H.unit 0 H.tt));
+    argUnitVal = elabVal (H.descArg H.unit 0 H.unit (_: H.retI H.unit 0 H.tt));
+    argUOneVal = elabVal (H.descArg H.unit 1 (H.u 0) (_: H.retI H.unit 1 H.tt));
+    recRetVal = elabVal (H.recI H.unit 0 H.tt (H.retI H.unit 0 H.tt));
+    recNatZeroVal = elabVal (H.recI H.nat 0 H.zero (H.retI H.nat 0 H.zero));
+    recNatSuccVal = elabVal (H.recI H.nat 0 (H.succ H.zero) (H.retI H.nat 0 H.zero));
+    piNatVal = elabVal (H.piI H.unit 0 H.nat (unitFn H.nat) (H.retI H.unit 0 H.tt));
+    piUnitVal = elabVal (H.piI H.unit 0 H.unit (unitFn H.unit) (H.retI H.unit 0 H.tt));
+    piNatRecVal = elabVal (H.piI H.unit 0 H.nat (unitFn H.nat)
+      (H.recI H.unit 0 H.tt (H.retI H.unit 0 H.tt)));
+    piUOneVal = elabVal (H.piI H.unit 1 (H.u 0) (unitFn (H.u 0)) (H.retI H.unit 1 H.tt));
   in {
     # §6.1 Structural rules — reflexivity
-    "conv-nat" = { expr = conv 0 vNat vNat; expected = true; };
     "conv-unit" = { expr = conv 0 vUnit vUnit; expected = true; };
-    "conv-zero" = { expr = conv 0 vZero vZero; expected = true; };
     "conv-tt" = { expr = conv 0 vTt vTt; expected = true; };
-    "conv-refl" = { expr = conv 0 vRefl vRefl; expected = true; };
+    "conv-refl" = { expr = conv 0 vBootRefl vBootRefl; expected = true; };
     "conv-funext" = { expr = conv 0 V.vFunext V.vFunext; expected = true; };
-    "conv-funext-refl" = { expr = conv 0 V.vFunext vRefl; expected = false; };
+    "conv-funext-refl" = { expr = conv 0 V.vFunext vBootRefl; expected = false; };
     "conv-U0" = { expr = conv 0 (vU V.vLevelZero) (vU V.vLevelZero); expected = true; };
     "conv-U1" = { expr = conv 0 (vU (V.vLevelSuc V.vLevelZero)) (vU (V.vLevelSuc V.vLevelZero)); expected = true; };
 
@@ -601,8 +604,8 @@ in mk {
     "conv-stringlit-intlit" = { expr = conv 0 (V.vStringLit "1") (V.vIntLit 1); expected = false; };
 
     # Structural rules — inequality
-    "conv-nat-unit" = { expr = conv 0 vNat vUnit; expected = false; };
-    "conv-zero-tt" = { expr = conv 0 vZero vTt; expected = false; };
+    "conv-string-unit" = { expr = conv 0 V.vString vUnit; expected = false; };
+    "conv-unit-tt" = { expr = conv 0 vUnit vTt; expected = false; };
     "conv-U0-U1" = { expr = conv 0 (vU V.vLevelZero) (vU (V.vLevelSuc V.vLevelZero)); expected = false; };
 
     # Universe conv uses the Level normaliser on the level argument,
@@ -628,7 +631,7 @@ in mk {
 
     # Level sort
     "conv-vlevel" = { expr = conv 0 V.vLevel V.vLevel; expected = true; };
-    "conv-vlevel-vnat" = { expr = conv 0 V.vLevel vNat; expected = false; };
+    "conv-vlevel-string" = { expr = conv 0 V.vLevel V.vString; expected = false; };
     "conv-level-zero" = {
       expr = conv 0 V.vLevelZero V.vLevelZero;
       expected = true;
@@ -712,120 +715,107 @@ in mk {
       expected = false;
     };
 
-    # VSucc
-    "conv-succ-eq" = { expr = conv 0 (vSucc vZero) (vSucc vZero); expected = true; };
-    "conv-succ-neq" = { expr = conv 0 (vSucc vZero) (vSucc (vSucc vZero)); expected = false; };
-    "conv-succ-deep" = {
-      expr = conv 0 (vSucc (vSucc vZero)) (vSucc (vSucc vZero));
+    # Generated Nat values
+    "conv-generated-zero" = { expr = conv 0 zeroVal zeroVal; expected = true; };
+    "conv-generated-succ-neq" = { expr = conv 0 zeroVal succZeroVal; expected = false; };
+    "conv-generated-succ-self" = {
+      expr = conv 0 succZeroVal succZeroVal;
       expected = true;
     };
 
     # §6.2 Binding forms
     "conv-pi" = {
-      # Π(x:Nat).Nat ≡ Π(y:Nat).Nat (names don't matter)
+      # Π(x:Unit).Unit ≡ Π(y:Unit).Unit (names don't matter)
       expr = conv 0
-        (vPi "x" vNat (mkClosure [] T.mkNat))
-        (vPi "y" vNat (mkClosure [] T.mkNat));
+        (vPi "x" vUnit (mkClosure [] T.mkUnit))
+        (vPi "y" vUnit (mkClosure [] T.mkUnit));
       expected = true;
     };
     "conv-pi-diff-domain" = {
       expr = conv 0
-        (vPi "x" vNat (mkClosure [] T.mkNat))
-        (vPi "x" vUnit (mkClosure [] T.mkNat));
+        (vPi "x" V.vString (mkClosure [] T.mkString))
+        (vPi "x" vUnit (mkClosure [] T.mkString));
       expected = false;
     };
     "conv-pi-diff-codomain" = {
       expr = conv 0
-        (vPi "x" vNat (mkClosure [] T.mkNat))
-        (vPi "x" vNat (mkClosure [] T.mkUnit));
+        (vPi "x" vUnit (mkClosure [] T.mkUnit))
+        (vPi "x" vUnit (mkClosure [] T.mkString));
       expected = false;
     };
     "conv-pi-dependent" = {
-      # Π(x:Nat).x ≡ Π(y:Nat).y — both bodies reference the bound var
+      # Π(x:Unit).x ≡ Π(y:Unit).y — both bodies reference the bound var
       expr = conv 0
-        (vPi "x" vNat (mkClosure [] (T.mkVar 0)))
-        (vPi "y" vNat (mkClosure [] (T.mkVar 0)));
+        (vPi "x" vUnit (mkClosure [] (T.mkVar 0)))
+        (vPi "y" vUnit (mkClosure [] (T.mkVar 0)));
       expected = true;
     };
 
     # Binding forms with different dependent bodies
     "conv-pi-dep-diff-body" = {
-      # Π(x:Nat).x vs Π(x:Nat).Nat — different dependent codomains
+      # Π(x:Unit).x vs Π(x:Unit).Unit — different dependent codomains
       expr = conv 0
-        (vPi "x" vNat (mkClosure [] (T.mkVar 0)))
-        (vPi "x" vNat (mkClosure [] T.mkNat));
+        (vPi "x" vUnit (mkClosure [] (T.mkVar 0)))
+        (vPi "x" vUnit (mkClosure [] T.mkUnit));
       expected = false;
     };
     "conv-sigma-dep-diff-body" = {
-      # Σ(x:Nat).x vs Σ(x:Nat).Nat — different dependent second components
+      # Σ(x:Unit).x vs Σ(x:Unit).Unit — different dependent second components
       expr = conv 0
-        (vSigma "x" vNat (mkClosure [] (T.mkVar 0)))
-        (vSigma "x" vNat (mkClosure [] T.mkNat));
+        (vSigma "x" vUnit (mkClosure [] (T.mkVar 0)))
+        (vSigma "x" vUnit (mkClosure [] T.mkUnit));
       expected = false;
     };
     "conv-ne-multi-spine-diff" = {
-      # x₀(Zero)(Zero) vs x₀(Zero)(Succ Zero) — second frame differs
+      # x₀(tt)(tt) vs x₀(tt)(Unit) — second frame differs
       expr = conv 2
-        (vNe 0 [ (eApp vZero) (eApp vZero) ])
-        (vNe 0 [ (eApp vZero) (eApp (vSucc vZero)) ]);
+        (vNe 0 [ (eApp vTt) (eApp vTt) ])
+        (vNe 0 [ (eApp vTt) (eApp vUnit) ]);
       expected = false;
     };
 
     "conv-lam" = {
-      # λ(x:Nat).x ≡ λ(y:Nat).y
+      # λ(x:Unit).x ≡ λ(y:Unit).y
       expr = conv 0
-        (vLam "x" vNat (mkClosure [] (T.mkVar 0)))
-        (vLam "y" vNat (mkClosure [] (T.mkVar 0)));
+        (vLam "x" vUnit (mkClosure [] (T.mkVar 0)))
+        (vLam "y" vUnit (mkClosure [] (T.mkVar 0)));
       expected = true;
     };
     "conv-lam-diff-body" = {
       expr = conv 0
-        (vLam "x" vNat (mkClosure [] T.mkZero))
-        (vLam "x" vNat (mkClosure [] (T.mkSucc T.mkZero)));
+        (vLam "x" vUnit (mkClosure [] T.mkTt))
+        (vLam "x" vUnit (mkClosure [] T.mkUnit));
       expected = false;
     };
     "conv-sigma" = {
       expr = conv 0
-        (vSigma "x" vNat (mkClosure [] T.mkUnit))
-        (vSigma "y" vNat (mkClosure [] T.mkUnit));
+        (vSigma "x" vUnit (mkClosure [] T.mkUnit))
+        (vSigma "y" vUnit (mkClosure [] T.mkUnit));
       expected = true;
     };
 
     # §6.3 Compound values
-    "conv-pair" = { expr = conv 0 (vPair vZero vTt) (vPair vZero vTt); expected = true; };
-    "conv-pair-diff" = { expr = conv 0 (vPair vZero vZero) (vPair vZero (vSucc vZero)); expected = false; };
-    "conv-list" = { expr = conv 0 (vList vNat) (vList vNat); expected = true; };
-    "conv-list-diff" = { expr = conv 0 (vList vNat) (vList vUnit); expected = false; };
-    "conv-nil" = { expr = conv 0 (vNil vNat) (vNil vNat); expected = true; };
-    "conv-cons" = {
-      expr = conv 0 (vCons vNat vZero (vNil vNat)) (vCons vNat vZero (vNil vNat));
-      expected = true;
-    };
-    "conv-cons-diff" = {
-      expr = conv 0
-        (vCons vNat vZero (vNil vNat))
-        (vCons vNat (vSucc vZero) (vNil vNat));
-      expected = false;
-    };
-    "conv-sum" = { expr = conv 0 (vSum vNat vUnit) (vSum vNat vUnit); expected = true; };
+    "conv-pair" = { expr = conv 0 (vPair vTt vTt) (vPair vTt vTt); expected = true; };
+    "conv-pair-diff" = { expr = conv 0 (vPair vTt vTt) (vPair vTt vUnit); expected = false; };
+    "conv-sum" = { expr = conv 0 (vBootSum vUnit vUnit) (vBootSum vUnit vUnit); expected = true; };
     "conv-inl" = {
-      expr = conv 0 (vInl vNat vUnit vZero) (vInl vNat vUnit vZero);
+      expr = conv 0 (vBootInl vUnit vUnit vTt) (vBootInl vUnit vUnit vTt);
       expected = true;
     };
     "conv-inl-diff" = {
-      expr = conv 0 (vInl vNat vUnit vZero) (vInl vNat vUnit (vSucc vZero));
+      expr = conv 0 (vBootInl vUnit vUnit vTt) (vBootInl vUnit vUnit vUnit);
       expected = false;
     };
     "conv-inr" = {
-      expr = conv 0 (vInr vNat vUnit vTt) (vInr vNat vUnit vTt);
+      expr = conv 0 (vBootInr vUnit vUnit vTt) (vBootInr vUnit vUnit vTt);
       expected = true;
     };
     "conv-eq" = {
-      expr = conv 0 (vEq vNat vZero vZero) (vEq vNat vZero vZero);
+      expr = conv 0 (vBootEq vUnit vTt vTt) (vBootEq vUnit vTt vTt);
       expected = true;
     };
     "conv-eq-diff" = {
-      expr = conv 0 (vEq vNat vZero vZero) (vEq vNat vZero (vSucc vZero));
+      expr = conv 0 (vBootEq vUnit vTt vTt) (vBootEq vUnit vTt vUnit);
       expected = false;
     };
 
@@ -833,11 +823,11 @@ in mk {
     "conv-ne-same" = { expr = conv 1 (vNe 0 []) (vNe 0 []); expected = true; };
     "conv-ne-diff-level" = { expr = conv 2 (vNe 0 []) (vNe 1 []); expected = false; };
     "conv-ne-app" = {
-      expr = conv 1 (vNe 0 [ (eApp vZero) ]) (vNe 0 [ (eApp vZero) ]);
+      expr = conv 1 (vNe 0 [ (eApp vTt) ]) (vNe 0 [ (eApp vTt) ]);
       expected = true;
     };
     "conv-ne-app-diff" = {
-      expr = conv 1 (vNe 0 [ (eApp vZero) ]) (vNe 0 [ (eApp (vSucc vZero)) ]);
+      expr = conv 1 (vNe 0 [ (eApp vTt) ]) (vNe 0 [ (eApp vUnit) ]);
       expected = false;
     };
     "conv-ne-fst" = {
@@ -849,41 +839,29 @@ in mk {
       expected = true;
     };
     "conv-ne-diff-spine-len" = {
-      expr = conv 1 (vNe 0 [ (eApp vZero) ]) (vNe 0 []);
+      expr = conv 1 (vNe 0 [ (eApp vTt) ]) (vNe 0 []);
       expected = false;
     };
     "conv-ne-diff-elim" = {
       expr = conv 1 (vNe 0 [ eFst ]) (vNe 0 [ eSnd ]);
       expected = false;
     };
-    "conv-ne-nat-elim" = {
-      expr = conv 1 (vNe 0 [ (eNatElim vNat vZero vZero) ]) (vNe 0 [ (eNatElim vNat vZero vZero) ]);
-      expected = true;
-    };
-    "conv-ne-nat-elim-diff" = {
-      expr = conv 1 (vNe 0 [ (eNatElim vNat vZero vZero) ]) (vNe 0 [ (eNatElim vUnit vZero vZero) ]);
-      expected = false;
-    };
-    "conv-ne-list-elim" = {
-      expr = conv 1 (vNe 0 [ (eListElim vNat vNat vZero vZero) ]) (vNe 0 [ (eListElim vNat vNat vZero vZero) ]);
-      expected = true;
-    };
     "conv-ne-sum-elim" = {
-      expr = conv 1 (vNe 0 [ (eSumElim vNat vUnit vNat vZero vZero) ]) (vNe 0 [ (eSumElim vNat vUnit vNat vZero vZero) ]);
+      expr = conv 1 (vNe 0 [ (eBootSumElim vUnit vUnit vUnit vTt vTt) ]) (vNe 0 [ (eBootSumElim vUnit vUnit vUnit vTt vTt) ]);
       expected = true;
     };
     "conv-ne-j" = {
-      expr = conv 1 (vNe 0 [ (eJ vNat vZero vNat vZero vZero) ]) (vNe 0 [ (eJ vNat vZero vNat vZero vZero) ]);
+      expr = conv 1 (vNe 0 [ (eBootJ vUnit vTt vUnit vTt vTt) ]) (vNe 0 [ (eBootJ vUnit vTt vUnit vTt vTt) ]);
       expected = true;
     };
 
     # Symmetry property
-    "conv-sym-nat-unit" = {
-      expr = (conv 0 vNat vUnit) == (conv 0 vUnit vNat);
+    "conv-sym-string-unit" = {
+      expr = (conv 0 V.vString vUnit) == (conv 0 vUnit V.vString);
       expected = true;
     };
-    "conv-sym-succ" = {
-      expr = let a = vSucc vZero; b = vSucc (vSucc vZero); in
+    "conv-sym-generated-nat" = {
+      expr = let a = zeroVal; b = succZeroVal; in
         (conv 0 a b) == (conv 0 b a);
       expected = true;
     };
@@ -893,12 +871,12 @@ in mk {
     "conv-pi-eta-neutral-vs-lam" = {
       expr = conv 1
         (V.freshVar 0)
-        (vLam "x" vNat (mkClosure [ (V.freshVar 0) ] (T.mkApp (T.mkVar 1) (T.mkVar 0))));
+        (vLam "x" vUnit (mkClosure [ (V.freshVar 0) ] (T.mkApp (T.mkVar 1) (T.mkVar 0))));
       expected = true;
     };
     "conv-pi-eta-lam-vs-neutral" = {
       expr = conv 1
-        (vLam "x" vNat (mkClosure [ (V.freshVar 0) ] (T.mkApp (T.mkVar 1) (T.mkVar 0))))
+        (vLam "x" vUnit (mkClosure [ (V.freshVar 0) ] (T.mkApp (T.mkVar 1) (T.mkVar 0))))
         (V.freshVar 0);
       expected = true;
     };
@@ -909,7 +887,7 @@ in mk {
     "conv-pi-eta-unit-codomain" = {
       expr = conv 1
         (V.freshVar 0)
-        (vLam "_" vNat (mkClosure [ ] T.mkTt));
+        (vLam "_" vUnit (mkClosure [ ] T.mkTt));
       expected = true;
     };
 
@@ -935,9 +913,9 @@ in mk {
     # spine extensions on a neutral whose existing spine is nat-indexed, because
     # the `a ≡ vFst v2` sub-conv returns false structurally.
     "conv-sigma-eta-unrelated-values-rejected" = {
-      expr = conv 0 (vPair vZero (vSucc vZero)) (V.freshVar 0);
+      expr = conv 0 (vPair vTt vUnit) (V.freshVar 0);
       # freshVar 0 is a bare VNe with empty spine; vFst (VNe 0 []) = VNe 0 [EFst],
-      # structural-conv with VZero returns false.
+      # structural-conv with VUnit returns false.
       expected = false;
     };
 
@@ -954,142 +932,106 @@ in mk {
     # Descriptions
     "conv-desc" = { expr = conv 0 (V.vDesc V.vLevelZero V.vUnit) (V.vDesc V.vLevelZero V.vUnit); expected = true; };
     "conv-desc-diff-I" = {
-      expr = conv 0 (V.vDesc V.vLevelZero V.vUnit) (V.vDesc V.vLevelZero V.vNat);
+      expr = conv 0 (V.vDesc V.vLevelZero V.vUnit) (V.vDesc V.vLevelZero natTyVal);
       expected = false;
     };
     "conv-descret" = {
-      expr = conv 0 (V.vDescRet vTt) (V.vDescRet vTt);
+      expr = conv 0 retUnitVal retUnitVal;
       expected = true;
     };
     "conv-descret-diff-j" = {
       # Eta-unit aside: at j : Nat level, two distinct j's don't conv.
-      expr = conv 0 (V.vDescRet vZero) (V.vDescRet (V.vSucc vZero));
+      expr = conv 0 retNatZeroVal retNatSuccVal;
       expected = false;
     };
     "conv-descarg" = {
-      expr = conv 0
-        (V.vDescArg V.vLevelZero V.vLevelZero vNat V.vRefl (mkClosure [] (T.mkDescRet T.mkTt)))
-        (V.vDescArg V.vLevelZero V.vLevelZero vNat V.vRefl (mkClosure [] (T.mkDescRet T.mkTt)));
+      expr = conv 0 argNatVal argNatVal;
       expected = true;
     };
     "conv-descarg-diff-S" = {
-      expr = conv 0
-        (V.vDescArg V.vLevelZero V.vLevelZero vNat V.vRefl (mkClosure [] (T.mkDescRet T.mkTt)))
-        (V.vDescArg V.vLevelZero V.vLevelZero vUnit V.vRefl (mkClosure [] (T.mkDescRet T.mkTt)));
+      expr = conv 0 argNatVal argUnitVal;
       expected = false;
     };
     "conv-descarg-diff-k" = {
-      expr = conv 0
-        (V.vDescArg V.vLevelZero V.vLevelZero vNat V.vRefl (mkClosure [] (T.mkDescRet T.mkTt)))
-        (V.vDescArg (V.vLevelSuc V.vLevelZero) (V.vLevelSuc V.vLevelZero) vNat V.vRefl (mkClosure [] (T.mkDescRet T.mkTt)));
+      expr = conv 0 argNatVal argUOneVal;
       expected = false;
     };
     "conv-descarg-same-k-one" = {
-      expr = conv 0
-        (V.vDescArg (V.vLevelSuc V.vLevelZero) (V.vLevelSuc V.vLevelZero) (V.vU V.vLevelZero) V.vRefl (mkClosure [] (T.mkDescRet T.mkTt)))
-        (V.vDescArg (V.vLevelSuc V.vLevelZero) (V.vLevelSuc V.vLevelZero) (V.vU V.vLevelZero) V.vRefl (mkClosure [] (T.mkDescRet T.mkTt)));
+      expr = conv 0 argUOneVal argUOneVal;
       expected = true;
     };
     "conv-descrec" = {
-      expr = conv 0
-        (V.vDescRec vTt (V.vDescRet vTt))
-        (V.vDescRec vTt (V.vDescRet vTt));
+      expr = conv 0 recRetVal recRetVal;
       expected = true;
     };
     "conv-descrec-diff-j" = {
-      expr = conv 0
-        (V.vDescRec vZero (V.vDescRet vZero))
-        (V.vDescRec (V.vSucc vZero) (V.vDescRet vZero));
+      expr = conv 0 recNatZeroVal recNatSuccVal;
       expected = false;
     };
     "conv-descpi" = {
-      expr = let f = V.vLam "_" vNat (mkClosure [] T.mkTt); in
-        conv 0
-          (V.vDescPi V.vLevelZero V.vLevelZero vNat V.vRefl f (V.vDescRet vTt))
-          (V.vDescPi V.vLevelZero V.vLevelZero vNat V.vRefl f (V.vDescRet vTt));
+      expr = conv 0 piNatVal piNatVal;
       expected = true;
     };
     "conv-descpi-diff-S" = {
-      expr = let
-        f1 = V.vLam "_" vNat (mkClosure [] T.mkTt);
-        f2 = V.vLam "_" vUnit (mkClosure [] T.mkTt);
-      in conv 0
-        (V.vDescPi V.vLevelZero V.vLevelZero vNat V.vRefl f1 (V.vDescRet vTt))
-        (V.vDescPi V.vLevelZero V.vLevelZero vUnit V.vRefl f2 (V.vDescRet vTt));
+      expr = conv 0 piNatVal piUnitVal;
       expected = false;
     };
     "conv-descpi-diff-D" = {
-      expr = let f = V.vLam "_" vNat (mkClosure [] T.mkTt); in
-        conv 0
-          (V.vDescPi V.vLevelZero V.vLevelZero vNat V.vRefl f (V.vDescRet vTt))
-          (V.vDescPi V.vLevelZero V.vLevelZero vNat V.vRefl f (V.vDescRec vTt (V.vDescRet vTt)));
+      expr = conv 0 piNatVal piNatRecVal;
       expected = false;
     };
     "conv-descpi-diff-k" = {
-      expr = let f = V.vLam "_" vNat (mkClosure [] T.mkTt); in
-        conv 0
-          (V.vDescPi V.vLevelZero V.vLevelZero vNat V.vRefl f (V.vDescRet vTt))
-          (V.vDescPi (V.vLevelSuc V.vLevelZero) (V.vLevelSuc V.vLevelZero) vNat V.vRefl f (V.vDescRet vTt));
+      expr = conv 0 piNatVal piUOneVal;
       expected = false;
     };
     "conv-mu" = {
       expr = conv 0
-        (V.vMu vUnit (V.vDescRet vTt) vTt)
-        (V.vMu vUnit (V.vDescRet vTt) vTt);
+        (V.vMu vUnit retUnitVal vTt)
+        (V.vMu vUnit retUnitVal vTt);
       expected = true;
     };
     "conv-mu-diff-D" = {
       expr = conv 0
-        (V.vMu vUnit (V.vDescRet vTt) vTt)
-        (V.vMu vUnit (V.vDescRec vTt (V.vDescRet vTt)) vTt);
+        (V.vMu vUnit retUnitVal vTt)
+        (V.vMu vUnit recRetVal vTt);
       expected = false;
     };
     "conv-mu-diff-i" = {
       expr = conv 0
-        (V.vMu vNat (V.vDescRet vZero) vZero)
-        (V.vMu vNat (V.vDescRet vZero) (V.vSucc vZero));
+        (V.vMu natTyVal retNatZeroVal zeroVal)
+        (V.vMu natTyVal retNatZeroVal succZeroVal);
       expected = false;
     };
     "conv-mu-diff-I" = {
       expr = conv 0
-        (V.vMu vUnit (V.vDescRet vTt) vTt)
-        (V.vMu vNat (V.vDescRet vTt) vTt);
+        (V.vMu vUnit retUnitVal vTt)
+        (V.vMu natTyVal retUnitVal vTt);
       expected = false;
     };
     "conv-desccon" = {
       expr = conv 0
-        (V.vDescCon (V.vDescRet vTt) vTt vRefl)
-        (V.vDescCon (V.vDescRet vTt) vTt vRefl);
+        (V.vDescCon retUnitVal vTt vBootRefl)
+        (V.vDescCon retUnitVal vTt vBootRefl);
       expected = true;
+    };
+    "conv-generated-nat-100-self" = {
+      expr = let n = elabVal (H.natLit 100); in conv 0 n n;
+      expected = true;
+    };
+    "conv-generated-nat-99-100-rejects" = {
+      expr = conv 0 (elabVal (H.natLit 99)) (elabVal (H.natLit 100));
+      expected = false;
     };
     "conv-ne-desc-ind" = {
       expr = conv 1
-        (vNe 0 [ (V.eDescInd (V.vDescRet vTt) vNat vZero vTt) ])
-        (vNe 0 [ (V.eDescInd (V.vDescRet vTt) vNat vZero vTt) ]);
+        (vNe 0 [ (V.eDescInd retUnitVal vUnit vTt vTt) ])
+        (vNe 0 [ (V.eDescInd retUnitVal vUnit vTt vTt) ]);
       expected = true;
     };
     "conv-ne-desc-ind-diff" = {
       expr = conv 1
-        (vNe 0 [ (V.eDescInd (V.vDescRet vTt) vNat vZero vTt) ])
-        (vNe 0 [ (V.eDescInd (V.vDescRet vTt) vUnit vZero vTt) ]);
-      expected = false;
-    };
-    "conv-ne-desc-elim" = {
-      expr = conv 1
-        (vNe 0 [ (V.eDescElim V.vLevelZero vNat vZero vZero vZero vZero vZero) ])
-        (vNe 0 [ (V.eDescElim V.vLevelZero vNat vZero vZero vZero vZero vZero) ]);
-      expected = true;
-    };
-    "conv-ne-desc-elim-diff" = {
-      expr = conv 1
-        (vNe 0 [ (V.eDescElim V.vLevelZero vNat vZero vZero vZero vZero vZero) ])
-        (vNe 0 [ (V.eDescElim V.vLevelZero vUnit vZero vZero vZero vZero vZero) ]);
-      expected = false;
-    };
-    "conv-ne-desc-elim-diff-k" = {
-      expr = conv 1
-        (vNe 0 [ (V.eDescElim V.vLevelZero vNat vZero vZero vZero vZero vZero) ])
-        (vNe 0 [ (V.eDescElim (V.vLevelSuc V.vLevelZero) vNat vZero vZero vZero vZero vZero) ]);
+        (vNe 0 [ (V.eDescInd retUnitVal vUnit vTt vTt) ])
+        (vNe 0 [ (V.eDescInd retUnitVal vUnit vUnit vTt) ]);
       expected = false;
     };
     # EInterpD / EAllD / EEverywhereD spine frames — stuck `interpD` /
@@ -1097,44 +1039,44 @@ in mk {
     # Field-wise compare; mismatch on any slot rejects.
     "conv-ne-interp-d" = {
       expr = conv 1
-        (vNe 0 [ (V.eInterpD V.vLevelZero vUnit vNat vTt) ])
-        (vNe 0 [ (V.eInterpD V.vLevelZero vUnit vNat vTt) ]);
+        (vNe 0 [ (V.eInterpD V.vLevelZero vUnit vUnit vTt) ])
+        (vNe 0 [ (V.eInterpD V.vLevelZero vUnit vUnit vTt) ]);
       expected = true;
     };
     "conv-ne-interp-d-diff-X" = {
       expr = conv 1
-        (vNe 0 [ (V.eInterpD V.vLevelZero vUnit vNat vTt) ])
-        (vNe 0 [ (V.eInterpD V.vLevelZero vUnit vUnit vTt) ]);
+        (vNe 0 [ (V.eInterpD V.vLevelZero vUnit vUnit vTt) ])
+        (vNe 0 [ (V.eInterpD V.vLevelZero vUnit V.vString vTt) ]);
       expected = false;
     };
     "conv-ne-interp-d-diff-level" = {
       expr = conv 1
-        (vNe 0 [ (V.eInterpD V.vLevelZero vUnit vNat vTt) ])
-        (vNe 0 [ (V.eInterpD (V.vLevelSuc V.vLevelZero) vUnit vNat vTt) ]);
+        (vNe 0 [ (V.eInterpD V.vLevelZero vUnit vUnit vTt) ])
+        (vNe 0 [ (V.eInterpD (V.vLevelSuc V.vLevelZero) vUnit vUnit vTt) ]);
       expected = false;
     };
     "conv-ne-all-d" = {
       expr = conv 1
-        (vNe 0 [ (V.eAllD V.vLevelZero vUnit V.vLevelZero vNat vNat vTt vRefl) ])
-        (vNe 0 [ (V.eAllD V.vLevelZero vUnit V.vLevelZero vNat vNat vTt vRefl) ]);
+        (vNe 0 [ (V.eAllD V.vLevelZero vUnit V.vLevelZero vUnit vUnit vTt vBootRefl) ])
+        (vNe 0 [ (V.eAllD V.vLevelZero vUnit V.vLevelZero vUnit vUnit vTt vBootRefl) ]);
       expected = true;
     };
     "conv-ne-all-d-diff-K" = {
       expr = conv 1
-        (vNe 0 [ (V.eAllD V.vLevelZero vUnit V.vLevelZero vNat vNat vTt vRefl) ])
-        (vNe 0 [ (V.eAllD V.vLevelZero vUnit (V.vLevelSuc V.vLevelZero) vNat vNat vTt vRefl) ]);
+        (vNe 0 [ (V.eAllD V.vLevelZero vUnit V.vLevelZero vUnit vUnit vTt vBootRefl) ])
+        (vNe 0 [ (V.eAllD V.vLevelZero vUnit (V.vLevelSuc V.vLevelZero) vUnit vUnit vTt vBootRefl) ]);
       expected = false;
     };
     "conv-ne-everywhere-d" = {
       expr = conv 1
-        (vNe 0 [ (V.eEverywhereD V.vLevelZero vUnit V.vLevelZero vNat vNat vTt vTt vRefl) ])
-        (vNe 0 [ (V.eEverywhereD V.vLevelZero vUnit V.vLevelZero vNat vNat vTt vTt vRefl) ]);
+        (vNe 0 [ (V.eEverywhereD V.vLevelZero vUnit V.vLevelZero vUnit vUnit vTt vTt vBootRefl) ])
+        (vNe 0 [ (V.eEverywhereD V.vLevelZero vUnit V.vLevelZero vUnit vUnit vTt vTt vBootRefl) ]);
       expected = true;
     };
     "conv-ne-everywhere-d-diff-ih" = {
       expr = conv 1
-        (vNe 0 [ (V.eEverywhereD V.vLevelZero vUnit V.vLevelZero vNat vNat vTt vTt vRefl) ])
-        (vNe 0 [ (V.eEverywhereD V.vLevelZero vUnit V.vLevelZero vNat vNat vUnit vTt vRefl) ]);
+        (vNe 0 [ (V.eEverywhereD V.vLevelZero vUnit V.vLevelZero vUnit vUnit vTt vTt vBootRefl) ])
+        (vNe 0 [ (V.eEverywhereD V.vLevelZero vUnit V.vLevelZero vUnit vUnit vUnit vTt vBootRefl) ]);
       expected = false;
     };
 
@@ -1161,11 +1103,11 @@ in mk {
       in conv 0 lhs rhs;
       expected = true;
     };
-    "conv-desc-mu-unfold-Nat-k0" = {
+    "conv-desc-mu-unfold-generated-nat-k0" = {
       # Desc Nat 0 ≡ μ ⊤ (descDesc Nat 0) tt — non-⊤ I slice.
       expr = let
-        lhs = V.vDesc V.vLevelZero vNat;
-        expectedD = E.mkDescDescAppV vNat V.vLevelZero;
+        lhs = V.vDesc V.vLevelZero natTyVal;
+        expectedD = E.mkDescDescAppV natTyVal V.vLevelZero;
         rhs = V.vMu V.vUnit expectedD V.vTt;
       in conv 0 lhs rhs;
       expected = true;
@@ -1184,7 +1126,7 @@ in mk {
       # Desc Nat 0 ≢ μ ⊤ (descDesc ⊤ 0) tt — v2.D encodes I=⊤ but v1
       # demands I=Nat. Structural conv on the descDesc tree distinguishes.
       expr = let
-        lhs = V.vDesc V.vLevelZero vNat;
+        lhs = V.vDesc V.vLevelZero natTyVal;
         expectedD = E.mkDescDescAppV V.vUnit V.vLevelZero;
         rhs = V.vMu V.vUnit expectedD V.vTt;
       in conv 0 lhs rhs;
@@ -1195,7 +1137,7 @@ in mk {
       # not ⊤, so the unfolding's ⊤-slot check fails.
       expr = let
         expectedD = E.mkDescDescAppV V.vUnit V.vLevelZero;
-        lhs = V.vMu vNat expectedD vZero;
+        lhs = V.vMu natTyVal expectedD zeroVal;
         rhs = V.vDesc V.vLevelZero V.vUnit;
       in conv 0 lhs rhs;
       expected = false;
@@ -1205,68 +1147,68 @@ in mk {
     # witness-irrelevance, eta on stuck neutrals, ELiftElim spine.
     "conv-lift-idempotent-collapse-vs-A" = {
       # Lift l l _ A ≡ A — load-bearing backward-compat rule.
-      expr = conv 0 (V.vLift V.vLevelZero V.vLevelZero V.vRefl vUnit) vUnit;
+      expr = conv 0 (V.vLift V.vLevelZero V.vLevelZero V.vBootRefl vUnit) vUnit;
       expected = true;
     };
     "conv-lift-idempotent-collapse-A-vs" = {
       # Symmetric direction — A ≡ Lift l l _ A.
-      expr = conv 0 vUnit (V.vLift V.vLevelZero V.vLevelZero V.vRefl vUnit);
+      expr = conv 0 vUnit (V.vLift V.vLevelZero V.vLevelZero V.vBootRefl vUnit);
       expected = true;
     };
     "conv-lift-intro-idempotent-collapse-vs-a" = {
       # lift l l _ A a ≡ a.
-      expr = conv 0 (V.vLiftIntro V.vLevelZero V.vLevelZero V.vRefl vUnit vTt) vTt;
+      expr = conv 0 (V.vLiftIntro V.vLevelZero V.vLevelZero V.vBootRefl vUnit vTt) vTt;
       expected = true;
     };
     "conv-lift-intro-idempotent-collapse-a-vs" = {
-      expr = conv 0 vTt (V.vLiftIntro V.vLevelZero V.vLevelZero V.vRefl vUnit vTt);
+      expr = conv 0 vTt (V.vLiftIntro V.vLevelZero V.vLevelZero V.vBootRefl vUnit vTt);
       expected = true;
     };
     "conv-lift-structural-equal" = {
       # Lift 0 1 _ Unit ≡ Lift 0 1 _ Unit at distinct levels.
       expr = conv 0
-        (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vUnit)
-        (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vUnit);
+        (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vBootRefl vUnit)
+        (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vBootRefl vUnit);
       expected = true;
     };
     "conv-lift-structural-diff-A" = {
       # Differing underlying types do not convert.
       expr = conv 0
-        (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vUnit)
-        (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vNat);
+        (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vBootRefl vUnit)
+        (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vBootRefl V.vString);
       expected = false;
     };
     "conv-lift-structural-diff-m" = {
       expr = conv 0
-        (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vUnit)
-        (V.vLift V.vLevelZero (V.vLevelSuc (V.vLevelSuc V.vLevelZero)) V.vRefl vUnit);
+        (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vBootRefl vUnit)
+        (V.vLift V.vLevelZero (V.vLevelSuc (V.vLevelSuc V.vLevelZero)) V.vBootRefl vUnit);
       expected = false;
     };
     "conv-lift-witness-irrelevance" = {
       # The `eq` slot is not compared — two `VLift`s with structurally
       # different but propositionally-equal witnesses convert.
-      # vRefl vs (vRefl) is a degenerate case; substitute distinct
+      # vBootRefl vs (vBootRefl) is a degenerate case; substitute distinct
       # placeholder values to confirm the eq slot is not consulted.
       expr = conv 0
-        (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vUnit)
+        (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vBootRefl vUnit)
         (V.vLift V.vLevelZero (V.vLevelSuc V.vLevelZero) vTt vUnit);
       expected = true;
     };
     "conv-lift-intro-structural-equal" = {
       expr = conv 0
-        (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vUnit vTt)
-        (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vUnit vTt);
+        (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vBootRefl vUnit vTt)
+        (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vBootRefl vUnit vTt);
       expected = true;
     };
     "conv-lift-intro-structural-diff-a" = {
       expr = conv 0
-        (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vNat vZero)
-        (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vNat (vSucc vZero));
+        (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vBootRefl V.vString (V.vStringLit "a"))
+        (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vBootRefl V.vString (V.vStringLit "b"));
       expected = false;
     };
     "conv-lift-intro-witness-irrelevance" = {
       expr = conv 0
-        (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vRefl vUnit vTt)
+        (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero) V.vBootRefl vUnit vTt)
         (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero) vTt vUnit vTt);
       expected = true;
     };
@@ -1278,10 +1220,10 @@ in mk {
       expr = let
         x = V.freshVar 0;
         loweredX = E.vLiftElimF V.vLevelZero (V.vLevelSuc V.vLevelZero)
-          V.vRefl vUnit x;
+          V.vBootRefl vUnit x;
       in conv 1
         (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero)
-          V.vRefl vUnit loweredX)
+          V.vBootRefl vUnit loweredX)
         x;
       expected = true;
     };
@@ -1290,35 +1232,35 @@ in mk {
       expr = let
         x = V.freshVar 0;
         loweredX = E.vLiftElimF V.vLevelZero (V.vLevelSuc V.vLevelZero)
-          V.vRefl vUnit x;
+          V.vBootRefl vUnit x;
       in conv 1
         x
         (V.vLiftIntro V.vLevelZero (V.vLevelSuc V.vLevelZero)
-          V.vRefl vUnit loweredX);
+          V.vBootRefl vUnit loweredX);
       expected = true;
     };
     "conv-ne-lift-elim" = {
       # Two stuck `lower`s with matching params convert.
       expr = conv 1
         (vNe 0 [ (V.eLiftElim V.vLevelZero (V.vLevelSuc V.vLevelZero)
-                   V.vRefl vUnit) ])
+                   V.vBootRefl vUnit) ])
         (vNe 0 [ (V.eLiftElim V.vLevelZero (V.vLevelSuc V.vLevelZero)
-                   V.vRefl vUnit) ]);
+                   V.vBootRefl vUnit) ]);
       expected = true;
     };
     "conv-ne-lift-elim-diff-A" = {
       expr = conv 1
         (vNe 0 [ (V.eLiftElim V.vLevelZero (V.vLevelSuc V.vLevelZero)
-                   V.vRefl vUnit) ])
+                   V.vBootRefl vUnit) ])
         (vNe 0 [ (V.eLiftElim V.vLevelZero (V.vLevelSuc V.vLevelZero)
-                   V.vRefl vNat) ]);
+                   V.vBootRefl V.vString) ]);
       expected = false;
     };
     "conv-ne-lift-elim-witness-irrelevance" = {
       # The `eq` slot is not compared in the spine frame.
       expr = conv 1
         (vNe 0 [ (V.eLiftElim V.vLevelZero (V.vLevelSuc V.vLevelZero)
-                   V.vRefl vUnit) ])
+                   V.vBootRefl vUnit) ])
         (vNe 0 [ (V.eLiftElim V.vLevelZero (V.vLevelSuc V.vLevelZero)
                    vTt vUnit) ]);
       expected = true;
@@ -1333,7 +1275,7 @@ in mk {
       expected = true;
     };
     "conv-squash-formers-diff-A" = {
-      expr = conv 0 (vSquash vUnit) (vSquash vNat);
+      expr = conv 0 (vSquash vUnit) (vSquash V.vString);
       expected = false;
     };
     "conv-squash-irrelevance" = {
@@ -1368,97 +1310,58 @@ in mk {
         f = vLam "_" vUnit (mkClosure [] T.mkTt);
       in conv 1
         (vNe 0 [ (eSquashElim vUnit vUnit f) ])
-        (vNe 0 [ (eSquashElim vNat vUnit f) ]);
+        (vNe 0 [ (eSquashElim V.vString vUnit f) ]);
       expected = false;
     };
 
-    # natToLevel — structural Nat→Level reduction; ENatToLevel spine on stuck.
-    "conv-nat-to-level-zero-vs-zero" = {
-      expr = conv 0
-        (E.vNatToLevel V.vZero) V.vLevelZero;
-      expected = true;
-    };
-    "conv-nat-to-level-suc-chain" = {
-      # natToLevel (suc (suc zero)) ≡ suc (suc zero) at the Level sort.
-      expr = conv 0
-        (E.vNatToLevel (vSucc (vSucc V.vZero)))
-        (V.vLevelSuc (V.vLevelSuc V.vLevelZero));
-      expected = true;
-    };
-    "conv-nat-to-level-stuck-equal" = {
-      # Two stuck `natToLevel` on the same Nat-typed neutral convert.
-      expr = conv 1
-        (E.vNatToLevel (V.freshVar 0))
-        (E.vNatToLevel (V.freshVar 0));
-      expected = true;
-    };
-    "conv-nat-to-level-stuck-diff-scrut" = {
-      expr = conv 2
-        (E.vNatToLevel (V.freshVar 0))
-        (E.vNatToLevel (V.freshVar 1));
-      expected = false;
-    };
-
-    # Stress tests — stack safety (B1/B2)
-    "conv-succ-5000" = {
+    # Stress tests — generated ordinary data
+    "conv-generated-nat-5000" = {
       expr = let
-        deep = builtins.foldl' (acc: _: vSucc acc) vZero (builtins.genList (x: x) 5000);
+        deep = E.eval [] (H.elab (H.natLit 5000));
       in conv 0 deep deep;
       expected = true;
     };
-    "conv-succ-5000-neq" = {
+    "conv-generated-list-5000" = {
       expr = let
-        a = builtins.foldl' (acc: _: vSucc acc) vZero (builtins.genList (x: x) 5000);
-        b = builtins.foldl' (acc: _: vSucc acc) vZero (builtins.genList (x: x) 4999);
-      in conv 0 a b;
-      expected = false;
-    };
-    "conv-cons-5000" = {
-      expr = let
-        deep = builtins.foldl' (acc: _: vCons vNat vZero acc) (vNil vNat) (builtins.genList (x: x) 5000);
+        deep = E.eval [] (H.elab (builtins.foldl' (acc: _:
+          H.cons H.nat H.zero acc
+        ) (H.nil H.nat) (builtins.genList (x: x) 5000)));
       in conv 0 deep deep;
       expected = true;
-    };
-    "conv-cons-5000-neq" = {
-      expr = let
-        a = builtins.foldl' (acc: _: vCons vNat vZero acc) (vNil vNat) (builtins.genList (x: x) 5000);
-        b = builtins.foldl' (acc: _: vCons vNat vZero acc) (vNil vNat) (builtins.genList (x: x) 4999);
-      in conv 0 a b;
-      expected = false;
     };
 
     # `_canonRef` short-circuit at VDescCon × VDescCon. Equality reduces
     # to conv on the carried `(id, I, L)`; `.D` is never forced.
     "conv-descDescApp-tag-self" = {
       expr =
-        let v = V.vDescConTagged vTt vTt V.vRefl
+        let v = V.vDescConTagged vTt vTt V.vBootRefl
                   { id = "descDesc"; I = V.vUnit; L = V.vLevelZero; };
         in conv 0 v v;
       expected = true;
     };
     "conv-descDescApp-tag-distinct-id-rejects" = {
       expr =
-        let v1 = V.vDescConTagged vTt vTt V.vRefl
+        let v1 = V.vDescConTagged vTt vTt V.vBootRefl
                    { id = "alpha"; I = V.vUnit; L = V.vLevelZero; };
-            v2 = V.vDescConTagged vTt vTt V.vRefl
+            v2 = V.vDescConTagged vTt vTt V.vBootRefl
                    { id = "beta";  I = V.vUnit; L = V.vLevelZero; };
         in conv 0 v1 v2;
       expected = false;
     };
     "conv-descDescApp-tag-distinct-I-rejects" = {
       expr =
-        let v1 = V.vDescConTagged vTt vTt V.vRefl
+        let v1 = V.vDescConTagged vTt vTt V.vBootRefl
                    { id = "descDesc"; I = V.vUnit; L = V.vLevelZero; };
-            v2 = V.vDescConTagged vTt vTt V.vRefl
-                   { id = "descDesc"; I = V.vNat;  L = V.vLevelZero; };
+            v2 = V.vDescConTagged vTt vTt V.vBootRefl
+                   { id = "descDesc"; I = natTyVal;  L = V.vLevelZero; };
         in conv 0 v1 v2;
       expected = false;
     };
     "conv-descDescApp-tag-distinct-L-rejects" = {
       expr =
-        let v1 = V.vDescConTagged vTt vTt V.vRefl
+        let v1 = V.vDescConTagged vTt vTt V.vBootRefl
                    { id = "descDesc"; I = V.vUnit; L = V.vLevelZero; };
-            v2 = V.vDescConTagged vTt vTt V.vRefl
+            v2 = V.vDescConTagged vTt vTt V.vBootRefl
                    { id = "descDesc"; I = V.vUnit; L = V.vLevelSuc V.vLevelZero; };
         in conv 0 v1 v2;
       expected = false;

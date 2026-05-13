@@ -79,7 +79,9 @@ let
       done
 
       [[ -d "$bench_dir" ]] || { echo "bench dir not found: $bench_dir" >&2; exit 2; }
+      bench_dir="$(realpath "$bench_dir")"
       [[ -n "$history_dir" ]] || history_dir="$bench_dir/history"
+      history_dir="$(realpath -m "$history_dir")"
       mkdir -p "$history_dir"
 
       # Resolve existing-budgets: explicit value wins; sentinel means
@@ -96,6 +98,7 @@ let
         exit 2
       fi
       if [[ -n "$existing_budgets" ]]; then
+        existing_budgets="$(realpath "$existing_budgets")"
         existing_budgets_arg="$existing_budgets"
         echo "bench-calibrate: preserving noiseLimited from $existing_budgets" >&2
       else

@@ -33,7 +33,7 @@ let
   # Tags whose HOAS surface is atomic — zero descendable children.
   atomic = [
     "nat" "unit" "string" "int" "float" "attrs" "path" "function"
-    "any" "U" "tt" "refl" "funext" "zero"
+    "any" "U" "tt" "refl" "boot-refl" "funext" "zero"
     "string-lit" "int-lit" "float-lit"
     "attrs-lit" "path-lit" "fn-lit" "any-lit"
   ];
@@ -69,19 +69,19 @@ let
         (map (b: { name = "Tag:${b.tag}"; value = sourceMapOf b.type; })
              h.branches))
 
-    # -- Kernel coproduct primitive --
-    else if t == "sum-prim" then
+    # -- Bootstrap coproduct for descPlus --
+    else if t == "boot-sum" then
       SM.node h {
         "DPlusL" = sourceMapOf h.L;
         "DPlusR" = sourceMapOf h.R;
       }
-    else if t == "inl-prim" || t == "inr-prim" then
+    else if t == "boot-inl" || t == "boot-inr" then
       SM.node h {
         "DPlusL" = sourceMapOf h.L;
         "DPlusR" = sourceMapOf h.R;
         "Field:term" = sourceMapOf h.term;
       }
-    else if t == "sum-elim-prim" then
+    else if t == "boot-sum-elim" then
       SM.node h {
         "DPlusL" = sourceMapOf h.left;
         "DPlusR" = sourceMapOf h.right;
@@ -91,8 +91,8 @@ let
         "Scrut"  = sourceMapOf h.scrut;
       }
 
-    # -- Eq type --
-    else if t == "eq" then
+    # -- Bootstrap Eq type --
+    else if t == "boot-eq" then
       SM.node h {
         "JType" = sourceMapOf h.type;
         "JLhs"  = sourceMapOf h.lhs;
@@ -169,29 +169,6 @@ let
     # -- Descriptions --
     else if t == "desc" then
       SM.node h { "Field:I" = sourceMapOf h.I; }
-    else if t == "desc-ret" then
-      SM.node h { "DRetIndex" = sourceMapOf h.j; }
-    else if t == "desc-arg" then
-      SM.node h {
-        "DArgSort" = sourceMapOf h.S;
-        "DArgBody" = sourceMapOf (h.body bodyMarker);
-      }
-    else if t == "desc-rec" then
-      SM.node h {
-        "DRecIndex" = sourceMapOf h.j;
-        "DRecTail"  = sourceMapOf h.D;
-      }
-    else if t == "desc-pi" then
-      SM.node h {
-        "DPiSort" = sourceMapOf h.S;
-        "DPiFn"   = sourceMapOf h.f;
-        "DPiBody" = sourceMapOf h.D;
-      }
-    else if t == "desc-plus" then
-      SM.node h {
-        "DPlusL" = sourceMapOf h.A;
-        "DPlusR" = sourceMapOf h.B;
-      }
     else if t == "desc-ret-enc" then
       SM.node h { "DRetIndex" = sourceMapOf h.j; }
     else if t == "desc-arg-enc" then
@@ -235,24 +212,13 @@ let
         "MuIndex"   = sourceMapOf h.i;
         "Scrut"     = sourceMapOf h.scrut;
       }
-    else if t == "desc-elim" then
-      SM.node h {
-        "Motive"      = sourceMapOf h.motive;
-        "Case:onRet"  = sourceMapOf h.onRet;
-        "Case:onArg"  = sourceMapOf h.onArg;
-        "Case:onRec"  = sourceMapOf h.onRec;
-        "Case:onPi"   = sourceMapOf h.onPi;
-        "Case:onPlus" = sourceMapOf h.onPlus;
-        "Scrut"       = sourceMapOf h.scrut;
-      }
-
     # Macro-constructor surfaces — elaborate descends into `.fallback`
     # for the non-chain path. Mirror that so a failure in the desugared
     # lam-cascade can still back-map through Case:fallback.
     else if t == "dt-ctor-mono" || t == "dt-ctor-poly" then
       SM.node h { "Case:fallback" = sourceMapOf h.fallback; }
 
-    else if t == "j" then
+    else if t == "j" || t == "boot-j" then
       SM.node h {
         "JType"     = sourceMapOf h.type;
         "JLhs"      = sourceMapOf h.lhs;
@@ -294,54 +260,83 @@ in {
         expected = "unit";
       };
 
-      # -- natDesc = plus descRet (descRec descRet) --
-      "natDesc-root-is-desc-plus" = {
+      # -- natDesc = NatDT.D --
+      "natDesc-root-is-ann" = {
         expr = smNat.hoas._htag;
+        expected = "ann";
+      };
+      "natDesc-AnnTerm-is-desc-plus" = {
+        expr = (SMf.descendChain [ P.AnnTerm ] smNat).hoas._htag;
         expected = "desc-plus-enc";
       };
       "natDesc-DPlusL-is-desc-ret" = {
-        expr = (SMf.descendChain [ P.DPlusL ] smNat).hoas._htag;
+        expr = (SMf.descendChain [ P.AnnTerm P.DPlusL ] smNat).hoas._htag;
         expected = "desc-ret-enc";
       };
       "natDesc-DPlusR-is-desc-rec" = {
-        expr = (SMf.descendChain [ P.DPlusR ] smNat).hoas._htag;
+        expr = (SMf.descendChain [ P.AnnTerm P.DPlusR ] smNat).hoas._htag;
         expected = "desc-rec-enc";
       };
       "natDesc-DPlusR-DRecTail-is-desc-ret" = {
-        expr = (SMf.descendChain [ P.DPlusR P.DRecTail ] smNat).hoas._htag;
+        expr = (SMf.descendChain [ P.AnnTerm P.DPlusR P.DRecTail ] smNat).hoas._htag;
         expected = "desc-ret-enc";
       };
       "natDesc-DPlusL-DRecTail-is-null" = {
-        expr = SMf.descendChain [ P.DPlusL P.DRecTail ] smNat;
+        expr = SMf.descendChain [ P.AnnTerm P.DPlusL P.DRecTail ] smNat;
         expected = null;
       };
 
-      # -- listDesc unit = plus descRet (descArg unit (_: descRec descRet)) --
-      "listDesc-DPlusL-is-desc-ret" = {
-        expr = (SMf.descendChain [ P.DPlusL ] smList).hoas._htag;
-        expected = "desc-ret-enc";
+      # -- listDesc unit = ListDT.D unit --
+      "listDesc-root-is-app" = {
+        expr = smList.hoas._htag;
+        expected = "app";
       };
-      "listDesc-DPlusR-DArgSort-is-elem-type" = {
-        expr = (SMf.descendChain [ P.DPlusR P.DArgSort ] smList).hoas._htag;
+      "listDesc-AppArg-is-elem-type" = {
+        expr = (SMf.descendChain [ P.AppArg ] smList).hoas._htag;
         expected = "unit";
       };
-      "listDesc-DPlusR-DArgBody-is-desc-rec" = {
-        expr = (SMf.descendChain [ P.DPlusR P.DArgBody ] smList).hoas._htag;
+      "listDesc-body-is-desc-plus" = {
+        expr = (SMf.descendChain
+          [ P.AppHead P.AnnTerm (P.Case "body") P.AnnTerm ] smList).hoas._htag;
+        expected = "desc-plus-enc";
+      };
+      "listDesc-body-DPlusL-is-desc-ret" = {
+        expr = (SMf.descendChain
+          [ P.AppHead P.AnnTerm (P.Case "body") P.AnnTerm P.DPlusL ] smList).hoas._htag;
+        expected = "desc-ret-enc";
+      };
+      "listDesc-body-DPlusR-DArgBody-is-desc-rec" = {
+        expr = (SMf.descendChain
+          [ P.AppHead P.AnnTerm (P.Case "body") P.AnnTerm P.DPlusR P.DArgBody ] smList).hoas._htag;
         expected = "desc-rec-enc";
       };
 
-      # -- sumDesc string unit = plus (descArg string (_: descRet))
-      #                              (descArg unit   (_: descRet)) --
-      "sumDesc-DPlusL-DArgSort-is-left-type" = {
-        expr = (SMf.descendChain [ P.DPlusL P.DArgSort ] smSum).hoas._htag;
-        expected = "string";
+      # -- sumDesc string unit = SumDT.D levelZero string unit --
+      "sumDesc-root-is-app" = {
+        expr = smSum.hoas._htag;
+        expected = "app";
       };
-      "sumDesc-DPlusR-DArgSort-is-right-type" = {
-        expr = (SMf.descendChain [ P.DPlusR P.DArgSort ] smSum).hoas._htag;
+      "sumDesc-AppArg-is-right-type" = {
+        expr = (SMf.descendChain [ P.AppArg ] smSum).hoas._htag;
         expected = "unit";
       };
-      "sumDesc-DPlusL-DArgBody-is-desc-ret" = {
-        expr = (SMf.descendChain [ P.DPlusL P.DArgBody ] smSum).hoas._htag;
+      "sumDesc-AppHead-AppArg-is-left-type" = {
+        expr = (SMf.descendChain [ P.AppHead P.AppArg ] smSum).hoas._htag;
+        expected = "string";
+      };
+      "sumDesc-body-is-desc-plus" = {
+        expr = (SMf.descendChain [
+          P.AppHead P.AppHead P.AppHead P.AnnTerm
+          (P.Case "body") (P.Case "body") (P.Case "body") P.AnnTerm
+        ] smSum).hoas._htag;
+        expected = "desc-plus-enc";
+      };
+      "sumDesc-body-DPlusL-DArgBody-is-desc-ret" = {
+        expr = (SMf.descendChain [
+          P.AppHead P.AppHead P.AppHead P.AnnTerm
+          (P.Case "body") (P.Case "body") (P.Case "body") P.AnnTerm
+          P.DPlusL P.DArgBody
+        ] smSum).hoas._htag;
         expected = "desc-ret-enc";
       };
 
@@ -353,7 +348,8 @@ in {
             leafErr = D.mkKernelError {
               rule = "check"; msg = "type mismatch";
             };
-            err = D.nestUnder P.DPlusR (D.nestUnder P.DRecTail leafErr);
+            err = D.nestUnder P.AnnTerm
+              (D.nestUnder P.DPlusR (D.nestUnder P.DRecTail leafErr));
             hoas = SMf.hoasAtError err smNat;
           in hoas._htag;
         expected = "desc-ret-enc";

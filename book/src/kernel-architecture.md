@@ -76,7 +76,7 @@ term.nix --> eval.nix --> value.nix
 |--------|----------|-----------|
 | `term.nix` | Term constructors | `mkVar`, `mkPi`, `mkLam`, `mkApp`, ... |
 | `eval.nix` | Evaluation | `Env × Tm -> Val` |
-| `value.nix` | Value constructors | `VLam`, `VPi`, `VPair`, `VZero`, ... |
+| `value.nix` | Value constructors | `VLam`, `VPi`, `VPair`, `VMu`, ... |
 | `quote.nix` | Quotation | `ℕ × Val -> Tm` |
 | `conv.nix` | Conversion checking | `ℕ × Val × Val -> Bool` |
 | `check.nix` | Type checking | `Ctx × Tm × Val -> Tm` / `Ctx × Tm -> Tm × Val` |
@@ -292,14 +292,12 @@ the result to a usable Nix value.
 
 ```nix
 # extract : HoasTree -> Val -> NixValue
-extract H.nat (VSucc (VSucc VZero))    # -> 2
-extract H.bool (VDescCon ... (VInl ... VRefl))   # -> true
-                                       #    (H.bool is derived,
-                                       #     so true/false are
-                                       #     plus-encoded μ values)
-extract H.string (VStringLit "hi")     # -> "hi"
-extract (H.listOf H.nat) (VCons ...)   # -> [1 2 3]
-extract (H.forall "x" ...) (VLam ...)  # -> Nix function (!)
+extract H.nat (VDescCon ... <succ payload>)        # -> 2
+extract H.bool (VDescCon ... <true payload>)       # -> true
+                                                     # H.bool is derived
+extract H.string (VStringLit "hi")                 # -> "hi"
+extract (H.listOf H.nat) (VDescCon ... <cons ...>) # -> [1 2 3]
+extract (H.forall "x" ...) (VLam ...)              # -> Nix function (!)
 ```
 
 The Pi case is the most important. Extracting a verified function
@@ -639,8 +637,8 @@ let
     H.boolElim 0 (H.lam "_" bool (_: bool)) H.false_ H.true_ b;
 in {
   # Prove: 3 + 5 = 8
-  # The kernel normalizes add(3,5) via NatElim, arrives at 8,
-  # and confirms Refl witnesses Eq(Nat, 8, 8).
+  # The kernel normalizes add(3,5) via generated natural induction,
+  # then confirms Refl witnesses Eq(Nat, 8, 8).
   arithmetic = (checkHoas
     (eq nat (add (H.natLit 3) (H.natLit 5)) (H.natLit 8))
     refl).tag == "refl";
@@ -652,7 +650,7 @@ in {
     refl).tag == "refl";
 
   # Prove: append([1,2], [3]) = [1,2,3]
-  # ListElim unfolds the first list, cons-ing each element onto [3].
+  # Generated list induction unfolds the first list onto [3].
   listAppend = let
     list12  = H.cons nat (H.natLit 1) (H.cons nat (H.natLit 2) (H.nil nat));
     list3   = H.cons nat (H.natLit 3) (H.nil nat);

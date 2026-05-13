@@ -417,7 +417,7 @@ in mk {
               rule = "desc-arg";
               msg = "type mismatch";
               expected = { tag = "VDesc"; };
-              got = { tag = "VNat"; };
+              got = { tag = "VUnit"; };
             };
         in resolve (fx.diag.error.nestUnder
                      fx.diag.positions.DArgBody leaf);
@@ -429,7 +429,7 @@ in mk {
               rule = "ann";
               msg = "expected a type";
               expected = { tag = "VU"; level = 0; };
-              got = { tag = "VNat"; };
+              got = { tag = "VUnit"; };
             };
         in resolve (fx.diag.error.nestUnder
                      fx.diag.positions.AnnType leaf);
@@ -453,7 +453,7 @@ in mk {
               rule = "mu";
               msg = "type mismatch";
               expected = { tag = "VDesc"; };
-              got = { tag = "VNat"; };
+              got = { tag = "VUnit"; };
             };
         in resolve (fx.diag.error.nestUnder
                      fx.diag.positions.MuDesc leaf);
@@ -462,7 +462,7 @@ in mk {
     "resolve-Motive-not-a-function" = {
       expr =
         let leaf = fx.diag.error.mkKernelError {
-              rule = "nat-elim";
+              rule = "elim";
               msg = "motive must be Π";
               expected = { tag = "VPi"; };
               got = { tag = "VU"; level = 0; };
@@ -492,7 +492,7 @@ in mk {
       expr = classify (fx.diag.error.mkKernelError {
         rule = "r"; msg = "m";
         expected = { tag = "VU"; level = 0; };
-        got = { tag = "VNat"; };
+        got = { tag = "VUnit"; };
       });
       expected = "not-a-type";
     };
@@ -500,7 +500,7 @@ in mk {
       expr = classify (fx.diag.error.mkKernelError {
         rule = "r"; msg = "m";
         expected = { tag = "VDesc"; };
-        got = { tag = "VNat"; };
+        got = { tag = "VUnit"; };
       });
       expected = "not-a-desc";
     };
@@ -516,7 +516,7 @@ in mk {
       expr = classify (fx.diag.error.mkKernelError {
         rule = "r"; msg = "m";
         expected = { tag = "VSigma"; };
-        got = { tag = "VNat"; };
+        got = { tag = "VUnit"; };
       });
       expected = "not-a-pair";
     };
@@ -587,7 +587,7 @@ in mk {
     "resolve-term-shape-Motive-not-a-function" = {
       expr =
         let leaf = fx.diag.error.mkKernelError {
-          rule = "nat-elim"; msg = "motive must be Π";
+          rule = "elim"; msg = "motive must be Π";
           expected = { tag = "pi"; };
           got      = { tag = "U"; level = 0; };
         };
@@ -721,7 +721,7 @@ in mk {
           leaf = fx.diag.error.mkKernelError {
             rule = "checkType"; msg = "expected a type";
             expected = { tag = "VU"; level = 0; };
-            got = { tag = "VNat"; };
+            got = { tag = "VUnit"; };
           };
           chain = fx.diag.error.nestUnder fx.diag.positions.Motive
                     (fx.diag.error.nestUnder fx.diag.positions.PiDom leaf);
@@ -734,7 +734,7 @@ in mk {
           leaf = fx.diag.error.mkKernelError {
             rule = "checkType"; msg = "expected a type";
             expected = { tag = "VU"; level = 0; };
-            got = { tag = "VNat"; };
+            got = { tag = "VUnit"; };
           };
         in resolve (fx.diag.error.nestUnder
                      fx.diag.positions.PiDom leaf);
@@ -750,7 +750,7 @@ in mk {
           leaf = fx.diag.error.mkKernelError {
             rule = "checkType"; msg = "expected a type";
             expected = { tag = "VU"; level = 0; };
-            got = { tag = "VNat"; };
+            got = { tag = "VUnit"; };
           };
           chain =
             fx.diag.error.nestUnder fx.diag.positions.AppArg
@@ -766,7 +766,7 @@ in mk {
         let leaf = fx.diag.error.mkKernelError {
           rule = "desc-pi"; msg = "f must have type S -> I";
           expected = { tag = "VPi"; };
-          got      = { tag = "VNat"; };
+          got      = { tag = "VUnit"; };
         };
         in resolve (fx.diag.error.nestUnder
                      fx.diag.positions.DPiFn leaf);
@@ -776,7 +776,7 @@ in mk {
       expr =
         let leaf = fx.diag.error.mkKernelError {
           rule = "desc-pi"; msg = "domain mismatch";
-          expected = { tag = "VNat"; };
+          expected = { tag = "VUnit"; };
           got      = { tag = "VString"; };
         };
         in resolve (fx.diag.error.nestUnder
@@ -788,7 +788,7 @@ in mk {
         let leaf = fx.diag.error.mkKernelError {
           rule = "desc-plus"; msg = "A must be Desc";
           expected = { tag = "VDesc"; };
-          got      = { tag = "VNat"; };
+          got      = { tag = "VUnit"; };
         };
         in resolve (fx.diag.error.nestUnder
                      fx.diag.positions.DPlusL leaf);
@@ -799,7 +799,7 @@ in mk {
         let leaf = fx.diag.error.mkKernelError {
           rule = "desc-plus"; msg = "B must be Desc";
           expected = { tag = "VDesc"; };
-          got      = { tag = "VNat"; };
+          got      = { tag = "VUnit"; };
         };
         in resolve (fx.diag.error.nestUnder
                      fx.diag.positions.DPlusR leaf);
@@ -809,7 +809,7 @@ in mk {
       expr =
         let leaf = fx.diag.error.mkKernelError {
           rule = "ann"; msg = "term does not match annotation";
-          expected = { tag = "VNat"; };
+          expected = { tag = "VUnit"; };
           got      = { tag = "VString"; };
         };
         in resolve (fx.diag.error.nestUnder
@@ -821,7 +821,7 @@ in mk {
         let leaf = fx.diag.error.mkKernelError {
           rule = "app"; msg = "expected function type";
           expected = { tag = "VPi"; };
-          got      = { tag = "VNat"; };
+          got      = { tag = "VUnit"; };
         };
         in resolve (fx.diag.error.nestUnder
                      fx.diag.positions.AppHead leaf);
@@ -831,7 +831,7 @@ in mk {
       expr =
         let leaf = fx.diag.error.mkKernelError {
           rule = "app"; msg = "arg mismatch";
-          expected = { tag = "VNat"; };
+          expected = { tag = "VUnit"; };
           got      = { tag = "VString"; };
         };
         in resolve (fx.diag.error.nestUnder
@@ -842,7 +842,7 @@ in mk {
       expr =
         let leaf = fx.diag.error.mkKernelError {
           rule = "desc-con"; msg = "target index mismatch";
-          expected = { tag = "VNat"; };
+          expected = { tag = "VUnit"; };
           got      = { tag = "VString"; };
         };
         in resolve (fx.diag.error.nestUnder
@@ -853,7 +853,7 @@ in mk {
       expr =
         let leaf = fx.diag.error.mkKernelError {
           rule = "desc-con"; msg = "payload mismatch";
-          expected = { tag = "VNat"; };
+          expected = { tag = "VUnit"; };
           got      = { tag = "VString"; };
         };
         in resolve (fx.diag.error.nestUnder
@@ -865,7 +865,7 @@ in mk {
         let leaf = fx.diag.error.mkKernelError {
           rule = "opaque-lam"; msg = "annotation must be Pi";
           expected = { tag = "VPi"; };
-          got      = { tag = "VNat"; };
+          got      = { tag = "VUnit"; };
         };
         in resolve (fx.diag.error.nestUnder
                      fx.diag.positions.OpaqueType leaf);
@@ -875,7 +875,7 @@ in mk {
       expr =
         let leaf = fx.diag.error.mkKernelError {
           rule = "opaque-lam"; msg = "domain mismatch";
-          expected = { tag = "VNat"; };
+          expected = { tag = "VUnit"; };
           got      = { tag = "VString"; };
         };
         in resolve (fx.diag.error.nestUnder
@@ -887,7 +887,7 @@ in mk {
         let leaf = fx.diag.error.mkKernelError {
           rule = "checkMotive"; msg = "motive must return a type";
           expected = { tag = "VU"; level = 0; };
-          got      = { tag = "VNat"; };
+          got      = { tag = "VUnit"; };
         };
         in resolve (fx.diag.error.nestUnder
                      fx.diag.positions.Motive leaf);
@@ -897,7 +897,7 @@ in mk {
       expr =
         let leaf = fx.diag.error.mkKernelError {
           rule = "j"; msg = "type mismatch";
-          expected = { tag = "VNat"; };
+          expected = { tag = "VUnit"; };
           got      = { tag = "VString"; };
         };
         in resolve (fx.diag.error.nestUnder
@@ -969,8 +969,8 @@ in mk {
     "resolve-Case-type-mismatch" = {
       expr =
         let leaf = fx.diag.error.mkKernelError {
-          rule = "nat-elim"; msg = "case body mismatch";
-          expected = { tag = "VNat"; };
+          rule = "elim"; msg = "case body mismatch";
+          expected = { tag = "VUnit"; };
           got      = { tag = "VString"; };
         };
         in resolve (fx.diag.error.nestUnder
@@ -1024,7 +1024,7 @@ in mk {
         let leaf = fx.diag.error.mkKernelError {
           rule = "level-suc"; msg = "pred must be Level";
           expected = { tag = "VLevel"; };
-          got      = { tag = "VNat"; };
+          got      = { tag = "VUnit"; };
         };
         in resolve (fx.diag.error.nestUnder
                      fx.diag.positions.LevelSucPred leaf);
@@ -1035,7 +1035,7 @@ in mk {
         let leaf = fx.diag.error.mkKernelError {
           rule = "level-max"; msg = "lhs must be Level";
           expected = { tag = "VLevel"; };
-          got      = { tag = "VNat"; };
+          got      = { tag = "VUnit"; };
         };
         in resolve (fx.diag.error.nestUnder
                      fx.diag.positions.LevelMaxLhs leaf);
@@ -1046,7 +1046,7 @@ in mk {
         let leaf = fx.diag.error.mkKernelError {
           rule = "level-max"; msg = "rhs must be Level";
           expected = { tag = "VLevel"; };
-          got      = { tag = "VNat"; };
+          got      = { tag = "VUnit"; };
         };
         in resolve (fx.diag.error.nestUnder
                      fx.diag.positions.LevelMaxRhs leaf);
@@ -1057,7 +1057,7 @@ in mk {
         let leaf = fx.diag.error.mkKernelError {
           rule = "U"; msg = "level argument must be Level";
           expected = { tag = "VLevel"; };
-          got      = { tag = "VNat"; };
+          got      = { tag = "VUnit"; };
         };
         in resolve (fx.diag.error.nestUnder
                      fx.diag.positions.ULevel leaf);

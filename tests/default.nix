@@ -176,7 +176,8 @@ in {
           strElemFound strElemMissing strElemEmptyList
           recordStrEqMatch recordStrEqNoMatch;
 
-  inherit (docsTests) portExample depContractExample stateEffectExample apiSurfaceSanity;
+  inherit (docsTests) portExample depContractExample stateEffectExample
+          apiSurfaceSanity apiDocsSkipsPlainWrapperData;
 
   inherit (pipelineTests) fullPipelineTest pureOnlyTest;
 

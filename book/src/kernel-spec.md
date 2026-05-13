@@ -73,36 +73,22 @@ Tm ::=
   | Fst(t : Tm)                         -- π₁ t
   | Snd(t : Tm)                         -- π₂ t
 
-  -- Natural numbers
-  | Nat                                 -- ℕ
-  | Zero                                -- 0
-  | Succ(t : Tm)                        -- S t
-  | NatElim(P : Tm, z : Tm, s : Tm, n : Tm)
-    -- elim_ℕ(P, z, s, n)
-
-  -- Lists
-  | List(A : Tm)                        -- List A
-  | Nil(A : Tm)                         -- nil_A
-  | Cons(A : Tm, h : Tm, t : Tm)        -- cons_A h t
-  | ListElim(A : Tm, P : Tm, n : Tm, c : Tm, l : Tm)
-    -- elim_List(A, P, n, c, l)
-
   -- Unit
   | Unit                                -- ⊤
   | Tt                                  -- tt
 
-  -- Sum
-  | Sum(A : Tm, B : Tm)                -- A + B
-  | Inl(A : Tm, B : Tm, t : Tm)        -- inl t
-  | Inr(A : Tm, B : Tm, t : Tm)        -- inr t
-  | SumElim(A : Tm, B : Tm, P : Tm, l : Tm, r : Tm, s : Tm)
-    -- elim_+(A, B, P, l, r, s)
+  -- Bootstrap coproduct, private to descPlus interpretation
+  | BootSum(A : Tm, B : Tm)             -- A + B
+  | BootInl(A : Tm, B : Tm, t : Tm)     -- inl t
+  | BootInr(A : Tm, B : Tm, t : Tm)     -- inr t
+  | BootSumElim(A : Tm, B : Tm, P : Tm, l : Tm, r : Tm, s : Tm)
+    -- private eliminator for descPlus payloads
 
-  -- Identity
-  | Eq(A : Tm, a : Tm, b : Tm)         -- Id_A(a, b)
-  | Refl                                -- refl
-  | J(A : Tm, a : Tm, P : Tm, pr : Tm, b : Tm, eq : Tm)
-    -- J(A, a, P, pr, b, eq)
+  -- Bootstrap identity, private to descRet/Lift/index transport
+  | BootEq(A : Tm, a : Tm, b : Tm)      -- internal Id_A(a, b)
+  | BootRefl                            -- internal refl
+  | BootJ(A : Tm, a : Tm, P : Tm, pr : Tm, b : Tm, eq : Tm)
+    -- private identity eliminator
 
   -- Levels (Tarski-style sort of universe levels — see §6.6, §8.5)
   | Level                               -- the Level sort itself, lives at U(0)
@@ -158,18 +144,34 @@ Tm ::=
 
 ```
 
+Public `Nat`, `List`, `Sum`, and `Eq` are not primitive core syntax.
+The HOAS prelude generates them as descriptions:
+
+```
+H.nat        = Mu(Unit, NatDT.D, Tt)
+H.listOf A   = Mu(Unit, ListDT.D A, Tt)
+H.sum A B    = Mu(Unit, SumDT.D 0 A B, Tt)
+H.eq A a b   = Mu(A, EqDT.D A a, b)
+
+```
+
+Their constructors and eliminators elaborate to `DescCon` and
+`DescInd` applications through the datatype macro layer. The kernel
+therefore exposes one public induction principle for data: `DescInd`.
+The bootstrap coproduct and bootstrap identity above remain internal
+support for description interpretation, `DescRet`, `Lift`, and index
+transport.
+
 ### 2.2 Binding convention
 
 In `Pi(n, A, B)`, `Lam(n, A, t)`, `Sigma(n, A, B)`, and `Let(n, A, t, u)`:
 the body (`B`, `t`, or `u`) binds one variable. Index 0 in the body
 refers to the bound variable. All other indices shift by 1.
 
-In `NatElim(P, z, s, n)`: `P` binds 0 variables (it's a function
-term `ℕ → U`). `z` binds 0 variables. `s` binds 0 variables (it's
-a function term). `n` binds 0 variables.
-
-All eliminators take their arguments as closed terms (no implicit
-binding). The motive is a function term, not a binder.
+Eliminators take their motives as ordinary function terms, not as
+implicit binders. Generated public eliminators build typed HOAS
+applications to datatype-specific eliminator functions; the core
+eliminator underneath is `DescInd`.
 
 ### 2.3 De Bruijn index conventions
 
@@ -194,28 +196,18 @@ Val ::=
   | VSigma(n : Name, A : Val, cl : Closure) -- Σ type
   | VPair(a : Val, b : Val)                  -- pair value
 
-  -- Natural numbers
-  | VNat
-  | VZero
-  | VSucc(v : Val)
-
-  -- Lists
-  | VList(A : Val)
-  | VNil(A : Val)
-  | VCons(A : Val, h : Val, t : Val)
-
   -- Unit
   | VUnit
   | VTt
 
-  -- Sum
-  | VSum(A : Val, B : Val)
-  | VInl(A : Val, B : Val, v : Val)
-  | VInr(A : Val, B : Val, v : Val)
+  -- Bootstrap coproduct, private to descPlus interpretation
+  | VBootSum(A : Val, B : Val)
+  | VBootInl(A : Val, B : Val, v : Val)
+  | VBootInr(A : Val, B : Val, v : Val)
 
-  -- Identity
-  | VEq(A : Val, a : Val, b : Val)
-  | VRefl
+  -- Bootstrap identity, private to descRet/Lift/index transport
+  | VBootEq(A : Val, a : Val, b : Val)
+  | VBootRefl
 
   -- Levels (Tarski-style sort of universe levels — see §6.6, §8.5)
   | VLevel                                -- the Level sort itself
@@ -228,12 +220,9 @@ Val ::=
 
   -- Descriptions (universe-polymorphic; see §7.6)
   | VDesc(K : Val, I : Val)                -- Desc^K I
-  | VDescRet(j : Val)                       -- ret(j)
-  | VDescArg(K : Val, S : Val, T : Closure) -- arg^K S T, T : S → Desc^K I as a closure
-  | VDescRec(j : Val, D : Val)              -- rec(j) D
-  | VDescPi(K : Val, S : Val, f : Val, D : Closure)
-                                            -- π^K S f D, f : S → I as a value, D : S → Desc^K I
-  | VDescPlus(A : Val, B : Val)             -- A + B
+  -- Description constructors are encoded as VDescCon inhabitants of
+  -- μ Unit (descDesc I K) tt. Evaluation projects them through the private
+  -- DViewRet/DViewArg/DViewRec/DViewPi/DViewPlus semantic view.
 
   -- μ-types
   | VMu(I : Val, D : Val, i : Val)          -- μ I D i
@@ -253,10 +242,8 @@ Elim ::=
   | EApp(v : Val)
   | EFst
   | ESnd
-  | ENatElim(P : Val, z : Val, s : Val)
-  | EListElim(A : Val, P : Val, n : Val, c : Val)
-  | ESumElim(A : Val, B : Val, P : Val, l : Val, r : Val)
-  | EJ(A : Val, a : Val, P : Val, pr : Val, b : Val)
+  | EBootSumElim(A : Val, B : Val, P : Val, l : Val, r : Val)
+  | EBootJ(A : Val, a : Val, P : Val, pr : Val, b : Val)
   | EStrEq(arg : Val)
   | EDescElim(K : Val, motive : Val, onRet : Val, onArg : Val,
               onRec : Val, onPi : Val, onPlus : Val)
@@ -353,54 +340,31 @@ vSnd(_)             = THROW "kernel bug: vSnd on non-pair"
 
 ```
 
-### 4.4 Natural numbers
+### 4.4 Generated data families
 
-```
-eval(ρ, Nat)             = VNat
-eval(ρ, Zero)            = VZero
-eval(ρ, Succ(t))         = VSucc(eval(ρ, t))   -- MUST trampoline for deep naturals
-eval(ρ, NatElim(P,z,s,n)) = vNatElim(eval(ρ,P), eval(ρ,z), eval(ρ,s), eval(ρ,n))
+Natural numbers, lists, public sums, and public equality are prelude
+datatypes generated from descriptions. Their types evaluate to
+`VMu I D i`; their constructors evaluate to `VDescCon D i payload`;
+their eliminators elaborate to `DescInd` over the generated description.
 
-```
-
-where:
-
-```
-vNatElim(P, z, s, VZero)     = z
-vNatElim(P, z, s, VSucc(n))  = vApp(vApp(s, n), vNatElim(P, z, s, n))
-vNatElim(P, z, s, VNe(l,sp)) = VNe(l, sp ++ [ENatElim(P, z, s)])
-vNatElim(_, _, _, _)         = THROW "kernel bug: vNatElim on non-nat"
-
+```text
+H.nat              == μ Unit NatDT.D tt
+H.zero             == descCon NatDT.D tt <zero payload>
+H.succ n           == descCon NatDT.D tt <succ payload n>
+H.listOf A         == μ Unit (ListDT.D A) tt
+H.nil A            == descCon (ListDT.D A) tt <nil payload>
+H.cons A h t       == descCon (ListDT.D A) tt <cons payload h t>
+H.sum A B          == μ Unit (SumDT.D 0 A B) tt
+H.eq A a b         == μ A (EqDT.D A a) b
 ```
 
-**Note**: `vNatElim` on `VSucc` recurses. The implementation MUST
-trampoline this to guarantee O(1) stack depth.
+The generated constructor payloads still use private bootstrap
+coproduct/identity values where the description interpretation requires
+them. These are representation details, not public eliminators.
 
-### 4.5 Lists
-
-```
-eval(ρ, List(A))            = VList(eval(ρ, A))
-eval(ρ, Nil(A))             = VNil(eval(ρ, A))
-eval(ρ, Cons(A, h, t))      = VCons(eval(ρ, A), eval(ρ, h), eval(ρ, t))  -- MUST trampoline for deep lists
-eval(ρ, ListElim(A,P,n,c,l)) =
-  vListElim(eval(ρ,A), eval(ρ,P), eval(ρ,n), eval(ρ,c), eval(ρ,l))
-
-```
-
-where:
-
-```
-vListElim(A, P, n, c, VNil(_))         = n
-vListElim(A, P, n, c, VCons(_, h, t))  =
-  vApp(vApp(vApp(c, h), t), vListElim(A, P, n, c, t))
-vListElim(A, P, n, c, VNe(l, sp))      =
-  VNe(l, sp ++ [EListElim(A, P, n, c)])
-vListElim(_, _, _, _, _)               =
-  THROW "kernel bug: vListElim on non-list"
-
-```
-
-**Note**: `vListElim` on `VCons` recurses. Must be trampolined.
+Deep generated natural/list values are stack-safe through the constructor
+flattening and `desc-con` trampoline paths, rather than through primitive
+nat/list evaluator cases.
 
 ### 4.6 Unit
 
@@ -416,48 +380,55 @@ type-free conv because conv is always called on values sharing a type;
 if one side is `VTt`, the shared type is ⊤ and the neutral's only
 inhabitant is `Tt`.
 
-### 4.7 Sum
+### 4.7 Bootstrap coproduct
 
 ```
-eval(ρ, Sum(A, B))        = VSum(eval(ρ, A), eval(ρ, B))
-eval(ρ, Inl(A, B, t))     = VInl(eval(ρ, A), eval(ρ, B), eval(ρ, t))
-eval(ρ, Inr(A, B, t))     = VInr(eval(ρ, A), eval(ρ, B), eval(ρ, t))
-eval(ρ, SumElim(A,B,P,l,r,s)) =
-  vSumElim(eval(ρ,A), eval(ρ,B), eval(ρ,P), eval(ρ,l), eval(ρ,r), eval(ρ,s))
-
-```
-
-where:
-
-```
-vSumElim(A, B, P, l, r, VInl(_, _, v))  = vApp(l, v)
-vSumElim(A, B, P, l, r, VInr(_, _, v))  = vApp(r, v)
-vSumElim(A, B, P, l, r, VNe(k, sp))     =
-  VNe(k, sp ++ [ESumElim(A, B, P, l, r)])
-vSumElim(_, _, _, _, _, _)              =
-  THROW "kernel bug: vSumElim on non-sum"
-
-```
-
-### 4.8 Identity
-
-```
-eval(ρ, Eq(A, a, b))        = VEq(eval(ρ, A), eval(ρ, a), eval(ρ, b))
-eval(ρ, Refl)                = VRefl
-eval(ρ, J(A, a, P, pr, b, eq)) =
-  vJ(eval(ρ,A), eval(ρ,a), eval(ρ,P), eval(ρ,pr), eval(ρ,b), eval(ρ,eq))
+eval(ρ, BootSum(A, B))        = VBootSum(eval(ρ, A), eval(ρ, B))
+eval(ρ, BootInl(A, B, t))     = VBootInl(eval(ρ, A), eval(ρ, B), eval(ρ, t))
+eval(ρ, BootInr(A, B, t))     = VBootInr(eval(ρ, A), eval(ρ, B), eval(ρ, t))
+eval(ρ, BootSumElim(A,B,P,l,r,s)) =
+  vBootSumElim(eval(ρ,A), eval(ρ,B), eval(ρ,P), eval(ρ,l), eval(ρ,r), eval(ρ,s))
 
 ```
 
 where:
 
 ```
-vJ(A, a, P, pr, b, VRefl)    = pr
-vJ(A, a, P, pr, b, VNe(l,sp)) =
-  VNe(l, sp ++ [EJ(A, a, P, pr, b)])
-vJ(_, _, _, _, _, _)          = THROW "kernel bug: vJ on non-refl"
+vBootSumElim(A, B, P, l, r, VBootInl(_, _, v))  = vApp(l, v)
+vBootSumElim(A, B, P, l, r, VBootInr(_, _, v))  = vApp(r, v)
+vBootSumElim(A, B, P, l, r, VNe(k, sp))         =
+  VNe(k, sp ++ [EBootSumElim(A, B, P, l, r)])
+vBootSumElim(_, _, _, _, _, _)                  =
+  THROW "kernel bug: vBootSumElim on non-boot-sum"
 
 ```
+
+This coproduct is private to `descPlus` interpretation. Public `H.sum`,
+`H.inl`, `H.inr`, and `H.sumElim` route through generated `SumDT`.
+
+### 4.8 Bootstrap identity
+
+```
+eval(ρ, BootEq(A, a, b))        = VBootEq(eval(ρ, A), eval(ρ, a), eval(ρ, b))
+eval(ρ, BootRefl)               = VBootRefl
+eval(ρ, BootJ(A, a, P, pr, b, eq)) =
+  vBootJ(eval(ρ,A), eval(ρ,a), eval(ρ,P), eval(ρ,pr), eval(ρ,b), eval(ρ,eq))
+
+```
+
+where:
+
+```
+vBootJ(A, a, P, pr, b, VBootRefl)    = pr
+vBootJ(A, a, P, pr, b, VNe(l,sp)) =
+  VNe(l, sp ++ [EBootJ(A, a, P, pr, b)])
+vBootJ(_, _, _, _, _, _)             = THROW "kernel bug: vBootJ on non-refl"
+
+```
+
+This identity substrate is private to `descRet`, Lift witnesses, index
+transport, and no-confusion helpers. Public `H.eq`, `H.refl`, and `H.j`
+route through generated `EqDT`.
 
 ### 4.9 Universes
 
@@ -507,9 +478,9 @@ where:
 
 ```
 -- trueV / falseV are the plus-encoded derived booleans:
---   trueV  = VDescCon boolDescV VTt (VInl eqTtV eqTtV VRefl)
---   falseV = VDescCon boolDescV VTt (VInr eqTtV eqTtV VRefl)
--- where boolDescV = plus-desc of two VDescRet VTt summands.
+--   trueV  = VDescCon boolDescV VTt (VBootInl eqTtV eqTtV VBootRefl)
+--   falseV = VDescCon boolDescV VTt (VBootInr eqTtV eqTtV VBootRefl)
+-- where boolDescV is the generated encoded BoolDT description.
 
 vStrEq(VStringLit(s₁), VStringLit(s₂)) = if s₁ == s₂ then trueV else falseV
 vStrEq(VNe(l, sp),     rhs)            = VNe(l, sp ++ [EStrEq(rhs)])
@@ -544,19 +515,13 @@ quote(d, VPi(n, A, cl))    = Pi(n, quote(d, A), quote(d+1, instantiate(cl, fresh
 quote(d, VLam(n, A, cl))   = Lam(n, quote(d, A), quote(d+1, instantiate(cl, fresh(d))))
 quote(d, VSigma(n, A, cl)) = Sigma(n, quote(d, A), quote(d+1, instantiate(cl, fresh(d))))
 quote(d, VPair(a, b))      = Pair(quote(d, a), quote(d, b), _)
-quote(d, VNat)             = Nat
-quote(d, VZero)            = Zero
-quote(d, VSucc(v))         = Succ(quote(d, v))   -- MUST trampoline for deep naturals
-quote(d, VList(A))         = List(quote(d, A))
-quote(d, VNil(A))          = Nil(quote(d, A))
-quote(d, VCons(A, h, t))   = Cons(quote(d, A), quote(d, h), quote(d, t))  -- MUST trampoline for deep lists
 quote(d, VUnit)            = Unit
 quote(d, VTt)              = Tt
-quote(d, VSum(A, B))       = Sum(quote(d, A), quote(d, B))
-quote(d, VInl(A, B, v))    = Inl(quote(d, A), quote(d, B), quote(d, v))
-quote(d, VInr(A, B, v))    = Inr(quote(d, A), quote(d, B), quote(d, v))
-quote(d, VEq(A, a, b))     = Eq(quote(d, A), quote(d, a), quote(d, b))
-quote(d, VRefl)            = Refl
+quote(d, VBootSum(A, B))       = BootSum(quote(d, A), quote(d, B))
+quote(d, VBootInl(A, B, v))    = BootInl(quote(d, A), quote(d, B), quote(d, v))
+quote(d, VBootInr(A, B, v))    = BootInr(quote(d, A), quote(d, B), quote(d, v))
+quote(d, VBootEq(A, a, b))     = BootEq(quote(d, A), quote(d, a), quote(d, b))
+quote(d, VBootRefl)            = BootRefl
 quote(d, VU(i))            = U(i)
 quote(d, VString)          = String
 quote(d, VInt)             = Int
@@ -578,14 +543,10 @@ quoteSp(d, head, [])                      = head
 quoteSp(d, head, [EApp(v) | rest])        = quoteSp(d, App(head, quote(d, v)), rest)
 quoteSp(d, head, [EFst | rest])           = quoteSp(d, Fst(head), rest)
 quoteSp(d, head, [ESnd | rest])           = quoteSp(d, Snd(head), rest)
-quoteSp(d, head, [ENatElim(P,z,s) | rest]) =
-  quoteSp(d, NatElim(quote(d,P), quote(d,z), quote(d,s), head), rest)
-quoteSp(d, head, [EListElim(A,P,n,c) | rest]) =
-  quoteSp(d, ListElim(quote(d,A), quote(d,P), quote(d,n), quote(d,c), head), rest)
-quoteSp(d, head, [ESumElim(A,B,P,l,r) | rest]) =
-  quoteSp(d, SumElim(quote(d,A), quote(d,B), quote(d,P), quote(d,l), quote(d,r), head), rest)
-quoteSp(d, head, [EJ(A,a,P,pr,b) | rest]) =
-  quoteSp(d, J(quote(d,A), quote(d,a), quote(d,P), quote(d,pr), quote(d,b), head), rest)
+quoteSp(d, head, [EBootSumElim(A,B,P,l,r) | rest]) =
+  quoteSp(d, BootSumElim(quote(d,A), quote(d,B), quote(d,P), quote(d,l), quote(d,r), head), rest)
+quoteSp(d, head, [EBootJ(A,a,P,pr,b) | rest]) =
+  quoteSp(d, BootJ(quote(d,A), quote(d,a), quote(d,P), quote(d,pr), quote(d,b), head), rest)
 quoteSp(d, head, [EStrEq(arg) | rest]) =
   quoteSp(d, StrEq(head, quote(d, arg)), rest)
 
@@ -605,12 +566,9 @@ conversion is purely structural on normalized values.
 
 ```
 conv(d, VU(i),    VU(j))    = (i == j)
-conv(d, VNat,     VNat)     = true
 conv(d, VUnit,    VUnit)    = true
-conv(d, VZero,    VZero)    = true
 conv(d, VTt,      VTt)      = true
-conv(d, VRefl,    VRefl)    = true
-conv(d, VSucc(a), VSucc(b)) = conv(d, a, b)
+conv(d, VBootRefl, VBootRefl) = true
 conv(d, VString,      VString)      = true
 conv(d, VInt,         VInt)         = true
 conv(d, VFloat,       VFloat)       = true
@@ -675,16 +633,14 @@ conv(d, VNe(l, sp), VPair(a, b)) =
 conv(d, VTt, VNe(_, _)) = true                                    -- ⊤-η
 conv(d, VNe(_, _), VTt) = true                                    -- ⊤-η
 
-conv(d, VList(A₁),        VList(A₂))        = conv(d, A₁, A₂)
-conv(d, VNil(A₁),         VNil(A₂))         = conv(d, A₁, A₂)
-conv(d, VCons(A₁, h₁, t₁), VCons(A₂, h₂, t₂)) =
-  conv(d, A₁, A₂) ∧ conv(d, h₁, h₂) ∧ conv(d, t₁, t₂)
+conv(d, VBootSum(A₁, B₁), VBootSum(A₂, B₂)) =
+  conv(d, A₁, A₂) ∧ conv(d, B₁, B₂)
+conv(d, VBootInl(A₁, B₁, v₁), VBootInl(A₂, B₂, v₂)) =
+  conv(d, A₁, A₂) ∧ conv(d, B₁, B₂) ∧ conv(d, v₁, v₂)
+conv(d, VBootInr(A₁, B₁, v₁), VBootInr(A₂, B₂, v₂)) =
+  conv(d, A₁, A₂) ∧ conv(d, B₁, B₂) ∧ conv(d, v₁, v₂)
 
-conv(d, VSum(A₁, B₁),           VSum(A₂, B₂))           = conv(d, A₁, A₂) ∧ conv(d, B₁, B₂)
-conv(d, VInl(A₁, B₁, v₁),      VInl(A₂, B₂, v₂))      = conv(d, A₁, A₂) ∧ conv(d, B₁, B₂) ∧ conv(d, v₁, v₂)
-conv(d, VInr(A₁, B₁, v₁),      VInr(A₂, B₂, v₂))      = conv(d, A₁, A₂) ∧ conv(d, B₁, B₂) ∧ conv(d, v₁, v₂)
-
-conv(d, VEq(A₁, a₁, b₁), VEq(A₂, a₂, b₂)) =
+conv(d, VBootEq(A₁, a₁, b₁), VBootEq(A₂, a₂, b₂)) =
   conv(d, A₁, A₂) ∧ conv(d, a₁, a₂) ∧ conv(d, b₁, b₂)
 
 ```
@@ -702,13 +658,9 @@ convSp(d, _, _)           = false    -- different lengths
 convElim(d, EApp(v₁),   EApp(v₂))   = conv(d, v₁, v₂)
 convElim(d, EFst,        EFst)        = true
 convElim(d, ESnd,        ESnd)        = true
-convElim(d, ENatElim(P₁,z₁,s₁), ENatElim(P₂,z₂,s₂)) =
-  conv(d, P₁, P₂) ∧ conv(d, z₁, z₂) ∧ conv(d, s₁, s₂)
-convElim(d, EListElim(A₁,P₁,n₁,c₁), EListElim(A₂,P₂,n₂,c₂)) =
-  conv(d, A₁, A₂) ∧ conv(d, P₁, P₂) ∧ conv(d, n₁, n₂) ∧ conv(d, c₁, c₂)
-convElim(d, ESumElim(A₁,B₁,P₁,l₁,r₁), ESumElim(A₂,B₂,P₂,l₂,r₂)) =
+convElim(d, EBootSumElim(A₁,B₁,P₁,l₁,r₁), EBootSumElim(A₂,B₂,P₂,l₂,r₂)) =
   conv(d, A₁, A₂) ∧ conv(d, B₁, B₂) ∧ conv(d, P₁, P₂) ∧ conv(d, l₁, l₂) ∧ conv(d, r₁, r₂)
-convElim(d, EJ(A₁,a₁,P₁,pr₁,b₁), EJ(A₂,a₂,P₂,pr₂,b₂)) =
+convElim(d, EBootJ(A₁,a₁,P₁,pr₁,b₁), EBootJ(A₂,a₂,P₂,pr₂,b₂)) =
   conv(d, A₁, A₂) ∧ conv(d, a₁, a₂) ∧ conv(d, P₁, P₂) ∧ conv(d, pr₁, pr₂) ∧ conv(d, b₁, b₂)
 convElim(d, EStrEq(arg₁), EStrEq(arg₂)) = conv(d, arg₁, arg₂)
 convElim(_, _, _) = false
@@ -899,89 +851,47 @@ handles two forms:
 
 The `k` is not fixed — motives may target any universe level,
 enabling **large elimination** (eliminators whose return type is a
-type, not a value). For example, `NatElim(λn. U(0), ...)` is valid
-and returns types at universe 1.
+type, not a value). Generated datatype eliminators use this same
+motive checker through `DescInd`.
 
-**NatElim**
+**Generated eliminators.** Public eliminators for natural numbers,
+lists, sums, equality, vectors, finite sets, W-types, and user-defined
+datatypes are generated as applications of `DescInd` to their datatype
+description. The checker validates the generated motive and branch
+terms against the generic indexed-description eliminator.
 
-```
-                Γ ⊢ P ⇐ VPi(_, VNat, ([], U(k)))  ↝  P'
-                P̂ = eval(Γ.env, P')
-                Γ ⊢ z ⇐ vApp(P̂, VZero)  ↝  z'
-                Γ ⊢ s ⇐ VPi(_, VNat, (Γ.env, Pi(_, App(P, Var(0)), ...)))  ↝  s'
-                   -- s : Π(k : ℕ). P(k) → P(S(k))
-                Γ ⊢ n ⇐ VNat  ↝  n'
-                ──────────────────────
-                Γ ⊢ NatElim(P, z, s, n) ⇒ vApp(P̂, eval(Γ.env, n'))
-                   ↝  NatElim(P', z', s', n')
+**Public identity elimination.** `H.j A a P pr b eq` is a HOAS adapter
+that preserves the usual J-shaped arguments, but elaborates to
+`EqDT.elim`. The adapter checks `pr` against `P a (EqDT.refl A a)` and
+checks `eq` against `EqDT.T A a b` before emitting the generated
+eliminator spine.
 
-```
-
-The full typing of `s` is:
-
-```
-s : Π(k : ℕ). P(k) → P(S(k))
-
-```
-This is checked by constructing the appropriate Pi type from `P̂`.
-
-**ListElim**
-
-```
-                Γ ⊢ A type  ↝  A'
-                Â = eval(Γ.env, A')
-                Γ ⊢ P ⇐ VPi(_, VList(Â), ([], U(k)))  ↝  P'
-                P̂ = eval(Γ.env, P')
-                Γ ⊢ n ⇐ vApp(P̂, VNil(Â))  ↝  n'
-                Γ ⊢ c ⇐ <Π(h:A). Π(t:List A). P(t) → P(cons h t)>  ↝  c'
-                Γ ⊢ l ⇐ VList(Â)  ↝  l'
-                ──────────────────────
-                Γ ⊢ ListElim(A, P, n, c, l) ⇒ vApp(P̂, eval(Γ.env, l'))
-                   ↝  ListElim(A', P', n', c', l')
-
-```
-
-**SumElim**
-
-```
-                Γ ⊢ A type  ↝  A'    Â = eval(Γ.env, A')
-                Γ ⊢ B type  ↝  B'    B̂ = eval(Γ.env, B')
-                Γ ⊢ P ⇐ VPi(_, VSum(Â, B̂), ([], U(k)))  ↝  P'
-                P̂ = eval(Γ.env, P')
-                Γ ⊢ l ⇐ VPi(_, Â, <P(inl x)>)  ↝  l'
-                Γ ⊢ r ⇐ VPi(_, B̂, <P(inr y)>)  ↝  r'
-                Γ ⊢ s ⇐ VSum(Â, B̂)  ↝  s'
-                ──────────────────────
-                Γ ⊢ SumElim(A,B,P,l,r,s) ⇒ vApp(P̂, eval(Γ.env, s'))
-                   ↝  SumElim(A',B',P',l',r',s')
-
-```
-
-**J** (identity elimination)
+**Bootstrap identity elimination.** Internal description machinery may
+still use `BootJ`:
 
 ```
                 Γ ⊢ A type  ↝  A'    Â = eval(Γ.env, A')
                 Γ ⊢ a ⇐ Â  ↝  a'    â = eval(Γ.env, a')
-                Γ ⊢ P ⇐ <Π(y : A). Π(e : Id_A(a, y)). U(k)>  ↝  P'
+                Γ ⊢ P ⇐ <Π(y : A). Π(e : BootEq A a y). U(k)>  ↝  P'
                 P̂ = eval(Γ.env, P')
-                Γ ⊢ pr ⇐ vApp(vApp(P̂, â), VRefl)  ↝  pr'
+                Γ ⊢ pr ⇐ vApp(vApp(P̂, â), VBootRefl)  ↝  pr'
                 Γ ⊢ b ⇐ Â  ↝  b'    b̂ = eval(Γ.env, b')
-                Γ ⊢ eq ⇐ VEq(Â, â, b̂)  ↝  eq'
+                Γ ⊢ eq ⇐ VBootEq(Â, â, b̂)  ↝  eq'
                 ──────────────────────
-                Γ ⊢ J(A, a, P, pr, b, eq) ⇒ vApp(vApp(P̂, b̂), eval(Γ.env, eq'))
-                   ↝  J(A', a', P', pr', b', eq')
+                Γ ⊢ BootJ(A, a, P, pr, b, eq) ⇒ vApp(vApp(P̂, b̂), eval(Γ.env, eq'))
+                   ↝  BootJ(A', a', P', pr', b', eq')
 
 ```
 
-**J motive verification.** For non-lambda motives, the
+**Bootstrap J motive verification.** For non-lambda motives, the
 implementation structurally verifies all three components:
 
 1. Outer Pi domain matches `A` (conversion check)
-2. Inner Pi domain matches `Eq(A, a, y)` (conversion check)
+2. Inner Pi domain matches `BootEq(A, a, y)` (conversion check)
 3. Innermost codomain is `VU(k)` for some `k`
 
 For lambda motives (`P = λy. body`), the body is checked via
-`checkMotive` against `Eq(A, a, y)`, which performs the same
+`checkMotive` against `BootEq(A, a, y)`, which performs the same
 verification on the inner structure. This catches motive errors
 at the motive itself rather than deferring to the base case.
 
@@ -1023,7 +933,8 @@ FnLit → VFunction, AnyLit → VAny.)
 **StrEq** (string equality)
 
 ```
-                boolV = VMu VUnit (VDescPlus (VDescRet VTt) (VDescRet VTt)) VTt
+                boolDescV = eval [] (elab BoolDT.D)
+                boolV = VMu VUnit boolDescV VTt
                 Γ ⊢ lhs ⇐ VString  ↝  lhs'
                 Γ ⊢ rhs ⇐ VString  ↝  rhs'
                 ──────────────────────
@@ -1062,44 +973,13 @@ no motive parameter.
 
 ```
 
-**Zero**
-
-```
-                whnf(A) = VNat
-                ──────────────────────
-                Γ ⊢ Zero ⇐ A  ↝  Zero
-
-```
-
-**Succ** (MUST trampoline for deep naturals)
-
-```
-                whnf(A) = VNat
-                Γ ⊢ t ⇐ VNat  ↝  t'
-                ──────────────────────
-                Γ ⊢ Succ(t) ⇐ A  ↝  Succ(t')
-
-```
-
-**Nil**
-
-```
-                whnf(A) = VList(Â)
-                ──────────────────────
-                Γ ⊢ Nil(_) ⇐ A  ↝  Nil(quote(Γ.depth, Â))
-
-```
-
-**Cons** (MUST trampoline for deep lists)
-
-```
-                whnf(A) = VList(Â)
-                Γ ⊢ h ⇐ Â  ↝  h'
-                Γ ⊢ t ⇐ VList(Â)  ↝  t'
-                ──────────────────────
-                Γ ⊢ Cons(_, h, t) ⇐ A  ↝  Cons(quote(Γ.depth, Â), h', t')
-
-```
+**Generated datatype constructors.** Public constructors such as
+`H.zero`, `H.succ`, `H.nil`, `H.cons`, `H.inl`, `H.inr`, and
+user-defined datatype constructors check as `DescCon` introductions
+against their generated `VMu` type. Their payloads are checked against
+the interpretation of the constructor's description. Deep generated
+natural/list constructor chains are handled by flat constructor
+elaboration and `desc-con` trampolines.
 
 **Tt**
 
@@ -1110,34 +990,22 @@ no motive parameter.
 
 ```
 
-**Inl / Inr**
+**BootRefl**
 
 ```
-                whnf(T) = VSum(A, B)
-                Γ ⊢ t ⇐ A  ↝  t'
-                ──────────────────────
-                Γ ⊢ Inl(_, _, t) ⇐ T  ↝  Inl(quote(Γ.depth, A), quote(Γ.depth, B), t')
-
-                whnf(T) = VSum(A, B)
-                Γ ⊢ t ⇐ B  ↝  t'
-                ──────────────────────
-                Γ ⊢ Inr(_, _, t) ⇐ T  ↝  Inr(quote(Γ.depth, A), quote(Γ.depth, B), t')
-
-```
-
-**Refl**
-
-```
-                whnf(T) = VEq(A, a, b)
+                whnf(T) = VBootEq(A, a, b)
                 conv(Γ.depth, a, b) = true
                 ──────────────────────
-                Γ ⊢ Refl ⇐ T  ↝  Refl
+                Γ ⊢ BootRefl ⇐ T  ↝  BootRefl
 
 ```
 
 If `conv(Γ.depth, a, b) = false`, this is a **type error**: the
-two sides of the equation are not definitionally equal, and `refl`
-cannot prove the equation. Report via effect.
+two sides of the equation are not definitionally equal, and
+`BootRefl` cannot prove the equation. Public `H.refl` is resolved by
+HOAS check mode against generated `EqDT.T A a a`, elaborating to
+`EqDT.refl A a`; unrestricted inference for bare public `refl` is
+rejected.
 
 **Primitive literals** (checked against their corresponding types)
 
@@ -1213,9 +1081,6 @@ levels are computed structurally during the type formation check
 
 ```
                 ──────────────────────
-                Γ ⊢ Nat type  ↝  Nat
-
-                ──────────────────────
                 Γ ⊢ Unit type  ↝  Unit
 
                 ──────────────────────
@@ -1227,12 +1092,15 @@ levels are computed structurally during the type formation check
                 Γ ⊢ U(i) type  ↝  U(i)
 
                 Γ ⊢ A type  ↝  A'
+                Γ ⊢ B type  ↝  B'
                 ──────────────────────
-                Γ ⊢ List(A) type  ↝  List(A')
+                Γ ⊢ BootSum(A, B) type  ↝  BootSum(A', B')
 
-                Γ ⊢ A type  ↝  A'       Γ ⊢ B type  ↝  B'
+                Γ ⊢ A type  ↝  A'     Â = eval(Γ.env, A')
+                Γ ⊢ a ⇐ Â  ↝  a'
+                Γ ⊢ b ⇐ Â  ↝  b'
                 ──────────────────────
-                Γ ⊢ Sum(A, B) type  ↝  Sum(A', B')
+                Γ ⊢ BootEq(A, a, b) type  ↝  BootEq(A', a', b')
 
                 Γ ⊢ A type  ↝  A'
                 Â = eval(Γ.env, A')
@@ -1248,12 +1116,6 @@ levels are computed structurally during the type formation check
                 ──────────────────────
                 Γ ⊢ Sigma(n, A, B) type  ↝  Sigma(n, A', B')
 
-                Γ ⊢ A type  ↝  A'     Â = eval(Γ.env, A')
-                Γ ⊢ a ⇐ Â  ↝  a'
-                Γ ⊢ b ⇐ Â  ↝  b'
-                ──────────────────────
-                Γ ⊢ Eq(A, a, b) type  ↝  Eq(A', a', b')
-
                 -- Fallback: infer and check it's a universe
                 Γ ⊢ T ⇒ A  ↝  T'
                 whnf(A) = VU(i)
@@ -1261,6 +1123,9 @@ levels are computed structurally during the type formation check
                 Γ ⊢ T type  ↝  T'
 
 ```
+
+Public generated data types enter this judgment through the fallback:
+their expanded `Mu(...)` terms infer a universe.
 
 ### 7.6 Descriptions: typing rules
 
@@ -1414,7 +1279,6 @@ levels for neutral type variables. We write `level(A)` as shorthand
 for `checkTypeLevel(Γ, A).level`.
 
 ```
-checkTypeLevel(Γ, Nat)         = { Nat,     0 }
 checkTypeLevel(Γ, Unit)        = { Unit,    0 }
 checkTypeLevel(Γ, String)      = { String,  0 }
 checkTypeLevel(Γ, Int)         = { Int,     0 }
@@ -1423,11 +1287,10 @@ checkTypeLevel(Γ, Attrs)       = { Attrs,   0 }
 checkTypeLevel(Γ, Path)        = { Path,    0 }
 checkTypeLevel(Γ, Function)    = { Function, 0 }
 checkTypeLevel(Γ, Any)         = { Any,     0 }
-checkTypeLevel(Γ, List(A))     = { List(A'), level(A) }
-checkTypeLevel(Γ, Sum(A, B))   = { Sum(A',B'), max(level(A), level(B)) }
+checkTypeLevel(Γ, BootSum(A,B))= { BootSum(A',B'), max(level(A), level(B)) }
 checkTypeLevel(Γ, Pi(n, A, B)) = { Pi(n,A',B'), max(level(A), level(B)) }
 checkTypeLevel(Γ, Sigma(n,A,B))= { Sigma(n,A',B'), max(level(A), level(B)) }
-checkTypeLevel(Γ, Eq(A, a, b)) = { Eq(A',a',b'), level(A) }
+checkTypeLevel(Γ, BootEq(A,a,b)) = { BootEq(A',a',b'), level(A) }
 checkTypeLevel(Γ, U(i))        = { U(i),   i + 1 }
 -- Fallback: infer type, require VU(i), extract i
 checkTypeLevel(Γ, T)           = { T', i }  where Γ ⊢ T ⇒ VU(i)
@@ -1555,17 +1418,21 @@ All fuel consumption flows through `evalF`:
 - Direct term evaluation (each `evalF` call decrements fuel by 1)
 - Beta-reduction in `vApp` consumes fuel indirectly via
   `instantiateF`, which calls `evalF`
-- Iota-reduction in recursive eliminators (`vNatElimF`,
-  `vListElimF`, `vSumElimF`) consumes fuel indirectly via `vAppF`
+- Iota-reduction in generated recursive eliminators consumes fuel
+  through `vDescIndF`, `vAllDF`, `vEverywhereDF`, and `vAppF`
 
-Non-recursive eliminators (`vJ`) complete in O(1) and do not call
-`evalF`. Structural operations (building values, pattern matching
-on tags) do not consume fuel.
+`BootJ` completes in O(1) on `BootRefl`. `BootSumElim` is
+non-recursive, but branch selection calls `vAppF` on the selected
+branch. Structural operations (building values, pattern matching on
+tags) do not consume fuel.
 
-### 9.4 Fuel threading in trampolined eliminators
+### 9.4 Fuel threading in generated eliminators
 
-Trampolined eliminators (`vNatElimF`, `vListElimF`) flatten
-recursive chains into `builtins.foldl'` loops. Each fold step
+Generated natural/list eliminators route through datatype-specific
+wrappers and the generic `DescInd` evaluator. Deep constructor chains
+are not handled by hard-coded nat/list cases: `DescCon` evaluation
+recognizes homogeneous linear recursive payloads from the description
+profile and flattens them into `builtins.foldl'` loops. Each fold step
 threads fuel through the accumulator:
 
 ```
@@ -1592,16 +1459,13 @@ pre-threading O(N × fuel) with unbounded N.
 
 ### 9.5 Fuel consumption in constructor chains
 
-Trampolined Succ and Cons evaluation (`eval(ρ, Succ(t))` and
-`eval(ρ, Cons(A, h, t))`) flatten chains of n constructors and
-deduct n fuel units from the budget before evaluating the base.
-A chain of n Succ constructors consumes n+1 fuel (1 for the entry
-evaluation, n for the chain deduction). Cons chains additionally
-thread remaining fuel through the fold: each fold step evaluates
-the element type and head with the current fuel budget, then
-decrements by 1 (matching the eliminator fuel threading pattern
-from §9.4). This is a third fuel consumption site alongside
-`evalF` decrements and eliminator fold steps.
+Generated constructor evaluation flattens chains of n `DescCon`
+layers when the description's linear profile proves the recursion is
+structurally homogeneous. The evaluator deducts n fuel units from the
+budget before rebuilding the semantic value. Generated natural and
+list constructors are instances of this generic path, so the 5000-deep
+stress tests are evidence for the description-level trampoline rather
+than for datatype-specific hard-coding.
 
 ---
 
@@ -1700,47 +1564,47 @@ premises are violated and the kernel rejects).
 ### 11.1 Required positive tests (kernel must ACCEPT)
 
 ```
--- Identity
-⊢ Refl : Eq(Nat, Zero, Zero)
+-- Public generated identity
+⊢ H.refl : H.eq H.nat H.zero H.zero
 
 -- Function type
-⊢ Lam(x, Nat, Var(0)) : Pi(x, Nat, Nat)
+⊢ Lam(x, H.nat, Var(0)) : Pi(x, H.nat, H.nat)
 
 -- Application
-f : Pi(x, Nat, Nat) ⊢ App(f, Zero) : Nat
+f : Pi(x, H.nat, H.nat) ⊢ App(f, H.zero) : H.nat
 
 -- Dependent function
 ⊢ Lam(A, U(0), Lam(x, Var(0), Var(0))) : Pi(A, U(0), Pi(x, A, A))
 
 -- Sigma pair
-⊢ Pair(Zero, Tt, Sigma(x, Nat, Unit)) : Sigma(x, Nat, Unit)
+⊢ Pair(H.zero, Tt, Sigma(x, H.nat, Unit)) : Sigma(x, H.nat, Unit)
 
--- Nat induction: 0 + 0 = 0
-⊢ Refl : Eq(Nat, NatElim(_, Zero, _, Zero), Zero)
+-- Generated natural induction: 0 + 0 = 0
+⊢ H.refl : H.eq H.nat (H.ind ... H.zero) H.zero
 
 -- List
-⊢ Cons(Nat, Zero, Nil(Nat)) : List(Nat)
+⊢ H.cons H.nat H.zero (H.nil H.nat) : H.listOf H.nat
 
 -- Sum injection
-⊢ Inl(Nat, Unit, Zero) : Sum(Nat, Unit)
+⊢ H.inl H.nat Unit H.zero : H.sum H.nat Unit
 
 -- Universe hierarchy
 ⊢ U(0) : U(1)
 ⊢ U(1) : U(2)
-⊢ Nat : U(0)
-⊢ Pi(x, Nat, Nat) : U(0)
+⊢ H.nat : U(0)
+⊢ Pi(x, H.nat, H.nat) : U(0)
 
 -- Let binding
-⊢ Let(x, Nat, Zero, Var(0)) : Nat
+⊢ Let(x, H.nat, H.zero, Var(0)) : H.nat
 
--- Cumulativity: Nat : U(0) should also be accepted at U(1)
+-- Cumulativity: H.nat : U(0) should also be accepted at U(1)
 
 -- StrEq: type inference returns the derived H.bool
 --   (= μ ⊤ (plus (retI tt) (retI tt)) tt; see §4.11)
 ⊢ StrEq(StringLit("a"), StringLit("b")) : H.bool
 
 -- StrEq reduction: equal strings reduce to the derived true_ value;
--- unequal strings reduce to false_. Both witnessed via Refl over the
+-- unequal strings reduce to false_. Both witnessed via H.refl over the
 -- derived-bool form. Expressing this rule at the Tm level requires
 -- the plus/μ machinery; see the examples/verified-functions.nix
 -- fixture `recordStrEqMatch` for an executable test.
@@ -1751,47 +1615,47 @@ f : Pi(x, Nat, Nat) ⊢ App(f, Zero) : Nat
 
 ```
 -- Type mismatch
-⊢ Zero : Unit                          REJECT
+⊢ H.zero : Unit                        REJECT
 
 -- Universe violation
 ⊢ U(0) : U(0)                          REJECT
 
--- Refl on unequal terms
-⊢ Refl : Eq(Nat, Zero, Succ(Zero))     REJECT
+-- H.refl on unequal terms
+⊢ H.refl : H.eq H.nat H.zero (H.succ H.zero)  REJECT
 
 -- Application of non-function
-⊢ App(Zero, Zero)                      REJECT
+⊢ App(H.zero, H.zero)                  REJECT
 
 -- Projection of non-pair
-⊢ Fst(Zero)                            REJECT
+⊢ Fst(H.zero)                          REJECT
 
 -- Wrong eliminator scrutinee
-⊢ NatElim(_, _, _, Tt)                 REJECT  (Tt : Unit, not Nat)
+⊢ H.ind ... Tt                         REJECT  (Tt : Unit, not H.nat)
 
 -- Unbound variable
 ⊢ Var(0)  (in empty context)           REJECT
 
 -- StrEq on non-string
-⊢ StrEq(Zero, StringLit("foo"))       REJECT  (lhs is Nat, expected String)
+⊢ StrEq(H.zero, StringLit("foo"))     REJECT  (lhs is H.nat, expected String)
 
 -- Ill-typed pair
-⊢ Pair(Zero, Zero, Sigma(x, Nat, Unit))  REJECT  (snd is Nat, expected Unit)
+⊢ Pair(H.zero, H.zero, Sigma(x, H.nat, Unit))  REJECT
 
 ```
 
 ### 11.3 Required stress tests
 
 ```
--- Large Nat: S^5000(0) : Nat                     ACCEPT (trampoline)
--- Large List: cons^5000 : List(Nat)              ACCEPT (trampoline)
--- NatElim on S^5000(0)                            ACCEPT (trampoline)
--- ListElim on cons^5000                           ACCEPT (trampoline)
+-- Large H.nat: H.succ^5000(H.zero) : H.nat        ACCEPT (trampoline)
+-- Large H.listOf: H.cons^5000 : H.listOf H.nat    ACCEPT (trampoline)
+-- H.ind on H.succ^5000(H.zero)                    ACCEPT (trampoline)
+-- H.listElim on H.cons^5000                       ACCEPT (trampoline)
 -- Succ elaboration: elab-succ-5000               ACCEPT (trampoline)
 -- Cons elaboration: elab-cons-5000               ACCEPT (trampoline)
--- Deeply nested Pi: Pi(x₁, ..., Pi(xₙ, Nat, Nat)...) for n=500  ACCEPT
+-- Deeply nested Pi: Pi(x₁, ..., Pi(xₙ, H.nat, H.nat)...) for n=500  ACCEPT
 -- Fuel exhaustion: artificially low fuel on complex term    REJECT (fuel)
--- Fuel threading: NatElim fold decrements fuel per step    ACCEPT
--- Fuel threading: ListElim fold decrements fuel per step   ACCEPT
+-- Fuel threading: generated natural fold decrements fuel per step  ACCEPT
+-- Fuel threading: generated list fold decrements fuel per step     ACCEPT
 
 ```
 
@@ -1861,7 +1725,7 @@ making the original annotation unrecoverable.
 
 ### 13.3 Term constructors do not validate argument types
 
-Term constructors (`mkVar`, `mkSucc`, etc.) accept arbitrary Nix
+Term constructors (`mkVar`, `mkApp`, etc.) accept arbitrary Nix
 values without type validation. `mkVar "hello"` produces
 `{ tag = "var"; idx = "hello"; }`, which crashes at eval time.
 The trust boundary is the HOAS layer (`hoas.nix`), which is the

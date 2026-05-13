@@ -52,104 +52,38 @@ let
     else if a == b then a
     else V.vLevelMax a b;
 
-  # `levelOf : Ctx → Tm → LevelVal | null` — pure structural walker
-  # reading a description Tm's intrinsic universe level without
-  # demanding inference of its index sub-terms. The bidirectional
-  # discipline accepts canonical leaves (`descRet ttPrim`, `descRet
-  # refl`, …) at index positions only via CHECK against the parent
-  # description's I-type; switching CHECK→INFER on a sub-description
-  # to read its level breaks any description containing such a leaf.
-  # `levelOf` reads the level from the constructor's tag fields
-  # (`tm.k`, `tm.D`, …) and returns the same `LevelVal` algebra the
-  # CHECK rules produce in their result types — so callers can
-  # propagate it without monadic plumbing.
-  #
-  # `var` falls back to `ctx.types[idx].level` when the variable's
-  # type is a `VDesc`. Any unrecognised shape returns `null`; callers
-  # treat that as "level not statically derivable" and either
-  # conservatively skip the level constraint or default to
-  # `vLevelZero`.
-  evalK = ctx: kTm:
-    if kTm.tag == "level-zero"
-    then V.vLevelZero
-    else E.eval ctx.env kTm;
-
-  levelOf = ctx: tm:
-    let t = tm.tag; in
-    if t == "desc-ret" then V.vLevelZero
-    else if t == "desc-arg" then
-      let
-        kVal = evalK ctx tm.k;
-        sVal = E.eval ctx.env tm.S;
-        ctx' = self.extend ctx "_" sVal;
-        bodyLev = levelOf ctx' tm.T;
-      in if bodyLev == null then null
-         else vLevelMaxOpt kVal bodyLev
-    else if t == "desc-rec" then levelOf ctx tm.D
-    else if t == "desc-pi" then
-      let
-        kVal = evalK ctx tm.k;
-        bodyLev = levelOf ctx tm.D;
-      in if bodyLev == null then null
-         else vLevelMaxOpt kVal bodyLev
-    else if t == "desc-plus" then
-      let
-        aLev = levelOf ctx tm.A;
-        bLev = levelOf ctx tm.B;
-      in if aLev == null || bLev == null then null
-         else vLevelMaxOpt aLev bLev
-    else if t == "var" then
-      let ty = self.lookupType ctx tm.idx;
-      in if ty.tag == "VDesc" then ty.level else null
-    else null;
-
-  # Decide whether a description Tm tag is one of the kernel's
-  # canonical introduction forms (`desc-ret`/`-arg`/`-rec`/`-pi`/
-  # `-plus`). The bidirectional discipline propagates the parent
-  # description's I-type and level through CHECK on these — sound
-  # under the desc-* CHECK rules' `max ≡` validation. Non-canonical
-  # shapes (`var`, `app`, `let`, `ann`, …) lack a check-mode rule and
-  # must be INFERed; the inferred VDesc carries its actual level.
-  #
-  # Implemented as an attrset `?` lookup (single `OpHasAttr`) rather
-  # than a chain of `||`-disjoined `==` tests: in deep cons-chain
-  # CHECK the desc-con rule fires once per layer with `tm.D.tag ==
-  # "ann"` (the elaborator emits an annotated description per
-  # constructor), so the non-canonical branch dominates and the
-  # disjunction-chain pays N `==` primops per layer. The cached
-  # attrset shifts this to one `OpHasAttr` per layer regardless of
-  # the tag.
-  canonicalDescTags = {
-    "desc-ret" = null;
-    "desc-arg" = null;
-    "desc-rec" = null;
-    "desc-pi" = null;
-    "desc-plus" = null;
-  };
-  isCanonicalDescTag = t: canonicalDescTags ? ${t};
 in {
   scope = {
-    inherit levelOf;
-
     # `checkDescAtAnyLevel : Ctx → Tm → Val → Computation { term; level; }`
-    # — admit a description term at any universe level under a known
-    # index type `iTyVal`. Canonical introduction forms route through
-    # CHECK at the level-zero soundness anchor (the desc-* CHECK rules
-    # validate internal levels via `max ≡`); non-canonical shapes are
-    # INFERed and the result type's `VDesc` is structurally validated
-    # to carry the expected I. The returned `level` is the description's
-    # actual intrinsic level: from `levelOf` after CHECK on canonical
-    # forms (the walker reads each constructor's tag fields), or from
-    # the inferred `VDesc.level` directly on non-canonical shapes —
-    # the latter covers `app descDesc k : desc^(suc k) ⊤` and other
-    # opaque-but-typeable descriptions whose level the syntactic walker
-    # cannot recover from the Tm alone.
+    # — infer a description term under a known index type `iTyVal`.
+    # A primitive `VDesc` result carries its level directly. An encoded
+    # description has type `VMu`; scan the bounded prelude levels and use
+    # the `VDesc ↔ VMu` conversion rule to recover the matching level.
     checkDescAtAnyLevel = ctx: dTm: iTyVal:
-      if isCanonicalDescTag dTm.tag
-      then bind (self.check ctx dTm (V.vDesc V.vLevelZero iTyVal)) (resTm:
-        let lv = self.levelOf ctx resTm;
-            actualLev = if lv == null then V.vLevelZero else lv;
-        in pure { term = resTm; level = actualLev; })
+      if dTm.tag == "ann"
+         && (dTm.trusted or false)
+         && dTm.type.tag == "desc"
+         && (dTm ? _descRef)
+      then
+        let
+          iTm = dTm.type.I;
+          iVal = E.eval ctx.env iTm;
+          kTm = dTm.type.k;
+          kVal =
+            if kTm.tag == "level-zero"
+            then V.vLevelZero
+            else E.eval ctx.env kTm;
+        in
+        if C.conv ctx.depth iVal iTyVal
+        then pure { term = dTm; level = kVal; }
+        else send "typeError" {
+          error = D.mkKernelError {
+            rule     = "checkDescAtAnyLevel";
+            msg      = "description index type mismatch";
+            expected = Q.quote ctx.depth iTyVal;
+            got      = Q.quote ctx.depth iVal;
+          };
+        }
       else bind (self.infer ctx dTm) (dResult:
         let
           dTy = dResult.type;
@@ -217,8 +151,7 @@ in {
         });
     checkTypeLevel = ctx: tm:
       let t = tm.tag; in
-      if t == "nat" then pure { term = T.mkNat; level = V.vLevelZero; }
-      else if t == "unit" then pure { term = T.mkUnit; level = V.vLevelZero; }
+      if t == "unit" then pure { term = T.mkUnit; level = V.vLevelZero; }
       else if t == "string" then pure { term = T.mkString; level = V.vLevelZero; }
       else if t == "int" then pure { term = T.mkInt; level = V.vLevelZero; }
       else if t == "float" then pure { term = T.mkFloat; level = V.vLevelZero; }
@@ -235,13 +168,10 @@ in {
         bind (self.check ctx tm.level V.vLevel) (lTm:
           let lVal = E.eval ctx.env lTm; in
           pure { term = T.mkU lTm; level = V.vLevelSuc lVal; })
-      else if t == "list" then
-        bind (self.checkTypeLevel ctx tm.elem) (r:
-          pure { term = T.mkList r.term; level = r.level; })
-      else if t == "sum" then
+      else if t == "boot-sum" then
         bind (self.checkTypeLevel ctx tm.left) (lr:
           bind (self.checkTypeLevel ctx tm.right) (rr:
-            pure { term = T.mkSum lr.term rr.term;
+            pure { term = T.mkBootSum lr.term rr.term;
                    level = vLevelMaxOpt lr.level rr.level; }))
       else if t == "pi" then
         bind (self.checkTypeLevel ctx tm.domain) (dr:
@@ -257,12 +187,12 @@ in {
           in bind (self.checkTypeLevel ctx' tm.snd) (sr:
             pure { term = T.mkSigma tm.name fr.term sr.term;
                    level = vLevelMaxOpt fr.level sr.level; }))
-      else if t == "eq" then
+      else if t == "boot-eq" then
         bind (self.checkTypeLevel ctx tm.type) (ar:
           let aVal = E.eval ctx.env ar.term; in
           bind (self.check ctx tm.lhs aVal) (lTm:
             bind (self.check ctx tm.rhs aVal) (rTm:
-              pure { term = T.mkEq ar.term lTm rTm; level = ar.level; })))
+              pure { term = T.mkBootEq ar.term lTm rTm; level = ar.level; })))
       # `Squash A : U(l)` for `A : U(l)` — propositional truncation
       # preserves the universe level.
       else if t == "squash" then
@@ -283,19 +213,10 @@ in {
           else bind (self.check ctx tm.k V.vLevel) (kTm:
             atLevel (E.eval ctx.env kTm))
       else if t == "mu" then
-        # `μ I D i : U(max levelOf(I) levelOf(D))` where `I : U(kI)`,
-        # `D : Desc^kD I`, `i : I`. The Tm carries I explicitly
-        # (`T.mkMu I D i`), so the rule routes I through
-        # `checkTypeLevel` (admitting any universe, not just U(0))
-        # and D through `checkDescAtAnyLevel`, which dispatches on
-        # D's tag: canonical introduction forms (`desc-ret`/`-arg`/
-        # `-rec`/`-pi`/`-plus`) take CHECK at the level-zero
-        # soundness anchor — admitting check-only canonical leaves
-        # (`tt`, `refl`) at index positions and using `levelOf` to
-        # recover the actual level structurally; non-canonical D
-        # (e.g. `app descDesc k : desc^(suc k) ⊤`) takes INFER, with
-        # the inferred `VDesc.level` flowing directly into the μ
-        # result. The result level is `vLevelMaxOpt iLev dLev`.
+        # `μ I D i : U(max levelOf(I) levelOf(D))`. I is explicit, so
+        # route it through `checkTypeLevel`; D is inferred by
+        # `checkDescAtAnyLevel`, which accepts primitive `VDesc` results
+        # and encoded `VMu` descriptions via the Desc/descDesc conversion.
         bind (self.checkTypeLevel ctx tm.I) (iResult:
           let iTyTm = iResult.term;
               iLev = iResult.level;

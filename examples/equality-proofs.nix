@@ -79,7 +79,7 @@ in rec {
       proofTm = j nat add21
         (lam "y" nat (y: lam "_" (eq nat add21 y) (_: eq nat (succ add21) (succ y))))
         refl three refl;
-    in (checkHoas proofTy proofTm).tag == "j";
+    in (checkHoas proofTy proofTm).tag == "app";
 
 
   # ===== 2. Symmetry (sym) =====
@@ -115,7 +115,7 @@ in rec {
       proofTm = j nat add03
         (lam "y" nat (y: lam "_" (eq nat add03 y) (_: eq nat y add03)))
         refl three refl;
-    in (checkHoas proofTy proofTm).tag == "j";
+    in (checkHoas proofTy proofTm).tag == "app";
 
 
   # ===== 3. Transitivity (trans) =====
@@ -158,7 +158,7 @@ in rec {
       proofTm = j nat three
         (lam "z" nat (z: lam "_" (eq nat three z) (_: eq nat add12 z)))
         refl add03 refl;
-    in (checkHoas proofTy proofTm).tag == "j";
+    in (checkHoas proofTy proofTm).tag == "app";
 
 
   # ===== 4. Transport =====
@@ -198,7 +198,7 @@ in rec {
         (lam "y" bool (y: lam "_" (eq bool true_ y) (_: motiveP y)))
         zero  # zero : Nat = P(true)
         true_ refl;
-    in (checkHoas nat proofTm).tag == "j";
+    in (checkHoas nat proofTm).tag == "app";
 
 
   # ===== 5. Combined: cong + sym =====
@@ -225,7 +225,7 @@ in rec {
       proofTm = j nat sadd21
         (lam "y" nat (y: lam "_" (eq nat sadd21 y) (_: eq nat y sadd21)))
         refl sthree congStep;
-    in (checkHoas proofTy proofTm).tag == "j";
+    in (checkHoas proofTy proofTm).tag == "app";
 
 
   # ===== All tests =====

@@ -117,7 +117,7 @@ Terms are Nix attrsets. Each has a `tag` field for the constructor:
 { tag = "ann"; term = ...; type = ...; }     # annotation
 { tag = "let"; name = "x"; type = ...; val = ...; body = ...; }  # let
 # Eliminators: nat-elim, list-elim, sum-elim, desc-ind
-# Description universe: desc, desc-ret, desc-arg, desc-rec, desc-pi, desc-plus
+# Description universe: desc plus encoded desc-*-enc HOAS constructors
 # Indexed fixpoint: mu, desc-con
 
 ```
@@ -136,17 +136,17 @@ This avoids the quadratic cost of explicit substitution.
 **Evaluation** (`eval : Env × Tm → Val`). Interprets a term in an
 environment of values, performing beta and iota reductions eagerly.
 Closures `(env, body)` capture the environment, avoiding substitution.
-Trampolined via `genericClosure` for recursive eliminators (NatElim,
-ListElim) to guarantee O(1) stack depth.
+Trampolined via `genericClosure` for generated datatype eliminators and
+description-recursion paths to guarantee O(1) stack depth.
 
 **Quotation** (`quote : ℕ × Val → Tm`). Converts a value back to
-a term, translating de Bruijn levels to indices. Trampolined for
-deep VSucc/VCons chains.
+a term, translating de Bruijn levels to indices. Deep generated
+constructor chains are handled by the datatype/description paths.
 
 **Conversion** (`conv : ℕ × Val × Val → Bool`). Checks definitional
 equality of two values. Purely structural on normalized values — no
 type information used. No eta expansion. Trampolined for deep
-VSucc and VCons chains.
+generated constructor chains.
 
 **Bidirectional type checking** (`check`/`infer`). Inference mode
 synthesizes a type from a term; checking mode verifies a term against
@@ -470,10 +470,11 @@ Wrap terms in attrsets with methods for infix-like notation:
 
 ```nix
 let
+  H = fx.types.hoas;
   E = expr: type: {
     inherit expr type;
     plus = other: E (mkApp plusFn (mkPair expr other.expr)) nat;
-    eq = other: E (mkEq nat expr other.expr) (typeAt 0);
+    eq = other: E (H.eq H.nat expr other.expr) (H.u 0);
     ap = arg: E (mkApp expr arg.expr) (subst type.codomain arg.expr);
   };
   n = E (var 0) nat;

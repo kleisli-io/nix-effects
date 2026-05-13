@@ -49,10 +49,10 @@ returns a result. If the result's `tag` is `"refl"`, the proof was
 accepted. If it has an `error` field, the kernel rejected it.
 
 The kernel doesn't pattern-match on `0 + 0 = 0` as a special case. It
-evaluates `add(zero, zero)` by running the `NatElim` eliminator — the
-base case fires, returns `n` (which is `zero`), and the kernel sees
-`Eq(Nat, zero, zero)`. `Refl` witnesses any `Eq(A, x, x)`, so the
-proof goes through.
+evaluates `add(zero, zero)` by running the generated natural eliminator
+behind `H.ind` — the base case fires, returns `n` (which is `zero`),
+and the kernel sees `Eq(Nat, zero, zero)`. `Refl` witnesses any
+`Eq(A, x, x)`, so the proof goes through.
 
 Larger numbers work the same way. The kernel unrolls the recursion:
 
@@ -148,10 +148,10 @@ in {
 
 ### Natural numbers
 
-`NatElim(motive, base, step, n)` — structural recursion. The base
-case handles zero, the step case takes the predecessor `k` and the
-inductive hypothesis `ih` (the result for `k`) and produces the result
-for `S(k)`:
+`H.ind k motive base step n` — structural recursion over the generated
+natural datatype. The base case handles zero, the step case takes the
+predecessor `k` and the inductive hypothesis `ih` (the result for `k`)
+and produces the result for `S(k)`:
 
 ```nix
 let
@@ -170,9 +170,10 @@ The kernel unrolls four steps: `double(4) = S(S(double(3))) = ... = 8`.
 
 ### Lists
 
-`ListElim(elemType, motive, nilCase, consCase, list)` — structural
-recursion on lists. The nil case provides the base value, the cons case
-takes the head, tail, and inductive hypothesis:
+`H.listElim k elemType motive nilCase consCase list` — structural
+recursion over the generated list datatype. The nil case provides the
+base value, the cons case takes the head, tail, and inductive
+hypothesis:
 
 ```nix
 let
@@ -195,8 +196,8 @@ in
 
 ### Sums (coproducts)
 
-`SumElim(L, R, motive, leftCase, rightCase, scrutinee)` — case
-analysis on `Left(a)` or `Right(b)`:
+`H.sumElim k L R motive leftCase rightCase scrutinee` — case analysis
+over the generated sum datatype:
 
 ```nix
 let
@@ -413,7 +414,7 @@ handles the plumbing for multi-argument functions and pattern matching.
 
 ### Pattern matching
 
-`v.match` builds a `NatElim` with a constant motive. You provide the
+`v.match` builds an `H.ind` with a constant motive. You provide the
 result type, the scrutinee, and branches for `zero` and `succ`:
 
 ```nix
@@ -551,14 +552,16 @@ normal forms.
 - Verified function extraction: any function expressible with the
   kernel's eliminators can be verified and extracted
 
-**It cannot prove:**
+**It cannot prove automatically by conversion:**
 
-- **Symbolic induction.** `forall n, n + 0 = n` requires induction over
-  an abstract variable. The `NatElim` evaluator only reduces on
-  concrete values (`VZero`, `VSucc`), not symbolic ones. You can prove
-  `3 + 0 = 3` and `100 + 0 = 100`, but not the universal statement.
-  The evaluator would need to produce symbolic normal forms, which is a
-  fundamentally different normalization strategy.
+- **Symbolic induction by `refl`.** `forall n, n + 0 = n` requires
+  induction over an abstract variable. The generated natural eliminator
+  reduces on concrete generated constructor values, so `3 + 0 = 3` and
+  `100 + 0 = 100` are witnessed by `refl`. For a bound `n`, `n + 0`
+  stays neutral because addition recurses on its first argument; it is
+  not definitionally equal to `n`. The universal statement is still
+  provable as propositional equality with an explicit induction proof.
+  See `apps/category-theory/arithmetic.nix` for `addRightZero`.
 
 - **Properties of Nix builtins.** The kernel axiomatizes `String`,
   `Int`, `Float`, etc. as opaque types. `builtins.stringLength` is not
@@ -582,14 +585,14 @@ normal forms.
   inductive types. `H.datatype name cons` compiles a monomorphic,
   ⊤-indexed datatype from a list of `H.con name fields` specs
   (`H.field`, `H.fieldD`, `H.recField`, `H.piField`, `H.piFieldD` for
-  the field shapes). `H.datatypeP name params mkCons` adds a
+  the field shapes). `H.datatypeP name params mkCtors` adds a
   parameter layer, threading each parameter through an outer Π
   binder. `H.datatypeI name I consList` adds an arbitrary index type
   `I : U`; constructors use `H.conI name fields targetIdx` to specify
   their target index as a function of earlier field markers, and
   recursive fields at non-default indices use `H.recFieldAt name
   idxFn` (plain `H.recField` is rejected at `I ≠ ⊤`). `H.datatypePI
-  name params indexFn mkCons` combines parameters and indexing — the
+  name params indexFn mkCtors` combines parameters and indexing — the
   index type itself may depend on parameters, which is what
   `Eq A a : A → U` requires. Each macro returns a record exposing
   `.D : Desc I`, `.T : Π(i:I). U` (or `μ ⊤ D tt` at the ⊤-sugar
@@ -614,9 +617,9 @@ that matters.
 | Computational equality | `Eq(A, x, y)` where `x`, `y` normalize to same value | `Refl` |
 | Dependent witness | `Σ(x:A). P(x)` | `(value, proof)` |
 | Case analysis (bool, derived) | `H.boolElim k motive true_case false_case b` | Result of elimination |
-| Structural recursion (nat) | `NatElim(motive, base, step, n)` | Result of elimination |
-| List recursion | `ListElim(elem, motive, nil_case, cons_case, xs)` | Result of elimination |
-| Sum dispatch | `SumElim(L, R, motive, left_case, right_case, s)` | Result of elimination |
+| Structural recursion (nat) | `H.ind k motive base step n` | Result of elimination |
+| List recursion | `H.listElim k elem motive nil_case cons_case xs` | Result of elimination |
+| Sum dispatch | `H.sumElim k L R motive left_case right_case s` | Result of elimination |
 | Congruence | `Eq(A,x,y) → Eq(B, f(x), f(y))` | `J(A, x, λy'.λ_. Eq(B,f(x),f(y')), Refl, y, p)` |
 | Symmetry | `Eq(A,x,y) → Eq(A,y,x)` | `J(A, x, λy'.λ_. Eq(A,y',x), Refl, y, p)` |
 | Transitivity | `Eq(A,x,y) → Eq(A,y,z) → Eq(A,x,z)` | `J(A, y, λz'.λ_. Eq(A,x,z'), p, z, q)` |

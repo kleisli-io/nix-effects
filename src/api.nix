@@ -66,7 +66,11 @@ rec {
       { inherit (x) doc tests; } //
       (if builtins.isAttrs x.value && !(x.value ? _tag)
        then lib.filterAttrs (_: v: v != {})
-            (builtins.mapAttrs (_: extractDocs) x.value)
+            (builtins.mapAttrs (_: extractDocs)
+              (lib.filterAttrs
+                (_: v: builtins.isAttrs v
+                    && (v._type or null) == "nix-effects-api")
+                x.value))
        else {})
     else if builtins.isAttrs x && !(x ? _tag)
     then lib.filterAttrs (_: v: v != {})

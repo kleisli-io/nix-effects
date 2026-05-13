@@ -53,8 +53,29 @@ let
     && fx ? adapt && fx ? adaptHandlers
     && fx ? types && fx ? effects && fx ? stream;
 
-in {
-  inherit portExample depContractExample stateEffectExample apiSurfaceSanity;
+  # -- Test 5: API docs skip semantic data inside module wrappers --
+  apiDocsSkipsPlainWrapperData =
+    let
+      raw = fx.api.mk {
+        doc = "root";
+        value = rec {
+          data = { inherit data; };
+          child = fx.api.mk {
+            doc = "child";
+            value = 1;
+          };
+        };
+      };
+      docs = fx.api.extractDocs raw;
+    in
+      docs.doc == "root"
+      && docs.child.doc == "child"
+      && !(docs ? data);
 
-  allPass = portExample && depContractExample && stateEffectExample && apiSurfaceSanity;
+in {
+  inherit portExample depContractExample stateEffectExample apiSurfaceSanity
+          apiDocsSkipsPlainWrapperData;
+
+  allPass = portExample && depContractExample && stateEffectExample
+            && apiSurfaceSanity && apiDocsSkipsPlainWrapperData;
 }

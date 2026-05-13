@@ -55,6 +55,9 @@ let
       [[ -n "$baseline" && -f "$baseline" ]] || { echo "--baseline file required and must exist" >&2; exit 2; }
       [[ -n "$current"  && -f "$current"  ]] || { echo "--current file required and must exist" >&2; exit 2; }
       [[ -d "$bench_dir" ]] || { echo "bench dir not found: $bench_dir" >&2; exit 2; }
+      baseline="$(realpath "$baseline")"
+      current="$(realpath "$current")"
+      bench_dir="$(realpath "$bench_dir")"
 
       baseline_name=$(basename "$baseline" .json)
       current_name=$(basename "$current" .json)
@@ -65,6 +68,7 @@ let
       # Budgets path is inlined as either a Nix path literal or `null`.
       if [[ -n "$budgets" ]]; then
         [[ -f "$budgets" ]] || { echo "budgets file not found: $budgets" >&2; exit 2; }
+        budgets="$(realpath "$budgets")"
         budgets_arg="$budgets"
       else
         budgets_arg="null"

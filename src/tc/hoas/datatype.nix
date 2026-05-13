@@ -21,8 +21,16 @@ in {
     # Field specifications. Each is a tagged attrset; position in the
     # constructor's field list is the position in the constructor's
     # argument list and in the payload spine.
-    field    = name: type: { _fieldTag = _fieldMarker; kind = "data";  inherit name type; };
-    fieldD   = name: tyFn: { _fieldTag = _fieldMarker; kind = "dataD"; inherit name; typeFn = tyFn; };
+    fieldAt  = level: name: type:
+      { _fieldTag = _fieldMarker; kind = "data"; inherit name level type; };
+    fieldDAt = level: name: tyFn:
+      { _fieldTag = _fieldMarker; kind = "dataD"; inherit name level; typeFn = tyFn; };
+    fieldAtWithEq = level: eq: name: type:
+      { _fieldTag = _fieldMarker; kind = "data"; inherit name level eq type; };
+    fieldDAtWithEq = level: eq: name: tyFn:
+      { _fieldTag = _fieldMarker; kind = "dataD"; inherit name level eq; typeFn = tyFn; };
+    field    = name: type: self.fieldAt 0 name type;
+    fieldD   = name: tyFn: self.fieldDAt 0 name tyFn;
     # Recursive self-reference at a specific index. `idxFn : prev -> Hoas`
     # computes the recursive-call index from markers bound by earlier
     # data/dataD fields. `recField name` is sugar for the recursive field
@@ -31,8 +39,16 @@ in {
     # (_: ttPrim)`.
     recField   = name:        { _fieldTag = _fieldMarker; kind = "recAt"; inherit name; idxFn = _: self.ttPrim; };
     recFieldAt = name: idxFn: { _fieldTag = _fieldMarker; kind = "recAt"; inherit name idxFn; };
-    piField  = name: S:    { _fieldTag = _fieldMarker; kind = "pi";    inherit name S; };
-    piFieldD = name: SFn:  { _fieldTag = _fieldMarker; kind = "piD";   inherit name; SFn = SFn; };
+    piFieldAt  = level: name: S:
+      { _fieldTag = _fieldMarker; kind = "pi"; inherit name level S; };
+    piFieldDAt = level: name: SFn:
+      { _fieldTag = _fieldMarker; kind = "piD"; inherit name level; SFn = SFn; };
+    piFieldAtWithEq = level: eq: name: S:
+      { _fieldTag = _fieldMarker; kind = "pi"; inherit name level eq S; };
+    piFieldDAtWithEq = level: eq: name: SFn:
+      { _fieldTag = _fieldMarker; kind = "piD"; inherit name level eq; SFn = SFn; };
+    piField  = name: S: self.piFieldAt 0 name S;
+    piFieldD = name: SFn: self.piFieldDAt 0 name SFn;
 
     # Constructor specification. `con` builds a constructor whose target
     # index is implicitly `ttPrim` (for ⊤-indexed families); `conI`
@@ -41,7 +57,7 @@ in {
     con  = name: fields:             { _conTag = _conMarker; inherit name fields; targetIdx = _: self.ttPrim; };
     conI = name: fields: targetIdx:  { _conTag = _conMarker; inherit name fields targetIdx; };
 
-    # conDesc I prev fields targetIdx : Hoas Desc
+    # conDesc I descLevel prev fields targetIdx : Hoas Desc
     # Compile a field list into a description spine over index type `I`.
     # `prev` threads HOAS markers for earlier `field` / `fieldD` bindings
     # (the only field kinds that bind a description-level variable via
@@ -50,27 +66,37 @@ in {
     # the ⊤-slice `descPi` alias and are therefore only valid at I=⊤;
     # at I≠⊤ an indexed pi-field sugar would be required and none
     # exists yet.
-    conDesc = I: prev: fields: targetIdx:
+    conDesc = I: descLevel: prev: fields: targetIdx:
       let
-        inherit (self) retI recI descArg descPi conDesc;
+        inherit (self)
+          retI recI descArgAt descArgWithEq
+          descPiAt descPiWithEq conDesc;
         isUnitI = (I._htag or null) == "unit";
+        descArgFor = f: S: body:
+          if f ? eq
+          then descArgWithEq I f.level descLevel S f.eq body
+          else descArgAt I f.level descLevel S body;
+        descPiFor = f: S: body:
+          if f ? eq
+          then descPiWithEq f.level descLevel S f.eq body
+          else descPiAt f.level descLevel S body;
       in
-      if fields == [] then retI I 0 (targetIdx prev)
+      if fields == [] then retI I descLevel (targetIdx prev)
       else let
         f = builtins.head fields;
         rest = builtins.tail fields;
         k = f.kind;
       in
-        if      k == "data"  then descArg I 0 f.type          (v: conDesc I (prev // { ${f.name} = v; }) rest targetIdx)
-        else if k == "dataD" then descArg I 0 (f.typeFn prev) (v: conDesc I (prev // { ${f.name} = v; }) rest targetIdx)
-        else if k == "recAt" then recI I 0 (f.idxFn prev) (conDesc I prev rest targetIdx)
+        if      k == "data"  then descArgFor f f.type          (v: conDesc I descLevel (prev // { ${f.name} = v; }) rest targetIdx)
+        else if k == "dataD" then descArgFor f (f.typeFn prev) (v: conDesc I descLevel (prev // { ${f.name} = v; }) rest targetIdx)
+        else if k == "recAt" then recI I descLevel (f.idxFn prev) (conDesc I descLevel prev rest targetIdx)
         else if k == "pi"    then
           if isUnitI
-          then descPi 0 f.S (conDesc I prev rest targetIdx)
+          then descPiFor f f.S (conDesc I descLevel prev rest targetIdx)
           else throw "datatype: piField '${f.name}' not supported at indexed family (I != unit)"
         else if k == "piD"   then
           if isUnitI
-          then descPi 0 (f.SFn prev) (conDesc I prev rest targetIdx)
+          then descPiFor f (f.SFn prev) (conDesc I descLevel prev rest targetIdx)
           else throw "datatype: piFieldD '${f.name}' not supported at indexed family (I != unit)"
         else throw "datatype: unknown field kind '${k}'";
 
@@ -80,11 +106,10 @@ in {
     # n>=2 produces a right-associated plus-spine `plus D_0 (plus D_1
     # (... D_{n-1}))`. `interp (plus A B) X i` reduces STRUCTURALLY to
     # kernel `Sum (⟦A⟧ X i) (⟦B⟧ X i)` — no bool-tag dispatch, no
-    # commuting-conv obligation on `interp ∘ bool-elim`. Matches the
-    # plus-based shape used by the prelude descriptions (`natDesc` /
-    # `listDesc` / `sumDesc` / `boolDesc` at `hoas/desc.nix` and
-    # `hoas/combinators.nix`).
-    spineDesc = I: descs:
+    # commuting-conv obligation on `interp ∘ bool-elim`. The generated
+    # prelude descriptions expose this plus-spine through their `DT.D`
+    # forwarders.
+    spineDesc = I: descLevel: descs:
       let
         inherit (self) plusI spineDesc;
         n = builtins.length descs;
@@ -95,47 +120,109 @@ in {
         let
           D1 = builtins.elemAt descs 0;
           rest = builtins.tail descs;
-        in plusI I 0 D1 (spineDesc I rest);
+        in plusI I descLevel D1 (spineDesc I descLevel rest);
 
-    # payloadTuple xs : Hoas
-    # Build a right-nested pair from an ordered list of HOAS terms.
-    # The terminator is `refl` — every call site feeds this into a
-    # `descCon` at a ret-leaf of its description, where the payload's
-    # innermost component inhabits `Eq I j i` (at I=⊤, `refl` witnesses
-    # `Eq ⊤ tt tt`).
-    payloadTuple = xs:
-      let inherit (self) pair refl payloadTuple; in
-      if xs == [] then refl
-      else pair (builtins.head xs) (payloadTuple (builtins.tail xs));
+    fieldLiftType = f: descLevel: S:
+      if f ? eq
+      then self.LiftAtWithEq f.level descLevel f.eq S
+      else self.LiftAt f.level descLevel S;
 
-    # encodeTagPrim I dOuter descsHoas targetIdxVal t payload : Hoas
+    liftFieldValue = f: descLevel: S: v:
+      if f ? eq
+      then self.liftAtWithEq f.level descLevel f.eq S v
+      else self.liftAt f.level descLevel S v;
+
+    lowerFieldValue = f: descLevel: S: v:
+      if f ? eq
+      then self.lowerAtWithEq f.level descLevel f.eq S v
+      else self.lowerAt f.level descLevel S v;
+
+    payloadLeafAt = I: descLevel: targetIdx:
+      self.liftAt 0 descLevel (self.bootEq I targetIdx targetIdx) self.bootRefl;
+
+    # Build the payload expected by `interpD descLevel ...`, lifting
+    # field values and the ret-leaf equality into `Desc^descLevel`.
+    payloadTupleAt = I: descLevel: targetIdx: xs:
+      let inherit (self) pair payloadTupleAt; in
+      if xs == [] then self.payloadLeafAt I descLevel targetIdx
+      else pair (builtins.head xs) (payloadTupleAt I descLevel targetIdx (builtins.tail xs));
+
+    payloadTuple = xs: self.payloadTupleAt self.unitPrim 0 self.ttPrim xs;
+
+    fieldPayloadValue = I: D: descLevel: f: prev: v:
+      let
+        S =
+          if      f.kind == "data"  then f.type
+          else if f.kind == "dataD" then f.typeFn prev
+          else if f.kind == "pi"    then f.S
+          else if f.kind == "piD"   then f.SFn prev
+          else null;
+      in
+        if f.kind == "data" || f.kind == "dataD" then
+          self.liftFieldValue f descLevel S v
+        else if f.kind == "pi" || f.kind == "piD" then
+          self.lam "x" (self.fieldLiftType f descLevel S) (x:
+            self.app
+              (self.ann v (self.forall "_" S (_: self.muI I D self.ttPrim)))
+              (self.lowerFieldValue f descLevel S x))
+        else v;
+
+    fieldUserValue = descLevel: f: prev: v:
+      let
+        S =
+          if      f.kind == "data"  then f.type
+          else if f.kind == "dataD" then f.typeFn prev
+          else if f.kind == "pi"    then f.S
+          else if f.kind == "piD"   then f.SFn prev
+          else null;
+      in
+        if f.kind == "data" || f.kind == "dataD" then
+          self.lowerFieldValue f descLevel S v
+        else if f.kind == "pi" || f.kind == "piD" then
+          self.lam "s" S (s:
+            self.app v (self.liftFieldValue f descLevel S s))
+        else v;
+
+    ihUserValue = descLevel: f: prev: ih:
+      let
+        S =
+          if      f.kind == "pi"  then f.S
+          else if f.kind == "piD" then f.SFn prev
+          else null;
+      in
+        if f.kind == "pi" || f.kind == "piD" then
+          self.lam "s" S (s:
+            self.app ih (self.liftFieldValue f descLevel S s))
+        else ih;
+
+    # encodeTagAt k I dOuter descsHoas targetIdxVal t payload : Hoas
     # Wrap `payload` with the (n-1)-deep plus-coproduct prefix committing
     # at position t (0-based) out of n total. Mirrors spineDesc
     # structurally: at every layer the L/R type arguments are the interps
     # of the current summand and the plus-tree of the remaining summands
     # respectively, under the muFam `λi:I. μI I dOuter i`, evaluated at
-    # the constructor's `targetIdxVal`. `inlPrim L R` at position t=0;
-    # otherwise `inrPrim L R (encodeTagPrim ... (t-1) (rest) payload)`.
+    # the constructor's `targetIdxVal`. `bootInl L R` at position t=0;
+    # otherwise `bootInr L R (encodeTagAt ... (t-1) (rest) payload)`.
     # n=1 has no prefix. `descsHoas` must have length >= 1; the
     # singleton case returns `payload` directly.
     #
-    # Primitive variant — consumed by `descEncodingCtx` and `iso`,
-    # whose `descsHoas` are primitive HOAS descs (descArg/descPiAt/
-    # descRec/descRet built via `*Prim` combinators). The L/R type
-    # slots emit kernel-primitive `interp-d` Tms whose `vInterpDF`
-    # dispatch handles primitive VDescX shapes uniformly (CDMM §4.2.3
-    # Table 6.2). The encoded-surface variant is `encodeTag` below.
-    encodeTagPrim = I: dOuter: descsHoas: targetIdxVal: t: payload:
+    # `descsHoas` are encoded HOAS descs. The spine plus-folds through
+    # `plusI I k`; the per-layer L/R interp emits kernel-primitive
+    # `interp-d` Tms whose `vInterpDF` dispatch handles encoded VDescCon
+    # shapes uniformly via the canonical-form path (CDMM §4.2.3).
+    # `_datatypeImpl` uses the level-zero wrapper `encodeTag`; descDesc's
+    # encoders use `encodeTagAt` at the lifted description level.
+    encodeTagAt = level: I: dOuter: descsHoas: targetIdxVal: t: payload:
       let
-        inherit (self) plusPrim inlPrim inrPrim interpD
-                        muI lam encodeTagPrim;
+        inherit (self) plusI bootInl bootInr interpD
+                        muI lam encodeTagAt;
         n = builtins.length descsHoas;
         muFam = lam "_i" I (iArg: muI I dOuter iArg);
         spineAfter = k:
           let remaining = n - k; in
           if remaining == 1 then builtins.elemAt descsHoas k
-          else plusPrim (builtins.elemAt descsHoas k) (spineAfter (k + 1));
-        interpAt = dH: interpD 0 I dH muFam targetIdxVal;
+          else plusI I level (builtins.elemAt descsHoas k) (spineAfter (k + 1));
+        interpAt = dH: interpD level I dH muFam targetIdxVal;
       in
       if n == 1 then payload
       else
@@ -144,40 +231,12 @@ in {
           rTy = interpAt (spineAfter 1);
           rest = builtins.tail descsHoas;
         in
-        if t == 0 then inlPrim lTy rTy payload
-        else inrPrim lTy rTy
-               (encodeTagPrim I dOuter rest targetIdxVal (t - 1) payload);
+        if t == 0 then bootInl lTy rTy payload
+        else bootInr lTy rTy
+               (encodeTagAt level I dOuter rest targetIdxVal (t - 1) payload);
 
-    # encodeTag I dOuter descsHoas targetIdxVal t payload : Hoas
-    # Encoded-surface variant. `descsHoas` are encoded HOAS descs
-    # (built via the unsuffixed combinators); the spine plus-folds
-    # through `plusI I 0`. The per-layer L/R interp emits kernel-
-    # primitive `interp-d` Tms whose `vInterpDF` dispatch handles
-    # encoded VDescCon shapes uniformly via the canonical-form path
-    # (CDMM §4.2.3). Consumed by `_datatypeImpl`'s constructor body
-    # assembly.
     encodeTag = I: dOuter: descsHoas: targetIdxVal: t: payload:
-      let
-        inherit (self) plusI inlPrim inrPrim interpD
-                        muI lam encodeTag;
-        n = builtins.length descsHoas;
-        muFam = lam "_i" I (iArg: muI I dOuter iArg);
-        spineAfter = k:
-          let remaining = n - k; in
-          if remaining == 1 then builtins.elemAt descsHoas k
-          else plusI I 0 (builtins.elemAt descsHoas k) (spineAfter (k + 1));
-        interpAt = dH: interpD 0 I dH muFam targetIdxVal;
-      in
-      if n == 1 then payload
-      else
-        let
-          lTy = interpAt (builtins.elemAt descsHoas 0);
-          rTy = interpAt (spineAfter 1);
-          rest = builtins.tail descsHoas;
-        in
-        if t == 0 then inlPrim lTy rTy payload
-        else inrPrim lTy rTy
-               (encodeTag I dOuter rest targetIdxVal (t - 1) payload);
+      self.encodeTagAt 0 I dOuter descsHoas targetIdxVal t payload;
 
     # Internal: build a DataSpec at index type `I`. When `indexed =
     # false`, exposes `T` as the bare kernel-level type `muI I D ttPrim`
@@ -188,16 +247,19 @@ in {
     # spine, constructor terms, and dispatchStep / jTransportLeaf are
     # shared across both modes, parameterised on the per-constructor
     # `targetIdx` spec field.
-    _datatypeImpl = { I, indexed, name, consList }:
+    _datatypeImpl = { I, indexed, name, consList, params ? [], descLevel ? 0 }:
       let
         inherit (self)
           u forall lam let_ app ann annTrusted
           fst_ snd_ pair
           ttPrim unitPrim
-          plusI sumPrim inlPrim inrPrim sumElimPrim
-          eq refl j
-          muI descI descCon descInd interpD allD
-          conDesc spineDesc payloadTuple encodeTag;
+          plusI bootSum bootInl bootInr bootSumElim
+          bootEq bootRefl bootJ
+          LiftAt liftAt lowerAt
+          levelMax natToLevel
+          muI descIAt descCon descInd interpD allD
+          conDesc spineDesc payloadTupleAt fieldPayloadValue
+          fieldUserValue ihUserValue encodeTagAt;
 
         n = builtins.length consList;
         conNames = map (c: c.name) consList;
@@ -212,7 +274,17 @@ in {
                  in if builtins.elem nm seen then nm else null;
           in builtins.foldl' step null idxs;
 
-        conDescs = map (c: conDesc I {} c.fields c.targetIdx) consList;
+        conDescs = map (c: conDesc I descLevel {} c.fields c.targetIdx) consList;
+        descRef = {
+          kind = "datatype-desc";
+          inherit name;
+          level = descLevel;
+          inherit I indexed params;
+          arity = n;
+          constructors = map (c: {
+            fieldKinds = map (f: f.kind) c.fields;
+          }) consList;
+        };
         # `spineDesc` plus-folds `conDescs` via `plusI I 0` — every
         # combinator under it (`retI`, `descArg`, `descRec`, `descPi`,
         # `plusI`) emits encoded HOAS, so the spine elaborates to a
@@ -221,7 +293,19 @@ in {
         # the kernel `Desc` ascription without re-checking — the body
         # is well-typed by construction (the encoder lambdas have
         # known polymorphic types).
-        D = annTrusted (spineDesc I conDescs) (descI I);
+        D = (annTrusted (spineDesc I descLevel conDescs) (descIAt descLevel I)) // {
+          _descRef = descRef;
+        };
+        descConCertified = ctorIndex: fieldCount: targetIdx: payload:
+          (descCon D targetIdx payload) // {
+            _descConCert = {
+              kind = "datatype-con-payload";
+              ref = descRef;
+              target = targetIdx;
+              ctor = ctorIndex;
+              inherit fieldCount;
+            };
+          };
         # Bare μ at the constant ⊤ index. The exposed `T` at
         # indexed=false, and the field type of `pi` / `piD` binders
         # (which are only valid at I=⊤ — see conDesc).
@@ -229,11 +313,21 @@ in {
         # Family-as-function: `λi:I. muI I D i`. The exposed `T` at
         # indexed=true.
         TFam = ann (lam "i" I (iArg: muI I D iArg))
-                   (forall "_" I (_: u 0));
+                   (forall "_" I (_: u descLevel));
         T = if indexed then TFam else TAtTt;
 
         muFam = lam "_i" I (iArg: muI I D iArg);
         ppTy = K: forall "i" I (iArg: forall "_" (muI I D iArg) (_: u K));
+        allLevel = K:
+          if builtins.isInt descLevel && descLevel == 0 then K
+          else if builtins.isInt K && K == 0 then descLevel
+          else if builtins.isInt descLevel && builtins.isInt K then
+            if descLevel < K then K else descLevel
+          else
+            let
+              descLevelTm = if builtins.isInt descLevel then natToLevel descLevel else descLevel;
+              kTm = if builtins.isInt K then natToLevel K else K;
+            in levelMax descLevelTm kTm;
 
         # Apply the user motive `P` to a scrutinee `x` at its index
         # `idx`. At indexed=false the user motive is 1-ary and `idx` is
@@ -288,21 +382,25 @@ in {
           if c.fields == []
           then
             let tIdx = c.targetIdx {}; in
-            descCon D tIdx (encodeTag I D conDescs tIdx i (payloadTuple []))
+            descConCertified i 0 tIdx
+              (encodeTagAt descLevel I D conDescs tIdx i
+                (payloadTupleAt I descLevel tIdx []))
           else
             let
               bareGo = remaining: prev: collected:
                 if remaining == [] then
                   let tIdx = c.targetIdx prev; in
-                  descCon D tIdx
-                    (encodeTag I D conDescs tIdx i (payloadTuple collected))
+                  descConCertified i (builtins.length collected) tIdx
+                    (encodeTagAt descLevel I D conDescs tIdx i
+                      (payloadTupleAt I descLevel tIdx collected))
                 else
                   let f = builtins.head remaining;
                       rest = builtins.tail remaining;
+                      fieldPrev = prev;
                   in lam f.name (fieldTyOf f prev) (v:
                        bareGo rest
                          (if extendsPrev f then prev // { ${f.name} = v; } else prev)
-                         (collected ++ [v]));
+                         (collected ++ [ (fieldPayloadValue I D descLevel f fieldPrev v) ]));
               bareCtor = bareGo c.fields {} [];
               fallback = ann bareCtor (ctorTyOf c);
             in {
@@ -322,8 +420,10 @@ in {
               targetIdx = c.targetIdx;
               # Per-constructor HOAS descriptions — consumed by
               # `elaborate`'s flatten path to precompute the per-layer
-              # L/R interp Tms of the `inlPrim` / `inrPrim` wrapping.
+              # L/R interp Tms of the `bootInl` / `bootInr` wrapping.
               inherit conDescs;
+              descRef = descRef;
+              inherit descLevel;
               nFields = builtins.length c.fields;
               fields = c.fields;
               inherit fallback;
@@ -407,8 +507,8 @@ in {
         # payload is a right-nested pair from payloadTuple — so fields in
         # declaration order line up with snd-descents.
         #
-        # For payloadIH, only rec/pi/piD fields contribute a Σ component
-        # (data/dataD's allHoasAt case is the identity on the tail). The
+        # For payloadIH, only rec/pi/piD fields contribute a Σ component.
+        # The
         # i-th rec/pi IH (0-based among rec/pi-only fields, in declaration
         # order) lives at fst (snd^i payloadIH).
         buildStepApply = s: c: payload: payloadIH:
@@ -420,10 +520,42 @@ in {
                   if idx == 0 then fst_ acc
                   else go (idx - 1) (snd_ acc);
                 in go j src;
-              fieldArgs = builtins.genList (j: projAt j payload)
-                                           (builtins.length c.fields);
+              fieldArgs =
+                let
+                  go = idx: prev:
+                    if idx == builtins.length c.fields then []
+                    else
+                      let
+                        f = builtins.elemAt c.fields idx;
+                        raw = projAt idx payload;
+                        user = fieldUserValue descLevel f prev raw;
+                        prev' =
+                          if extendsPrev f then prev // { ${f.name} = user; } else prev;
+                      in [ user ] ++ go (idx + 1) prev';
+                in go 0 {};
               ihCount = builtins.length (builtins.filter isIHField c.fields);
-              ihArgs = builtins.genList (i: projAt i payloadIH) ihCount;
+              ihFields = builtins.filter isIHField c.fields;
+              fieldIndex = field:
+                let
+                  idxs = builtins.genList (x: x) (builtins.length c.fields);
+                in builtins.foldl' (acc: idx:
+                  if acc != null then acc
+                  else if (builtins.elemAt c.fields idx).name == field.name then idx
+                  else null)
+                  null
+                  idxs;
+              prevForField = field:
+                builtins.foldl' (acc: idx:
+                  let f = builtins.elemAt c.fields idx; in
+                  if extendsPrev f
+                  then acc // { ${f.name} = builtins.elemAt fieldArgs idx; }
+                  else acc)
+                {}
+                (builtins.genList (x: x) (fieldIndex field));
+              ihArgs = builtins.genList (i:
+                let f = builtins.elemAt ihFields i;
+                in ihUserValue descLevel f (prevForField f) (projAt i payloadIH))
+                ihCount;
               withFields = builtins.foldl' (acc: a: app acc a) s fieldArgs;
               withIHs = builtins.foldl' (acc: a: app acc a) withFields ihArgs;
             in withIHs;
@@ -440,9 +572,12 @@ in {
                 else go (idx - 1) (snd_ acc);
               in go j src;
             step = acc: idx:
-              let f = builtins.elemAt c.fields idx; in
+              let
+                f = builtins.elemAt c.fields idx;
+                raw = projAt idx payload;
+              in
               if f.kind == "data" || f.kind == "dataD"
-              then acc // { ${f.name} = projAt idx payload; }
+              then acc // { ${f.name} = fieldUserValue descLevel f acc raw; }
               else acc;
           in builtins.foldl' step {} (builtins.genList (x: x) (builtins.length c.fields));
 
@@ -459,27 +594,14 @@ in {
         # sumElim that commits to constructor i on `inl` (J-transported)
         # and descends into the rest-spine on `inr`.
         #
-        # J-transport (jTransportLeaf targetIdx_c payloadCtx c r userApplied):
-        # The user step `s` produces `userApplied : app Pp targetIdx_c
-        # (descCon D targetIdx_c (payloadCtx (pair f_0 (... (pair f_{k-1}
-        # refl)))))` where each f_i = fst(snd^i r) and the leaf is the
-        # macro-inserted `refl`. The expected type is `app Pp iArg (descCon
-        # D iArg (payloadCtx (pair f_0 (... (pair f_{k-1} snd^k r)))))` —
-        # same modulo the iArg position and the leaf Eq witness `snd^k r :
-        # Eq I targetIdx_c iArg`. MLTT without K cannot conv `VRefl ≡
-        # VNe(eq)`; J is the sanctioned transport. Motive `M(y,e) = app
-        # Pp y (descCon D y (payloadCtx (pair f_0 (... (pair f_{k-1}
-        # e)))))`; base `M(targetIdx_c, refl) ≡ userApplied`; result
-        # `M(iArg, snd^k r)` matches the expected type. k=0 corner: r
-        # ITSELF is the Eq witness and `payloadCtx e` is the full payload
-        # at the leaf.
-        dispatchStep = K: Pp: iArg: ctx: descs: steps: cons: payload: payloadIH:
+        dispatchStep = K: P: Pp: iArg: ctx: descs: steps: cons: payload: payloadIH:
           let
             n' = builtins.length descs;
+            KAll = allLevel K;
 
             jTransportLeaf = targetIdx_c: payloadCtx: c: r: userApplied:
               let
-                k = builtins.length c.fields;
+                fieldCount = builtins.length c.fields;
                 projAt = i: src:
                   let go = idx: acc:
                     if idx == 0 then fst_ acc
@@ -490,18 +612,25 @@ in {
                     if idx == 0 then acc
                     else go (idx - 1) (snd_ acc);
                   in go i src;
-                eLeaf = sndN k r;
-                buildPayload = e:
+                eLeaf = sndN fieldCount r;
+                lowerLeaf = y: e:
+                  lowerAt 0 descLevel (bootEq I targetIdx_c y) e;
+                liftLeaf = y: e:
+                  liftAt 0 descLevel (bootEq I targetIdx_c y) e;
+                buildPayload = y: e:
                   let
                     go = i:
-                      if i == k then e
+                      if i == fieldCount then liftLeaf y e
                       else pair (projAt i r) (go (i + 1));
                   in go 0;
+                target = y: e: descCon D y (payloadCtx (buildPayload y e));
+                targetBase = target targetIdx_c bootRefl;
+                liftedApplied =
+                  liftAt K KAll (applyMotive P targetIdx_c targetBase) userApplied;
                 motive = lam "y" I (y:
-                         lam "e" (eq I targetIdx_c y) (e:
-                           app (app Pp y)
-                               (descCon D y (payloadCtx (buildPayload e)))));
-              in j I targetIdx_c motive userApplied iArg eLeaf;
+                         lam "e" (bootEq I targetIdx_c y) (e:
+                           app (app Pp y) (target y e)));
+              in bootJ I targetIdx_c motive liftedApplied iArg (lowerLeaf iArg eLeaf);
           in
           if n' == 1 then
             let
@@ -518,30 +647,30 @@ in {
               restD = builtins.tail descs;
               restS = builtins.tail steps;
               restC = builtins.tail cons;
-              restSpine = spineDesc I restD;
+              restSpine = spineDesc I descLevel restD;
               # Interp types of the two summands at the current iArg:
               # the outer plus's interp reduces to `Sum lInterp rInterp`
               # (kernel Sum), and `payload : Sum lInterp rInterp` is
-              # dispatched via `sumElimPrim`.
-              lInterp = interpD 0 I D1 muFam iArg;
-              rInterp = interpD 0 I restSpine muFam iArg;
+              # dispatched via `bootSumElim`.
+              lInterp = interpD descLevel I D1 muFam iArg;
+              rInterp = interpD descLevel I restSpine muFam iArg;
               # Sum-elim motive: each summand inhabits this Pp-target
-              # rebuilt through `ctx (inlPrim/inrPrim …)`.
-              sumMot = lam "s" (sumPrim lInterp rInterp) (s:
-                forall "rih" (allD 0 I (plusI I 0 D1 restSpine) K muFam Pp iArg s) (_:
+              # rebuilt through `ctx (bootInl/bootInr …)`.
+              sumMot = lam "s" (bootSum lInterp rInterp) (s:
+                forall "rih" (allD descLevel I (plusI I descLevel D1 restSpine) KAll muFam Pp iArg s) (_:
                   app (app Pp iArg) (descCon D iArg (ctx s))));
               onInl = lam "r" lInterp (r:
-                      lam "rih" (allD 0 I D1 K muFam Pp iArg r) (rih:
+                      lam "rih" (allD descLevel I D1 KAll muFam Pp iArg r) (rih:
                         let targetIdx_c1 = c1.targetIdx (prevOfPayload c1 r); in
                         jTransportLeaf targetIdx_c1
-                          (local: ctx (inlPrim lInterp rInterp local))
+                          (local: ctx (bootInl lInterp rInterp local))
                           c1 r
                           (buildStepApply s1 c1 r rih)));
-              ctx' = local: ctx (inrPrim lInterp rInterp local);
+              ctx' = local: ctx (bootInr lInterp rInterp local);
               onInr = lam "r" rInterp (r:
-                      lam "rih" (allD 0 I restSpine K muFam Pp iArg r) (rih:
-                        dispatchStep K Pp iArg ctx' restD restS restC r rih));
-            in app (sumElimPrim lInterp rInterp sumMot onInl onInr payload)
+                      lam "rih" (allD descLevel I restSpine KAll muFam Pp iArg r) (rih:
+                        dispatchStep K P Pp iArg ctx' restD restS restC r rih));
+            in app (bootSumElim lInterp rInterp sumMot onInl onInr payload)
                  payloadIH;
 
         # Generic eliminator. The closed term is wrapped in `ann` against
@@ -585,11 +714,12 @@ in {
         # `allD` so the internal pTy binder accepts a `Pp` whose
         # codomain lives at U(K). The scrutinee description level `L = 0`
         # — `datatype` constructors all bind their sorts at `U(0)`.
-        indStep = K: Pp: steps:
+        indStep = K: P: Pp: steps:
+          let KAll = allLevel K; in
           lam "i" I (iArg:
-          lam "d" (interpD 0 I D muFam iArg) (d:
-          lam "ih" (allD 0 I D K muFam Pp iArg d) (ih:
-            dispatchStep K Pp iArg (x: x) conDescs steps consList d ih)));
+          lam "d" (interpD descLevel I D muFam iArg) (d:
+          lam "ih" (allD descLevel I D KAll muFam Pp iArg d) (ih:
+            dispatchStep K P Pp iArg (x: x) conDescs steps consList d ih)));
 
         elimTy = K:
           if indexed then
@@ -610,16 +740,22 @@ in {
             buildLamCascade (steps:
               lam "i" I (iArg:
               lam "scrut" (muI I D iArg) (scrut:
-                let_ "Pp" (ppTy K) P (Pp:
-                  descInd D Pp (indStep K Pp steps) iArg scrut))))
+                let_ "Pp" (ppTy (allLevel K))
+                  (lam "i" I (pIdx:
+                   lam "x" (muI I D pIdx) (x:
+                     LiftAt K (allLevel K) (app (app P pIdx) x)))) (Pp:
+                  lowerAt K (allLevel K) (app (app P iArg) scrut)
+                    (descInd D Pp (indStep K P Pp steps) iArg scrut)))))
               P)
           else
             lam "P" (motiveTy K) (P:
             buildLamCascade (steps:
               lam "scrut" TAtTt (scrut:
-                let_ "Pp" (ppTy K)
-                  (lam "i" I (_: lam "x" (muI I D ttPrim) (x: app P x))) (Pp:
-                  descInd D Pp (indStep K Pp steps) ttPrim scrut)))
+                let_ "Pp" (ppTy (allLevel K))
+                  (lam "i" I (_: lam "x" (muI I D ttPrim) (x:
+                    LiftAt K (allLevel K) (app P x)))) (Pp:
+                  lowerAt K (allLevel K) (app P scrut)
+                    (descInd D Pp (indStep K P Pp steps) ttPrim scrut))))
               P);
 
         elim = K: ann (elimBody K) (elimTy K);
@@ -644,8 +780,8 @@ in {
         # indexed=true `T` is a function from I to U and its type is
         # `Π(i:I). U`.
         _tys = {
-          D = descI I;
-          T = if indexed then forall "_" I (_: u 0) else u 0;
+          D = descIAt descLevel I;
+          T = if indexed then forall "_" I (_: u descLevel) else u descLevel;
           elim = elimTy;
         } // (builtins.listToAttrs (builtins.genList (i:
           let c = builtins.elemAt consList i; in
@@ -669,12 +805,14 @@ in {
 
     # Monomorphic ⊤-indexed DataSpec. Exposes `T = muI ⊤ D ttPrim` (a
     # bare μ-type) and a 1-ary eliminator `P : T → U`.
-    datatype = name: consList:
+    datatypeAt = name: descLevel: consList:
       self._datatypeImpl {
         I = self.unitPrim;
         indexed = false;
-        inherit name consList;
+        inherit name descLevel consList;
       };
+
+    datatype = name: consList: self.datatypeAt name 0 consList;
 
     # Monomorphic indexed DataSpec over index type `I`. Exposes `T = ann
     # (λi:I. muI I D i) (Π(_:I). U)` — a family-as-function — and a
@@ -704,20 +842,24 @@ in {
     # `datatypeI`'s I argument); the spec of each constructor uses
     # `conI name fields targetIdx`.
     #
-    # The probe call `mkCons dummyMarkers` is only used to extract
+    # The probe call `mkCtors dummyMarkers` is only used to extract
     # constructor names and metadata (via shallow attrs c.name / f.name /
-    # f.kind). Each polymorphic field's closure re-runs `mkCons` with real
+    # f.kind). Each polymorphic field's closure re-runs `mkCtors` with real
     # HOAS markers at elaborate-time, so field types and constructor
     # bodies are never resolved against the probe's dummy values.
-    _datatypePImpl = { indexed, name, params, indexFn, mkCons }:
+    _datatypePImpl = { indexed, name, params, indexFn, levelFn ? (_: 0), mkCtors }:
       let
         inherit (self) u lam forall ann;
 
         nParams = builtins.length params;
         monoOf = markers:
-          if indexed
-          then self.datatypeI name (indexFn markers) (mkCons markers)
-          else self.datatype  name (mkCons markers);
+          self._datatypeImpl {
+            I = if indexed then indexFn markers else self.unitPrim;
+            inherit indexed name;
+            descLevel = levelFn markers;
+            consList = mkCtors markers;
+            params = markers;
+          };
         # A parameter's `kind` is either a fixed Hoas (the common case,
         # e.g. `kind = u 0`) or a function from the list of
         # previously-bound parameter markers to a Hoas (e.g. for W-type's
@@ -740,6 +882,17 @@ in {
             else
               let p = builtins.elemAt params i; in
               forall p.name (resolveKind p markers) (m: go (i + 1) (markers ++ [m]));
+          in go 0 [];
+        annotateParamArgs = args:
+          let
+            go = i: prev:
+              if i == nParams then []
+              else
+                let
+                  p = builtins.elemAt params i;
+                  a = builtins.elemAt args i;
+                  aAnn = ann a (resolveKind p prev);
+                in [ aAnn ] ++ go (i + 1) (prev ++ [ aAnn ]);
           in go 0 [];
         polyField = fieldName:
           ann (overParams (markers:
@@ -774,7 +927,7 @@ in {
         # dummy HOAS is structurally valid anywhere a type is expected;
         # field type expressions are never forced during the probe.
         dummyMarkers = map (_: u 0) params;
-        probe = mkCons dummyMarkers;
+        probe = mkCtors dummyMarkers;
         conNames = map (c: c.name) probe;
         # Eagerly validate shape (n=0, duplicate con names) at datatypeP time.
         _validate = builtins.seq (monoOf dummyMarkers).name null;
@@ -797,7 +950,7 @@ in {
             # the mono constructor HOAS (a `dt-ctor-mono` tagged node for
             # fielded ctors, or a plain `descCon` HOAS for zero-field
             # ctors).
-            monoAt = paramArgs: builtins.getAttr cName (monoOf paramArgs);
+            monoAt = paramArgs: builtins.getAttr cName (monoOf (annotateParamArgs paramArgs));
             # Fallback for non-saturated / non-chain uses.
             fallback = polyCtor cName;
           };
@@ -831,27 +984,36 @@ in {
 
     # ⊤-indexed polymorphic DataSpec. Each field of the output is an
     # `ann`-wrapped `λparams. monoField`. Constructors use `con`.
-    datatypeP = name: params: mkCons:
+    datatypePAt = name: params: levelFn: mkCtors:
       self._datatypePImpl {
         indexed = false;
         indexFn = _: self.unitPrim;
-        inherit name params mkCons;
+        inherit name params levelFn mkCtors;
       };
+
+    datatypeP = name: params: mkCtors:
+      self.datatypePAt name params (_: 0) mkCtors;
 
     # Indexed polymorphic DataSpec. `indexFn : params → Hoas` produces
-    # the index type from parameter markers; `mkCons` produces a list of
+    # the index type from parameter markers; `mkCtors` produces a list of
     # `conI`-tagged constructor specs.
-    datatypePI = name: params: indexFn: mkCons:
+    datatypePI = name: params: indexFn: mkCtors:
       self._datatypePImpl {
         indexed = true;
-        inherit name params indexFn mkCons;
+        inherit name params indexFn mkCtors;
       };
 
-    # Macro-derived prelude datatypes. The surface `nat`, `listOf`, `sum`
-    # and their introductions (`zero`, `succ`, `nil`, `cons`, `inl`,
-    # `inr`) forward to fields of these specs; extract/reifyType detect
-    # the μ-shape match and route decoding through the existing
-    # nat/list/sum branches so reify-shape equivalence is preserved.
+    # Macro-derived prelude datatypes. Surface types and introductions
+    # forward to fields of these specs; extract/reifyType detect the
+    # μ-shape match and route decoding through the existing prelude
+    # branches so reify-shape equivalence is preserved.
+    BoolDT =
+      let inherit (self) datatype con; in
+      datatype "Bool" [
+        (con "true" [])
+        (con "false" [])
+      ];
+
     NatDT =
       let inherit (self) datatype con recField; in
       datatype "Nat" [
@@ -868,12 +1030,20 @@ in {
         ]);
 
     SumDT =
-      let inherit (self) datatypeP con field u; in
-      datatypeP "Sum"
-        [ { name = "A"; kind = u 0; } { name = "B"; kind = u 0; } ]
-        (ps: let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
-          (con "inl" [ (field "value" A) ])
-          (con "inr" [ (field "value" B) ])
+      let inherit (self) datatypePAt con fieldAt level u; in
+      datatypePAt "Sum"
+        [ { name = "k"; kind = level; }
+          { name = "A"; kind = ps: u (builtins.elemAt ps 0); }
+          { name = "B"; kind = ps: u (builtins.elemAt ps 0); } ]
+        (ps: builtins.elemAt ps 0)
+        (ps:
+          let
+            k = builtins.elemAt ps 0;
+            A = builtins.elemAt ps 1;
+            B = builtins.elemAt ps 2;
+          in [
+            (con "inl" [ (fieldAt k "value" A) ])
+            (con "inr" [ (fieldAt k "value" B) ])
         ]);
 
     # Fin — monomorphic indexed datatype over Nat. Two constructors,
@@ -920,19 +1090,44 @@ in {
           (conI "refl" [] (_: a))
         ]);
 
+    WDT =
+      let inherit (self) datatypePAt con fieldAt piFieldDAt level u forall app; in
+      datatypePAt "W"
+        [ { name = "k"; kind = level; }
+          { name = "S"; kind = ms: u (builtins.elemAt ms 0); }
+          { name = "P"; kind = ms:
+              let k = builtins.elemAt ms 0;
+                  S = builtins.elemAt ms 1;
+              in forall "_" S (_: u k); } ]
+        (ps: builtins.elemAt ps 0)
+        (ps:
+          let k = builtins.elemAt ps 0;
+              S = builtins.elemAt ps 1;
+              P = builtins.elemAt ps 2;
+          in [
+            (con "sup" [
+              (fieldAt k "s" S)
+              (piFieldDAt k "f" (prev: app P prev.s))
+            ])
+          ]);
+
     # Surface forwarders onto the macro-derived prelude. `nat` is
     # `NatDT.T` directly — monomorphic `T` is a `"mu"` HOAS node carrying
     # `_dtypeMeta`. `listOf`/`sum` are spines of `app` over the
     # polymorphic `T`, keeping the parameter HOAS as a literal structural
     # slot. The un-reduced app form carries two pieces of information the
-    # β-reduced `mu (listDesc A)` destroys: `_dtypeMeta` from the polyField
-    # head and the parameter HOAS with any surface sugar intact
+    # β-reduced `mu (app ListDT.D A)` destroys: `_dtypeMeta` from the
+    # polyField head and the parameter HOAS with any surface sugar intact
     # (`H.record`, `H.variant`, `H.maybe`). elaborateValue / validateValue
     # / extractInner all dispatch on the app-spine directly and never
     # round-trip through a kernel value to recover the parameter.
     nat = self.NatDT.T;
     listOf = A: self.app self.ListDT.T A;
-    sum    = A: B: self.app (self.app self.SumDT.T A) B;
+    sumAt = k: A: B:
+      let kTm = if builtins.isInt k then self.natToLevel k else k; in
+      self.app (self.app (self.app self.SumDT.T kTm) A) B;
+    sum = A: B: self.sumAt self.levelZero A B;
+    w      = k: S: P: self.app (self.app (self.app self.WDT.T k) S) P;
 
     # Macro-introduced constructors. `zero`/`nil`/`inl`/`inr` are spines
     # over the polymorphic `T` in `datatypeP`; `succ`/`cons` similarly
@@ -943,8 +1138,19 @@ in {
     succ = h: self.app self.NatDT.succ h;
     nil = A: self.app self.ListDT.nil A;
     cons = A: h: t: self.app (self.app (self.app self.ListDT.cons A) h) t;
-    inl = A: B: v: self.app (self.app (self.app self.SumDT.inl A) B) v;
-    inr = A: B: v: self.app (self.app (self.app self.SumDT.inr A) B) v;
+    inlAt = k: A: B: v:
+      let kTm = if builtins.isInt k then self.natToLevel k else k; in
+      self.app (self.app (self.app (self.app self.SumDT.inl kTm) A) B) v;
+    inrAt = k: A: B: v:
+      let kTm = if builtins.isInt k then self.natToLevel k else k; in
+      self.app (self.app (self.app (self.app self.SumDT.inr kTm) A) B) v;
+    inl = A: B: v: self.inlAt self.levelZero A B v;
+    inr = A: B: v: self.inrAt self.levelZero A B v;
+    wDesc = k: S: P: self.app (self.app (self.app self.WDT.D k) S) P;
+    sup = k: S: P: s: f:
+      self.app (self.app (self.app (self.app (self.app self.WDT.sup k) S) P) s) f;
+    wElim = k: K: S: P: Q: step: x:
+      self.app (self.app (self.app (self.app (self.app (self.app (self.WDT.elim K) k) S) P) Q) step) x;
   };
   tests = {};
 }

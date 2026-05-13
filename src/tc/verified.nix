@@ -276,7 +276,7 @@ in mk {
 
     "v-nat-5" = {
       expr = let t = H.checkHoas NatT (nat 5); in "${t.tag}/${t.d.tag}";
-      expected = "desc-con/inr";
+      expected = "desc-con/boot-inr";
     };
     "v-str-hello" = {
       expr = (H.checkHoas StringT (str "hello")).tag;

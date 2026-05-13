@@ -79,13 +79,13 @@ in {
 
       ctx0 = C.emptyCtx;
 
-      # Success case: check `zero : Nat`.
-      goodCheck = C.check ctx0 T.mkZero V.vNat;
+      # Success case: check `tt : Unit`.
+      goodCheck = C.check ctx0 T.mkTt V.vUnit;
 
-      # Failure case: check `Nat : Nat`. The sub-rule falls through to
-      # infer, sees `Nat : U(0)`, and conv rejects `U(0) ≠ Nat`
+      # Failure case: check `Unit : Unit`. The sub-rule falls through to
+      # infer, sees `Unit : U(0)`, and conv rejects `U(0) ≠ Unit`
       # emitting a "type mismatch" from check.nix's fallback.
-      badCheck = C.check ctx0 T.mkNat V.vNat;
+      badCheck = C.check ctx0 T.mkUnit V.vUnit;
 
       smLeaf = SM.leaf "root-hoas";
 
@@ -98,7 +98,7 @@ in {
       # -- runCheckD success pass-through --
       "runCheckD-success-pass-through" = {
         expr = runCheckD SM.opaque goodCheck;
-        expected = T.mkZero;
+        expected = T.mkTt;
       };
       "runCheckD-success-has-no-hint-field" = {
         expr =
@@ -134,7 +134,7 @@ in {
       };
 
       # -- Hint resolution --
-      # A leaf-position kernel error on a naked tt-vs-Nat mismatch has no
+      # A leaf-position kernel error on a naked type-vs-Unit mismatch has no
       # hint-table entry (no outer position was declared); the resolver
       # returns null. A SourceMap-supplied error path can be richer, but
       # the shell's contract is to expose whatever `hints.resolve` says.
@@ -149,7 +149,7 @@ in {
           let
             err = fx.diag.error.mkKernelError {
               position = P.DArgSort;
-              rule = "desc-arg";
+              rule = "encoded-desc";
               msg = "type mismatch";
               expected = { tag = "VU"; level = 0; };
               got = { tag = "VU"; level = 1; };
@@ -192,16 +192,16 @@ in {
 
       # -- checkD / inferD delegation --
       "checkD-success-returns-elaborated-term" = {
-        expr = checkD ctx0 T.mkZero V.vNat SM.opaque;
-        expected = T.mkZero;
+        expr = checkD ctx0 T.mkTt V.vUnit SM.opaque;
+        expected = T.mkTt;
       };
       "checkD-failure-carries-error" = {
-        expr = (checkD ctx0 T.mkTt V.vNat SM.opaque).error.layer.tag;
+        expr = (checkD ctx0 T.mkTt V.vString SM.opaque).error.layer.tag;
         expected = "Kernel";
       };
       "checkD-failure-has-hint-and-surface" = {
         expr =
-          let r = checkD ctx0 T.mkTt V.vNat smLeaf;
+          let r = checkD ctx0 T.mkTt V.vString smLeaf;
           in r ? hint && r ? surface;
         expected = true;
       };
@@ -222,7 +222,7 @@ in {
       "runCheckDLazy-success-does-not-force-thunk" = {
         expr = runCheckDLazy (_: throw "SM thunk forced on success")
                  goodCheck;
-        expected = T.mkZero;
+        expected = T.mkTt;
       };
       "runCheckDLazy-failure-decorates" = {
         expr = (runCheckDLazy (_: SM.opaque) badCheck).error.layer.tag;

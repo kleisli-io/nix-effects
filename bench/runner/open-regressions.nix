@@ -80,6 +80,10 @@ let
       [[ -n "$current"  && -f "$current"  ]] || { echo "--current file required and must exist" >&2; exit 2; }
       [[ -d "$bench_dir" ]] || { echo "bench dir not found: $bench_dir" >&2; exit 2; }
       [[ -d "$repo_root" ]] || { echo "repo root not found: $repo_root" >&2; exit 2; }
+      baseline="$(realpath "$baseline")"
+      current="$(realpath "$current")"
+      bench_dir="$(realpath "$bench_dir")"
+      repo_root="$(realpath "$repo_root")"
 
       tmpdir=$(mktemp -d)
       trap 'rm -rf "$tmpdir"' EXIT

@@ -93,7 +93,9 @@ let
 
       [[ -n "$name" ]] || { echo "--name is required" >&2; exit 2; }
       [[ -d "$bench_dir" ]] || { echo "bench dir not found: $bench_dir" >&2; exit 2; }
+      bench_dir="$(realpath "$bench_dir")"
       [[ -n "$history_dir" ]] || history_dir="$bench_dir/history"
+      history_dir="$(realpath -m "$history_dir")"
       mkdir -p "$history_dir"
 
       # Pin nixpkgs to the flake-locked store path baked in at build

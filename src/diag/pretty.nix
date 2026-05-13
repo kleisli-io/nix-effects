@@ -413,8 +413,8 @@ in mk {
       expected = "42";
     };
     "renderValue-tag-only" = {
-      expr = renderValue { tag = "VNat"; };
-      expected = "VNat";
+      expr = renderValue { tag = "VUnit"; };
+      expected = "VUnit";
     };
     "renderValue-tag-with-field" = {
       expr = renderValue { tag = "VU"; level = 0; };

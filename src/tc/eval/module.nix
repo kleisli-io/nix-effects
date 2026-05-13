@@ -25,15 +25,14 @@ api.mk {
 
     - `vApp : Val → Val → Val` — apply a function value (beta-reduces VLam, extends spine for VNe)
     - `vFst`, `vSnd` — pair projections
-    - `vNatElim`, `vListElim` — inductive eliminators
-    - `vSumElim` — sum elimination
-    - `vJ` — identity elimination (computes to base on VRefl)
+    - `vBootSumElim` — sum elimination
+    - `vBootJ` — identity elimination (computes to base on VBootRefl)
 
     ## Trampolining (§11.3)
 
-    `vNatElim`, `vListElim`, `succ` chains, and `cons` chains use
-    `builtins.genericClosure` to flatten recursive structures iteratively,
-    guaranteeing O(1) stack depth on inputs like S^10000(0) or cons^5000.
+    Generated `desc-con` chains use `builtins.genericClosure` to flatten
+    recursive structures iteratively, guaranteeing O(1) stack depth on
+    deep generated recursive data.
 
     ## Fuel Mechanism (§9)
 
@@ -45,11 +44,10 @@ api.mk {
   value = {
     inherit (self)
       eval evalF instantiate
-      vApp vFst vSnd vNatElim vListElim vSumElim vJ
+      vApp vFst vSnd vBootSumElim vBootJ
       vLiftF vLiftIntroF vLiftElimF
-      vNatToLevel vNatToLevelF
-      vDescInd vDescElim linearProfile decodeDescCase
-      tryDecodeToPrim
+      vDescInd descView linearProfile
+      sumPayloadTmView sumPayloadValView
       vInterpD vAllD vEverywhereD
       mkDescDescAppV mkDescDescAppVF;
   };

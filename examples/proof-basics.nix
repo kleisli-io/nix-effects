@@ -64,31 +64,31 @@ in rec {
 
   # 0 + 0 = 0
   addZeroZero =
-    (checkHoas (eq nat (add zero zero) zero) refl).tag == "refl";
+    (checkHoas (eq nat (add zero zero) zero) refl).tag == "desc-con";
 
   # 3 + 5 = 8
   addThreeFive =
-    (checkHoas (eq nat (add (natLit 3) (natLit 5)) (natLit 8)) refl).tag == "refl";
+    (checkHoas (eq nat (add (natLit 3) (natLit 5)) (natLit 8)) refl).tag == "desc-con";
 
   # 10 + 7 = 17
   addTenSeven =
-    (checkHoas (eq nat (add (natLit 10) (natLit 7)) (natLit 17)) refl).tag == "refl";
+    (checkHoas (eq nat (add (natLit 10) (natLit 7)) (natLit 17)) refl).tag == "desc-con";
 
   # not(not(true)) = true
   doubleNegTrue =
-    (checkHoas (eq bool (not_ (not_ true_)) true_) refl).tag == "refl";
+    (checkHoas (eq bool (not_ (not_ true_)) true_) refl).tag == "desc-con";
 
   # not(not(false)) = false
   doubleNegFalse =
-    (checkHoas (eq bool (not_ (not_ false_)) false_) refl).tag == "refl";
+    (checkHoas (eq bool (not_ (not_ false_)) false_) refl).tag == "desc-con";
 
   # length([1,2,3]) = 3
   lengthThree =
-    (checkHoas (eq nat (length list123) (natLit 3)) refl).tag == "refl";
+    (checkHoas (eq nat (length list123) (natLit 3)) refl).tag == "desc-con";
 
   # append([1,2], [3]) = [1,2,3]
   appendTwoOne =
-    (checkHoas (eq (listOf nat) (append list12 list3) list123) refl).tag == "refl";
+    (checkHoas (eq (listOf nat) (append list12 list3) list123) refl).tag == "desc-con";
 
 
   # ===== 2. Dependent Witnesses =====
@@ -129,14 +129,14 @@ in rec {
     let
       double = n: ind 0 (lam "_" nat (_: nat)) zero
         (lam "k" nat (_: lam "ih" nat (ih: succ (succ ih)))) n;
-    in (checkHoas (eq nat (double (natLit 4)) (natLit 8)) refl).tag == "refl";
+    in (checkHoas (eq nat (double (natLit 4)) (natLit 8)) refl).tag == "desc-con";
 
   # mul(3,4) = 12 — mul(0,n)=0, mul(S(k),n)=add(n,mul(k,n))
   natElimMul =
     let
       mul = m: n: ind 0 (lam "_" nat (_: nat)) zero
         (lam "k" nat (_: lam "ih" nat (ih: add n ih))) m;
-    in (checkHoas (eq nat (mul (natLit 3) (natLit 4)) (natLit 12)) refl).tag == "refl";
+    in (checkHoas (eq nat (mul (natLit 3) (natLit 4)) (natLit 12)) refl).tag == "desc-con";
 
 
   # ===== 4. BoolElim — Case Analysis on Booleans =====
@@ -145,13 +145,13 @@ in rec {
   boolElimTrue =
     let
       result = boolElim 0 (lam "_" bool (_: nat)) (natLit 42) zero true_;
-    in (checkHoas (eq nat result (natLit 42)) refl).tag == "refl";
+    in (checkHoas (eq nat result (natLit 42)) refl).tag == "desc-con";
 
   # if false then 42 else 0 = 0
   boolElimFalse =
     let
       result = boolElim 0 (lam "_" bool (_: nat)) (natLit 42) zero false_;
-    in (checkHoas (eq nat result zero) refl).tag == "refl";
+    in (checkHoas (eq nat result zero) refl).tag == "desc-con";
 
 
   # ===== 5. ListElim — Structural Recursion on Lists =====
@@ -166,7 +166,7 @@ in rec {
       sumList = xs: listElim 0 nat (lam "_" (listOf nat) (_: nat)) zero
         (lam "h" nat (h: lam "t" (listOf nat) (_:
           lam "ih" nat (ih: add h ih)))) xs;
-    in (checkHoas (eq nat (sumList list123) (natLit 6)) refl).tag == "refl";
+    in (checkHoas (eq nat (sumList list123) (natLit 6)) refl).tag == "desc-con";
 
   # map succ [0,1,2] = [1,2,3]
   listMapSucc =
@@ -175,7 +175,7 @@ in rec {
         (nil nat)
         (lam "h" nat (h: lam "t" (listOf nat) (_:
           lam "ih" (listOf nat) (ih: cons nat (succ h) ih)))) xs;
-    in (checkHoas (eq (listOf nat) (mapSucc list012) list123) refl).tag == "refl";
+    in (checkHoas (eq (listOf nat) (mapSucc list012) list123) refl).tag == "desc-con";
 
 
   # ===== 6. SumElim — Case Analysis on Coproducts =====
@@ -191,7 +191,7 @@ in rec {
         (lam "n" nat (n: n))
         (lam "b" bool (_: zero))
         scrut;
-    in (checkHoas (eq nat result (natLit 5)) refl).tag == "refl";
+    in (checkHoas (eq nat result (natLit 5)) refl).tag == "desc-con";
 
   # case Right(true) of { Left n → n; Right b → if b then 1 else 0 } = 1
   sumElimRight =
@@ -201,7 +201,7 @@ in rec {
         (lam "n" nat (n: n))
         (lam "b" bool (b: boolElim 0 (lam "_" bool (_: nat)) (natLit 1) zero b))
         scrut;
-    in (checkHoas (eq nat result (natLit 1)) refl).tag == "refl";
+    in (checkHoas (eq nat result (natLit 1)) refl).tag == "desc-con";
 
 
   # ===== 7. Polymorphic Identity =====

@@ -274,7 +274,7 @@ in mk {
       expr = (mkKernelError {
         rule = "check";
         msg = "type mismatch";
-        expected = { tag = "VNat"; };
+        expected = { tag = "VUnit"; };
         got = { tag = "VString"; };
       }).children;
       expected = [];
@@ -648,7 +648,7 @@ in mk {
           kErr = mkKernelError {
             rule = "check";
             msg = "type mismatch";
-            expected = { tag = "VNat"; };
+            expected = { tag = "VUnit"; };
             got = { tag = "VString"; };
           };
         in (addChild (Field "age") root kErr).layer.tag;

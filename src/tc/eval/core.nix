@@ -6,11 +6,10 @@
 #
 # Fuel-threaded: each `evalF` call decrements a counter; exhaustion
 # throws "normalization budget exceeded". Default budget is 10M steps
-# (§9). Trampolines `vNatElim`, `vListElim`, `succ`, `cons`, and the
-# `desc-con` chain via `builtins.genericClosure` to bound stack depth
-# on deep structures (§11.3).
+# (§9). Trampolines the `desc-con` chain via `builtins.genericClosure`
+# to bound stack depth on deep generated recursive data (§11.3).
 #
-# Description operations (`vDescIndF`, `vDescElimF`, `linearProfileF`)
+# Description operations (`vDescIndF`, `linearProfileF`)
 # live in the sibling `desc.nix`; `evalF` dispatches to them through
 # `self`.
 { self, fx, ... }:
@@ -18,22 +17,30 @@
 let
   val = fx.tc.value;
   inherit (val) mkClosure
-    vLam vPi vSigma vPair vNat vZero vSucc
-    vList vNil vCons
-    vUnit vTt vSum vInl vInr vEq vRefl vFunext vU vNe
+    vLam vPi vSigma vPair
+    vUnit vTt vBootSum vBootInl vBootInr vBootEq vBootRefl vFunext vU vNe
     vSquash vSquashIntro
     vLevel vLevelZero vLevelSuc vLevelMax
     vLift vLiftIntro
-    vDesc vDescRet vDescArg vDescRec vDescPi vDescPlus vMu vDescCon
+    vDesc vMu vDescCon
     vString vInt vFloat vAttrs vPath vFunction vAny
     vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit
-    eApp eFst eSnd eNatElim eListElim eSumElim eJ eStrEq eLiftElim eNatToLevel
+    eApp eFst eSnd eBootSumElim eBootJ eStrEq eLiftElim
     eSquashElim;
+  H = fx.tc.hoas;
+  boolDescTm = H.elab H.boolDesc;
 
   # Cached `U(0)` value. `mkU mkLevelZero` produces a term whose `level` is the
   # `level-zero` singleton; evaluating under the U-case returns this
   # sentinel directly — no fuel decrement, no dispatch, no allocation.
   vUZero = vU vLevelZero;
+
+  evalDescRef = eval: ref:
+    ref // {
+      I = eval ref.I;
+      level = eval ref.level;
+      params = map eval (ref.params or []);
+    };
 in {
   scope = {
     defaultFuel = 10000000;
@@ -41,7 +48,8 @@ in {
     instantiateF = fuel: cl: arg: self.evalF fuel ([ arg ] ++ cl.env) cl.body;
 
     vAppF = fuel: fn: arg:
-      if fn.tag == "VLam" then self.instantiateF fuel fn.closure arg
+      if fn.tag == "VDescViewFn" then fn.apply arg
+      else if fn.tag == "VLam" then self.instantiateF fuel fn.closure arg
       else if fn.tag == "VNe" then vNe fn.level (fn.spine ++ [ (eApp arg) ])
       else throw "tc: vApp on non-function (tag=${fn.tag})";
 
@@ -55,70 +63,15 @@ in {
       else if p.tag == "VNe" then vNe p.level (p.spine ++ [ eSnd ])
       else throw "tc: vSnd on non-pair (tag=${p.tag})";
 
-    # vNatElim — trampolined via genericClosure for large naturals.
-    vNatElimF = fuel: motive: base: step: scrut:
-      if scrut.tag == "VZero" then base
-      else if scrut.tag == "VNe" then
-        vNe scrut.level (scrut.spine ++ [ (eNatElim motive base step) ])
-      else if scrut.tag == "VSucc" then
-        let
-          chain = builtins.genericClosure {
-            startSet = [{ key = 0; val = scrut; }];
-            operator = item:
-              if item.val.tag == "VSucc"
-              then [{ key = item.key + 1; val = item.val.pred; }]
-              else [];
-          };
-          last = builtins.elemAt chain (builtins.length chain - 1);
-          baseResult = self.vNatElimF fuel motive base step last.val;
-          n = builtins.length chain - 1;
-          # Thread fuel through fold: each step application decrements fuel
-          result = builtins.foldl' (state: i:
-            if state.fuel <= 0 then throw "normalization budget exceeded"
-            else let
-              item = builtins.elemAt chain (n - i);
-              predVal = item.val.pred;
-              f = state.fuel;
-              applied = self.vAppF f (self.vAppF f step predVal) state.acc;
-            in { acc = applied; fuel = f - 1; }
-          ) { acc = baseResult; inherit fuel; } (builtins.genList (i: i + 1) n);
-        in result.acc
-      else throw "tc: vNatElim on non-nat (tag=${scrut.tag})";
-
-    # vNatToLevelF — asymmetric Nat→Level bridge. Reduces structurally
-    # on closed Nats (`zero → vLevelZero`, `suc^n zero → vLevelSuc^n
-    # vLevelZero`); records `eNatToLevel` on a stuck Nat-typed neutral.
-    # Trampolined via genericClosure for deep Nats, mirroring vNatElimF.
-    vNatToLevelF = fuel: scrut:
-      if scrut.tag == "VZero" then vLevelZero
-      else if scrut.tag == "VNe" then
-        vNe scrut.level (scrut.spine ++ [ eNatToLevel ])
-      else if scrut.tag == "VSucc" then
-        let
-          chain = builtins.genericClosure {
-            startSet = [{ key = 0; val = scrut; }];
-            operator = item:
-              if item.val.tag == "VSucc"
-              then [{ key = item.key + 1; val = item.val.pred; }]
-              else [];
-          };
-          last = builtins.elemAt chain (builtins.length chain - 1);
-          baseResult = self.vNatToLevelF fuel last.val;
-          n = builtins.length chain - 1;
-        in if n > fuel then throw "normalization budget exceeded"
-        else builtins.foldl' (acc: _: vLevelSuc acc)
-          baseResult (builtins.genList (x: x) n)
-      else throw "tc: vNatToLevel on non-nat (tag=${scrut.tag})";
-
     # vStrEq — string equality primitive.
     # Both VStringLit → plus-encoded VDescCon true/false. Neutral → spine.
     # StrEq is symmetric, so we canonicalize neutral-first for the spine.
     vStrEq = lhs: rhs:
       let
-        boolDescV = vDescPlus (vDescRet vTt) (vDescRet vTt);
-        eqTtV = vEq vUnit vTt vTt;
-        vBoolTrue = vDescCon boolDescV vTt (vInl eqTtV eqTtV vRefl);
-        vBoolFalse = vDescCon boolDescV vTt (vInr eqTtV eqTtV vRefl);
+        boolDescV = self.eval [] boolDescTm;
+        eqTtV = vBootEq vUnit vTt vTt;
+        vBoolTrue = vDescCon boolDescV vTt (vBootInl eqTtV eqTtV vBootRefl);
+        vBoolFalse = vDescCon boolDescV vTt (vBootInr eqTtV eqTtV vBootRefl);
       in
       if lhs.tag == "VStringLit" && rhs.tag == "VStringLit" then
         if lhs.value == rhs.value then vBoolTrue else vBoolFalse
@@ -128,52 +81,21 @@ in {
         vNe rhs.level (rhs.spine ++ [ (eStrEq lhs) ])
       else throw "tc: vStrEq on non-string (tags=${lhs.tag}, ${rhs.tag})";
 
-    # vListElim — trampolined like vNatElim for large lists.
-    vListElimF = fuel: elemTy: motive: onNil: onCons: scrut:
-      if scrut.tag == "VNil" then onNil
+    vBootSumElimF = fuel: left: right: motive: onLeft: onRight: scrut:
+      if scrut.tag == "VBootInl" then self.vAppF fuel onLeft scrut.val
+      else if scrut.tag == "VBootInr" then self.vAppF fuel onRight scrut.val
       else if scrut.tag == "VNe" then
-        vNe scrut.level (scrut.spine ++ [ (eListElim elemTy motive onNil onCons) ])
-      else if scrut.tag == "VCons" then
-        let
-          chain = builtins.genericClosure {
-            startSet = [{ key = 0; val = scrut; }];
-            operator = item:
-              if item.val.tag == "VCons"
-              then [{ key = item.key + 1; val = item.val.tail; }]
-              else [];
-          };
-          last = builtins.elemAt chain (builtins.length chain - 1);
-          baseResult = self.vListElimF fuel elemTy motive onNil onCons last.val;
-          n = builtins.length chain - 1;
-          # Thread fuel through fold: each step application decrements fuel
-          result = builtins.foldl' (state: i:
-            if state.fuel <= 0 then throw "normalization budget exceeded"
-            else let
-              item = builtins.elemAt chain (n - i);
-              h = item.val.head;
-              t = item.val.tail;
-              f = state.fuel;
-              applied = self.vAppF f (self.vAppF f (self.vAppF f onCons h) t) state.acc;
-            in { acc = applied; fuel = f - 1; }
-          ) { acc = baseResult; inherit fuel; } (builtins.genList (i: i + 1) n);
-        in result.acc
-      else throw "tc: vListElim on non-list (tag=${scrut.tag})";
-
-    vSumElimF = fuel: left: right: motive: onLeft: onRight: scrut:
-      if scrut.tag == "VInl" then self.vAppF fuel onLeft scrut.val
-      else if scrut.tag == "VInr" then self.vAppF fuel onRight scrut.val
-      else if scrut.tag == "VNe" then
-        vNe scrut.level (scrut.spine ++ [ (eSumElim left right motive onLeft onRight) ])
-      else throw "tc: vSumElim on non-sum (tag=${scrut.tag})";
+        vNe scrut.level (scrut.spine ++ [ (eBootSumElim left right motive onLeft onRight) ])
+      else throw "tc: vBootSumElim on non-bootstrap-sum (tag=${scrut.tag})";
 
     # J computation: J(A, a, P, pr, b, refl) = pr.
-    # When eq=VRefl, the checker has verified b≡a, so `rhs` is unused.
-    # When eq is neutral, `rhs` is preserved in the EJ spine frame for quotation.
-    vJ = type: lhs: motive: base: rhs: eq:
-      if eq.tag == "VRefl" then base
+    # When eq=VBootRefl, the checker has verified b≡a, so `rhs` is unused.
+    # When eq is neutral, `rhs` is preserved in the EBootJ spine frame for quotation.
+    vBootJ = type: lhs: motive: base: rhs: eq:
+      if eq.tag == "VBootRefl" then base
       else if eq.tag == "VNe" then
-        vNe eq.level (eq.spine ++ [ (eJ type lhs motive base rhs) ])
-      else throw "tc: vJ on non-eq (tag=${eq.tag})";
+        vNe eq.level (eq.spine ++ [ (eBootJ type lhs motive base rhs) ])
+      else throw "tc: vBootJ on non-eq (tag=${eq.tag})";
 
     # `recTrunc A B f x` for `x : Squash A` returning `Squash B`.
     # β-reduces on canonical `VSquashIntro a` to `f a`; on stuck `VNe`
@@ -190,12 +112,12 @@ in {
     # when `convLevel l m` (the load-bearing backward-compat rule for
     # homogeneous code: `Lift l l _ A ≡ A`) and composes nested Lifts
     # (`Lift l m _ (Lift l' l _ A') ≡ Lift l' m _ A'`). The witness slot
-    # is irrelevant — emit `vRefl` on collapse since both bound
+    # is irrelevant — emit `vBootRefl` on collapse since both bound
     # conditions hold by transitivity.
     vLiftF = l: m: eq: A:
       if fx.tc.conv.convLevel l m then A
       else if A.tag == "VLift"
-      then vLift A.l m vRefl A.A
+      then vLift A.l m vBootRefl A.A
       else vLift l m eq A;
 
     # Lift introducer. Idempotent at `convLevel l m` (returns `a`); η on
@@ -232,7 +154,11 @@ in {
       else let t = tm.tag; f = fuel - 1; ev = self.evalF f env; in
       if t == "var" then builtins.elemAt env tm.idx
       else if t == "let" then self.evalF f ([ (ev tm.val) ] ++ env) tm.body
-      else if t == "ann" then ev tm.term
+      else if t == "ann" then
+        let v = ev tm.term; in
+        if tm ? _descRef
+        then v // { _descRef = evalDescRef ev tm._descRef; }
+        else v
 
       else if t == "pi" then vPi tm.name (ev tm.domain) (mkClosure env tm.codomain)
       else if t == "lam" then vLam tm.name (ev tm.domain) (mkClosure env tm.body)
@@ -243,70 +169,21 @@ in {
       else if t == "fst" then self.vFst (ev tm.pair)
       else if t == "snd" then self.vSnd (ev tm.pair)
 
-      else if t == "nat" then vNat
-      else if t == "zero" then vZero
-      # succ — trampolined for deep naturals (S^5000+)
-      else if t == "succ" then
-        let
-          chain = builtins.genericClosure {
-            startSet = [{ key = 0; val = tm; }];
-            operator = item:
-              if item.val.tag == "succ"
-              then [{ key = item.key + 1; val = item.val.pred; }]
-              else [];
-          };
-          n = builtins.length chain - 1;
-          base = (builtins.elemAt chain n).val;
-        in if n > f then throw "normalization budget exceeded"
-        else builtins.foldl' (acc: _: vSucc acc)
-          (self.evalF (f - n) env base)
-          (builtins.genList (x: x) n)
-      else if t == "nat-elim" then
-        self.vNatElimF f (ev tm.motive) (ev tm.base) (ev tm.step) (ev tm.scrut)
-
-      else if t == "list" then vList (ev tm.elem)
-      else if t == "nil" then vNil (ev tm.elem)
-      # cons — trampolined for deep lists (5000+ elements).
-      # Fuel: deduct n for chain length, thread remaining through fold (§9.5)
-      else if t == "cons" then
-        let
-          chain = builtins.genericClosure {
-            startSet = [{ key = 0; val = tm; }];
-            operator = item:
-              if item.val.tag == "cons"
-              then [{ key = item.key + 1; val = item.val.tail; }]
-              else [];
-          };
-          n = builtins.length chain - 1;
-          base = (builtins.elemAt chain n).val;
-        in if n > f then throw "normalization budget exceeded"
-        else let
-          result = builtins.foldl' (state: i:
-            if state.fuel <= 0 then throw "normalization budget exceeded"
-            else let
-              node = (builtins.elemAt chain (n - 1 - i)).val;
-              ef = self.evalF state.fuel env;
-            in { acc = vCons (ef node.elem) (ef node.head) state.acc; fuel = state.fuel - 1; }
-          ) { acc = self.evalF (f - n) env base; fuel = f - n; } (builtins.genList (x: x) n);
-        in result.acc
-      else if t == "list-elim" then
-        self.vListElimF f (ev tm.elem) (ev tm.motive) (ev tm.nil) (ev tm.cons) (ev tm.scrut)
-
       else if t == "unit" then vUnit
       else if t == "tt" then vTt
 
-      else if t == "sum" then vSum (ev tm.left) (ev tm.right)
-      else if t == "inl" then vInl (ev tm.left) (ev tm.right) (ev tm.term)
-      else if t == "inr" then vInr (ev tm.left) (ev tm.right) (ev tm.term)
-      else if t == "sum-elim" then
-        self.vSumElimF f (ev tm.left) (ev tm.right) (ev tm.motive)
+      else if t == "boot-sum" then vBootSum (ev tm.left) (ev tm.right)
+      else if t == "boot-inl" then vBootInl (ev tm.left) (ev tm.right) (ev tm.term)
+      else if t == "boot-inr" then vBootInr (ev tm.left) (ev tm.right) (ev tm.term)
+      else if t == "boot-sum-elim" then
+        self.vBootSumElimF f (ev tm.left) (ev tm.right) (ev tm.motive)
           (ev tm.onLeft) (ev tm.onRight) (ev tm.scrut)
 
-      else if t == "eq" then vEq (ev tm.type) (ev tm.lhs) (ev tm.rhs)
-      else if t == "refl" then vRefl
+      else if t == "boot-eq" then vBootEq (ev tm.type) (ev tm.lhs) (ev tm.rhs)
+      else if t == "boot-refl" then vBootRefl
       else if t == "funext" then vFunext
-      else if t == "j" then
-        self.vJ (ev tm.type) (ev tm.lhs) (ev tm.motive)
+      else if t == "boot-j" then
+        self.vBootJ (ev tm.type) (ev tm.lhs) (ev tm.motive)
           (ev tm.base) (ev tm.rhs) (ev tm.eq)
 
       else if t == "squash"       then vSquash (ev tm.A)
@@ -322,31 +199,15 @@ in {
         if tm.k.tag == "level-zero"
         then vDesc vLevelZero (ev tm.I)
         else vDesc (ev tm.k) (ev tm.I)
-      else if t == "desc-ret" then vDescRet (ev tm.j)
-      # Level-zero fast-path at the new `k` slot: when `tm.k` is the
-      # `level-zero` singleton (the overwhelmingly common shape for
-      # prelude descriptions), skip eval and pass `vLevelZero` directly.
-      else if t == "desc-arg" then
-        vDescArg
-          (if tm.k.tag == "level-zero" then vLevelZero else ev tm.k)
-          (if tm.l.tag == "level-zero" then vLevelZero else ev tm.l)
-          (ev tm.S) (ev tm.eq) (mkClosure env tm.T)
-      else if t == "desc-rec" then vDescRec (ev tm.j) (ev tm.D)
-      else if t == "desc-pi" then
-        vDescPi
-          (if tm.k.tag == "level-zero" then vLevelZero else ev tm.k)
-          (if tm.l.tag == "level-zero" then vLevelZero else ev tm.l)
-          (ev tm.S) (ev tm.eq) (ev tm.f) (ev tm.D)
-      else if t == "desc-plus" then vDescPlus (ev tm.A) (ev tm.B)
       else if t == "mu" then vMu (ev tm.I) (ev tm.D) (ev tm.i)
       # desc-con — trampolined for deep recursive chains (5000+).
       # Peels a homogeneous desc-con chain along its single recursive
       # position when D = plus A B with exactly one of A, B linear-
       # recursive (a descArg-chain ending in `descRec descRet`). The
       # recursive summand drives the chain; its injection side picks
-      # the payload tag (`inl` when A is recursive, `inr` when B is).
+      # the payload tag (`boot-inl` when A is recursive, `boot-inr` when B is).
       #
-      # Payload at each layer is `inl/inr lTy rTy (pair f_0 … (pair REC refl))`
+      # Payload at each layer is `boot-inl/boot-inr lTy rTy (pair f_0 … (pair REC refl))`
       # — n data fields, the recursive tail, and a refl witness for
       # the ret-leaf equality. lTy/rTy are invariant across layers (D
       # is shared) and reused from the first peel.
@@ -364,16 +225,11 @@ in {
           dVal = ev tm.D;
           # Classify plus D. null declines the trampoline; otherwise
           # returns the linear profile and which side (`inl`/`inr`)
-          # carries the recursive summand. Handles both primitive
-          # `VDescPlus` and encoded `VDescCon` (idx=4 plus summand of
-          # descDesc); for the encoded case the payload's `(A_enc,
-          # (B_enc, refl))` triple supplies the two sub-descriptions.
+          # carries the recursive summand.
           plusSides =
-            if dVal.tag == "VDescPlus" then { A = dVal.A; B = dVal.B; }
-            else if dVal.tag == "VDescCon" then
-              let info = self.decodeDescCaseF dVal; in
-              if info == null || info.idx != 4 then null
-              else { A = info.payload.fst; B = info.payload.snd.fst; }
+            let view = self.descViewF f dVal; in
+            if view != null && view.idx == 4
+            then { A = view.A; B = view.B; }
             else null;
           classify =
             if plusSides == null then null
@@ -392,10 +248,13 @@ in {
           # Walk n data-field pairs terminated by `pair REC refl`.
           collectPairs = inner:
             let
+              isRetLeaf = p:
+                p.tag == "boot-refl"
+                || (p.tag == "lift-intro" && p.a.tag == "boot-refl");
               collect = i: p: acc:
                 if i == nFields then
                   if p.tag != "pair" then null
-                  else if p.snd.tag != "refl" then null
+                  else if !(isRetLeaf p.snd) then null
                   else if p.fst.tag != "desc-con" then null
                   else { heads = acc; tail = p.fst; }
                 else
@@ -404,11 +263,16 @@ in {
             in collect 0 inner [];
           walkPayload = payload:
             if classify == null then null
-            else if payload.tag != classify.side then null
             else
-              let inner = collectPairs payload.term; in
+              let
+                sv = self.sumPayloadTmView payload;
+                inner =
+                  if sv == null || sv.side != classify.side
+                  then null
+                  else collectPairs sv.value;
+              in
               if inner == null then null
-              else inner // { lTm = payload.left; rTm = payload.right; };
+              else inner // { rebuildVal = sv.rebuildVal; };
           peel = node:
             if classify == null then null
             else if node.tag != "desc-con" then null
@@ -420,43 +284,40 @@ in {
           # is unnecessary and would add O(N²) cost through repeated
           # traversal.
           chain = builtins.genericClosure {
-            startSet = [{ key = 0; val = tm; }];
+            startSet = [{ key = 0; val = tm; peeled = peel tm; }];
             operator = item:
-              let peeled = peel item.val; in
-              if peeled == null then []
-              else [{ key = item.key + 1; val = peeled.tail; }];
+              if item.peeled == null then []
+              else
+                let val = item.peeled.tail; in
+                [{ key = item.key + 1; inherit val; peeled = peel val; }];
           };
           n = builtins.length chain - 1;
           base = (builtins.elemAt chain n).val;
-          topPeel = if n >= 1 then peel tm else null;
-          lVal = if topPeel == null then null else self.evalF (f - n) env topPeel.lTm;
-          rVal = if topPeel == null then null else self.evalF (f - n) env topPeel.rTm;
+          topPeel = if n >= 1 then (builtins.elemAt chain 0).peeled else null;
         in if n > f then throw "normalization budget exceeded"
         else let
           baseVal = vDescCon dVal
-            (self.evalF (f - n) env base.i)
+            (if base.i.tag == "tt" then vTt else self.evalF (f - n) env base.i)
             (self.evalF (f - n) env base.d);
           buildInner = hs: innerTail:
             if hs == [] then innerTail
             else vPair (builtins.head hs) (buildInner (builtins.tail hs) innerTail);
           wrapPayload = innerVal:
-            if classify.side == "inl" then vInl lVal rVal innerVal
-            else vInr lVal rVal innerVal;
+            topPeel.rebuildVal (tm': self.evalF (f - n) env tm') innerVal;
         in builtins.foldl' (acc: i:
           let
-            layer = (builtins.elemAt chain (n - 1 - i)).val;
-            peeled = peel layer;
+            layerItem = builtins.elemAt chain (n - 1 - i);
+            layer = layerItem.val;
+            peeled = layerItem.peeled;
             heads = peeled.heads;
             headVals = map (h: self.evalF (f - n + i) env h) heads;
-            iLayerVal = self.evalF (f - n + i) env layer.i;
+            iLayerVal =
+              if layer.i.tag == "tt" then vTt else self.evalF (f - n + i) env layer.i;
           in vDescCon dVal iLayerVal
-               (wrapPayload (buildInner headVals (vPair acc vRefl)))
+               (wrapPayload (buildInner headVals (vPair acc vBootRefl)))
         ) baseVal (builtins.genList (x: x) n)
       else if t == "desc-ind" then
         self.vDescIndF f (ev tm.D) (ev tm.motive) (ev tm.step) (ev tm.i) (ev tm.scrut)
-      else if t == "desc-elim" then
-        self.vDescElimF f (ev tm.k) (ev tm.motive) (ev tm.onRet) (ev tm.onArg)
-          (ev tm.onRec) (ev tm.onPi) (ev tm.onPlus) (ev tm.scrut)
 
       else if t == "desc-desc-app" then
         self.mkDescDescAppVF f (ev tm.I) (ev tm.L)
@@ -514,8 +375,6 @@ in {
       else if t == "level-zero" then vLevelZero
       else if t == "level-suc" then vLevelSuc (ev tm.pred)
       else if t == "level-max" then vLevelMax (ev tm.lhs) (ev tm.rhs)
-      else if t == "nat-to-level" then self.vNatToLevelF f (ev tm.n)
-
       # Axiomatized primitives
       else if t == "string" then vString
       else if t == "int" then vInt
@@ -545,56 +404,57 @@ in {
     instantiate = self.instantiateF self.defaultFuel;
     vApp = self.vAppF self.defaultFuel;
     mkDescDescAppV = self.mkDescDescAppVF self.defaultFuel;
-    vNatElim = self.vNatElimF self.defaultFuel;
-    vListElim = self.vListElimF self.defaultFuel;
-    vSumElim = self.vSumElimF self.defaultFuel;
-    vNatToLevel = self.vNatToLevelF self.defaultFuel;
+    vBootSumElim = self.vBootSumElimF self.defaultFuel;
     vSquashElim = self.vSquashElimF self.defaultFuel;
   };
 
   tests = let
     T = fx.tc.term;
+    H = fx.tc.hoas;
     inherit (val) freshVar;
     inherit (self) eval evalF instantiate;
 
-    succN = n: if n == 0 then T.mkZero else T.mkSucc (succN (n - 1));
-    idTm = T.mkLam "x" T.mkNat (T.mkVar 0);
-    appIdZero = T.mkApp idTm T.mkZero;
+    idTm = T.mkLam "x" T.mkUnit (T.mkVar 0);
+    appIdTt = T.mkApp idTm T.mkTt;
+    encRet = H.elab (H.retI H.unit 0 H.tt);
+    encArg = H.elab (H.descArg H.unit 0 H.nat (_: H.retI H.unit 0 H.tt));
+    encArg1 = H.elab (H.descArg H.unit 1 (H.u 0) (_: H.retI H.unit 1 H.tt));
+    encRec = H.elab (H.recI H.unit 0 H.tt (H.retI H.unit 0 H.tt));
+    encPi = H.elab (H.descPi 0 H.nat (H.retI H.unit 0 H.tt));
+    descViewOf = tm: self.descView (eval [] tm);
   in {
-    "eval-var-0" = { expr = (eval [ vZero vTt ] (T.mkVar 0)).tag; expected = "VZero"; };
-    "eval-var-1" = { expr = (eval [ vZero vTt ] (T.mkVar 1)).tag; expected = "VTt"; };
+    "eval-var-0" = { expr = (eval [ vTt vUnit ] (T.mkVar 0)).tag; expected = "VTt"; };
+    "eval-var-1" = { expr = (eval [ vTt vUnit ] (T.mkVar 1)).tag; expected = "VUnit"; };
 
     "eval-let" = {
-      expr = (eval [] (T.mkLet "x" T.mkNat T.mkZero (T.mkVar 0))).tag;
-      expected = "VZero";
+      expr = (eval [] (T.mkLet "x" T.mkUnit T.mkTt (T.mkVar 0))).tag;
+      expected = "VTt";
     };
 
     "eval-ann" = {
-      expr = (eval [] (T.mkAnn T.mkZero T.mkNat)).tag;
-      expected = "VZero";
+      expr = (eval [] (T.mkAnn T.mkTt T.mkUnit)).tag;
+      expected = "VTt";
     };
 
     "eval-lam" = { expr = (eval [] idTm).tag; expected = "VLam"; };
-    "eval-pi" = { expr = (eval [] (T.mkPi "x" T.mkNat T.mkNat)).tag; expected = "VPi"; };
+    "eval-pi" = { expr = (eval [] (T.mkPi "x" T.mkUnit T.mkUnit)).tag; expected = "VPi"; };
     "eval-app-beta" = {
-      # (λx.x) 0 = 0
-      expr = (eval [] appIdZero).tag;
-      expected = "VZero";
+      expr = (eval [] appIdTt).tag;
+      expected = "VTt";
     };
     "eval-app-stuck" = {
-      # x 0 where x is a neutral at level 0
-      expr = (eval [ (freshVar 0) ] (T.mkApp (T.mkVar 0) T.mkZero)).tag;
+      expr = (eval [ (freshVar 0) ] (T.mkApp (T.mkVar 0) T.mkTt)).tag;
       expected = "VNe";
     };
 
-    "eval-sigma" = { expr = (eval [] (T.mkSigma "x" T.mkNat T.mkUnit)).tag; expected = "VSigma"; };
-    "eval-pair" = { expr = (eval [] (T.mkPair T.mkZero T.mkTt)).tag; expected = "VPair"; };
+    "eval-sigma" = { expr = (eval [] (T.mkSigma "x" T.mkUnit T.mkUnit)).tag; expected = "VSigma"; };
+    "eval-pair" = { expr = (eval [] (T.mkPair T.mkTt T.mkTt)).tag; expected = "VPair"; };
     "eval-fst" = {
-      expr = (eval [] (T.mkFst (T.mkPair T.mkZero T.mkTt))).tag;
-      expected = "VZero";
+      expr = (eval [] (T.mkFst (T.mkPair T.mkTt T.mkTt))).tag;
+      expected = "VTt";
     };
     "eval-snd" = {
-      expr = (eval [] (T.mkSnd (T.mkPair T.mkZero T.mkTt))).tag;
+      expr = (eval [] (T.mkSnd (T.mkPair T.mkTt T.mkTt))).tag;
       expected = "VTt";
     };
     "eval-fst-stuck" = {
@@ -602,72 +462,31 @@ in {
       expected = "VNe";
     };
 
-    "eval-nat" = { expr = (eval [] T.mkNat).tag; expected = "VNat"; };
-    "eval-zero" = { expr = (eval [] T.mkZero).tag; expected = "VZero"; };
-    "eval-succ" = { expr = (eval [] (T.mkSucc T.mkZero)).tag; expected = "VSucc"; };
-    "eval-succ-3" = {
-      expr = (eval [] (succN 3)).pred.pred.pred.tag;
-      expected = "VZero";
-    };
-
-    "eval-nat-elim-zero" = {
-      expr = (eval [ vNat vZero (freshVar 2) ]
-        (T.mkNatElim (T.mkVar 0) (T.mkVar 1) (T.mkVar 2) T.mkZero)).tag;
-      expected = "VZero";
-    };
-
-    "eval-nat-elim-succ1" = {
-      expr =
-        let
-          stepTm = T.mkLam "k" T.mkNat (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0)));
-          r = eval [] (T.mkNatElim (T.mkLam "n" T.mkNat (T.mkU T.mkLevelZero)) T.mkZero stepTm (T.mkSucc T.mkZero));
-        in r.tag;
-      expected = "VSucc";
-    };
-
-    "eval-nat-elim-stuck" = {
-      expr = (eval [ (freshVar 0) vNat vZero (freshVar 3) ]
-        (T.mkNatElim (T.mkVar 1) (T.mkVar 2) (T.mkVar 3) (T.mkVar 0))).tag;
-      expected = "VNe";
-    };
-
-    "eval-list" = { expr = (eval [] (T.mkList T.mkNat)).tag; expected = "VList"; };
-    "eval-nil" = { expr = (eval [] (T.mkNil T.mkNat)).tag; expected = "VNil"; };
-    "eval-cons" = { expr = (eval [] (T.mkCons T.mkNat T.mkZero (T.mkNil T.mkNat))).tag; expected = "VCons"; };
-    "eval-list-elim-nil" = {
-      expr = (eval [] (T.mkListElim T.mkNat
-        (T.mkLam "l" (T.mkList T.mkNat) T.mkNat)
-        T.mkZero
-        (T.mkLam "h" T.mkNat (T.mkLam "t" (T.mkList T.mkNat) (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0)))))
-        (T.mkNil T.mkNat))).tag;
-      expected = "VZero";
-    };
-
     "eval-unit" = { expr = (eval [] T.mkUnit).tag; expected = "VUnit"; };
     "eval-tt" = { expr = (eval [] T.mkTt).tag; expected = "VTt"; };
 
-    "eval-sum" = { expr = (eval [] (T.mkSum T.mkNat T.mkUnit)).tag; expected = "VSum"; };
-    "eval-inl" = { expr = (eval [] (T.mkInl T.mkNat T.mkUnit T.mkZero)).tag; expected = "VInl"; };
-    "eval-inr" = { expr = (eval [] (T.mkInr T.mkNat T.mkUnit T.mkTt)).tag; expected = "VInr"; };
-    "eval-sum-elim-inl" = {
-      expr = (eval [] (T.mkSumElim T.mkNat T.mkUnit
-        (T.mkLam "s" (T.mkSum T.mkNat T.mkUnit) T.mkNat)
-        (T.mkLam "x" T.mkNat (T.mkVar 0))
-        (T.mkLam "y" T.mkUnit T.mkZero)
-        (T.mkInl T.mkNat T.mkUnit (T.mkSucc T.mkZero)))).tag;
-      expected = "VSucc";
+    "eval-boot-sum" = { expr = (eval [] (T.mkBootSum T.mkUnit T.mkUnit)).tag; expected = "VBootSum"; };
+    "eval-boot-inl" = { expr = (eval [] (T.mkBootInl T.mkUnit T.mkUnit T.mkTt)).tag; expected = "VBootInl"; };
+    "eval-boot-inr" = { expr = (eval [] (T.mkBootInr T.mkUnit T.mkUnit T.mkTt)).tag; expected = "VBootInr"; };
+    "eval-boot-sum-elim-inl" = {
+      expr = (eval [] (T.mkBootSumElim T.mkUnit T.mkUnit
+        (T.mkLam "s" (T.mkBootSum T.mkUnit T.mkUnit) T.mkUnit)
+        (T.mkLam "x" T.mkUnit T.mkTt)
+        (T.mkLam "y" T.mkUnit T.mkTt)
+        (T.mkBootInl T.mkUnit T.mkUnit T.mkTt))).tag;
+      expected = "VTt";
     };
-    "eval-sum-elim-inr" = {
-      expr = (eval [] (T.mkSumElim T.mkNat T.mkUnit
-        (T.mkLam "s" (T.mkSum T.mkNat T.mkUnit) T.mkNat)
-        (T.mkLam "x" T.mkNat (T.mkVar 0))
-        (T.mkLam "y" T.mkUnit T.mkZero)
-        (T.mkInr T.mkNat T.mkUnit T.mkTt))).tag;
-      expected = "VZero";
+    "eval-boot-sum-elim-inr" = {
+      expr = (eval [] (T.mkBootSumElim T.mkUnit T.mkUnit
+        (T.mkLam "s" (T.mkBootSum T.mkUnit T.mkUnit) T.mkUnit)
+        (T.mkLam "x" T.mkUnit T.mkTt)
+        (T.mkLam "y" T.mkUnit T.mkTt)
+        (T.mkBootInr T.mkUnit T.mkUnit T.mkTt))).tag;
+      expected = "VTt";
     };
 
-    "eval-eq" = { expr = (eval [] (T.mkEq T.mkNat T.mkZero T.mkZero)).tag; expected = "VEq"; };
-    "eval-refl" = { expr = (eval [] T.mkRefl).tag; expected = "VRefl"; };
+    "eval-eq" = { expr = (eval [] (T.mkBootEq T.mkUnit T.mkTt T.mkTt)).tag; expected = "VBootEq"; };
+    "eval-refl" = { expr = (eval [] T.mkBootRefl).tag; expected = "VBootRefl"; };
     "eval-funext" = { expr = (eval [] T.mkFunext).tag; expected = "VFunext"; };
     "eval-squash" = { expr = (eval [] (T.mkSquash T.mkUnit)).tag; expected = "VSquash"; };
     "eval-squash-A" = { expr = (eval [] (T.mkSquash T.mkUnit)).A.tag; expected = "VUnit"; };
@@ -704,15 +523,15 @@ in {
       expected = "ESquashElim";
     };
     "eval-j-refl" = {
-      # J(Nat, 0, P, base, 0, refl) = base
-      expr = (eval [ vNat vZero (freshVar 2) vZero vZero ]
-        (T.mkJ T.mkNat T.mkZero (T.mkVar 2) (T.mkVar 3) T.mkZero T.mkRefl)).tag;
-      expected = "VZero";
+      expr = (eval [] (T.mkBootJ T.mkUnit T.mkTt
+        (T.mkLam "y" T.mkUnit (T.mkLam "e" (T.mkBootEq T.mkUnit T.mkTt (T.mkVar 0)) T.mkUnit))
+        T.mkTt T.mkTt T.mkBootRefl)).tag;
+      expected = "VTt";
     };
     "eval-j-stuck" = {
-      expr = (eval [ (freshVar 0) ] (T.mkJ T.mkNat T.mkZero
-        (T.mkLam "y" T.mkNat (T.mkLam "e" (T.mkEq T.mkNat T.mkZero (T.mkVar 0)) (T.mkU T.mkLevelZero)))
-        (T.mkU T.mkLevelZero) T.mkZero (T.mkVar 0))).tag;
+      expr = (eval [ (freshVar 0) ] (T.mkBootJ T.mkUnit T.mkTt
+        (T.mkLam "y" T.mkUnit (T.mkLam "e" (T.mkBootEq T.mkUnit T.mkTt (T.mkVar 0)) (T.mkU T.mkLevelZero)))
+        (T.mkU T.mkLevelZero) T.mkTt (T.mkVar 0))).tag;
       expected = "VNe";
     };
 
@@ -750,187 +569,105 @@ in {
     "eval-any-lit" = { expr = (eval [] T.mkAnyLit).tag; expected = "VAnyLit"; };
 
     "instantiate-identity" = {
-      expr = (instantiate (mkClosure [] (T.mkVar 0)) vZero).tag;
-      expected = "VZero";
+      expr = (instantiate (mkClosure [] (T.mkVar 0)) vTt).tag;
+      expected = "VTt";
     };
     "instantiate-const" = {
-      expr = (instantiate (mkClosure [ vTt ] (T.mkVar 1)) vZero).tag;
+      expr = (instantiate (mkClosure [ vTt ] (T.mkVar 1)) vUnit).tag;
       expected = "VTt";
     };
 
-    "fuel-exhaustion" = {
-      # Low fuel on a term requiring many eval steps → throws
-      expr = (builtins.tryEval (builtins.deepSeq
-        (evalF 10 [] (T.mkNatElim
-          (T.mkLam "n" T.mkNat T.mkNat)
-          T.mkZero
-          (T.mkLam "k" T.mkNat (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0))))
-          (succN 100)))
-        true)).success;
-      expected = false;
-    };
-    "fuel-sufficient" = {
-      # Default fuel handles moderate terms fine
-      expr = (eval [] (T.mkNatElim
-        (T.mkLam "n" T.mkNat T.mkNat)
-        T.mkZero
-        (T.mkLam "k" T.mkNat (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0))))
-        (succN 100))).tag;
-      expected = "VSucc";
-    };
-
-    "fuel-threading-nat-elim" = {
-      expr = (builtins.tryEval (builtins.deepSeq
-        (evalF 100 [] (T.mkNatElim
-          (T.mkLam "n" T.mkNat T.mkNat)
-          T.mkZero
-          (T.mkLam "k" T.mkNat (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0))))
-          (succN 200)))
-        true)).success;
-      expected = false;
-    };
-    "fuel-threading-list-elim" = {
-      expr = let
-        mkList = n: builtins.foldl' (acc: _: T.mkCons T.mkNat T.mkZero acc)
-          (T.mkNil T.mkNat) (builtins.genList (x: x) n);
-      in (builtins.tryEval (builtins.deepSeq
-        (evalF 100 [] (T.mkListElim T.mkNat
-          (T.mkLam "l" (T.mkList T.mkNat) T.mkNat)
-          T.mkZero
-          (T.mkLam "h" T.mkNat (T.mkLam "t" (T.mkList T.mkNat)
-            (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0)))))
-          (mkList 200)))
-        true)).success;
-      expected = false;
-    };
-
-    "fuel-threading-cons-eval" = {
-      expr = let
-        mkList = n: builtins.foldl' (acc: _: T.mkCons T.mkNat T.mkZero acc)
-          (T.mkNil T.mkNat) (builtins.genList (x: x) n);
-      in (builtins.tryEval (builtins.deepSeq
-        (evalF 100 [] (mkList 200))
-        true)).success;
-      expected = false;
-    };
-    "fuel-sufficient-cons-eval" = {
-      expr = let
-        mkList = n: builtins.foldl' (acc: _: T.mkCons T.mkNat T.mkZero acc)
-          (T.mkNil T.mkNat) (builtins.genList (x: x) n);
-      in (eval [] (mkList 50)).tag;
-      expected = "VCons";
-    };
-
     "eval-desc" = { expr = (eval [] (T.mkDesc T.mkLevelZero T.mkUnit)).tag; expected = "VDesc"; };
-    "eval-desc-ret" = { expr = (eval [] (T.mkDescRet T.mkTt)).tag; expected = "VDescRet"; };
+    "eval-desc-ret" = { expr = (descViewOf encRet).idx; expected = 0; };
     "eval-desc-arg" = {
-      expr = (eval [] (T.mkDescArg T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl
-        (T.mkLam "_" T.mkNat (T.mkDescRet T.mkTt)))).tag;
-      expected = "VDescArg";
+      expr = (descViewOf encArg).idx;
+      expected = 1;
     };
-    "eval-desc-arg-k-zero" = {
-      expr = (eval [] (T.mkDescArg T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl
-        (T.mkLam "_" T.mkNat (T.mkDescRet T.mkTt)))).k.tag;
-      expected = "VLevelZero";
+    "eval-desc-arg-sort" = {
+      expr = (descViewOf encArg).sTy.tag;
+      expected = "VMu";
     };
-    "eval-desc-arg-k-one" = {
-      expr = (eval [] (T.mkDescArg (T.mkLevelSuc T.mkLevelZero) (T.mkLevelSuc T.mkLevelZero) T.mkNat T.mkRefl
-        (T.mkLam "_" T.mkNat (T.mkDescRet T.mkTt)))).k.tag;
-      expected = "VLevelSuc";
+    "eval-desc-arg-level-one-sort" = {
+      expr = (descViewOf encArg1).sTy.tag;
+      expected = "VU";
     };
     "eval-desc-rec" = {
-      expr = (eval [] (T.mkDescRec T.mkTt (T.mkDescRet T.mkTt))).tag;
-      expected = "VDescRec";
+      expr = (descViewOf encRec).idx;
+      expected = 2;
     };
     "eval-desc-pi" = {
-      expr = (eval [] (T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl
-        (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt))).tag;
-      expected = "VDescPi";
+      expr = (descViewOf encPi).idx;
+      expected = 3;
     };
     "eval-desc-pi-S" = {
-      expr = (eval [] (T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl
-        (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt))).S.tag;
-      expected = "VNat";
+      expr = (descViewOf encPi).sTy.tag;
+      expected = "VMu";
     };
     "eval-desc-pi-D" = {
-      expr = (eval [] (T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl
-        (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt))).D.tag;
-      expected = "VDescRet";
-    };
-    "eval-desc-pi-k-zero" = {
-      expr = (eval [] (T.mkDescPi T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl
-        (T.mkLam "_" T.mkNat T.mkTt) (T.mkDescRet T.mkTt))).k.tag;
-      expected = "VLevelZero";
+      expr = (self.descView (descViewOf encPi).sub).idx;
+      expected = 0;
     };
     "eval-mu" = {
-      expr = (eval [] (T.mkMu T.mkUnit (T.mkDescRet T.mkTt) T.mkTt)).tag;
+      expr = (eval [] (T.mkMu T.mkUnit encRet T.mkTt)).tag;
       expected = "VMu";
     };
     "eval-desc-con" = {
-      expr = (eval [] (T.mkDescCon (T.mkDescRet T.mkTt) T.mkTt T.mkRefl)).tag;
+      expr = (eval [] (T.mkDescCon encRet T.mkTt T.mkBootRefl)).tag;
+      expected = "VDescCon";
+    };
+    "eval-generated-list-5000" = {
+      expr = let
+        bigList = builtins.foldl' (acc: _:
+          H.cons H.nat H.zero acc
+        ) (H.nil H.nat) (builtins.genList (x: x) 5000);
+      in (eval [] (H.elab bigList)).tag;
       expected = "VDescCon";
     };
     "eval-desc-ind-stuck" = {
       # desc-ind on a neutral scrutinee produces VNe
-      expr = (eval [ (freshVar 0) ] (T.mkDescInd (T.mkDescRet T.mkTt)
+      expr = (eval [ (freshVar 0) ] (T.mkDescInd encRet
         (T.mkVar 0) (T.mkVar 0) T.mkTt (T.mkVar 0))).tag;
-      expected = "VNe";
-    };
-
-    "eval-desc-elim-ret" = {
-      # descElim on VDescRet applies onRet to j. With onRet = λ_:Unit. Unit and j=vTt, result is VUnit.
-      expr = (eval [] (T.mkDescElim T.mkLevelZero
-        (T.mkLam "_" (T.mkDesc T.mkLevelZero T.mkUnit) (T.mkU T.mkLevelZero))
-        (T.mkLam "_" T.mkUnit T.mkUnit)
-        T.mkUnit T.mkUnit T.mkUnit T.mkUnit
-        (T.mkDescRet T.mkTt))).tag;
-      expected = "VUnit";
-    };
-    "eval-desc-elim-stuck" = {
-      # descElim on a neutral scrutinee produces VNe with EDescElim frame
-      expr = (eval [ (freshVar 0) ] (T.mkDescElim T.mkLevelZero
-        T.mkUnit T.mkUnit T.mkUnit T.mkUnit T.mkUnit T.mkUnit (T.mkVar 0))).tag;
       expected = "VNe";
     };
 
     # interp-d / all-d / everywhere-d Tm dispatch.
     "eval-interp-d-ret" = {
-      # interpD 0 Unit (descRet tt) (λ_:Unit. Nat) tt = Lift 0 0 _ (Eq Unit tt tt) ≡ Eq Unit tt tt.
+      # interpD 0 Unit (descRet tt) (λ_:Unit. Unit) tt = Lift 0 0 _ (Eq Unit tt tt) ≡ Eq Unit tt tt.
       expr = (eval [] (T.mkInterpD T.mkLevelZero T.mkUnit
-        (T.mkDescRet T.mkTt)
-        (T.mkLam "_" T.mkUnit T.mkNat)
+        encRet
+        (T.mkLam "_" T.mkUnit T.mkUnit)
         T.mkTt)).tag;
-      expected = "VEq";
+      expected = "VBootEq";
     };
     "eval-interp-d-stuck" = {
       # interpD on a stuck D produces VNe with EInterpD frame.
       expr = (eval [ (freshVar 0) ] (T.mkInterpD T.mkLevelZero T.mkUnit
-        (T.mkVar 0) (T.mkLam "_" T.mkUnit T.mkNat) T.mkTt)).tag;
+        (T.mkVar 0) (T.mkLam "_" T.mkUnit T.mkUnit) T.mkTt)).tag;
       expected = "VNe";
     };
     "eval-interp-d-stuck-spine-tag" = {
       expr = let
         r = eval [ (freshVar 0) ] (T.mkInterpD T.mkLevelZero T.mkUnit
-          (T.mkVar 0) (T.mkLam "_" T.mkUnit T.mkNat) T.mkTt);
+          (T.mkVar 0) (T.mkLam "_" T.mkUnit T.mkUnit) T.mkTt);
       in (builtins.head r.spine).tag;
       expected = "EInterpD";
     };
     "eval-all-d-ret" = {
       # allD 0 Unit (descRet tt) 0 X M tt refl = Lift 0 0 _ Unit ≡ Unit.
       expr = (eval [] (T.mkAllD T.mkLevelZero T.mkUnit
-        (T.mkDescRet T.mkTt) T.mkLevelZero
-        (T.mkLam "_" T.mkUnit T.mkNat)
-        (T.mkLam "i" T.mkUnit (T.mkLam "_" T.mkNat (T.mkU T.mkLevelZero)))
-        T.mkTt T.mkRefl)).tag;
+        encRet T.mkLevelZero
+        (T.mkLam "_" T.mkUnit T.mkUnit)
+        (T.mkLam "i" T.mkUnit (T.mkLam "_" T.mkUnit (T.mkU T.mkLevelZero)))
+        T.mkTt T.mkBootRefl)).tag;
       expected = "VUnit";
     };
     "eval-all-d-stuck-spine-tag" = {
       expr = let
         r = eval [ (freshVar 0) ] (T.mkAllD T.mkLevelZero T.mkUnit
           (T.mkVar 0) T.mkLevelZero
-          (T.mkLam "_" T.mkUnit T.mkNat)
-          (T.mkLam "i" T.mkUnit (T.mkLam "_" T.mkNat (T.mkU T.mkLevelZero)))
-          T.mkTt T.mkRefl);
+          (T.mkLam "_" T.mkUnit T.mkUnit)
+          (T.mkLam "i" T.mkUnit (T.mkLam "_" T.mkUnit (T.mkU T.mkLevelZero)))
+          T.mkTt T.mkBootRefl);
       in (builtins.head r.spine).tag;
       expected = "EAllD";
     };
@@ -938,49 +675,48 @@ in {
       # everywhereD 0 Unit (descRet tt) 0 X M ih tt refl
       #   = liftIntro 0 0 refl Unit tt ≡ tt.
       expr = (eval [] (T.mkEverywhereD T.mkLevelZero T.mkUnit
-        (T.mkDescRet T.mkTt) T.mkLevelZero
-        (T.mkLam "_" T.mkUnit T.mkNat)
-        (T.mkLam "i" T.mkUnit (T.mkLam "_" T.mkNat (T.mkU T.mkLevelZero)))
-        (T.mkLam "j" T.mkUnit (T.mkLam "x" T.mkNat (T.mkU T.mkLevelZero)))
-        T.mkTt T.mkRefl)).tag;
+        encRet T.mkLevelZero
+        (T.mkLam "_" T.mkUnit T.mkUnit)
+        (T.mkLam "i" T.mkUnit (T.mkLam "_" T.mkUnit (T.mkU T.mkLevelZero)))
+        (T.mkLam "j" T.mkUnit (T.mkLam "x" T.mkUnit (T.mkU T.mkLevelZero)))
+        T.mkTt T.mkBootRefl)).tag;
       expected = "VTt";
     };
     "eval-everywhere-d-stuck-spine-tag" = {
       expr = let
         r = eval [ (freshVar 0) ] (T.mkEverywhereD T.mkLevelZero T.mkUnit
           (T.mkVar 0) T.mkLevelZero
-          (T.mkLam "_" T.mkUnit T.mkNat)
-          (T.mkLam "i" T.mkUnit (T.mkLam "_" T.mkNat (T.mkU T.mkLevelZero)))
-          (T.mkLam "j" T.mkUnit (T.mkLam "x" T.mkNat (T.mkU T.mkLevelZero)))
-          T.mkTt T.mkRefl);
+          (T.mkLam "_" T.mkUnit T.mkUnit)
+          (T.mkLam "i" T.mkUnit (T.mkLam "_" T.mkUnit (T.mkU T.mkLevelZero)))
+          (T.mkLam "j" T.mkUnit (T.mkLam "x" T.mkUnit (T.mkU T.mkLevelZero)))
+          T.mkTt T.mkBootRefl);
       in (builtins.head r.spine).tag;
       expected = "EEverywhereD";
     };
 
     "eval-desc-ind-ret-con" = {
-      # ind (ret tt) P (λi d ih. 0) tt (con tt refl) = 0
+      # ind (ret tt) P (λi d ih. tt) tt (con tt refl) = tt
       expr = let
-        D = T.mkDescRet T.mkTt;
-        P = T.mkLam "i" T.mkUnit (T.mkLam "_" (T.mkMu T.mkUnit D T.mkTt) T.mkNat);
+        D = encRet;
+        P = T.mkLam "i" T.mkUnit (T.mkLam "_" (T.mkMu T.mkUnit D T.mkTt) T.mkUnit);
         step = T.mkLam "i" T.mkUnit
           (T.mkLam "d" T.mkUnit
-            (T.mkLam "ih" T.mkUnit T.mkZero));
-        scrut = T.mkDescCon D T.mkTt T.mkRefl;
+            (T.mkLam "ih" T.mkUnit T.mkTt));
+        scrut = T.mkDescCon D T.mkTt T.mkBootRefl;
       in (eval [] (T.mkDescInd D P step T.mkTt scrut)).tag;
-      expected = "VZero";
+      expected = "VTt";
     };
     "eval-desc-ind-arg-con" = {
-      # D = arg Nat (λ_. ret tt), ind D P step tt (con tt (zero, refl)) = 0
+      # D = arg Nat (λ_. ret tt), ind D P step tt (con tt (zero, refl)) = tt
       expr = let
-        D = T.mkDescArg T.mkLevelZero T.mkLevelZero T.mkNat T.mkRefl
-          (T.mkLam "_" T.mkNat (T.mkDescRet T.mkTt));
-        P = T.mkLam "i" T.mkUnit (T.mkLam "_" (T.mkMu T.mkUnit D T.mkTt) T.mkNat);
+        D = encArg;
+        P = T.mkLam "i" T.mkUnit (T.mkLam "_" (T.mkMu T.mkUnit D T.mkTt) T.mkUnit);
         step = T.mkLam "i" T.mkUnit
           (T.mkLam "d" (T.mkU T.mkLevelZero)
-            (T.mkLam "ih" T.mkUnit T.mkZero));
-        scrut = T.mkDescCon D T.mkTt (T.mkPair T.mkZero T.mkRefl);
+            (T.mkLam "ih" T.mkUnit T.mkTt));
+        scrut = T.mkDescCon D T.mkTt (T.mkPair (H.elab H.zero) T.mkBootRefl);
       in (eval [] (T.mkDescInd D P step T.mkTt scrut)).tag;
-      expected = "VZero";
+      expected = "VTt";
     };
 
     # Lift primitive — type-former, introducer, eliminator.
@@ -988,29 +724,29 @@ in {
       # Lift l l _ A ≡ A — load-bearing backward-compat at homogeneous
       # levels. Both levels mkLevelZero, so convLevel fires and the
       # smart constructor returns A directly.
-      expr = (eval [] (T.mkLift T.mkLevelZero T.mkLevelZero T.mkRefl T.mkUnit)).tag;
+      expr = (eval [] (T.mkLift T.mkLevelZero T.mkLevelZero T.mkBootRefl T.mkUnit)).tag;
       expected = "VUnit";
     };
     "eval-lift-distinct-levels" = {
       # 0 < 1: convLevel rejects, vLiftF falls through to constructor.
       expr = (eval [] (T.mkLift T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
-        T.mkRefl T.mkUnit)).tag;
+        T.mkBootRefl T.mkUnit)).tag;
       expected = "VLift";
     };
     "eval-lift-distinct-levels-A" = {
       expr = (eval [] (T.mkLift T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
-        T.mkRefl T.mkUnit)).A.tag;
+        T.mkBootRefl T.mkUnit)).A.tag;
       expected = "VUnit";
     };
     "eval-lift-composition" = {
       # Lift 0 2 _ (Lift 0 1 _ Unit) collapses to Lift 0 2 _ Unit by
-      # the inner-Lift composition rule (witness combined into vRefl).
+      # the inner-Lift composition rule (witness combined into vBootRefl).
       expr = let
         inner = T.mkLift T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
-          T.mkRefl T.mkUnit;
+          T.mkBootRefl T.mkUnit;
         outer = T.mkLift T.mkLevelZero
           (T.mkLevelSuc (T.mkLevelSuc T.mkLevelZero))
-          T.mkRefl inner;
+          T.mkBootRefl inner;
       in (eval [] outer).A.tag;
       # Composition collapses A to the deepest underlying type (Unit).
       expected = "VUnit";
@@ -1018,20 +754,20 @@ in {
 
     "eval-lift-intro-idempotent" = {
       # lift l l _ A a ≡ a (η-collapse on idempotent Lift)
-      expr = (eval [] (T.mkLiftIntro T.mkLevelZero T.mkLevelZero T.mkRefl
+      expr = (eval [] (T.mkLiftIntro T.mkLevelZero T.mkLevelZero T.mkBootRefl
         T.mkUnit T.mkTt)).tag;
       expected = "VTt";
     };
     "eval-lift-intro-distinct-levels" = {
       # 0 < 1: builds a VLiftIntro cell.
       expr = (eval [] (T.mkLiftIntro T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
-        T.mkRefl T.mkUnit T.mkTt)).tag;
+        T.mkBootRefl T.mkUnit T.mkTt)).tag;
       expected = "VLiftIntro";
     };
 
     "eval-lift-elim-idempotent" = {
       # lower l l _ A x ≡ x (idempotent at l=m)
-      expr = (eval [] (T.mkLiftElim T.mkLevelZero T.mkLevelZero T.mkRefl
+      expr = (eval [] (T.mkLiftElim T.mkLevelZero T.mkLevelZero T.mkBootRefl
         T.mkUnit T.mkTt)).tag;
       expected = "VTt";
     };
@@ -1039,9 +775,9 @@ in {
       # lower (lift a) → a
       expr = let
         inner = T.mkLiftIntro T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
-          T.mkRefl T.mkUnit T.mkTt;
+          T.mkBootRefl T.mkUnit T.mkTt;
         outer = T.mkLiftElim T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
-          T.mkRefl T.mkUnit inner;
+          T.mkBootRefl T.mkUnit inner;
       in (eval [] outer).tag;
       expected = "VTt";
     };
@@ -1049,14 +785,14 @@ in {
       # lower on a neutral produces VNe with ELiftElim spine entry.
       expr = (eval [ (freshVar 0) ]
         (T.mkLiftElim T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
-          T.mkRefl T.mkUnit (T.mkVar 0))).tag;
+          T.mkBootRefl T.mkUnit (T.mkVar 0))).tag;
       expected = "VNe";
     };
     "eval-lift-elim-stuck-spine-tag" = {
       expr = let
         r = eval [ (freshVar 0) ]
           (T.mkLiftElim T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
-            T.mkRefl T.mkUnit (T.mkVar 0));
+            T.mkBootRefl T.mkUnit (T.mkVar 0));
       in (builtins.elemAt r.spine 0).tag;
       expected = "ELiftElim";
     };
@@ -1066,9 +802,9 @@ in {
       # trailing ELiftElim from the spine.
       expr = let
         lowerd = T.mkLiftElim T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
-          T.mkRefl T.mkUnit (T.mkVar 0);
+          T.mkBootRefl T.mkUnit (T.mkVar 0);
         wrapped = T.mkLiftIntro T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
-          T.mkRefl T.mkUnit lowerd;
+          T.mkBootRefl T.mkUnit lowerd;
       in (eval [ (freshVar 0) ] wrapped).tag;
       expected = "VNe";
     };
@@ -1076,59 +812,11 @@ in {
       # After η, the only spine entry (the ELiftElim) is gone.
       expr = let
         lowerd = T.mkLiftElim T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
-          T.mkRefl T.mkUnit (T.mkVar 0);
+          T.mkBootRefl T.mkUnit (T.mkVar 0);
         wrapped = T.mkLiftIntro T.mkLevelZero (T.mkLevelSuc T.mkLevelZero)
-          T.mkRefl T.mkUnit lowerd;
+          T.mkBootRefl T.mkUnit lowerd;
       in (eval [ (freshVar 0) ] wrapped).spine;
       expected = [];
-    };
-
-    "eval-nat-to-level-zero" = {
-      expr = (eval [] (T.mkNatToLevel T.mkZero)).tag;
-      expected = "VLevelZero";
-    };
-    "eval-nat-to-level-suc-zero" = {
-      expr = (eval [] (T.mkNatToLevel (T.mkSucc T.mkZero))).tag;
-      expected = "VLevelSuc";
-    };
-    "eval-nat-to-level-3-shape" = {
-      # natToLevel 3 ≡ suc (suc (suc zero)) definitionally.
-      expr = let
-        n3 = T.mkSucc (T.mkSucc (T.mkSucc T.mkZero));
-        v = eval [] (T.mkNatToLevel n3);
-      in v.pred.pred.pred.tag;
-      expected = "VLevelZero";
-    };
-    "eval-nat-to-level-stuck" = {
-      # natToLevel (Var 0) leaves an ENatToLevel frame on a Nat-typed neutral.
-      expr = (eval [ (freshVar 0) ] (T.mkNatToLevel (T.mkVar 0))).tag;
-      expected = "VNe";
-    };
-    "eval-nat-to-level-stuck-spine-tag" = {
-      expr = let
-        v = eval [ (freshVar 0) ] (T.mkNatToLevel (T.mkVar 0));
-      in (builtins.head v.spine).tag;
-      expected = "ENatToLevel";
-    };
-
-    # §11.3 Stress tests (eval level)
-
-    "stress-eval-10000" = {
-      expr = let
-        bigNat = builtins.foldl' (acc: _: T.mkSucc acc)
-          T.mkZero (builtins.genList (x: x) 10000);
-      in (eval [] bigNat).tag;
-      expected = "VSucc";
-    };
-
-    "stress-nat-elim-1000" = {
-      expr = let
-        nat1000 = builtins.foldl' (acc: _: T.mkSucc acc)
-          T.mkZero (builtins.genList (x: x) 1000);
-        step = T.mkLam "k" T.mkNat (T.mkLam "ih" T.mkNat (T.mkSucc (T.mkVar 0)));
-        r = eval [] (T.mkNatElim (T.mkLam "n" T.mkNat T.mkNat) T.mkZero step nat1000);
-      in r.tag;
-      expected = "VSucc";
     };
 
     # `desc-desc-app` eval rule stamps `_canonRef = { id; I; L; }` on

@@ -98,6 +98,10 @@ let
       [[ -n "$current"  && -f "$current"  ]] || { echo "--current file required and must exist" >&2; exit 2; }
       [[ -d "$bench_dir" ]] || { echo "bench dir not found: $bench_dir" >&2; exit 2; }
       [[ -d "$repo_root" ]] || { echo "repo root not found: $repo_root" >&2; exit 2; }
+      baseline="$(realpath "$baseline")"
+      current="$(realpath "$current")"
+      bench_dir="$(realpath "$bench_dir")"
+      repo_root="$(realpath "$repo_root")"
 
       # Auto-discover <bench-dir>/budgets.toml when --budgets is omitted.
       # The file carries cpu budgets and the allocNoiseLimited list; without
@@ -189,6 +193,7 @@ let
 
       if [[ -n "$budgets" ]]; then
         [[ -f "$budgets" ]] || { echo "budgets file not found: $budgets" >&2; exit 2; }
+        budgets="$(realpath "$budgets")"
         budgets_arg="$budgets"
       else
         budgets_arg="null"

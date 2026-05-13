@@ -57,7 +57,7 @@ let
   AppArg   = mkPos "AppArg"   "app.arg"  {};
 
   # Positions naming sub-locations inside eliminator rules — shared
-  # across nat-elim, list-elim, sum-elim, desc-elim, desc-ind, j.
+  # across generated datatype eliminators, sum-elim, desc-elim, desc-ind, j.
   Scrut  = mkPos "Scrut"  "scrut"  {};
   Motive = mkPos "Motive" "motive" {};
 
@@ -80,7 +80,6 @@ let
   LevelSucPred = mkPos "LevelSucPred" "suc.pred" {};
   LevelMaxLhs  = mkPos "LevelMaxLhs"  "max.L"    {};
   LevelMaxRhs  = mkPos "LevelMaxRhs"  "max.R"    {};
-  NatToLevelN  = mkPos "NatToLevelN"  "natToLevel.n" {};
 
   # Position naming the level argument of `U(k)`.
   ULevel = mkPos "ULevel" "U.k" {};
@@ -94,9 +93,9 @@ let
   Tag   = name: mkPos "Tag"   ("#" + name)               { inherit name; };
 
   # Parameterised position naming a case-handler inside an eliminator:
-  # "zero"/"succ" (nat-elim), "nil"/"cons" (list-elim), "inl"/"inr"
-  # (sum-elim), "base" (j), "onRet"/"onArg"/"onRec"/"onPi"/"onPlus"
-  # (desc-elim), "step" (desc-ind).
+  # generated constructor names, "inl"/"inr" (sum-elim), "base" (j),
+  # "onRet"/"onArg"/"onRec"/"onPi"/"onPlus" (desc-elim), "step"
+  # (desc-ind).
   Case = name: mkPos "Case" ("@" + name) { inherit name; };
 
   # Structural equality works because Nix compares attrsets by
@@ -155,7 +154,7 @@ in mk {
       MuDesc MuIndex MuPayload
       JType JLhs JRhs JEq
       OpaqueType
-      LevelSucPred LevelMaxLhs LevelMaxRhs ULevel NatToLevelN
+      LevelSucPred LevelMaxLhs LevelMaxRhs ULevel
       Field Elem Tag Case
       eq renderSegment isPosition;
   };

@@ -6,8 +6,7 @@ checks and extracts back to usable Nix functions.
 
 ## Two kernels
 
-nix-effects is a freer-monad effect layer with a dependent type
-checker on top. There are two kernels:
+nix-effects combines an effects kernel with a type-checking kernel:
 
 - The **effects kernel** (`src/kernel.nix`, `src/comp.nix`,
   `src/queue.nix`) implements the freer monad with FTCQueue. It
@@ -128,19 +127,16 @@ these values.
 | `lambda` | `Function` | `FnLit` | 0 |
 | (any) | `Any` | `AnyLit` | 0 |
 
-The structural types with kernel introduction and elimination rules
-are `Nat`, `Unit`, `List`, `Sum`, `Sigma`, `Pi`, and `Eq`, together
-with the indexed-description family (`Desc I`, `μ`, `desc-ind`).
-`Bool` and `Void` are derived, not primitive: `H.bool` elaborates to
-`μ ⊤ (plus (retI tt) (retI tt)) tt` (a plus-coproduct of two unit
-points), and `H.void` elaborates to `Fin 0`. Their eliminators —
-`H.boolElim`, `H.absurd` — are defined in `src/tc/hoas/combinators.nix`
-in terms of `desc-ind` and a direct `J`-transport respectively.
+The structural type formers with kernel introduction and elimination
+rules are `Unit`, `Sigma`, `Pi`, bootstrap identity/coproduct
+infrastructure, and the indexed-description family (`Desc I`, `μ`,
+`desc-ind`). Public `Nat`, `List`, `Sum`, `Bool`, `Eq`, `Fin`, `Vec`,
+and `W` are generated through descriptions and the datatype macro.
+Their eliminators are generated adapters over `desc-ind`.
 
-This gives the kernel enough structure to compute with natural
-numbers, booleans, lists, pairs, functions, and user-defined
-inductive families, but treats strings, integers, and other
-Nix-native types as opaque tokens.
+This gives the kernel enough structure to compute with generated
+inductive families, pairs, and functions, while treating strings,
+integers, and other Nix-native types as opaque tokens.
 
 Axiomatized primitives are critical for real-world use. Without them,
 verified modules can only work over `Nat`/`Bool`/`List`/`Sigma`/`Sum`.

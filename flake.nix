@@ -1,5 +1,5 @@
 {
-  description = "A freer-monad effect layer for pure Nix, with a dependent type checker built on top of it";
+  description = "Pure Nix effects, typed validation, verified boundaries, and description-backed DSLs";
 
   inputs = {
     nixpkgs.url = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.xz";

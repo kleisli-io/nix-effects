@@ -9,22 +9,22 @@ validates individual fields, not relationships between them. "The build
 system must appear in the declared platforms list" is a constraint no
 existing Nix tool can express as a type.
 
-nix-effects is a freer-monad effect layer for pure Nix, with a
-dependent type checker built on top of it. The effect layer is where
-the DX comes from. Validation is phrased as a `typeCheck` effect, and
-the same validator can run under different handlers that choose what
-happens on a failure. The handler is where the policy lives, not the
-validator. Everything runs at `nix eval` time, before anything builds
-or ships.
+nix-effects is a pure Nix toolkit for effectful programs, typed
+validation, verified boundaries, and description-backed DSLs. Validation
+is phrased as a `typeCheck` effect, and the same validator can run under
+different handlers that choose what happens on a failure. The handler is
+where the policy lives, not the validator. Everything runs at `nix eval`
+time, before anything builds or ships.
 
-On top of the effect layer sits a Martin-Löf dependent type checker in
-`src/tc/` with Pi, Sigma, identity types with J, cumulative universes,
-HOAS elaboration, and verified extraction of plain Nix functions from
-proof terms. The kernel itself is pure functions over values,
-independent of the effect layer; the effect layer is what surfaces
-kernel errors to users. The bidirectional checker sends `typeCheck`
-effects carrying a field-path context, so type errors in deeply nested
-terms come back localized to the field that broke.
+The type layer is backed by a Martin-Löf dependent type checker in
+`src/tc/` with Pi, Sigma, identity types with J, explicit universe
+levels, HOAS elaboration, generated datatypes, and verified extraction
+of plain Nix functions from proof terms. Descriptions provide reusable
+datatype shapes, so domain DSLs can be validated, interpreted,
+documented, or extracted by generic tools instead of one-off traversals.
+The bidirectional checker sends `typeCheck` effects carrying a
+field-path context, so type errors in deeply nested terms come back
+localized to the field that broke.
 
 ## What it looks like
 
@@ -187,9 +187,9 @@ it sends a `typeCheck` effect. The handler decides the policy:
 - **Collecting** — gather all errors, keep checking
 - **Logging** — record every check, pass or fail
 
-Same validation logic, different handler. The type-checking kernel
-itself runs as an effectful computation on this same infrastructure —
-the kernel is just another program running on the effects substrate.
+Same validation logic, different handler. The checker reports through
+the same effect substrate, so validation policy composes with the rest
+of the effect system.
 
 ## The verification spectrum
 
@@ -235,9 +235,9 @@ The rest of the guide builds up from here:
   extraction of plain Nix functions from kernel-checked HOAS terms.
 - **[Theory](theory.md)** covers the papers that shaped the design,
   algebraic effects and freer monads, FTCQueue for O(1) bind, dependent
-  type theory in the Martin-Löf and Mini-TT lineage, the handler
-  pattern, and refinement and graded types, and how they compose as a
-  practical engineering layer with a dependent type checker on top.
+  type theory in the Martin-Löf and Mini-TT lineage, descriptions,
+  the handler pattern, refinement and graded types, and how they
+  compose into typed Nix DSLs with effectful interpreters.
 - **[Trampoline](trampoline.md)** explains how `builtins.genericClosure`
   becomes a trampoline for stack-safe evaluation at scale.
 - **[Systems Architecture](systems-architecture.md)** describes the

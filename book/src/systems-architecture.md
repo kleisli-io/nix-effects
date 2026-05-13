@@ -1,10 +1,10 @@
 # Systems Architecture
 
-nix-effects is a freer-monad effect layer with a dependent type checker
-on top, all running at `nix eval` time. The effect layer is the
-foundation — handlers, blame tracking, and error policy all flow through
-it. The type checker is a Lean-light MLTT core that uses the effect
-infrastructure for its own checking pipeline.
+nix-effects is a pure Nix toolkit for effectful programs, typed
+validation, verified boundaries, and description-backed DSLs. The effect
+layer provides handlers, blame tracking, scoped context, and error
+policy. The type layer provides kernel-checked boundaries and reusable
+datatype descriptions that generic tools can consume.
 
 The type-checking kernel lives in `src/tc/`. Every `fx.types` type
 carries a `_kernel` field — an HOAS tree that elaborates to a kernel
@@ -19,8 +19,8 @@ nix-effects has two foundation layers:
 
 **The effects kernel.** Freer monad with FTCQueue for O(1) bind.
 `builtins.genericClosure` trampoline for O(1) stack depth. Handler-swap
-pattern for configurable interpretation. This layer is solid — tested at
-1,000,000 operations, constant memory, ~3 seconds.
+pattern for configurable interpretation. The test suite includes deep
+effect and bind-chain workloads to pin the stack-safety contract.
 
 **The type-checking kernel.** Every type is defined by its kernel
 representation — an HOAS type tree that the MLTT kernel can check.
@@ -72,8 +72,10 @@ judgment `Γ ⊢ t : T`.
 ## The trusted kernel
 
 The kernel is small and auditable. It implements a core dependent type
-theory — something in the neighborhood of MLTT with natural numbers,
-identity types, and a cumulative universe hierarchy.
+theory: Pi, Sigma, identity, explicit universe levels, descriptions,
+and `μ` for inductive data. Public natural numbers, lists, sums, and
+equality are generated through descriptions rather than hard-coded as
+ordinary data primitives.
 
 ### Core judgments
 
@@ -179,8 +181,8 @@ normalize = term:
 ```
 
 O(1) stack depth. `deepSeq` breaks thunk chains. The same technique that
-lets nix-effects run 1,000,000 effect operations lets the kernel
-normalize complex proof terms without hitting Nix's stack limit.
+keeps deep effect workloads stack-safe lets the kernel normalize complex
+proof terms without hitting Nix's stack limit.
 
 ### Why the FTCQueue matters
 
@@ -269,8 +271,9 @@ correct but expensive. For decidable properties — which is everything
 the decision procedure handles — we derive a fast path from the kernel
 type definition.
 
-The kernel defines `Nat` as an inductive type with `zero` and `succ`.
-From that definition, a decision procedure is mechanically derived:
+`Nat` is generated as an inductive type with `zero` and `succ` through
+the description/datatype layer. From that definition, a decision
+procedure is mechanically derived:
 
 ```nix
 # Decision procedure derived from kernel Nat definition
@@ -293,15 +296,15 @@ function.
 
 | Current API | Kernel construction | Fast path |
 |------------|-------------------|-----------|
-| `Nat` | Inductive type (zero, succ) | `isInt v && v >= 0` |
+| `Nat` | Generated inductive type (zero, succ) | `isInt v && v >= 0` |
 | `String` | Primitive (axiom) | `builtins.isString v` |
-| `ListOf A` | Inductive type (nil, cons A) | `builtins.isList v && all A.check v` |
+| `ListOf A` | Generated inductive type (nil, cons A) | `builtins.isList v && all A.check v` |
 | `Record { a = A; b = B }` | Sigma (a : A) (b : B) | Field-wise guard |
 | `DepRecord [...]` | Nested Sigma | Dependent field-wise guard |
 | `Sigma { fst, snd }` | Kernel Sigma directly | `fst.check v.fst && (snd v.fst).check v.snd` |
 | `Pi { domain, codomain }` | Kernel Pi directly | `isFunction` (guard only) |
 | `refined "P" A pred` | Subset type `{ x : A \| P(x) }` | `A.check v && pred v` |
-| `Either A B` | Sum type (inl, inr) | Tag-based dispatch |
+| `Either A B` | Generated sum type (inl, inr) | Tag-based dispatch |
 | `typeAt n` | `Type n` (universe) | `v ? universe && v.universe <= n` |
 
 For first-order types (Nat, String, ListOf, Record), the fast path IS
@@ -577,33 +580,37 @@ All types have kernel backing via `kernelType`. The architecture is:
 ### What the API looks like
 
 ```nix
-# Checking a value (decide via kernel)
-fx.types.Nat.check 42                    # true
-fx.types.(ListOf Nat).check [1, 2, 3]   # true
+let
+  H = fx.types.hoas;
+  v = fx.types.verified;
+  Nat = fx.types.mkType { name = "Nat"; kernelType = H.nat; };
+  NatList = fx.types.mkType { name = "List Nat"; kernelType = H.listOf H.nat; };
+in {
+  # Checking a value (decide via kernel)
+  natOk = Nat.check 42;
+  listOk = NatList.check [1 2 3];
 
-# Effectful validation with blame
-fx.run (fx.types.Nat.validate 42) handlers []
+  # Effectful validation with blame
+  validated = fx.run (Nat.validate 42) handlers [];
 
-# Proving a universal property
-fx.types.prove (
-  forall nat (n: eq nat (plus n zero) n)
-) proofTerm                              # { ok = true; } or type error
+  # Checking a proof term
+  proofOk = (H.checkHoas (H.eq H.nat H.zero H.zero) H.refl).tag == "Tm";
 
-# Verified function extraction
-v.verify (H.forall "x" H.nat (_: H.nat)) (v.fn "x" H.nat (x: H.succ x))
-# → Nix function, correct by construction
-
+  # Verified function extraction
+  succ = v.verify (H.forall "x" H.nat (_: H.nat)) (v.fn "x" H.nat (x: H.succ x));
+}
 ```
 
 ## What exists
 
 1. **Type-checking kernel** (`src/tc/eval.nix`, `check.nix`,
-   `quote.nix`, `conv.nix`, `term.nix`, `value.nix`). Pi, Sigma, Nat,
-   List, Sum, Unit, identity types, indexed descriptions (`Desc I`,
-   `μ`, `desc-ind`) with a first-class plus coproduct, cumulative
-   universes, and 7 axiomatized primitive types (String, Int, Float,
-   Attrs, Path, Function, Any). `Bool` and `Void` are derived:
-   `H.bool = μ ⊤ (plus (retI tt) (retI tt)) tt`, `H.void = Fin 0`.
+   `quote.nix`, `conv.nix`, `term.nix`, `value.nix`). Pi, Sigma,
+   Unit, bootstrap identity/coproduct infrastructure, indexed
+   descriptions (`Desc I`, `μ`, `desc-ind`), explicit universe levels,
+   and 7 axiomatized primitive types (String, Int, Float, Attrs, Path,
+   Function, Any). Public `Nat`, `List`, `Sum`, `Bool`, `Eq`, `Fin`,
+   `Vec`, and `W` are generated through descriptions and the datatype
+   macro.
    Bidirectional checking with NbE. Fuel-bounded evaluation with
    `genericClosure` trampolining for stack safety.
 

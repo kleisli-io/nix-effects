@@ -70,8 +70,8 @@ is the pattern Van Horn & Might (2010) identified in *Abstracting Abstract
 Machines*: store-allocated continuations plus worklist iteration give you
 bounded stack depth. The [Trampoline](trampoline.md) chapter covers the
 implementation — how `genericClosure` becomes a trampoline, why `deepSeq`
-prevents thunk accumulation, and what the 1,000,000-operation benchmark
-actually measures.
+prevents thunk accumulation, and which automated tests pin stack-safety
+behavior.
 
 ## Value-dependent types
 

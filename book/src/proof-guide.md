@@ -572,14 +572,13 @@ normal forms.
   Functions that are extensionally equal but intensionally different are
   not convertible.
 
-- **User-defined recursive types.** The kernel has primitive
-  inductives (Nat, List, Sum) with their own eliminators and an
-  indexed-description family (`Desc I` / `μ` / `desc-ind`) that the
-  macro layer uses to build derived inductives such as `Bool`, `Fin`,
+- **User-defined recursive types.** The kernel has an indexed-description
+  family (`Desc I` / `μ` / `desc-ind`) that the macro layer uses to
+  build public inductives such as `Nat`, `List`, `Sum`, `Bool`, `Fin`,
   `Vec`, and `Eq`-as-description. Arbitrary user-defined inductive
-  families (binary trees, red-black trees, etc.) require the
-  description-macro layer; they are not written directly against the
-  kernel.
+  families (binary trees, red-black trees, etc.) use the same
+  description-macro layer; they are not written directly against
+  primitive per-type kernel nodes.
 
   The macro layer exposes four user-facing entry points for defining
   inductive types. `H.datatype name cons` compiles a monomorphic,

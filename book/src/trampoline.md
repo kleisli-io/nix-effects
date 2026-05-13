@@ -84,8 +84,8 @@ key = builtins.deepSeq newState (step.key + 1)
 Since `genericClosure` forces `key`, it also forces `deepSeq newState`,
 which eagerly evaluates the state at each step. No thunk chain builds up.
 
-Test suite validates 100,000 operations; manual runs confirm
-1,000,000 operations in ~3 seconds with constant memory.
+The test suite validates deep effect chains and pure bind chains so the
+stack-safety contract stays covered by automated checks.
 
 ## Defunctionalization
 

@@ -1,4 +1,4 @@
-# nix-effects: Algebraic effects, dependent types, and a type-checking kernel in pure Nix
+# nix-effects: effects, typed boundaries, and description-backed DSLs in pure Nix
 #
 # Usage:
 #   let fx = import ./. { lib = nixpkgs.lib; };

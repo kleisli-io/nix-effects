@@ -12,6 +12,7 @@
 
 let
   docs = nix-effects.extractDocs;
+  metaKeys = [ "title" "doc" "description" "signature" "sections" "tests" "appendix" ];
 
   # Render a module page from a node with shape:
   #   { doc?, tests?, fnName = { doc, tests }, ... }
@@ -19,14 +20,26 @@ let
   # for each documented entry.
   renderPage = title: node:
     let
-      moduleDoc = lib.optionalString (node ? doc && node.doc != "")
-        (lib.removeSuffix "\n" (lib.trimWith { start = true; end = true; } node.doc) + "\n\n");
+      moduleDocText =
+        if node ? doc && node.doc != "" then node.doc
+        else node.description or "";
+      moduleDoc = lib.optionalString (moduleDocText != "")
+        (lib.removeSuffix "\n" (lib.trimWith { start = true; end = true; } moduleDocText) + "\n\n");
 
-      entries = lib.filterAttrs (k: _: k != "doc" && k != "tests") node;
+      entries = lib.filterAttrs (k: _: !(builtins.elem k metaKeys)) node;
 
       renderEntry = name: entry:
-        lib.optionalString (entry ? doc)
-          "## `${name}`\n\n${lib.removeSuffix "\n" (lib.trimWith { start = true; end = true; } entry.doc)}\n\n";
+        let
+          hasDesc = entry ? description && entry.description != "";
+          hasDoc = entry ? doc && entry.doc != "";
+          hasSig = entry ? signature && entry.signature != "";
+          trim = s: lib.removeSuffix "\n" (lib.trimWith { start = true; end = true; } s);
+          descBlock = lib.optionalString hasDesc "_${trim entry.description}_\n\n";
+          sigBlock = lib.optionalString hasSig "```\n${trim entry.signature}\n```\n\n";
+          docBlock = lib.optionalString hasDoc "${trim entry.doc}\n\n";
+        in
+        lib.optionalString (hasDesc || hasDoc || hasSig)
+          "## `${name}`\n\n${descBlock}${sigBlock}${docBlock}";
 
       body = lib.concatStringsSep "" (lib.mapAttrsToList renderEntry entries);
     in
@@ -34,11 +47,14 @@ let
 
   # A node is a directory-level container if it has no module-level doc.
   # Containers are not rendered as pages; their children are.
-  isContainer = node: builtins.isAttrs node && !(node ? doc);
+  isContainer = node:
+    builtins.isAttrs node
+    && !(node ? doc)
+    && !(node ? description)
+    && !(node ? signature);
 
-  # `doc` (string) and `tests` (attrset of expr/expected pairs) are
-  # meta-attributes of the containing node, not children to recurse into.
-  children = node: lib.filterAttrs (k: _: k != "doc" && k != "tests") node;
+  # Metadata fields describe the containing node, not child pages.
+  children = node: lib.filterAttrs (k: _: !(builtins.elem k metaKeys)) node;
 
   # Recursively generate { name (relative path), path (store path) } entries.
   genEntries = prefix: node:

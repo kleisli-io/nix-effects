@@ -7,7 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-05-20
+
 ### Headline changes
+
+#### Generic typed boundaries and datatype tooling
+
+- **Datatype descriptions now drive generic metadata, views, round-trips, derivation, and checking.** The new `tc.generic` layer derives descriptor views, value/project/review helpers, dependency/schema-style artifacts, and stack-safe `checkD` validation from the same generated datatype descriptions used by the kernel.
+- **Records, variants, and certified boundaries move onto description-backed data.** `Record` and `Variant` route through generated datatype evidence, `Certified` exposes its Σ shape in the kernel, and validation descends through a Contract detail layer with stable path and reason data instead of ad hoc walkers.
+- **Decidable predicates become first-class library material.** `LeDT`, the decidable surface library, `Nat` equality/order witnesses, `IntZ`, and `intzLe` provide reusable proof objects for common value-level reasoning.
+
+#### Surface elaboration and implicit arguments
+
+- **The elaborator grows metavariable unification, check/infer overlays, and implicit insertion.** New `tc.elaborate` modules cover constraints, contexts, zonking, meta evaluation, checked/inferred overlays, value conversion, and `runElab`, with regression coverage for postponed constraints and wake-up chains.
+- **A surface framework lands for description-backed DSLs.** The new `tc.surface` namespace includes registries, handler context, implicit support, parser/printer/elaborator derivation hooks, and a prelude used by the STLC examples.
+- **STLC examples now exercise sums, products, recursive lists, and refinement diagnostics.** These examples validate the surface layer against realistic typed DSL shapes rather than isolated kernel snippets.
+
+#### Description-interpreted effects
+
+- **Experimental handler descriptions are represented as indexed descriptions.** `experimental.desc-interp` adds a FreeFx-style kernel, `IDesc (U × U)` handler result shapes, `UniRet`, state/error handler descriptions, extraction, trampoline support, and compatibility adapters.
+- **Handler composition gets checked laws and shortcuts.** `composeHandlers`, `qAppKernel`, `qAppIdLaw`, state/error shortcut lemmas, residual-form emission, extension layering, and parity tests cover composed state/error handlers and deep bind chains.
 
 #### Kernel `Derivation` primitive and generic `Thunk` carrier
 
@@ -25,17 +44,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`tc.generic` namespace** — description, datatype, value, derive, check, `checkD`, ornament, and path modules for generic consumers over datatype descriptions.
+- **`tc.surface` namespace** — surface registries, handler contexts, implicit elaboration, parser/printer/elaborator derivation hooks, ornament definitions, and surface tests.
+- **Meta-aware elaboration APIs** — metavariables, constraints, zonking, check/infer overlays, literal `Val → Tm` splicing, and checked value extraction support the new surface layer.
 - **`fx.state` namespace** — new state-carrier surface. Initial inhabitants: `mkThunk` / `forceThunk` / `isThunk` for deepSeq-safe transport of arbitrary values through handler state. Source: `src/state/thunk.nix`; rationale in `book/src/trampoline.md` § "State-shape contract".
 - **`fx.types.Derivation`** — exported on the public `fx.types` surface and kernel-decided (`kernelType = H.derivation`, no guard). Accepts raw drv attrsets — for typed `package` fields and similar review-boundary checks.
 - **`H.thunk : Hoas → Hoas`** — parametric deepSeq-safe carrier type former, walked lazily and structurally (verifies `_force` closure, never invokes it). Usable wherever a value must survive trampoline `deepSeq` while remaining recoverable post-forget.
+- **Kernel `Empty` / `Absurd` primitives** — restored as explicit primitives for the implicit/surface migration path.
+- **`H.product` sugar** — named single-constructor μ-datatypes can be introduced as product-shaped records without hand-writing the lower-level description form.
+- **`defEq` exposure** — sugar compatibility tests and callers can anchor on definitional equality directly.
 - **First-class ornaments for generated datatypes** — HOAS and generic surfaces expose ornament construction, checked metadata, `ornDesc`, `ornForget`, identity, composition, pullback transport, liftFold transport, and indexed/unit-indexed compatibility.
 - **Ornament diagnostics and law harness** — validation APIs report datatype, constructor, field, indexed-branch, and algebra-node context while semantic maps stay pure after validation.
 - **Functional ornaments for generated datatypes** — the HOAS surface exposes `functionalOrnament`, section/build accessors, law diagnostics, composition, and producer/transform lifting. The generic surface adds synthesis from `{ base; spec; synth; }`, proof and measure obligations, structured diagnostics, and canonical build/forget helpers.
 - **MetaBuilder-style functional ornament pilot** — a synthetic `CoreBuilder -> CodeGenBuilder -> IdlBuilder` chain demonstrates public-API enrichment, composed sections, forget coherence, lifted producers, and missing-enrichment diagnostics.
+- **Description labels and self-describing API wrappers** — generated descriptions carry erasable constructor/field labels, and public API leaves carry co-located descriptions, signatures, docs, tests, and source metadata.
+- **New documentation and examples** — README rewrite, generated-datatypes, typed-validation, ornaments, effects-and-handlers, and generic-programming chapters; STLC examples; source mtime/SHA metadata for generated docs.
+- **Bench workloads** — new generic, ornament, meta-unification, surface, decidable, `checkD`, paired state-chain, and experimental desc-interp workloads.
+- **Docs-content CI gates** — the external docs corpus derivation now depends on deterministic docs checks, and `nix flake check` builds the corpus plus anchor/schema/routing gates.
+
+### Changed
+
+- **`Record` and `Variant` are description-backed datatypes.** Value walkers now recover constructors through datatype metadata and project fields through generated eliminators instead of the previous bespoke HOAS record/variant path.
+- **Type-checking diagnostics use structured paths and Contract details.** `typeCheck` handlers receive richer reason/detail data, fail-only validation paths, wildcard hint keys, per-hint source positions, and parent backlinks for generated docs.
+- **`Desc` and description operations lift the old `I : U(0)` restriction.** `descDesc`, `VDesc`, `canonRef`, `interpD`, `allD`, and `everywhereD` now carry the index universe level explicitly.
+- **`fx.sugar.do` is replaced by a composable Kleisli pipeline; the old form is available as `steps`.** Documentation and compatibility tests now use the split naming.
+- **Source internals are gated behind `exposeInternals`.** The public import keeps the curated API surface by default while internal consumers can opt into the raw source tree.
+- **Documentation extraction uses co-located API metadata.** The legacy `__docs` sibling convention was replaced by `_self` descriptions and `api.mk` wrappers throughout the source tree.
+- **Bench history archives the recovery baseline.** The previous active baseline was renamed to `baseline.recovery-target.{json,md}`, and the failed `ci-1f13e07f` gate artifacts were removed from the active history.
+
+### Fixed
+
+- **API docs traversal is bounded.** Recursive documentation extraction avoids unbounded walks through generated API data.
+- **Datatype fast paths are signature-aware.** Conversion and checking shortcuts no longer conflate generated datatype descriptors that share a shape but differ in signature.
+- **Dependent datatype fields validate against their expected types.** Polymorphic field intros now thread expected types, and the latest homogeneous-chain optimization trusts prevalidated non-recursive field arguments only at the empty top-level context.
+- **Implicit surface migration is green.** STLC implicits, `EffState` implicit parameters, and the broader implicit migration suite have regression fixes.
+- **Inline tests call `api.mk` wrappers correctly.** `hasHandler`, plan, and benchmark tests no longer invoke wrapped namespaces as functions.
+- **Generated anchor and docs tests are path-stable.** Schema tests scrub world-root paths, anchor golden files cover book chapters and hint docs, and docs-resolves tests cover deep-page routes.
+- **Bench workloads track internal namespace moves.** Workloads were retargeted after `_internal` migration and split-module changes.
 
 ### Performance
 
 - **Ornament benchmark workloads** — quick-tier workloads now cover `ornDesc`, `ornForget`, composition, algebraic ornaments, generic metadata/view/review/derive artifacts, functional synthesis, failed synthesis diagnostics, lifted producers, and the synthetic MetaBuilder-style chain. On the local quick sample, `tc.generic.functional-builder-chain` evaluated in about 221 ms wall / 0.171 s evaluator CPU while preserving `forget` and `liftedForget` checks.
+- **Description-interpreter shortcuts** — `pureCon` memoization and removed kernel η-wrappers make `qApp` about 40% faster; state/error handlers cache per-op values and share shortcut paths across composed handlers.
+- **Type-checker and evaluator fast paths** — certificate paths reuse `ty.D`, description eliminators share `ihVal`/`muFam`, closed deciders are pre-elaborated, test probes are hoisted, and `litVal` gives O(1) value reflection where possible.
+- **Diagnostics allocate less on deep traces.** `multiLine` chain-position walking is fused and trace appends use literal records instead of `//`.
+- **Homogeneous constructor chains avoid repeated field checks.** When a flattened constructor chain reuses the same simple data fields at every layer, elaboration prevalidates the shared field terms once and the kernel checker reuses that attestation only at the top-level empty context.
+
+### Removed
+
+- **Legacy bespoke `H.record` / `H.variant` implementation path** — the public constructors remain, but their behaviour now comes from generated datatype descriptions and `RecordOpen` metadata records.
+- **Legacy `__docs` sibling maps for documentation extraction** — public documentation now lives on API wrappers and explicit module structure.
 
 ## [0.11.0] - 2026-05-13
 

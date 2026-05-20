@@ -203,6 +203,18 @@ in
         _unfold = self.sum inner self.unit;
       };
     };
+    # Maybe value-level injections. Expand directly to Sum(inner, Unit)
+    # sum-injects so downstream layers see the existing tag set.
+    just = api.leaf {
+      description = "just: HOAS Maybe just-injection — `just innerTy v` is `inl v : maybe innerTy`.";
+      signature = "just : Hoas -> Hoas -> Hoas  -- innerTy, value";
+      value = innerTy: v: self.inlAtExplicit 0 innerTy self.unit v;
+    };
+    nothing = api.leaf {
+      description = "nothing: HOAS Maybe none-injection — `nothing innerTy` is `inr tt : maybe innerTy`.";
+      signature = "nothing : Hoas -> Hoas  -- innerTy";
+      value = innerTy: self.inrAtExplicit 0 innerTy self.unit self.tt;
+    };
     # thunk = `{ _tag = "Thunk"; _force = _: inner }` — generic deepSeq-safe
     # carrier wrapping any HOAS type. Forget map: `t._force null`. The check
     # is structurally lazy: it verifies the carrier shape but does NOT recurse
@@ -259,6 +271,40 @@ in
                 (builtins.genList (x: x) (n - 1));
         in
         { _htag = "variant"; inherit branches; _unfold = unfold; };
+    };
+    # Variant value-level injection. Mirrors `variant`'s nested-sum unfold:
+    # the active branch is inl'd through the inr-skipped prefix.
+    variantInject = api.leaf {
+      description = "variantInject: HOAS variant-value injection — `variantInject ty tag inner` produces the nested `inl/inr` chain that injects `inner` into `tag`'s branch of `ty`.";
+      signature = "variantInject : Hoas -> String -> Hoas -> Hoas  -- variantTy, tag, value";
+      value = ty: tag: inner:
+        let
+          branches = ty.branches or [ ];
+          n = builtins.length branches;
+          activeIdx =
+            let
+              go = i:
+                if i >= n then null
+                else if (builtins.elemAt branches i).tag == tag then i
+                else go (i + 1);
+            in
+            go 0;
+          restFrom = i:
+            if i == n - 1 then (builtins.elemAt branches i).type
+            else self.sum (builtins.elemAt branches i).type (restFrom (i + 1));
+          inject = i:
+            let
+              leftTy = (builtins.elemAt branches i).type;
+              rightTy = restFrom (i + 1);
+            in
+            if i == n - 1 then inner
+            else if i == activeIdx then self.inlAtExplicit 0 leftTy rightTy inner
+            else self.inrAtExplicit 0 leftTy rightTy (inject (i + 1));
+        in
+        if n == 0 then throw "variantInject: empty variant has no inhabitants"
+        else if activeIdx == null then throw "variantInject: tag '${toString tag}' not in branches"
+        else if n == 1 then inner
+        else inject 0;
     };
 
     # H.product name fields → named single-constructor μ-datatype. Sugar

@@ -22,7 +22,7 @@
 #   nix-effects/types/{foundation,primitives,...}.md
 #   nix-effects/streams/{core,transform,...}.md
 
-{ pkgs, lib, nix-effects }:
+{ pkgs, lib, nix-effects, requiredChecks ? [ ] }:
 
 let
   docs = nix-effects.extractDocs;
@@ -1168,6 +1168,17 @@ let
       });
   };
 
+  rawCorpus = pkgs.linkFarm "nix-effects-docs-raw"
+    ([ projectEntry indexEntry exampleOverviewEntry ] ++ guideEntries ++ manualSectionIndexEntries ++ exampleGroupEntries ++ exampleEntries ++ apiEntries ++ diagHintsIndexEntry ++ diagHintsEntries);
+
+  checkDeps = lib.concatMapStringsSep "\n"
+    (check: "test -e ${check}")
+    requiredChecks;
+
 in
-pkgs.linkFarm "nix-effects-docs"
-  ([ projectEntry indexEntry exampleOverviewEntry ] ++ guideEntries ++ manualSectionIndexEntries ++ exampleGroupEntries ++ exampleEntries ++ apiEntries ++ diagHintsIndexEntry ++ diagHintsEntries)
+pkgs.runCommand "nix-effects-docs" { } ''
+  set -eu
+  ${checkDeps}
+  mkdir -p "$out"
+  cp -a ${rawCorpus}/. "$out/"
+''

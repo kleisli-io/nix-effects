@@ -638,6 +638,51 @@ let
               }];
           };
           nLayers = builtins.length chain;
+          # Sharing-aware validation: when the chain's non-rec field args
+          # are Nix-equal across all layers AND the field kinds are simple
+          # `data` (so `f.type` is a constant HOAS type), pre-check the
+          # unique field Tms once at `CH.emptyCtx`. The outermost cert
+          # then carries `validatedFields.validated = true`; the kernel
+          # trampoline trusts the attestation only when its own ctx is
+          # also empty (the `H.checkHoas` boundary). Sound by referential
+          # transparency of `check`: the elaborator's pre-check IS the
+          # kernel checker; same `(ctx, tm, ty)` triple → same result.
+          chainValidated =
+            let
+              nNonRec = nFields - 1;
+              layerArgsAt = i: (builtins.elemAt chain i).val.nonRecArgs;
+              layer0 = if nLayers == 0 then [ ] else layerArgsAt 0;
+              homogeneousAt = j:
+                let a0 = builtins.elemAt layer0 j; in
+                builtins.all
+                  (i: builtins.elemAt (layerArgsAt i) j == a0)
+                  (builtins.genList (x: x) nLayers);
+              dataAt = j:
+                (builtins.elemAt mono.fields j).kind == "data";
+              eligible =
+                depth == 0
+                && nLayers >= 2
+                && nNonRec >= 1
+                && mono ? descRef
+                && builtins.all dataAt (builtins.genList (x: x) nNonRec)
+                && builtins.all homogeneousAt (builtins.genList (x: x) nNonRec);
+            in
+            if !eligible then false
+            else
+              let
+                preElabPayloadTms = map (a: elaborate depth a) (payloadArgsOf layer0);
+                checks = builtins.genList
+                  (j:
+                    let
+                      f = builtins.elemAt mono.fields j;
+                      vTy = E.eval [ ] (elaborate depth f.type);
+                      tm = builtins.elemAt preElabPayloadTms j;
+                      res = CH.checkTm CH.emptyCtx tm vTy;
+                    in
+                    res ? tag)
+                  (nFields - 1);
+              in
+              builtins.all (x: x) checks;
           innermost = (builtins.elemAt chain (nLayers - 1)).val;
           # Base: whatever the innermost layer's `recArg` points to (the
           # first non-chain-successor tail).
@@ -693,7 +738,7 @@ let
           # `prevOfArgs` extracts the data markers needed by `targetIdx`.
           # The innermost pair terminator is `Refl : Eq I j j` where
           # `j = targetIdx prev` for this layer.
-          buildLayer = nonRecHoasArgs: accTm:
+          buildLayer = isOuter: nonRecHoasArgs: accTm:
             let
               prev = prevOfArgs nonRecHoasArgs;
               targetIdxHoas = mono.targetIdx prev;
@@ -708,7 +753,7 @@ let
                   in T.mkPair f acc)
                 innerMost
                 (builtins.genList (x: x) (builtins.length nonRecTms));
-              cert =
+              baseCert =
                 if mono ? descRef then {
                   kind = "datatype-con-payload";
                   ref = elaborateDescRef depth mono.descRef;
@@ -716,6 +761,11 @@ let
                   ctor = ctorIdx;
                   fieldCount = builtins.length nonRecHoasArgs + 1;
                 } else null;
+              cert =
+                if baseCert == null then null
+                else if isOuter && chainValidated
+                then baseCert // { validatedFields = { validated = true; }; }
+                else baseCert;
               payloadTm = encodeTagTm tags.lTms tags.rTms ctorIdx nCtors payloadInner;
             in
             if cert == null
@@ -729,8 +779,9 @@ let
           (acc: idx:
             let
               layer = (builtins.elemAt chain (nLayers - 1 - idx)).val;
+              isOuter = idx == nLayers - 1;
             in
-            buildLayer layer.nonRecArgs acc
+            buildLayer isOuter layer.nonRecArgs acc
           )
           baseTm
           (builtins.genList (x: x) nLayers);
@@ -1584,12 +1635,6 @@ in
             surface = CHD.sourceMap.hoasAtError r.error (self.sourceMapOf hoasTm);
           }
         else r;
-    };
-
-    _probeElaborateForCheck = api.leaf {
-      description = "TEMP probe exposure";
-      signature = "_probeElaborateForCheck : Int -> Hoas -> Hoas -> Tm";
-      value = elaborateForCheck;
     };
 
     # Natural number literal helper — build S^n(zero).

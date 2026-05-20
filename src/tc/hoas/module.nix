@@ -105,11 +105,11 @@ api.mk {
       functionalOrnamentDiagnosticRecords functionalOrnamentDiagnostics fzero
       iff ind inferHoas inl inr intLit int_ interpD intz intzDecode intzDesc
       intzElim intzLe intzLit intzNegSucc intzNegSuccCong intzNegSuccInjective
-      intzPos intzPosCong intzPosInjective isLeafOrn j lam le leDesc leElim leInjSS
+      intzPos intzPosCong intzPosInjective isLeafOrn j just lam le leDesc leElim leInjSS
       leRefutSuccZero leSS leZ leafOrnament leafOrnamentDiagnosticRecords
       leafOrnamentDiagnostics let_ level levelMax levelSuc levelZero listDesc
       listElim listOf litVal maxSucDom maybe mu nat natCaseU natDesc natLit
-      natPredCase natToLevel nil no not opaqueLam or_ ornArgInsert ornArgKeep
+      natPredCase natToLevel nil no nothing not opaqueLam or_ ornArgInsert ornArgKeep
       ornBuild ornCompose ornDesc ornForget ornI ornId ornIndexProof
       ornLiftFold ornLiftProducer ornLiftTransform ornMu ornPiKeep ornPlus
       ornPullback ornRec ornRet ornSection ornTargetIndex ornament
@@ -121,7 +121,7 @@ api.mk {
       sum sumDesc sumElim sup thunk thunkOrnament trans true_ tryAlgOrn
       tryFunctionalOrnament tryLeafOrnament tryOrnament tt u unit validateAlgOrn
       validateFunctionalLaws validateFunctionalOrnament validateLeafOrnament
-      validateOrnament variant vcons vec vecDesc
+      validateOrnament variant variantInject vcons vec vecDesc
       vecElim vhead vnil void vtail w wDesc wElim withConLabel withDescLabel
       yes zero;
 

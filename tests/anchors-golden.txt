@@ -26,6 +26,7 @@ getting-started.md#your-first-effect
 getting-started.md#your-first-type
 index.md#api-reference
 index.md#concepts
+index.md#examples
 index.md#guide
 index.md#internals
 introduction.md#how-this-document-is-organized
@@ -109,6 +110,8 @@ kernel-spec.md#4-2-functions
 kernel-spec.md#4-3-pairs
 kernel-spec.md#4-4-generated-data-families
 kernel-spec.md#4-5-description-interpretation-lift-squash-and-funext
+kernel-spec.md#4-6-absurd
+kernel-spec.md#4-6-empty
 kernel-spec.md#4-6-unit
 kernel-spec.md#4-7-bootstrap-coproduct
 kernel-spec.md#4-8-bootstrap-identity

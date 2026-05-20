@@ -256,6 +256,38 @@ in
       expr = let t = elab (HI.inrAtExplicit 0 nat bool true_); in "${t.tag}/${t.d.tag}";
       expected = "desc-con/boot-inr";
     };
+    "elab-just" = {
+      expr = let t = elab (self.just nat zero); in "${t.tag}/${t.d.tag}";
+      expected = "desc-con/boot-inl";
+    };
+    "elab-nothing" = {
+      expr = let t = elab (self.nothing nat); in "${t.tag}/${t.d.tag}";
+      expected = "desc-con/boot-inr";
+    };
+    "elab-variantInject-first" = {
+      expr =
+        let
+          v = self.variant [
+            { tag = "A"; type = nat; }
+            { tag = "B"; type = bool; }
+          ];
+          t = elab (self.variantInject v "A" zero);
+        in
+        "${t.tag}/${t.d.tag}";
+      expected = "desc-con/boot-inl";
+    };
+    "elab-variantInject-second" = {
+      expr =
+        let
+          v = self.variant [
+            { tag = "A"; type = nat; }
+            { tag = "B"; type = bool; }
+          ];
+          t = elab (self.variantInject v "B" true_);
+        in
+        "${t.tag}/${t.d.tag}";
+      expected = "desc-con/boot-inr";
+    };
     "check-public-refl" = {
       expr = (checkHoas (eq nat zero zero) refl).tag;
       expected = "desc-con";

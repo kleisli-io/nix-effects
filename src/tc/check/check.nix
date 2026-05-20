@@ -387,6 +387,10 @@ in
               dTm = dInfo.term;
               dVal = E.eval ctx.env dTm;
               cert = tm._descConCert or null;
+              certValidatedFields = if cert == null then null else cert.validatedFields or null;
+              certHasValidatedAttestation =
+                certValidatedFields != null
+                && (certValidatedFields.validated or false);
               certRef = if cert == null then null else evalDescRef ctx.env cert.ref;
               certHasTarget = cert != null && (cert ? target);
               certTargetIsIndex =
@@ -601,7 +605,9 @@ in
                                           rest = builtins.tail remaining;
                                         in
                                         bindPChain [ (P.DConLayer layerDepth) (P.Elem j) ]
-                                          (self.check ctx h.head h.S)
+                                          (if certHasValidatedAttestation && ctx.depth == 0
+                                           then pure h.head
+                                           else self.check ctx h.head h.S)
                                           (hTm: checkHeads (j + 1) rest (accTms ++ [ hTm ]));
                                     tasks = builtins.genList
                                       (j:

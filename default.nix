@@ -370,10 +370,33 @@ fx // {
   # Returns a directory of markdown files with front matter, structured as
   # nix-effects/{section}/{page}.md. No hub-specific assumptions live in
   # the producer beyond the layout contract.
-  mkDocsContent = pkgs: import ./book/gen/docs-content.nix {
-    inherit pkgs lib;
-    nix-effects = fx // { inherit extractDocs src examplesDocs; raw = internals.raw; };
-  };
+  mkDocsContent = pkgs:
+    let
+      nix-effects-for-docs = fx // { inherit extractDocs src examplesDocs; raw = internals.raw; };
+      rawCorpus = import ./book/gen/docs-content.nix {
+        inherit pkgs lib;
+        nix-effects = nix-effects-for-docs;
+      };
+      requiredChecks = [
+        (import ./tests/anchors-schema.nix {
+          inherit pkgs lib src;
+          corpus = rawCorpus;
+        })
+        (import ./tests/anchors-golden.nix {
+          inherit pkgs lib;
+          bookSrc = ./book/src;
+          goldenFile = ./tests/anchors-golden.txt;
+        })
+        (import ./tests/routing-coverage.nix {
+          inherit pkgs lib;
+          corpus = rawCorpus;
+        })
+      ];
+    in
+    import ./book/gen/docs-content.nix {
+      inherit pkgs lib requiredChecks;
+      nix-effects = nix-effects-for-docs;
+    };
 
   # Maintenance tool: regenerate the heading-anchor golden file consumed
   # by `tests.anchors-golden`. See the script's header for usage.

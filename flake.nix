@@ -40,9 +40,7 @@
 
           # Markdown content for an external documentation hub.
           # nix build .#docs-content && ls result/nix-effects/
-          docs-content = import ./book/gen/docs-content.nix {
-            inherit pkgs lib nix-effects;
-          };
+          docs-content = nix-effects-with-pkgs.mkDocsContent pkgs;
 
           # Bench harness. Binary stem is `nix-effects-bench-*`; the
           # `apps` outputs below alias these for `nix run .#bench-* -- …`.
@@ -76,7 +74,9 @@
       checks = forAllSystems (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          lib = nixpkgs.lib;
           nix-unit-pkg = nix-unit.packages.${system}.default;
+          nix-effects-with-pkgs = import ./. { inherit pkgs lib; };
         in
         {
           default = pkgs.runCommand "nix-effects-tests"
@@ -91,6 +91,10 @@
               --flake ${self}#tests
             touch $out
           '';
+          docs-content = self.packages.${system}.docs-content;
+          docs-anchors-schema = nix-effects-with-pkgs.tests.anchors-schema;
+          docs-anchors-golden = nix-effects-with-pkgs.tests.anchors-golden;
+          docs-routing-coverage = nix-effects-with-pkgs.tests.routing-coverage;
         });
     };
 }

@@ -1,51 +1,37 @@
-# Generic description-driven value walker — the canonical fold on the
-# full HOAS type algebra.
+# Generic typed walker — one polymorphic monadic fold over the HOAS type
+# algebra, parameterised by `Algebra A`.
+#
+#   unitAlg (A=Unit): validation via collecting handler — emits typeCheck
+#                     effects on failure, constructs nothing.
+#   hoasAlg (A=Hoas): elaboration via strict handler — failures throw,
+#                     `.value` is the elaborated HOAS tree.
+#
+# New interpretations (size, depth, decidable bridges) add algebras
+# against the unchanged walker.
 #
 # Public surface:
-#
 #   deriveCheck    : ty → path → value → Computation Unit
 #   deriveElaborate: ty → path → value → Computation Hoas
 #   checkWithGuard : ty → path → value → Computation Unit
 #
-# `deriveGo` is a single polymorphic monadic fold over the type algebra,
-# parameterised by an `Algebra A`. The two canonical algebras are:
+# Fold owns: shape inspection, `_htag` dispatch, effect emissions, path
+# threading, `builtins.foldl'` iteration (avoids the construction-time
+# stack growth of `bind (pure x) k`), and the dependent-Σ snd-type
+# derivation via a strict-handler hoasAlg walk on fst.
 #
-#   unitAlg : A = Unit. Every node returns null. Used by `validateValue`
-#             through the collecting handler — the walker emits typeCheck
-#             effects on failure but constructs nothing.
-#   hoasAlg : A = Hoas. Every node constructs the appropriate HOAS term.
-#             Used by `elaborateValue` through the strict handler — failures
-#             throw; on success `.value` is the elaborated HOAS tree.
+# Algebra owns: per-shape success-case construction at carrier A.
+# `walkFields` is delegated (unitAlg discards the carrier; hoasAlg builds
+# the constructor app spine); both resolve dependent field types through
+# `D.fieldType field prev`.
 #
-# Validation and elaboration are not two functors. They are one fold instantiated
-# at two carriers. Future interpretations (size, depth, decidable bridges) add
-# algebras against the unchanged walker.
-#
-# The fold owns: shape inspection, `_htag` dispatch, effect emissions, path
-# threading, `builtins.foldl'` iteration (avoiding construction-time stack growth
-# from eager `bind (pure x) k`), and the dependent-Σ snd-type derivation via an
-# internal strict-handler hoasAlg walk on fst.
-#
-# The algebra owns: per-shape success-case construction at carrier A. The
-# field-walker is delegated to the algebra because unitAlg discards the output
-# carrier while hoasAlg builds the constructor application spine. Both resolve
-# dependent field types through `D.fieldType field prev`.
-#
-# Failure modes carry one of these `reason` tags so handlers under
-# `fx.effects.typecheck.*` can route:
-#
-#   shape-mismatch    — structural disagreement at a primitive leaf, a non-attrset
-#                       where a constructor record was expected, or an unrecognised
+# Failure `reason` tags routed by `fx.effects.typecheck.*`:
+#   shape-mismatch    — primitive leaf disagreement, non-attrset where a
+#                       constructor record was expected, or unrecognised
 #                       `_con`/`_tag`.
-#   missing-field     — a constructor field is absent from the record.
-#   extra-field       — the record carries undeclared fields.
-#   predicate-failed  — a refinement guard rejected the value after shape passed.
+#   missing-field     — constructor field absent.
+#   extra-field       — record carries undeclared fields.
+#   predicate-failed  — refinement guard rejected after shape passed.
 #   deferred-pi       — reserved for proof-bearing kernel terms.
-#
-# Refinement guards still bind-sequence outside the structural walker via
-# `checkWithGuard` — the predicate is a Nix-meta-level function. With a
-# Σ-with-Decide-snd kernel encoding, `checkWithGuard` collapses into
-# `deriveCheck` over Σ-types.
 { self, fx, api, ... }:
 
 let
@@ -58,10 +44,8 @@ let
   H = fx.tc.hoas;
   HI = H._internal._indexed;
 
-  # Build the standard typeCheck-effect payload and continue with the
-  # algebra's failure carrier. Under strict, the handler throws before the
-  # bind continuation runs; under collecting, the bind continuation runs
-  # with the resume value (discarded by `(_:`) and the carrier flows on.
+  # Emit a typeCheck effect, then continue with the algebra's failure
+  # carrier. Strict throws before bind runs; collecting resumes.
   emit = alg: ty: path: reason: context: value:
     bind
       (send "typeCheck" {
@@ -73,14 +57,10 @@ let
   tryDatatypeInfo = hoasTy:
     builtins.tryEval (D.datatypeInfo hoasTy);
 
-  # Wrap an arbitrary HOAS type into a minimal `{ name; check }` record so
-  # handlers can format messages. `check = _: false` because every emission
-  # represents a failure — strict's `param.type.check param.value` reads
-  # `false` and throws; collecting/other handlers append.
-  #
-  # For μ/app-form datatypes, prefer the datatype's user-facing name
-  # (e.g. `"MetaBuilderFinalizedTool"`) over the bare `_htag` ("mu"),
-  # which is uninformative in diagnostics.
+  # Shim HOAS types into the `{ name; check }` shape handlers expect.
+  # `check = _: false` since every emission is a failure. For μ/app-form
+  # datatypes use the datatype's name (e.g. `MetaBuilderFinalizedTool`)
+  # instead of the bare `"mu"` htag.
   wrapType = ty:
     if builtins.isAttrs ty && ty ? name && ty ? check
     then ty
@@ -99,40 +79,30 @@ let
       in
       { inherit name; check = _: false; };
 
-  # Native-Nix scalar predicates. The closed leaf-bridge — partial categorical
-  # embedding of Nix's primitive value category into the kernel value category.
-  nativePred = htag:
-    if htag == "bool" then builtins.isBool
-    else if htag == "nat" then (v: builtins.isInt v && v >= 0)
-    else if htag == "unit" then (v: v == null)
-    else if htag == "string" then builtins.isString
-    else if htag == "int" then builtins.isInt
-    else if htag == "float" then builtins.isFloat
-    else if htag == "attrs" then builtins.isAttrs
-    else if htag == "path" then builtins.isPath
-    else if htag == "derivation" then (v: builtins.isAttrs v && (v.type or null) == "derivation")
-    else if htag == "function" then builtins.isFunction
-    else if htag == "any" then (_: true)
-    else if htag == "U" then (v: builtins.isAttrs v && v ? _kernel)
-    else null;
+  # Native-Nix primitive registry — leaf bridge from Nix values to the
+  # kernel. Each row binds the validation predicate, the diagnostic
+  # expectation string, and the HOAS literal constructor for a primitive
+  # `htag`. Adding a primitive = one row.
+  primitives = {
+    bool       = { pred = builtins.isBool;                                          expectation = "bool";                                            lit = v: if v then H.true_ else H.false_; };
+    nat        = { pred = v: builtins.isInt v && v >= 0;                            expectation = "non-negative integer";                            lit = H.natLit; };
+    unit       = { pred = v: v == null;                                             expectation = "null (unit)";                                     lit = _: H.tt; };
+    string     = { pred = builtins.isString;                                        expectation = "string";                                          lit = H.stringLit; };
+    int        = { pred = builtins.isInt;                                           expectation = "integer";                                         lit = H.intLit; };
+    float      = { pred = builtins.isFloat;                                         expectation = "float";                                           lit = H.floatLit; };
+    attrs      = { pred = builtins.isAttrs;                                         expectation = "attrset";                                         lit = _: H.attrsLit; };
+    path       = { pred = builtins.isPath;                                          expectation = "path";                                            lit = _: H.pathLit; };
+    derivation = { pred = v: builtins.isAttrs v && (v.type or null) == "derivation"; expectation = "derivation (attrset with type=\"derivation\")"; lit = _: H.derivationLit; };
+    function   = { pred = builtins.isFunction;                                      expectation = "function";                                        lit = _: H.fnLit; };
+    any        = { pred = _: true;                                                  expectation = "<native>";                                        lit = _: H.anyLit; };
+    U          = { pred = v: builtins.isAttrs v && v ? _kernel;                     expectation = "Type with _kernel";                               lit = v: v._kernel; };
+  };
 
-  nativeExpectation = htag:
-    if htag == "bool" then "bool"
-    else if htag == "nat" then "non-negative integer"
-    else if htag == "unit" then "null (unit)"
-    else if htag == "string" then "string"
-    else if htag == "int" then "integer"
-    else if htag == "float" then "float"
-    else if htag == "attrs" then "attrset"
-    else if htag == "path" then "path"
-    else if htag == "derivation" then "derivation (attrset with type=\"derivation\")"
-    else if htag == "function" then "function"
-    else if htag == "U" then "Type with _kernel"
-    else "<native>";
+  nativePred        = htag: primitives.${htag}.pred or null;
+  nativeExpectation = htag: primitives.${htag}.expectation or "<native>";
 
-  # Detect a list-shape datatype: two constructors, the first nullary, the
-  # second carrying one data field + one recAt field. The surface form is a
-  # Nix list rather than a constructor record.
+  # List-shape: two constructors, nullary then `[data, recAt]`. Surface
+  # form is a Nix list rather than a constructor record.
   isListShape = info:
     let cs = info.constructors; in
     builtins.length cs == 2
@@ -152,12 +122,10 @@ let
     in
     elemField.type;
 
-  # Resolve a constructor for an attrset value. Dispatch order:
-  #   1. `_con` or `_tag` present → look up by exact name; null on miss.
-  #   2. No tag and cardinality 1 → η-rule, the only constructor applies.
-  #   3. No tag and cardinality > 1 → null (caller emits shape-mismatch).
-  # The cardinality-1 η-rule does NOT shadow an explicit tag: a value with
-  # an unknown `_con` against a 1-constructor type is still rejected.
+  # Resolve a constructor for an attrset. Dispatch: (1) `_con`/`_tag`
+  # present → exact lookup, null on miss; (2) no tag, cardinality 1 →
+  # η-rule, sole constructor applies; (3) no tag, cardinality > 1 → null.
+  # An explicit unknown tag is never shadowed by the η-rule.
   resolveCon = info: value:
     if !builtins.isAttrs value then null
     else
@@ -189,16 +157,12 @@ let
         (deriveGo hoasAlg ty path value)).value
     );
 
-  # Recover fst's HOAS via a separate strict-handler trampoline over hoasAlg,
-  # catching internal failures with tryEval. Used by walkSigma — the
-  # dependent snd type requires the elaborated fst HOAS regardless of the
-  # outer algebra's carrier. Routing through the same canonical walker at a
-  # different carrier keeps the dependency local to this fold.
+  # Elaborate fst via a strict-handler hoasAlg walk; tryEval for failure.
+  # walkSigma needs fst's HOAS regardless of the outer algebra's carrier.
   elaborateFstHoas = elaborateHoasStrict;
 
-  # Π-typed values: functions and `_hoasImpl`-bearing verified records are
-  # accepted; non-functions emit shape-mismatch. A structural walker cannot
-  # inspect the function's behaviour without applying it.
+  # Π: accept functions and `_hoasImpl`-bearing records; reject anything
+  # else as shape-mismatch — the walker can't inspect a function's body.
   walkPi = alg: ty: path: value:
     if (builtins.isAttrs value && value ? _hoasImpl) || builtins.isFunction value
     then pure (alg.onPi ty value)
@@ -207,17 +171,11 @@ let
         "expected function, got ${builtins.typeOf value}"
         value;
 
-  # Σ-types: walk fst at the outer algebra, then derive snd's type by
-  # substituting fst's HOAS into `ty.body`. The HOAS recovery uses a
-  # separate strict trampoline — even when validating, the dependent snd
-  # type needs the elaborated fst.
-  #
-  # Position alphabet: `Pos.SigmaFst` / `Pos.SigmaSnd` (rendered `Σ.fst`
-  # / `Σ.snd`). Matches both the SourceMap walker
-  # (`tc/hoas/source_map.nix:127-131`) and Sigma's bespoke surface
-  # `verify=` (`types/dependent.nix:584-587`), so the walker and the
-  # surface validator emit identical blame paths — Findler-Felleisen
-  # invariance under encoding.
+  # Σ: walk fst, then derive snd's type by substituting fst's HOAS into
+  # `ty.body`. fst HOAS comes from a strict trampoline even when
+  # validating — snd needs it dependently. Blame uses
+  # `Pos.SigmaFst`/`Pos.SigmaSnd`, matching SourceMap and Sigma's
+  # surface `verify=` so paths stay invariant under encoding.
   walkSigma = alg: ty: path: value:
     if !(builtins.isAttrs value && value ? fst && value ? snd) then
       emit alg (wrapType ty) path "shape-mismatch"
@@ -246,11 +204,9 @@ let
       bind (deriveGo alg ty.inner path value) (innerA:
         pure (alg.onMaybeJust ty innerA));
 
-  # Thunk — generic deepSeq-safe carrier. Lazy structural check: verify
-  # the carrier shape (`is attrset ∧ has _force closure`) but do NOT
-  # descend into `_force`. Forcing `_force` would defeat the
-  # deepSeq-shielding the whole construct exists for — the inner type is
-  # validated post-forget by whoever consumes the forced value.
+  # Thunk — deepSeq-safe carrier. Check the carrier shape only; never
+  # invoke `_force` (forcing defeats the deepSeq shielding). Inner-type
+  # validation happens post-forget at the consumer.
   walkThunk = alg: ty: path: value:
     if !(builtins.isAttrs value
       && value ? _force
@@ -261,19 +217,10 @@ let
     else
       pure (alg.onThunk ty value);
 
-  # Variant — first-class kernel sum type. Dispatch on `value._tag`,
-  # locate the matching branch in `ty.branches`, descend into the branch
-  # type with `Pos.Tag tag` as the leaf branch coordinate. No synthetic
-  # `Pos.Field "value"` ever appears in the path because the walker
-  # treats variants as primitive kernel constructs, not as μ-encoded
-  # single-field records.
-  #
-  # Literature: every major dependent kernel (CIC/Coq, Lean 4, Agda)
-  # treats inductive sums as kernel primitives; constructor names live
-  # at the surface, positional eliminators at the core. Encoding sums
-  # through μ + synthetic field would leak the field name into blame
-  # paths, violating Findler-Felleisen / Wadler-Findler blame-label
-  # source-invariance.
+  # Variant — primitive kernel sum. Dispatch on `value._tag`, descend
+  # into the matching branch's type with `Pos.Tag tag`. No synthetic
+  # `Pos.Field "value"` appears in any path; constructor tags at the
+  # surface preserve Wadler-Findler blame-label source-invariance.
   walkVariant = alg: ty: path: value:
     if !(builtins.isAttrs value && value ? _tag && value ? value) then
       emit alg (wrapType ty) path "shape-mismatch"
@@ -300,15 +247,10 @@ let
         bind (deriveGo alg branch.type branchPath value.value)
           (innerA: pure (alg.onVariant ty tag innerA));
 
-  # Walk an indexed list against an element HOAS type. The accumulator is
-  # algebra-specific (`alg.listAcc`); for unitAlg it stays null (zero
-  # per-element allocation), for hoasAlg it is a continuation that builds
-  # the cons chain in a single O(N) finish pass.
-  #
-  # `builtins.foldl'` is strict in the accumulator, so each bind step
-  # produces either `pure accB` (passing) or an Impure node with a snoc'd
-  # queue (failing). The recursive-`go` shape would recurse N levels at
-  # construction time because `bind (pure x) k` evaluates `k x` eagerly.
+  # Walk a list at element type. Accumulator is algebra-specific
+  # (`alg.listAcc`): null for unitAlg, a cons-chain continuation for
+  # hoasAlg. `foldl'` (not recursive `go`) avoids the construction-time
+  # N-deep stack from eager `bind (pure x) k`.
   walkElems = alg: ty: path: elemTy: value:
     if !builtins.isList value then
       emit alg (wrapType ty) path "shape-mismatch"
@@ -346,10 +288,10 @@ let
         "expected ${nativeExpectation htag}, got ${builtins.typeOf value}"
         value;
 
-  # μ-/app-form datatypes. List-shape datatypes route through walkElems;
-  # attrset values dispatch on `_con`/`_tag` via `resolveCon` and descend
-  # through the algebra's `walkFields`. μ-encoded primitives (Bool's
-  # `[[],[]]`, Nat's `[[],["recAt"]]`) route back through walkPrim.
+  # μ/app datatypes. List-shape → walkElems. Attrset values dispatch on
+  # `_con`/`_tag` via `resolveCon`, then through `alg.walkFields`.
+  # μ-encoded Bool (`[[],[]]`) and Nat (`[[],["recAt"]]`) route back
+  # through walkPrim.
   walkDatatype = alg: ty: path: value:
     let infoTry = tryDatatypeInfo ty; in
     if !infoTry.success then
@@ -393,9 +335,8 @@ let
           "expected attrset (constructor signatures = ${builtins.toJSON sigs})"
           value;
 
-  # The canonical polymorphic fold. Routes on `ty._htag` over the full
-  # HOAS algebra and threads the algebra `alg` through every recursive
-  # call. Validation is `deriveGo unitAlg`; elaboration is `deriveGo hoasAlg`.
+  # Polymorphic fold. Routes on `ty._htag`, threading `alg` through every
+  # recursive call. unitAlg → validation; hoasAlg → elaboration.
   deriveGo = alg: ty: path: value:
     let t = ty._htag or null; in
     if t == "pi" then walkPi alg ty path value
@@ -407,9 +348,8 @@ let
     else if t == "mu" || t == "app" then walkDatatype alg ty path value
     else if nativePred t != null then walkPrim alg t ty path value
     else
-    # No recognised `_htag`. Some construction paths attach datatype
-    # metadata without setting `_htag`; consult `datatypeInfo` as a
-    # fallback before emitting the unknown-tag error.
+    # Fallback: some construction paths attach `_dtypeMeta` without
+    # `_htag`; try datatypeInfo before emitting unknown-tag.
       let infoTry = tryDatatypeInfo ty; in
       if infoTry.success then walkDatatype alg ty path value
       else
@@ -417,9 +357,9 @@ let
           "unknown type tag '${toString t}'"
           value;
 
-  # unitAlg's `walkFields`: validates each field and threads successful
-  # data/dataD fields as HOAS in `prev` so later dependent `typeFn`s resolve
-  # against the same field record hoasAlg uses.
+  # unitAlg's walkFields. Validates each field and threads passing
+  # data/dataD as HOAS in `prev` for dependent `typeFn` resolution —
+  # same record hoasAlg sees.
   unitWalkFields = ty: path: info: con: value:
     let
       unknownType = { _htag = "<unknown>"; };
@@ -477,10 +417,9 @@ let
     in
     bind (builtins.foldl' step (pure { }) con.fields) (_: pure null);
 
-  # hoasAlg's `walkFields`: prev-threaded constructor application chain.
-  # Each field's HOAS type is resolved via `D.fieldType field prev` so
-  # dependent fields (`typeFn prev`) resolve to the correct kernel type.
-  # The accumulator is the HOAS `H.app` chain rooted at `con.ctor`.
+  # hoasAlg's walkFields. Threads `prev` through `D.fieldType` for
+  # dependent fields and accumulates an `H.app` chain rooted at
+  # `con.ctor`.
   hoasWalkFields = ty: path: info: con: value:
     let
       fields = con.fields or [ ];
@@ -492,9 +431,8 @@ let
           builtins.filter
             (n: n != "_con" && n != "_tag" && !(builtins.elem n fieldNames))
             (builtins.attrNames value);
-      # Resolve a field's HOAS type from prev. recAt fields recurse on the
-      # parent type, decorated with the constructor's metadata so a bare
-      # `mu` node retains its datatypeInfo on the inner descent.
+      # recAt fields recurse on the parent type, decorated with
+      # `_dtypeMeta` so a bare `mu` keeps its info on the inner descent.
       fieldTyAt = f: prev:
         if f.kind == "recAt"
         then
@@ -515,11 +453,8 @@ let
             fv = if hasIt then builtins.getAttr f.name value else null;
           in
           if !hasIt then
-          # Strict aborts here; collecting accumulates the missing-field
-          # error and the resulting HOAS is a partial application chain
-          # (semantically meaningless under collecting + hoasAlg, but the
-          # error stream is correct, which is what collecting consumers
-          # read).
+          # Strict aborts here; collecting accumulates and produces a
+          # partial HOAS chain (see `hoasAlg.onFailure` for the read).
             bind
               (send "typeCheck" {
                 type = wrapType (f.type or { _htag = "<unknown>"; });
@@ -575,88 +510,35 @@ let
       if builtins.isAttrs v && v ? _hoasImpl then v._hoasImpl
       else if builtins.isFunction v then H.opaqueLam v ty
       else throw "hoasAlg.onPi: walker shape-check should have rejected this";
-    onMaybeNull = ty: H.inr H.tt;
-    onMaybeJust = ty: inner: H.inl inner;
-    # Thunk values are opaque closures — elaboration to a HOAS term
-    # would require materializing `_force null`, defeating the laziness
-    # the carrier exists for. `hoasAlg` on a thunk is therefore an
-    # error-by-design: validation works via `unitAlg`, but elaboration
-    # of a thunk value is intentionally unsupported. Callers force at
-    # the boundary (`fx.state.forceThunk`) before re-elaborating.
-    onThunk = _: _:
-      throw "hoasAlg.onThunk: thunk carriers cannot be elaborated; force at the boundary first";
-    onSigma = _: fstA: sndA: H.pair fstA sndA;
-    # Variant elaboration mirrors `elaborate.nix:574`'s type-side
-    # desugaring of `_htag = "variant"` into nested `H.sum`s:
-    # `Variant{T0,…,Tn-1}` ≅ `Sum(T0, Sum(T1, …, Tn-1))`. The active
-    # branch's value is injected with the matching `H.inl`/`H.inr`
-    # chain so the elaborated kernel value type-checks against the
-    # elaborated type.
-    onVariant = ty: tag: inner:
+    onMaybeNull = ty: H.nothing ty.inner;
+    onMaybeJust = ty: inner: H.just ty.inner inner;
+    # Thunk's kernel type is `Record { _tag : string; _force : function_ }`
+    # (inner type is HOAS-surface only). Apply the record's `mk` to
+    # `stringLit` + `fnLit`; `_force` is opaque so never invoked.
+    onThunk = ty: v:
       let
-        branches = ty.branches or [ ];
-        n = builtins.length branches;
-        # Locate the active branch index (the walker already proved it
-        # exists — `onVariant` only fires from a successful match).
-        activeIdx =
-          let
-            go = i:
-              if i >= n then null
-              else if (builtins.elemAt branches i).tag == tag then i
-              else go (i + 1);
-          in
-          go 0;
-        # Right-associated Sum suffix: `Sum(T_i, Sum(T_{i+1}, …, T_{n-1}))`
-        # collapses to just `T_{n-1}` at the deepest position. Matches
-        # `elaborate.nix:574`'s `foldl' (acc i: sum branch.type acc)`
-        # construction with the same `lastType` base.
-        restFrom = i:
-          if i == n - 1 then (builtins.elemAt branches i).type
-          else H.sum (builtins.elemAt branches i).type (restFrom (i + 1));
-        # Wrap `inner` in `i` outer `inr`s then one terminal `inl`
-        # (unless it is the last branch, in which case the terminal
-        # injection is absent — the rightmost summand is `T_{n-1}` not
-        # `Sum(T_{n-1}, ⊥)`).
-        inject = i:
-          let
-            leftTy = (builtins.elemAt branches i).type;
-            rightTy = restFrom (i + 1);
-          in
-          if i == n - 1 then inner
-          else if i == activeIdx then H.inl inner
-          else H.inr (inject (i + 1));
+        info = D.datatypeInfo ty._unfold;
+        ctor = (builtins.head info.constructors).ctor;
       in
-      if n == 0 then
-        throw "hoasAlg.onVariant: empty variant has no inhabitants"
-      else if activeIdx == null then
-        throw "hoasAlg.onVariant: tag '${toString tag}' not in branches"
-      else if n == 1 then inner
-      else inject 0;
+      H.app (H.app ctor (H.stringLit (v._tag or "Thunk"))) H.fnLit;
+    onSigma = ty: fstA: sndA: H.ann (H.pair fstA sndA) ty;
+    onVariant = ty: tag: inner: H.variantInject ty tag inner;
     onPrim = htag: _ty: v:
-      if htag == "bool" then (if v then H.true_ else H.false_)
-      else if htag == "nat" then H.natLit v
-      else if htag == "unit" then H.tt
-      else if htag == "string" then H.stringLit v
-      else if htag == "int" then H.intLit v
-      else if htag == "float" then H.floatLit v
-      else if htag == "attrs" then H.attrsLit
-      else if htag == "path" then H.pathLit
-      else if htag == "derivation" then H.derivationLit
-      else if htag == "function" then H.fnLit
-      else if htag == "any" then H.anyLit
-      else if htag == "U" then
-        if builtins.isAttrs v && v ? _kernel then v._kernel
-        else throw "hoasAlg.onPrim: U requires _kernel-bearing value"
-      else throw "hoasAlg.onPrim: unknown htag '${toString htag}'";
+      let p = primitives.${htag} or null; in
+      if p == null then throw "hoasAlg.onPrim: unknown htag '${toString htag}'"
+      else p.lit v;
     fromHoas = h: h;
-    # Unreachable under strict (the handler throws before bind continues).
-    # Under collecting + hoasAlg (unusual combo), the resulting HOAS is
-    # garbage but the error stream is preserved — that's what consumers read.
-    onFailure = null;
+    # Unreachable under strict. Collecting + hoasAlg is incoherent —
+    # fire loudly when forced rather than propagate garbage HOAS.
+    onFailure = throw ''
+      hoasAlg.onFailure forced: deriveElaborate ran under the collecting
+      handler, which produces meaningless HOAS for failed subtrees. Use
+      runStrict for elaboration, or unitAlg to collect errors without
+      elaborating.
+    '';
     listAcc = {
-      # Continuation-based accumulator: O(1) per step, O(N) finalisation.
-      # Direct snoc would be O(K) per step (Nix `++` copies left list),
-      # giving O(N²) total — defeats the bench property foldl' established.
+      # CPS accumulator: O(1) per step, O(N) finalise. Direct snoc would
+      # be O(N²) because Nix `++` copies the left operand.
       init = _: _: (rest: rest);
       step = _: elemTy: acc: elem: (rest: acc (HI.consAtExplicit elemTy elem rest));
       finish = _: elemTy: acc: acc (HI.nilAtExplicit elemTy);
@@ -667,19 +549,11 @@ let
   deriveCheckGo = ty: path: value: deriveGo unitAlg ty path value;
   deriveElaborateGo = ty: path: value: deriveGo hoasAlg ty path value;
 
-  # Refinement guard: shape first via the unit walker, predicate second.
-  # The two checks cannot run in parallel — the predicate's domain is
-  # exactly the values that pass shape (Σ-type sequencing).
-  #
-  # `mkType` does not surface the bare `guard` predicate on the type
-  # value; it composes it into `.check` (= `kernelDecide ∧ guard`) and
-  # records the kernel-only decision in `.kernelCheck`. We reconstruct
-  # the guard's verdict from the two: if shape passes and `.check`
-  # rejects, the guard fired. `_kernelSufficient = false` flags the
-  # presence of a guard so non-refined types fast-path through.
-  #
-  # With a Σ-with-Decide-snd encoding, refinement validation falls out of
-  # `deriveGo unitAlg` on the encoded form.
+  # Refinement: shape first, then predicate (Σ-type sequencing — the
+  # predicate's domain is shape-passing values). `mkType` composes the
+  # guard into `.check` (= `kernelCheck ∧ guard`); we reconstruct the
+  # guard's verdict by comparing the two. `_kernelSufficient = false`
+  # flags refined types; non-refined fast-path through.
   checkWithGuardGo = ty: path: value:
     let
       kernelTy = ty._kernel or null;
@@ -785,9 +659,8 @@ in
         expr =
           let
             T = H.thunk H.derivation;
-            # _force throws when invoked — if validation forced it, the
-            # whole expression would crash. Validation must NOT invoke
-            # `_force`; that's the deepSeq-shielding contract.
+            # `_force` throws on invocation — if validation forced it the
+            # whole test would crash.
             bomb = { _tag = "Thunk"; _force = _: throw "force was invoked during validation"; };
             errs = runCollecting (deriveCheckGo T P.empty bomb);
           in
@@ -1091,8 +964,7 @@ in
         expected = {
           count = 1;
           reason = "shape-mismatch";
-          # Variants carry the active branch directly; no synthetic
-          # `Pos.Field "value"` appears between tag and payload.
+          # No synthetic `Pos.Field "value"` between tag and payload.
           path = [
             (Pos.Field "choice")
             (Pos.Tag "Left")
@@ -1183,8 +1055,145 @@ in
         expr = (H.elab (runStrict (deriveElaborateGo
           (H.sigma "x" H.nat (_: H.bool))
           P.empty
-          { fst = 0; snd = true; }))).tag;
+          { fst = 0; snd = true; }))).term.tag;
         expected = "pair";
+      };
+
+      "deriveElaborate-thunk-yields-record-con" = {
+        expr =
+          let
+            T = H.thunk H.derivation;
+            carrier = fx.state.thunk.mkThunk { type = "derivation"; name = "x"; outPath = "/nix/store/x"; };
+            t = H.elab (runStrict (deriveElaborateGo T P.empty carrier));
+          in
+          t.tag;
+        expected = "desc-con";
+      };
+
+      "deriveElaborate-thunk-does-not-force" = {
+        expr =
+          let
+            T = H.thunk H.derivation;
+            bomb = { _tag = "Thunk"; _force = _: throw "force was invoked during elaboration"; };
+            t = H.elab (runStrict (deriveElaborateGo T P.empty bomb));
+          in
+          t.tag;
+        expected = "desc-con";
+      };
+
+      # Polymorphic intros as Record field args — kernel checks against
+      # the declared field type via explicit Sum/Σ parameters.
+
+      "decide-record-maybe-field-null-accepts" = {
+        expr = fx.tc.elaborate.decide
+          (FC.Record { a = FC.Maybe FP.String; })._kernel
+          { a = null; };
+        expected = true;
+      };
+
+      "decide-record-maybe-field-just-accepts" = {
+        expr = fx.tc.elaborate.decide
+          (FC.Record { a = FC.Maybe FP.String; })._kernel
+          { a = "x"; };
+        expected = true;
+      };
+
+      "decide-record-maybe-record-field-accepts-null" = {
+        expr = fx.tc.elaborate.decide
+          (FC.Record { x = FC.Maybe (FC.Record { a = FP.Int; }); })._kernel
+          { x = null; };
+        expected = true;
+      };
+
+      "decide-record-maybe-record-field-accepts-value" = {
+        expr = fx.tc.elaborate.decide
+          (FC.Record { x = FC.Maybe (FC.Record { a = FP.Int; }); })._kernel
+          { x = { a = 1; }; };
+        expected = true;
+      };
+
+      "decide-record-variant-field-first-branch-accepts" = {
+        expr =
+          let
+            V = FC.Variant {
+              none = FC.Record { };
+              luks = FC.Record { mapperName = FP.String; };
+            };
+          in
+          fx.tc.elaborate.decide
+            (FC.Record { encryption = V; })._kernel
+            { encryption = { _tag = "none"; value = { }; }; };
+        expected = true;
+      };
+
+      "decide-record-variant-field-second-branch-accepts" = {
+        expr =
+          let
+            V = FC.Variant {
+              none = FC.Record { };
+              luks = FC.Record { mapperName = FP.String; };
+            };
+          in
+          fx.tc.elaborate.decide
+            (FC.Record { encryption = V; })._kernel
+            { encryption = { _tag = "luks"; value = { mapperName = "x"; }; }; };
+        expected = true;
+      };
+
+      "decide-record-variant-three-branch-unit-payload" = {
+        expr =
+          let
+            V = FC.Variant {
+              wayland = FP.Unit;
+              x11 = FP.Unit;
+              hybrid = FP.Unit;
+            };
+            T = (FC.Record { session = V; })._kernel;
+          in
+          builtins.all
+            (tag: fx.tc.elaborate.decide T {
+              session = { _tag = tag; value = null; };
+            })
+            [ "wayland" "x11" "hybrid" ];
+        expected = true;
+      };
+
+      "decide-record-sigma-field-accepts-pair" = {
+        expr =
+          let
+            S = FD.Sigma {
+              fst = FP.String;
+              snd = _: FP.Int;
+              universe = 0;
+            };
+          in
+          fx.tc.elaborate.decide
+            (FC.Record { p = S; })._kernel
+            { p = { fst = "a"; snd = 1; }; };
+        expected = true;
+      };
+
+      "decide-record-listOf-maybe-field-accepts" = {
+        expr = fx.tc.elaborate.decide
+          (FC.Record { xs = FC.ListOf (FC.Maybe FP.Int); })._kernel
+          { xs = [ null 1 null 2 ]; };
+        expected = true;
+      };
+
+      "decide-record-maybe-field-soundness" = {
+        # Refinement guard inside Maybe inside Record still rejects via
+        # `.check` (kernelDecide ∧ guard).
+        expr =
+          let
+            Pos = FR.refined "Pos" FP.Int (x: x > 0);
+            T = FC.Record { a = FC.Maybe Pos; };
+          in
+          {
+            null_ok = T.check { a = null; };
+            pos_ok = T.check { a = 5; };
+            neg_rejected = T.check { a = (-1); };
+          };
+        expected = { null_ok = true; pos_ok = true; neg_rejected = false; };
       };
     };
 

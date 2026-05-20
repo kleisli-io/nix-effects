@@ -424,12 +424,12 @@ in
         expected = "desc-con/boot-inr";
       };
       "elab-val-pair" = {
-        expr = (H.elab (elaborateValue (H.sigma "x" H.nat (_: H.bool)) { fst = 0; snd = true; })).tag;
+        expr = (H.elab (elaborateValue (H.sigma "x" H.nat (_: H.bool)) { fst = 0; snd = true; })).term.tag;
         expected = "pair";
       };
 
       "elab-val-sigma-pi-snd" = {
-        expr = (H.elab (elaborateValue (H.sigma "x" H.nat (_: H.forall "y" H.nat (_: H.bool))) { fst = 0; snd = _: true; })).tag;
+        expr = (H.elab (elaborateValue (H.sigma "x" H.nat (_: H.forall "y" H.nat (_: H.bool))) { fst = 0; snd = _: true; })).term.tag;
         expected = "pair";
       };
 
@@ -614,7 +614,7 @@ in
             ty = H.sigma "x" H.nat (_: H.bool);
             val = { fst = 0; snd = true; };
           in
-          (H.elab (elaborateValue ty val)).tag;
+          (H.elab (elaborateValue ty val)).term.tag;
         expected = "pair";
       };
 
@@ -631,7 +631,7 @@ in
               else H.nat);
             val = { fst = true; snd = 42; };
           in
-          (H.elab (elaborateValue ty val)).tag;
+          (H.elab (elaborateValue ty val)).term.tag;
         expected = "pair";
       };
 

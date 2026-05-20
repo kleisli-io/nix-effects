@@ -1,13 +1,12 @@
 # fx.tc.elaborate — elaboration-bridge module head.
 #
 # Public export assembly for the elaboration bridge. `self` is the
-# disjoint-union fixpoint of `core.nix` and `extract.nix`; `partTests`
-# is the aggregated test map from both parts.
-{ self, partTests, partDocs, api, ... }:
+# disjoint-union fixpoint of every sibling part; `partTests` is the
+# aggregated test map.
+{ self, partTests, api, ... }:
 
-api.mkModule {
-  inherit partDocs;
-  description = "fx.tc.elaborate: elaboration bridge between `fx.types` and the kernel — `elaborateType`/`elaborateValue`/`extract`/`decide` thread between Nix values and kernel terms.";
+api.mk {
+  description = "fx.tc.elaborate: bridge between `fx.types` and the kernel — `elaborateType`/`elaborateValue`/`extract`/`decide` translate values to kernel terms and back.";
   doc = ''
     # fx.tc.elaborate — Elaboration Bridge
 
@@ -62,17 +61,63 @@ api.mkModule {
     - `verifyAndExtract : Hoas → Hoas → NixValue` — type-check an HOAS
       implementation against an HOAS type, evaluate, extract to Nix value.
       Throws on type error.
+
+    ## Value Embedding
+
+    - `embedVal : Val → Hoas` — lift a kernel value back into HOAS.
+      `quote 0` reads the value to a closed `Tm`; `H.embedTm` wraps it
+      via the `pre-elab` rule. Use when a Val produced by kernel
+      evaluation (e.g. an effect handler's response) needs to flow into
+      a surrounding HOAS expression that is itself about to be
+      elaborated and re-evaluated.
   '';
   value = {
     inherit (self)
       elaborateType elaborateValue validateValue
       extract extractInner reifyType
-      verifyAndExtract decide decideType;
+      verifyAndExtract embedVal decide decideType
+      instantiateOverlayF instantiateOverlay
+      evalOverlayF evalOverlay;
 
-    _internal = api.mk {
+    meta = api.namespace {
+      description = "fx.tc.elaborate.meta: meta-aware overlay — `VMeta`, overlay check/infer, overlay eliminators, quote, `elabConv`, five scoped meta-effects (force/getMetas/assignMeta/emitConstraint/getConstraints), `runElab` handler.";
+      value = {
+        inherit (self)
+          mkVMeta isVMeta coerce
+          elabCheck elabCheckTm
+          elabInfer elabInferTm elabInferApp
+          elabConv
+          elabAppF
+          elabFst elabSnd
+          elabBootSumElimF
+          elabBootJ
+          elabSquashElimF
+          elabLiftElimF
+          elabDescIndF
+          elabInterpDF
+          elabAllDF
+          elabEverywhereDF
+          mkMeta quote quoteSp quoteElim nf
+          insertImplicits descendImplicitPi plicityAwait isImplicitPi isVMetaTy
+          mkHole mkSolved isHole isSolved freshMetaInState
+          lookupMeta extendMeta solveMeta reawakenMentions forceMeta
+          mkConstraint addConstraint updateConstraint markConstraint registerMentions
+          metaIdsVal mentionsOf occurs patternSpine levelsVal simplifyConstraint
+          addAndSimplifyConstraint processActiveConstraints sigmaFlatten
+          zonkTm evalElab
+          metaEff metaResp
+          force getMetas assignMeta emitConstraint getConstraints freshMeta
+          handle_Meta handle_MetaTy
+          emptyState dispatchMeta runElab;
+      };
+    };
+
+    _internal = api.namespace {
       description = "fx.tc.elaborate._internal: cross-part elaboration helpers reachable from sibling parts via the self-fixpoint; not part of the stable consumer surface.";
-      value = { inherit (self) reifyDesc; };
+      value = {
+        inherit (self) reifyDesc;
+      };
     };
   };
-  tests = partTests;
+  tests = partTests // (self.meta.tests or { });
 }

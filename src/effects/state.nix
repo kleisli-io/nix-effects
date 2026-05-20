@@ -9,7 +9,7 @@
 # References:
 #   Plotkin & Power (2002) "Notions of Computation Determine Monads"
 #   Kiselyov & Ishii (2015) "Freer Monads, More Extensible Effects"
-{ fx, ... }:
+{ fx, api, ... }:
 let
   inherit (fx.kernel) pure bind send;
   get = send "get" null;
@@ -29,18 +29,13 @@ let
     modify = { param, state }: { resume = null; state = param state; };
   };
 
-in {
-  inherit get put modify update gets handler;
-
-
-
-  __docs = {
-    _self = {
-      description = "state effect: mutable state threaded by the handler; get/put/modify with update/gets sugar and a standard handler.";
-      doc = "Mutable state effect: get/put/modify with standard handler.";
-    };
-
-    get = {
+in
+api.namespace {
+  description = "state effect: mutable state threaded by the handler; get/put/modify with update/gets sugar and a standard handler.";
+  doc = "Mutable state effect: get/put/modify with standard handler.";
+  value = {
+    get = api.leaf {
+      value = get;
       description = "get: read the current state threaded by the state handler; impure request whose response IS the handler state.";
       signature = "get : Computation s";
       doc = ''
@@ -59,7 +54,8 @@ in {
       };
     };
 
-    put = {
+    put = api.leaf {
+      value = put;
       description = "put: replace the current state with the supplied value; impure request resuming with null.";
       signature = "put : s -> Computation null";
       doc = ''
@@ -78,7 +74,8 @@ in {
       };
     };
 
-    update = {
+    update = api.leaf {
+      value = update;
       description = "update: read the state, run a user computation against it to produce `{ state, value }`, put the new state, return the value.";
       signature = "update : (s -> Computation { state, value }) -> Computation value";
       doc = ''
@@ -103,7 +100,8 @@ in {
       };
     };
 
-    modify = {
+    modify = api.leaf {
+      value = modify;
       description = "modify: apply a function to the current state in place; impure request resuming with null after the handler runs the transformer.";
       signature = "modify : (s -> s) -> Computation null";
       doc = ''
@@ -118,7 +116,8 @@ in {
       };
     };
 
-    gets = {
+    gets = api.leaf {
+      value = gets;
       description = "gets: read a projection of the current state via a user function; sugar for `bind get (s: pure (f s))`.";
       signature = "gets : (s -> a) -> Computation a";
       doc = ''
@@ -132,7 +131,8 @@ in {
       };
     };
 
-    handler = {
+    handler = api.leaf {
+      value = handler;
       description = "state.handler: interprets get/put/modify over a single state value; pair with `trampoline.handle` and the initial state.";
       doc = ''
         Standard state handler. Interprets get/put/modify effects.

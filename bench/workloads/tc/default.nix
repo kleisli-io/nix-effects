@@ -4,16 +4,19 @@
 # user-facing surface.
 { fx }:
 {
-  conv      = import ./conv.nix      { inherit fx; };
-  quote     = import ./quote.nix     { inherit fx; };
-  check     = import ./check.nix     { inherit fx; };
-  infer     = import ./infer.nix     { inherit fx; };
+  conv = import ./conv.nix { inherit fx; };
+  quote = import ./quote.nix { inherit fx; };
+  check = import ./check.nix { inherit fx; };
+  checkD = import ./checkD.nix { inherit fx; };
+  infer = import ./infer.nix { inherit fx; };
   elaborate = import ./elaborate.nix { inherit fx; };
-  e2e       = import ./e2e.nix       { inherit fx; };
-  diag      = import ./diag.nix      { inherit fx; };
-  bindP     = import ./bindP.nix     { inherit fx; };
+  meta = import ./meta.nix { inherit fx; };
+  surface = import ./surface.nix { inherit fx; };
+  e2e = import ./e2e.nix { inherit fx; };
+  diag = import ./diag.nix { inherit fx; };
+  bindP = import ./bindP.nix { inherit fx; };
   ornaments = import ./ornaments.nix { inherit fx; };
-  generic   = import ./generic.nix   { inherit fx; };
+  generic = import ./generic.nix { inherit fx; };
   generic-fold = import ./generic-fold.nix { inherit fx; };
   decidable = import ./decidable.nix { inherit fx; };
 }

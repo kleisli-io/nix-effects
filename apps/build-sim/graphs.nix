@@ -1,5 +1,5 @@
 # Scalable dependency graph generators for benchmarking.
-{ }:
+{}:
 
 let
   sumBuilder = { deps, config }:
@@ -9,83 +9,111 @@ let
 
   leaf = name: value: {
     inherit name;
-    deps = [];
+    deps = [ ];
     builder = { deps, config }: value;
   };
 
   failingNode = name: msg: {
     inherit name;
-    deps = [];
+    deps = [ ];
     builder = failingBuilder msg;
   };
 
   # n0 <- n1 <- n2 <- ... <- nN (sequential, no cache hits)
   mkLinear = n:
-    let nodes = builtins.genList (i:
-      if i == 0 then leaf "n0" 1
-      else { name = "n${toString i}"; deps = [ (builtins.elemAt nodes (i - 1)) ]; builder = sumBuilder; }
-    ) n;
-    in { root = builtins.elemAt nodes (n - 1); config = { base = 0; }; };
+    let
+      nodes = builtins.genList
+        (i:
+          if i == 0 then leaf "n0" 1
+          else { name = "n${toString i}"; deps = [ (builtins.elemAt nodes (i - 1)) ]; builder = sumBuilder; }
+        )
+        n;
+    in
+    { root = builtins.elemAt nodes (n - 1); config = { base = 0; }; };
 
   # root depends on N independent leaves (parallel, no cache hits)
   mkWide = n:
     let leaves = builtins.genList (i: leaf "leaf${toString i}" 1) n;
-    in { root = { name = "root"; deps = leaves; builder = sumBuilder; }; config = {}; };
+    in { root = { name = "root"; deps = leaves; builder = sumBuilder; }; config = { }; };
 
   # Diamond pattern: shared deps at each level (cache stress)
   mkDiamond = depth:
     let
       buildLevel = level: children:
         if level <= 0 then children
-        else let
-          leftNode = { name = "l${toString level}_left"; deps = children; builder = sumBuilder; };
-          rightNode = { name = "l${toString level}_right"; deps = children; builder = sumBuilder; };
-        in buildLevel (level - 1) [ leftNode rightNode ];
+        else
+          let
+            leftNode = { name = "l${toString level}_left"; deps = children; builder = sumBuilder; };
+            rightNode = { name = "l${toString level}_right"; deps = children; builder = sumBuilder; };
+          in
+          buildLevel (level - 1) [ leftNode rightNode ];
       topNodes = buildLevel depth [ (leaf "base" 1) ];
-    in { root = { name = "root"; deps = topNodes; builder = sumBuilder; }; config = {}; };
+    in
+    { root = { name = "root"; deps = topNodes; builder = sumBuilder; }; config = { }; };
 
   # Binary tree: each node has 2 children, no sharing (exponential, no cache benefit)
   mkBinaryTree = depth:
-    let buildTree = d: prefix:
-      if d <= 0 then leaf "${prefix}" 1
-      else { name = prefix; deps = [ (buildTree (d - 1) "${prefix}_l") (buildTree (d - 1) "${prefix}_r") ]; builder = sumBuilder; };
-    in { root = buildTree depth "root"; config = {}; };
+    let
+      buildTree = d: prefix:
+        if d <= 0 then leaf "${prefix}" 1
+        else { name = prefix; deps = [ (buildTree (d - 1) "${prefix}_l") (buildTree (d - 1) "${prefix}_r") ]; builder = sumBuilder; };
+    in
+    { root = buildTree depth "root"; config = { }; };
 
   # Mixed: chains + wide deps
   mkMixed = { chains, chainLength, wideNodes }:
     let
-      chainRoots = builtins.genList (c:
-        let chainNodes = builtins.genList (i:
-          if i == 0 then leaf "c${toString c}_n0" 1
-          else { name = "c${toString c}_n${toString i}"; deps = [ (builtins.elemAt chainNodes (i - 1)) ]; builder = sumBuilder; }
-        ) chainLength;
-        in builtins.elemAt chainNodes (chainLength - 1)
-      ) chains;
+      chainRoots = builtins.genList
+        (c:
+          let
+            chainNodes = builtins.genList
+              (i:
+                if i == 0 then leaf "c${toString c}_n0" 1
+                else { name = "c${toString c}_n${toString i}"; deps = [ (builtins.elemAt chainNodes (i - 1)) ]; builder = sumBuilder; }
+              )
+              chainLength;
+          in
+          builtins.elemAt chainNodes (chainLength - 1)
+        )
+        chains;
       leaves = builtins.genList (i: leaf "wide${toString i}" 1) wideNodes;
-    in { root = { name = "combiner"; deps = chainRoots ++ leaves; builder = sumBuilder; }; config = { base = 0; }; };
+    in
+    { root = { name = "combiner"; deps = chainRoots ++ leaves; builder = sumBuilder; }; config = { base = 0; }; };
 
   mkLinearWithFailure = n: failAt:
-    let nodes = builtins.genList (i:
-      if i == failAt then failingNode "n${toString i}" "intentional failure at node ${toString i}"
-      else if i == 0 then leaf "n0" 1
-      else { name = "n${toString i}"; deps = [ (builtins.elemAt nodes (i - 1)) ]; builder = sumBuilder; }
-    ) n;
-    in { root = builtins.elemAt nodes (n - 1); config = { base = 0; }; };
+    let
+      nodes = builtins.genList
+        (i:
+          if i == failAt then failingNode "n${toString i}" "intentional failure at node ${toString i}"
+          else if i == 0 then leaf "n0" 1
+          else { name = "n${toString i}"; deps = [ (builtins.elemAt nodes (i - 1)) ]; builder = sumBuilder; }
+        )
+        n;
+    in
+    { root = builtins.elemAt nodes (n - 1); config = { base = 0; }; };
 
   mkMixedWithFailures = { chains, chainLength, wideNodes, failingLeaves ? 0 }:
     let
-      chainRoots = builtins.genList (c:
-        let chainNodes = builtins.genList (i:
-          if i == 0 then leaf "c${toString c}_n0" 1
-          else { name = "c${toString c}_n${toString i}"; deps = [ (builtins.elemAt chainNodes (i - 1)) ]; builder = sumBuilder; }
-        ) chainLength;
-        in builtins.elemAt chainNodes (chainLength - 1)
-      ) chains;
+      chainRoots = builtins.genList
+        (c:
+          let
+            chainNodes = builtins.genList
+              (i:
+                if i == 0 then leaf "c${toString c}_n0" 1
+                else { name = "c${toString c}_n${toString i}"; deps = [ (builtins.elemAt chainNodes (i - 1)) ]; builder = sumBuilder; }
+              )
+              chainLength;
+          in
+          builtins.elemAt chainNodes (chainLength - 1)
+        )
+        chains;
       goodLeaves = builtins.genList (i: leaf "wide${toString i}" 1) (wideNodes - failingLeaves);
       badLeaves = builtins.genList (i: failingNode "fail${toString i}" "leaf ${toString i} failed") failingLeaves;
-    in { root = { name = "combiner"; deps = chainRoots ++ goodLeaves ++ badLeaves; builder = sumBuilder; }; config = { base = 0; }; };
+    in
+    { root = { name = "combiner"; deps = chainRoots ++ goodLeaves ++ badLeaves; builder = sumBuilder; }; config = { base = 0; }; };
 
-in {
+in
+{
   inherit leaf failingNode sumBuilder failingBuilder;
   inherit mkLinear mkWide mkDiamond mkBinaryTree mkMixed;
   inherit mkLinearWithFailure mkMixedWithFailures;

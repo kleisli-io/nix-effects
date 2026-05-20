@@ -22,31 +22,36 @@ let
   # Single-constructor datatype with `n` `data` fields, no `rec`.
   # Saturated application of `mk` triggers the flat-payload path.
   flatDT = n:
-    let fields = builtins.genList
-          (i: H.field "f${toString i}" H.nat) n;
-    in H.datatype "Flat" [ (H.con "mk" fields) ];
+    let
+      fields = builtins.genList
+        (i: H.field "f${toString i}" H.nat)
+        n;
+    in
+    H.datatype "Flat" [ (H.con "mk" fields) ];
 
   # n-ary saturated application: `mk 0 0 0 … 0`.
   flatApp = n:
-    let DT = flatDT n;
-        args = builtins.genList (_: H.zero) n;
-    in builtins.foldl' (acc: a: H.app acc a) DT.mk args;
+    let
+      DT = flatDT n;
+      args = builtins.genList (_: H.zero) n;
+    in
+    builtins.foldl' (acc: a: H.app acc a) DT.mk args;
 
-  # n-deep cons chain at `List Nat`. Trailing `rec` field on `cons`
-  # routes through the linear-recursive flatten path.
+  # `H.cons` carries an implicit `{A : U}`; the chain has no expected
+  # type on its own, so the workload exit wraps it in `H.checkHoas`.
   consChain = n:
     builtins.foldl'
-      (acc: _: H.cons H.nat H.zero acc)
-      (H.nil H.nat)
+      (acc: _: H.cons H.zero acc)
+      H.nil
       (builtins.genList (x: x) n);
 
-in {
+in
+{
   # Saturated chain at a 1000-data-field constructor. Forces the
   # elaborator to walk a 1000-arg app spine and assemble a single
   # flat `desc-con` Tm.
   flatten = (H.elab (flatApp 1000)).tag;
 
-  # 1000-deep cons chain. Forces the recursive flatten path's
-  # trampoline along the rec tail.
-  recursive = (H.elab (consChain 1000)).tag;
+  # 1000-deep cons chain through the bidirectional check-mode path.
+  recursive = (H.checkHoas (H.listOf H.nat) (consChain 1000)).tag;
 }

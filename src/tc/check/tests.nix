@@ -1,15 +1,15 @@
 # Inline tests for the type-checking kernel: context ops, bidirectional
 # dispatch, motive checking, primitive literals, Desc/Mu, generated data,
 # universe levels, and trampoline stress.
-{ self, fx, ... }:
+{ self, fx, lib, ... }:
 
 let
   T = fx.tc.term;
   V = fx.tc.value;
   Q = fx.tc.quote;
-  H  = fx.tc.hoas;
+  H = fx.tc.hoas;
   HI = fx.tc.hoas._internal._indexed;
-  E  = fx.tc.eval;
+  E = fx.tc.eval;
 
   inherit (self)
     checkType checkTypeLevel
@@ -28,10 +28,10 @@ let
       spine = fx.tc.conv.normLevel v;
       head = builtins.head spine;
     in
-      if spine == [ ] then 0
-      else if builtins.length spine == 1 && head.base.kind == "zero"
-      then head.shift
-      else throw "check/tests: non-concrete level (${toString (builtins.length spine)} summands)";
+    if spine == [ ] then 0
+    else if builtins.length spine == 1 && head.base.kind == "zero"
+    then head.shift
+    else throw "check/tests: non-concrete level (${toString (builtins.length spine)} summands)";
   typeLvl = r: lvlToInt r.type.level;
   ctlLvl = r: lvlToInt r.level;
 
@@ -39,15 +39,15 @@ let
   zeroTm = H.elab H.zero;
   succZeroTm = H.elab (H.succ H.zero);
   listNatTm = H.elab (H.listOf H.nat);
-  nilNatTm = H.elab (H.nil H.nat);
-  consZeroNilTm = H.elab (H.cons H.nat H.zero (H.nil H.nat));
-  natTyVal = E.eval [] natTyTm;
-  listNatVal = E.eval [] listNatTm;
+  nilNatTm = H.elab (HI.nilAtExplicit H.nat);
+  consZeroNilTm = H.elab (HI.consAtExplicit H.nat H.zero (HI.nilAtExplicit H.nat));
+  natTyVal = E.eval [ ] natTyTm;
+  listNatVal = E.eval [ ] listNatTm;
 
   bigNatTm = H.elab (H.natLit 5000);
   bigListTm = H.elab (builtins.foldl'
-    (acc: _: H.cons H.nat H.zero acc)
-    (H.nil H.nat)
+    (acc: _: HI.consAtExplicit H.nat H.zero acc)
+    (HI.nilAtExplicit H.nat)
     (builtins.genList (x: x) 5000));
 
   unitFn = S: H.ann (H.lam "_" S (_: H.tt)) (H.forall "_" S (_: H.unit));
@@ -61,10 +61,13 @@ let
   encArgD = T.mkAnn encArg (T.mkDesc T.mkLevelZero T.mkUnit);
   encRecD = T.mkAnn encRec (T.mkDesc T.mkLevelZero T.mkUnit);
   encPiD = T.mkAnn encPi (T.mkDesc T.mkLevelZero T.mkUnit);
-  encPlus  = H.elab (H.plus (H.retI H.unit 0 H.tt) (H.retI H.unit 0 H.tt));
+  encPlus = H.elab (H.plus (H.retI H.unit 0 H.tt) (H.retI H.unit 0 H.tt));
   encPlusD = T.mkAnn encPlus (T.mkDesc T.mkLevelZero T.mkUnit);
-in {
-  scope = {};
+  encNonLinear = H.elab (H.plus H.descRet (H.descRec (H.descRec H.descRet)));
+  encNonLinearD = T.mkAnn encNonLinear (T.mkDesc T.mkLevelZero T.mkUnit);
+in
+{
+  scope = { };
   tests = {
     "ctx-empty-depth" = { expr = ctx0.depth; expected = 0; };
     "ctx-extend-depth" = { expr = ctx1.depth; expected = 1; };
@@ -72,7 +75,7 @@ in {
 
     "check-id" = {
       expr = (checkTm ctx0 (T.mkLam "x" T.mkUnit (T.mkVar 0))
-        (vPi "x" vUnit (mkClosure [] T.mkUnit))).tag;
+        (vPi "x" vUnit (mkClosure [ ] T.mkUnit))).tag;
       expected = "lam";
     };
     "check-tt" = {
@@ -85,7 +88,7 @@ in {
     };
     "check-pair" = {
       expr = (checkTm ctx0 (T.mkPair T.mkTt T.mkTt)
-        (vSigma "x" vUnit (mkClosure [] T.mkUnit))).tag;
+        (vSigma "x" vUnit (mkClosure [ ] T.mkUnit))).tag;
       expected = "pair";
     };
     "check-boot-inl" = {
@@ -158,31 +161,39 @@ in {
       expected = 0;
     };
     "infer-app" = {
-      expr = let
-        idFn = T.mkAnn (T.mkLam "x" T.mkUnit (T.mkVar 0))
-          (T.mkPi "x" T.mkUnit T.mkUnit);
-      in (inferTm ctx0 (T.mkApp idFn T.mkTt)).type.tag;
+      expr =
+        let
+          idFn = T.mkAnn (T.mkLam "x" T.mkUnit (T.mkVar 0))
+            (T.mkPi "x" T.mkUnit T.mkUnit);
+        in
+        (inferTm ctx0 (T.mkApp idFn T.mkTt)).type.tag;
       expected = "VUnit";
     };
     "infer-fst" = {
-      expr = let
-        p = T.mkAnn (T.mkPair T.mkTt (T.mkStringLit "x"))
-          (T.mkSigma "x" T.mkUnit T.mkString);
-      in (inferTm ctx0 (T.mkFst p)).type.tag;
+      expr =
+        let
+          p = T.mkAnn (T.mkPair T.mkTt (T.mkStringLit "x"))
+            (T.mkSigma "x" T.mkUnit T.mkString);
+        in
+        (inferTm ctx0 (T.mkFst p)).type.tag;
       expected = "VUnit";
     };
     "infer-snd" = {
-      expr = let
-        p = T.mkAnn (T.mkPair T.mkTt (T.mkStringLit "x"))
-          (T.mkSigma "x" T.mkUnit T.mkString);
-      in (inferTm ctx0 (T.mkSnd p)).type.tag;
+      expr =
+        let
+          p = T.mkAnn (T.mkPair T.mkTt (T.mkStringLit "x"))
+            (T.mkSigma "x" T.mkUnit T.mkString);
+        in
+        (inferTm ctx0 (T.mkSnd p)).type.tag;
       expected = "VString";
     };
     "infer-pair-via-ann" = {
-      expr = let
-        sigTy = T.mkSigma "x" T.mkUnit T.mkString;
-        p = T.mkAnn (T.mkPair T.mkTt (T.mkStringLit "x")) sigTy;
-      in (inferTm ctx0 p).type.tag;
+      expr =
+        let
+          sigTy = T.mkSigma "x" T.mkUnit T.mkString;
+          p = T.mkAnn (T.mkPair T.mkTt (T.mkStringLit "x")) sigTy;
+        in
+        (inferTm ctx0 p).type.tag;
       expected = "VSigma";
     };
     "reject-pair-infer-bare" = {
@@ -191,19 +202,21 @@ in {
     };
     "reject-pair-infer-bare-msg" = {
       expr = (inferTm ctx0 (T.mkPair T.mkTt T.mkTt)).msg;
-      expected = "cannot infer type";
+      expected = "no inference rule for term shape pair";
     };
     "check-let" = {
       expr = (checkTm ctx0 (T.mkLet "x" T.mkUnit T.mkTt (T.mkVar 0)) vUnit).tag;
       expected = "let";
     };
     "check-poly-id" = {
-      expr = let
-        ty = vPi "A" (vU V.vLevelZero)
-          (mkClosure [] (T.mkPi "x" (T.mkVar 0) (T.mkVar 1)));
-        tm = T.mkLam "A" (T.mkU T.mkLevelZero)
-          (T.mkLam "x" (T.mkVar 0) (T.mkVar 0));
-      in (checkTm ctx0 tm ty).tag;
+      expr =
+        let
+          ty = vPi "A" (vU V.vLevelZero)
+            (mkClosure [ ] (T.mkPi "x" (T.mkVar 0) (T.mkVar 1)));
+          tm = T.mkLam "A" (T.mkU T.mkLevelZero)
+            (T.mkLam "x" (T.mkVar 0) (T.mkVar 0));
+        in
+        (checkTm ctx0 tm ty).tag;
       expected = "lam";
     };
 
@@ -269,13 +282,136 @@ in {
     };
     "reject-pair-snd-mismatch" = {
       expr = (checkTm ctx0 (T.mkPair T.mkTt T.mkTt)
-        (vSigma "x" vUnit (mkClosure [] T.mkString))) ? error;
+        (vSigma "x" vUnit (mkClosure [ ] T.mkString))) ? error;
       expected = true;
     };
     "reject-pair-snd-mismatch-msg" = {
       expr = (checkTm ctx0 (T.mkPair T.mkTt T.mkTt)
-        (vSigma "x" vUnit (mkClosure [] T.mkString))).msg;
-      expected = "cannot infer type";
+        (vSigma "x" vUnit (mkClosure [ ] T.mkString))).msg;
+      expected = "no inference rule for term shape tt";
+    };
+    "catchall-leaf-carries-term-tag" = {
+      expr = (inferTm ctx0 (T.mkPair T.mkTt T.mkTt)).error.detail.term.tag;
+      expected = "pair";
+    };
+    "catchall-leaf-carries-frame-depth-zero" = {
+      expr = (inferTm ctx0 (T.mkPair T.mkTt T.mkTt)).error.detail.frame.depth;
+      expected = 0;
+    };
+    "catchall-leaf-frame-depth-tracks-context" = {
+      expr =
+        let
+          ctx5 = builtins.foldl' (c: n: extend c "v${toString n}" vUnit)
+            ctx0 [ 0 1 2 3 4 ];
+        in
+        (inferTm ctx5 (T.mkPair T.mkTt T.mkTt)).error.detail.frame.depth;
+      expected = 5;
+    };
+    "catchall-leaf-frame-names-tracks-extends" = {
+      expr =
+        let
+          ctx3 = extend (extend (extend ctx0 "a" vUnit) "b" vUnit) "c" vUnit;
+        in
+        (inferTm ctx3 (T.mkPair T.mkTt T.mkTt)).error.detail.frame.names;
+      expected = [ "c" "b" "a" ];
+    };
+    "catchall-leaf-carries-quoted-term" = {
+      expr = (inferTm ctx0 (T.mkPair T.mkTt T.mkTt)).error.detail.term.quoted.tag;
+      expected = "pair";
+    };
+    "trace-records-rule-name-via-bindPR" = {
+      expr =
+        let
+          err = (checkTm ctx0 (T.mkPair T.mkTt T.mkTt)
+            (vSigma "x" vUnit (mkClosure [ ] T.mkString))).error;
+          rules = map (e: e.rule) err.detail.trace;
+        in
+        builtins.elem "check" rules;
+      expected = true;
+    };
+
+    # -- End-to-end resolver: the catch-all leaf from a real kernel
+    # path must surface a shape-category Hint via fx.diag.hints.resolve.
+    # Drives the full check→sub→infer→catch-all flow.
+    "catchall-resolves-shape-hint" = {
+      expr =
+        let
+          err = (checkTm ctx0 (T.mkPair T.mkTt T.mkTt)
+            (vSigma "x" vUnit (mkClosure [ ] T.mkString))).error;
+          hint = fx.diag.hints.resolve err;
+        in
+        if hint == null then null else hint.category;
+      expected = "shape";
+    };
+    "catchall-resolves-unhandled-tt" = {
+      expr =
+        let
+          err = (checkTm ctx0 (T.mkPair T.mkTt T.mkTt)
+            (vSigma "x" vUnit (mkClosure [ ] T.mkString))).error;
+          hint = fx.diag.hints.resolve err;
+        in
+        hint == fx.diag.hints.hints."::unhandled-tt";
+      expected = true;
+    };
+
+    # -- End-to-end renderer: multiLine on a real catch-all error
+    # contains the Kernel layer marker, the term tag, the frame depth,
+    # the trace stack header, and the resolved hint text.
+    "catchall-render-includes-kernel-layer" = {
+      expr =
+        let
+          err = (checkTm ctx0 (T.mkPair T.mkTt T.mkTt)
+            (vSigma "x" vUnit (mkClosure [ ] T.mkString))).error;
+          rendered = fx.diag.pretty.multiLine err;
+        in
+        lib.strings.hasInfix "[Kernel]" rendered;
+      expected = true;
+    };
+    "catchall-render-includes-term-tag-line" = {
+      expr =
+        let
+          err = (checkTm ctx0 (T.mkPair T.mkTt T.mkTt)
+            (vSigma "x" vUnit (mkClosure [ ] T.mkString))).error;
+          rendered = fx.diag.pretty.multiLine err;
+        in
+        lib.strings.hasInfix "term: tt" rendered;
+      expected = true;
+    };
+    "catchall-render-includes-frame-depth-line" = {
+      expr =
+        let
+          err = (checkTm ctx0 (T.mkPair T.mkTt T.mkTt)
+            (vSigma "x" vUnit (mkClosure [ ] T.mkString))).error;
+          rendered = fx.diag.pretty.multiLine err;
+        in
+        lib.strings.hasInfix "frame.depth: 0" rendered;
+      expected = true;
+    };
+    "catchall-render-includes-trace-header" = {
+      expr =
+        let
+          err = (checkTm ctx0 (T.mkPair T.mkTt T.mkTt)
+            (vSigma "x" vUnit (mkClosure [ ] T.mkString))).error;
+          rendered = fx.diag.pretty.multiLine err;
+        in
+        lib.strings.hasInfix "trace:" rendered;
+      expected = true;
+    };
+    # Resolver and renderer are decoupled: the resolver returns the
+    # Hint, the renderer reads `err.hint`. The end-to-end pipeline is
+    # resolve → setLeafHint → render. This test pins the whole chain.
+    "catchall-resolve-attach-render-pipeline" = {
+      expr =
+        let
+          err = (checkTm ctx0 (T.mkPair T.mkTt T.mkTt)
+            (vSigma "x" vUnit (mkClosure [ ] T.mkString))).error;
+          hint = fx.diag.hints.resolve err;
+          annotated = fx.diag.error.setLeafHint hint err;
+          rendered = fx.diag.pretty.multiLine annotated;
+        in
+        hint != null
+        && lib.strings.hasInfix hint.text rendered;
+      expected = true;
     };
     "reject-j-motive-wrong-inner-domain" = {
       expr = (inferTm ctx0 (T.mkBootJ T.mkUnit T.mkTt
@@ -295,7 +431,8 @@ in {
     };
     "reject-U1-in-U0" = {
       expr = (checkTm ctx0
-        (T.mkU (T.mkLevelSuc T.mkLevelZero)) (vU V.vLevelZero)) ? error;
+        (T.mkU (T.mkLevelSuc T.mkLevelZero))
+        (vU V.vLevelZero)) ? error;
       expected = true;
     };
     "reject-sum-elim-unit-scrut" = {
@@ -319,6 +456,19 @@ in {
       expr = (inferTm ctx0 (T.mkBootSum T.mkUnit T.mkString)).type.tag;
       expected = "VU";
     };
+    "infer-lift-elim-accepts-composed-nested-lift" = {
+      expr =
+        let
+          l0 = T.mkLevelZero;
+          l1 = T.mkLevelSuc l0;
+          l2 = T.mkLevelSuc l1;
+          innerTy = T.mkLift l0 l1 T.mkBootRefl T.mkUnit;
+          composedIntro = T.mkLiftIntro l0 l2 T.mkBootRefl T.mkUnit T.mkTt;
+          lowered = T.mkLiftElim l1 l2 T.mkBootRefl innerTy composedIntro;
+        in
+        (inferTm ctx0 lowered).type.tag;
+      expected = "VLift";
+    };
     "checktype-generated-nat" = {
       expr = (runCheck (checkType ctx0 natTyTm)).tag;
       expected = "mu";
@@ -341,144 +491,177 @@ in {
     };
 
     "stress-nested-let-100" = {
-      expr = let
-        nested = builtins.foldl' (body: _:
-          T.mkLet "x" T.mkUnit T.mkTt body
-        ) T.mkTt (builtins.genList (x: x) 100);
-      in (checkTm ctx0 nested vUnit).tag;
+      expr =
+        let
+          nested = builtins.foldl'
+            (body: _:
+              T.mkLet "x" T.mkUnit T.mkTt body
+            )
+            T.mkTt
+            (builtins.genList (x: x) 100);
+        in
+        (checkTm ctx0 nested vUnit).tag;
       expected = "let";
     };
     "stress-nested-pi" = {
-      expr = let
-        nested = builtins.foldl' (acc: _: T.mkPi "x" T.mkUnit acc)
-          T.mkUnit (builtins.genList (x: x) 500);
-      in typeLvl (inferTm ctx0 nested);
+      expr =
+        let
+          nested = builtins.foldl' (acc: _: T.mkPi "x" T.mkUnit acc)
+            T.mkUnit
+            (builtins.genList (x: x) 500);
+        in
+        typeLvl (inferTm ctx0 nested);
       expected = 0;
     };
 
     "roundtrip-tt" = {
-      expr = Q.nf [] (Q.nf [] T.mkTt) == Q.nf [] T.mkTt;
+      expr = Q.nf [ ] (Q.nf [ ] T.mkTt) == Q.nf [ ] T.mkTt;
       expected = true;
     };
     "roundtrip-generated-zero" = {
-      expr = Q.nf [] (Q.nf [] zeroTm) == Q.nf [] zeroTm;
+      expr = Q.nf [ ] (Q.nf [ ] zeroTm) == Q.nf [ ] zeroTm;
       expected = true;
     };
     "roundtrip-generated-list" = {
-      expr = Q.nf [] (Q.nf [] consZeroNilTm) == Q.nf [] consZeroNilTm;
+      expr = Q.nf [ ] (Q.nf [ ] consZeroNilTm) == Q.nf [ ] consZeroNilTm;
       expected = true;
     };
     "roundtrip-pair" = {
-      expr = Q.nf [] (Q.nf [] (T.mkPair T.mkTt T.mkTt))
-        == Q.nf [] (T.mkPair T.mkTt T.mkTt);
+      expr = Q.nf [ ] (Q.nf [ ] (T.mkPair T.mkTt T.mkTt))
+        == Q.nf [ ] (T.mkPair T.mkTt T.mkTt);
       expected = true;
     };
     "roundtrip-app-beta" = {
-      expr = let
-        tm = T.mkApp (T.mkLam "x" T.mkUnit (T.mkVar 0)) T.mkTt;
-      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expr =
+        let
+          tm = T.mkApp (T.mkLam "x" T.mkUnit (T.mkVar 0)) T.mkTt;
+        in
+        Q.nf [ ] (Q.nf [ ] tm) == Q.nf [ ] tm;
       expected = true;
     };
     "roundtrip-let" = {
-      expr = let tm = T.mkLet "x" T.mkUnit T.mkTt (T.mkVar 0);
-      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expr =
+        let tm = T.mkLet "x" T.mkUnit T.mkTt (T.mkVar 0);
+        in Q.nf [ ] (Q.nf [ ] tm) == Q.nf [ ] tm;
       expected = true;
     };
     "roundtrip-pi" = {
-      expr = let tm = T.mkPi "x" T.mkUnit T.mkUnit;
-      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expr =
+        let tm = T.mkPi "x" T.mkUnit T.mkUnit;
+        in Q.nf [ ] (Q.nf [ ] tm) == Q.nf [ ] tm;
       expected = true;
     };
     "roundtrip-lam" = {
-      expr = let tm = T.mkLam "x" T.mkUnit (T.mkVar 0);
-      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expr =
+        let tm = T.mkLam "x" T.mkUnit (T.mkVar 0);
+        in Q.nf [ ] (Q.nf [ ] tm) == Q.nf [ ] tm;
       expected = true;
     };
     "roundtrip-sigma" = {
-      expr = let tm = T.mkSigma "x" T.mkUnit T.mkUnit;
-      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expr =
+        let tm = T.mkSigma "x" T.mkUnit T.mkUnit;
+        in Q.nf [ ] (Q.nf [ ] tm) == Q.nf [ ] tm;
       expected = true;
     };
     "roundtrip-sum" = {
-      expr = let tm = T.mkBootSum T.mkUnit T.mkString;
-      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expr =
+        let tm = T.mkBootSum T.mkUnit T.mkString;
+        in Q.nf [ ] (Q.nf [ ] tm) == Q.nf [ ] tm;
       expected = true;
     };
     "roundtrip-inl" = {
-      expr = let tm = T.mkBootInl T.mkUnit T.mkString T.mkTt;
-      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expr =
+        let tm = T.mkBootInl T.mkUnit T.mkString T.mkTt;
+        in Q.nf [ ] (Q.nf [ ] tm) == Q.nf [ ] tm;
       expected = true;
     };
     "roundtrip-inr" = {
-      expr = let tm = T.mkBootInr T.mkUnit T.mkString (T.mkStringLit "x");
-      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expr =
+        let tm = T.mkBootInr T.mkUnit T.mkString (T.mkStringLit "x");
+        in Q.nf [ ] (Q.nf [ ] tm) == Q.nf [ ] tm;
       expected = true;
     };
     "roundtrip-eq" = {
-      expr = let tm = T.mkBootEq T.mkUnit T.mkTt T.mkTt;
-      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expr =
+        let tm = T.mkBootEq T.mkUnit T.mkTt T.mkTt;
+        in Q.nf [ ] (Q.nf [ ] tm) == Q.nf [ ] tm;
       expected = true;
     };
     "roundtrip-refl" = {
-      expr = Q.nf [] (Q.nf [] T.mkBootRefl) == Q.nf [] T.mkBootRefl;
+      expr = Q.nf [ ] (Q.nf [ ] T.mkBootRefl) == Q.nf [ ] T.mkBootRefl;
       expected = true;
     };
     "roundtrip-U" = {
-      expr = Q.nf [] (Q.nf [] (T.mkU T.mkLevelZero)) == Q.nf [] (T.mkU T.mkLevelZero);
+      expr = Q.nf [ ] (Q.nf [ ] (T.mkU T.mkLevelZero)) == Q.nf [ ] (T.mkU T.mkLevelZero);
       expected = true;
     };
     "roundtrip-under-binder-var" = {
-      expr = let env1 = [ (V.freshVar 0) ];
-      in Q.nf env1 (Q.nf env1 (T.mkVar 0)) == Q.nf env1 (T.mkVar 0);
+      expr =
+        let env1 = [ (V.freshVar 0) ];
+        in Q.nf env1 (Q.nf env1 (T.mkVar 0)) == Q.nf env1 (T.mkVar 0);
       expected = true;
     };
     "roundtrip-under-binder-pi" = {
-      expr = let
-        env1 = [ (V.freshVar 0) ];
-        tm = T.mkPi "y" T.mkUnit (T.mkVar 1);
-      in Q.nf env1 (Q.nf env1 tm) == Q.nf env1 tm;
+      expr =
+        let
+          env1 = [ (V.freshVar 0) ];
+          tm = T.mkPi "y" T.mkUnit (T.mkVar 1);
+        in
+        Q.nf env1 (Q.nf env1 tm) == Q.nf env1 tm;
       expected = true;
     };
     "roundtrip-under-binder-lam" = {
-      expr = let
-        env1 = [ (V.freshVar 0) ];
-        tm = T.mkLam "y" T.mkUnit (T.mkVar 1);
-      in Q.nf env1 (Q.nf env1 tm) == Q.nf env1 tm;
+      expr =
+        let
+          env1 = [ (V.freshVar 0) ];
+          tm = T.mkLam "y" T.mkUnit (T.mkVar 1);
+        in
+        Q.nf env1 (Q.nf env1 tm) == Q.nf env1 tm;
       expected = true;
     };
 
     "level-pi-with-type-var" = {
-      expr = let
-        ctxB = extend ctx0 "B" (vU (V.vLevelSuc V.vLevelZero));
-      in typeLvl (inferTm ctxB (T.mkPi "x" T.mkUnit (T.mkVar 1)));
+      expr =
+        let
+          ctxB = extend ctx0 "B" (vU (V.vLevelSuc V.vLevelZero));
+        in
+        typeLvl (inferTm ctxB (T.mkPi "x" T.mkUnit (T.mkVar 1)));
       expected = 1;
     };
     "level-sigma-with-type-var" = {
-      expr = let
-        ctxB = extend ctx0 "B" (vU (V.vLevelSuc V.vLevelZero));
-      in typeLvl (inferTm ctxB (T.mkSigma "x" T.mkUnit (T.mkVar 1)));
+      expr =
+        let
+          ctxB = extend ctx0 "B" (vU (V.vLevelSuc V.vLevelZero));
+        in
+        typeLvl (inferTm ctxB (T.mkSigma "x" T.mkUnit (T.mkVar 1)));
       expected = 1;
     };
     "level-nested-pi" = {
-      expr = let
-        ctxA = extend ctx0 "A" (vU (V.vLevelSuc (V.vLevelSuc V.vLevelZero)));
-      in typeLvl (inferTm ctxA (T.mkPi "x" T.mkUnit (T.mkPi "y" T.mkUnit (T.mkVar 2))));
+      expr =
+        let
+          ctxA = extend ctx0 "A" (vU (V.vLevelSuc (V.vLevelSuc V.vLevelZero)));
+        in
+        typeLvl (inferTm ctxA (T.mkPi "x" T.mkUnit (T.mkPi "y" T.mkUnit (T.mkVar 2))));
       expected = 2;
     };
     "level-app-returning-universe" = {
-      expr = let
-        fTy = vPi "x" vUnit (mkClosure [] (T.mkU (T.mkLevelSuc T.mkLevelZero)));
-        ctxF = extend ctx0 "F" fTy;
-      in typeLvl (inferTm ctxF (T.mkPi "y" (T.mkApp (T.mkVar 0) T.mkTt) T.mkUnit));
+      expr =
+        let
+          fTy = vPi "x" vUnit (mkClosure [ ] (T.mkU (T.mkLevelSuc T.mkLevelZero)));
+          ctxF = extend ctx0 "F" fTy;
+        in
+        typeLvl (inferTm ctxF (T.mkPi "y" (T.mkApp (T.mkVar 0) T.mkTt) T.mkUnit));
       expected = 1;
     };
     "level-sigma-mixed-vars" = {
-      expr = let
-        ctxAB = extend
-          (extend ctx0 "A" (vU (V.vLevelSuc (V.vLevelSuc V.vLevelZero))))
-          "B"
-          (vU (V.vLevelSuc V.vLevelZero));
-      in typeLvl (inferTm ctxAB (T.mkSigma "x" (T.mkVar 1) (T.mkVar 1)));
+      expr =
+        let
+          ctxAB = extend
+            (extend ctx0 "A" (vU (V.vLevelSuc (V.vLevelSuc V.vLevelZero))))
+            "B"
+            (vU (V.vLevelSuc V.vLevelZero));
+        in
+        typeLvl (inferTm ctxAB (T.mkSigma "x" (T.mkVar 1) (T.mkVar 1)));
       expected = 2;
     };
 
@@ -620,7 +803,8 @@ in {
           checked = checkTm ctx0
             encArg1
             (V.vDesc (V.vLevelSuc V.vLevelZero) vUnit);
-        in (E.eval [] checked).tag;
+        in
+        (E.eval [ ] checked).tag;
       expected = "VDescCon";
     };
     "infer-desc-rec" = {
@@ -657,36 +841,52 @@ in {
       expr = (inferTm ctx0
         (T.mkDescCon
           encRetD
-          T.mkTt T.mkBootRefl)).type.tag;
+          T.mkTt
+          T.mkBootRefl)).type.tag;
       expected = "VMu";
     };
     "check-desc-con" = {
       expr =
         let
-          encRetVal = E.eval [] (inferTm ctx0 encRetD).term;
-        in (checkTm ctx0
-              (T.mkDescCon encRetD T.mkTt T.mkBootRefl)
-              (vMu vUnit encRetVal vTt)).tag;
+          encRetVal = E.eval [ ] (inferTm ctx0 encRetD).term;
+        in
+        (checkTm ctx0
+          (T.mkDescCon encRetD T.mkTt T.mkBootRefl)
+          (vMu vUnit encRetVal vTt)).tag;
+      expected = "desc-con";
+    };
+    "check-desc-con-nonlinear-plus-left" = {
+      expr =
+        let
+          DVal = E.eval [ ] (inferTm ctx0 encNonLinearD).term;
+          payload = T.mkBootInl T.mkUnit T.mkUnit T.mkBootRefl;
+        in
+        (checkTm ctx0
+          (T.mkDescCon encNonLinearD T.mkTt payload)
+          (vMu vUnit DVal vTt)).tag;
       expected = "desc-con";
     };
     "reject-desc-con-bad-payload" = {
       expr = (inferTm ctx0
         (T.mkDescCon
           encRetD
-          T.mkTt T.mkTt)) ? error;
+          T.mkTt
+          T.mkTt)) ? error;
       expected = true;
     };
     "infer-desc-ind-ret" = {
-      expr = let
-        D = encRetD;
-      in (inferTm ctx0 (T.mkDescInd D
-        (T.mkLam "i" T.mkUnit
-          (T.mkLam "_" (T.mkMu T.mkUnit D (T.mkVar 0)) T.mkUnit))
-        (T.mkLam "i" T.mkUnit
-          (T.mkLam "d" (T.mkBootEq T.mkUnit T.mkTt (T.mkVar 0))
-            (T.mkLam "_" T.mkUnit T.mkTt)))
-        T.mkTt
-        (T.mkDescCon D T.mkTt T.mkBootRefl))).type.tag;
+      expr =
+        let
+          D = encRetD;
+        in
+        (inferTm ctx0 (T.mkDescInd D
+          (T.mkLam "i" T.mkUnit
+            (T.mkLam "_" (T.mkMu T.mkUnit D (T.mkVar 0)) T.mkUnit))
+          (T.mkLam "i" T.mkUnit
+            (T.mkLam "d" (T.mkBootEq T.mkUnit T.mkTt (T.mkVar 0))
+              (T.mkLam "_" T.mkUnit T.mkTt)))
+          T.mkTt
+          (T.mkDescCon D T.mkTt T.mkBootRefl))).type.tag;
       expected = "VUnit";
     };
 
@@ -695,86 +895,139 @@ in {
       expected = "VPi";
     };
     "infer-funext-type-roundtrips-to-funextTypeTm" = {
-      expr = let
-        r = inferTm ctx0 T.mkFunext;
-      in Q.quote 0 r.type == T.funextTypeTm;
+      expr =
+        let
+          r = inferTm ctx0 T.mkFunext;
+        in
+        Q.quote 0 r.type == T.funextTypeTm;
       expected = true;
     };
     "infer-funext-type-binds-level-j" = {
-      expr = let
-        r = inferTm ctx0 T.mkFunext;
-        tyTm = Q.quote 0 r.type;
-      in tyTm.name;
+      expr =
+        let
+          r = inferTm ctx0 T.mkFunext;
+          tyTm = Q.quote 0 r.type;
+        in
+        tyTm.name;
       expected = "j";
     };
     "infer-funext-type-binds-level-k" = {
-      expr = let
-        r = inferTm ctx0 T.mkFunext;
-        tyTm = Q.quote 0 r.type;
-      in tyTm.codomain.name;
+      expr =
+        let
+          r = inferTm ctx0 T.mkFunext;
+          tyTm = Q.quote 0 r.type;
+        in
+        tyTm.codomain.name;
       expected = "k";
     };
     "check-funext-against-its-type" = {
-      expr = let
-        funextTy = E.eval [] T.funextTypeTm;
-      in (checkTm ctx0 T.mkFunext funextTy).tag;
+      expr =
+        let
+          funextTy = E.eval [ ] T.funextTypeTm;
+        in
+        (checkTm ctx0 T.mkFunext funextTy).tag;
       expected = "funext";
     };
     "check-funext-reflexive-application" = {
-      expr = let
-        A = T.mkUnit;
-        Bty = T.mkPi "_" A (T.mkU T.mkLevelZero);
-        B = T.mkAnn (T.mkLam "_" A A) Bty;
-        fTy = T.mkPi "a" A A;
-        f = T.mkAnn (T.mkLam "_" A T.mkTt) fTy;
-        ptTy = T.mkPi "a" A (T.mkBootEq A T.mkTt T.mkTt);
-        pointwise = T.mkAnn (T.mkLam "_" A T.mkBootRefl) ptTy;
-        term = T.mkApp (T.mkApp (T.mkApp (T.mkApp (T.mkApp (T.mkApp (T.mkApp
-          T.mkFunext (T.mkLevelLit 0)) (T.mkLevelLit 0)) A) B) f) f) pointwise;
-        expectedTy = V.vBootEq
-          (V.vPi "a" V.vUnit (V.mkClosure [] A))
-          (E.eval [] f)
-          (E.eval [] f);
-      in (checkTm ctx0 term expectedTy).tag;
+      expr =
+        let
+          A = T.mkUnit;
+          Bty = T.mkPi "_" A (T.mkU T.mkLevelZero);
+          B = T.mkAnn (T.mkLam "_" A A) Bty;
+          fTy = T.mkPi "a" A A;
+          f = T.mkAnn (T.mkLam "_" A T.mkTt) fTy;
+          ptTy = T.mkPi "a" A (T.mkBootEq A T.mkTt T.mkTt);
+          pointwise = T.mkAnn (T.mkLam "_" A T.mkBootRefl) ptTy;
+          term = T.mkApp
+            (T.mkApp
+              (T.mkApp
+                (T.mkApp
+                  (T.mkApp
+                    (T.mkApp
+                      (T.mkApp
+                        T.mkFunext
+                        (T.mkLevelLit 0))
+                      (T.mkLevelLit 0))
+                    A)
+                  B)
+                f)
+              f)
+            pointwise;
+          expectedTy = V.vBootEq
+            (V.vPi "a" V.vUnit (V.mkClosure [ ] A))
+            (E.eval [ ] f)
+            (E.eval [ ] f);
+        in
+        (checkTm ctx0 term expectedTy).tag;
       expected = "app";
     };
     "check-funext-application-at-level-one" = {
-      expr = let
-        A = T.mkU T.mkLevelZero;
-        Bty = T.mkPi "_" A (T.mkU (T.mkLevelSuc T.mkLevelZero));
-        B = T.mkAnn (T.mkLam "_" A A) Bty;
-        fTy = T.mkPi "_" A A;
-        f = T.mkAnn (T.mkLam "_" A T.mkUnit) fTy;
-        ptTy = T.mkPi "_" A (T.mkBootEq A T.mkUnit T.mkUnit);
-        pointwise = T.mkAnn (T.mkLam "_" A T.mkBootRefl) ptTy;
-        term = T.mkApp (T.mkApp (T.mkApp (T.mkApp (T.mkApp (T.mkApp (T.mkApp
-          T.mkFunext (T.mkLevelLit 1)) (T.mkLevelLit 1)) A) B) f) f) pointwise;
-        fVal = E.eval [] (inferTm ctx0 f).term;
-        expectedTy = V.vBootEq
-          (V.vPi "_" (V.vU V.vLevelZero) (V.mkClosure [] A))
-          fVal
-          fVal;
-      in (checkTm ctx0 term expectedTy).tag;
+      expr =
+        let
+          A = T.mkU T.mkLevelZero;
+          Bty = T.mkPi "_" A (T.mkU (T.mkLevelSuc T.mkLevelZero));
+          B = T.mkAnn (T.mkLam "_" A A) Bty;
+          fTy = T.mkPi "_" A A;
+          f = T.mkAnn (T.mkLam "_" A T.mkUnit) fTy;
+          ptTy = T.mkPi "_" A (T.mkBootEq A T.mkUnit T.mkUnit);
+          pointwise = T.mkAnn (T.mkLam "_" A T.mkBootRefl) ptTy;
+          term = T.mkApp
+            (T.mkApp
+              (T.mkApp
+                (T.mkApp
+                  (T.mkApp
+                    (T.mkApp
+                      (T.mkApp
+                        T.mkFunext
+                        (T.mkLevelLit 1))
+                      (T.mkLevelLit 1))
+                    A)
+                  B)
+                f)
+              f)
+            pointwise;
+          fVal = E.eval [ ] (inferTm ctx0 f).term;
+          expectedTy = V.vBootEq
+            (V.vPi "_" (V.vU V.vLevelZero) (V.mkClosure [ ] A))
+            fVal
+            fVal;
+        in
+        (checkTm ctx0 term expectedTy).tag;
       expected = "app";
     };
     "check-funext-application-heterogeneous-j0-k1" = {
-      expr = let
-        A = T.mkUnit;
-        descTy = T.mkDesc T.mkLevelZero T.mkUnit;
-        Bty = T.mkPi "_" A (T.mkU (T.mkLevelSuc T.mkLevelZero));
-        B = T.mkAnn (T.mkLam "_" A descTy) Bty;
-        fTy = T.mkPi "_" A descTy;
-        f = T.mkAnn (T.mkLam "_" A encRet) fTy;
-        ptTy = T.mkPi "_" A (T.mkBootEq descTy encRet encRet);
-        pointwise = T.mkAnn (T.mkLam "_" A T.mkBootRefl) ptTy;
-        term = T.mkApp (T.mkApp (T.mkApp (T.mkApp (T.mkApp (T.mkApp (T.mkApp
-          T.mkFunext (T.mkLevelLit 0)) (T.mkLevelLit 1)) A) B) f) f) pointwise;
-        fVal = E.eval [] (inferTm ctx0 f).term;
-        expectedTy = V.vBootEq
-          (V.vPi "_" V.vUnit (V.mkClosure [] descTy))
-          fVal
-          fVal;
-      in (checkTm ctx0 term expectedTy).tag;
+      expr =
+        let
+          A = T.mkUnit;
+          descTy = T.mkDesc T.mkLevelZero T.mkUnit;
+          Bty = T.mkPi "_" A (T.mkU (T.mkLevelSuc T.mkLevelZero));
+          B = T.mkAnn (T.mkLam "_" A descTy) Bty;
+          fTy = T.mkPi "_" A descTy;
+          f = T.mkAnn (T.mkLam "_" A encRet) fTy;
+          ptTy = T.mkPi "_" A (T.mkBootEq descTy encRet encRet);
+          pointwise = T.mkAnn (T.mkLam "_" A T.mkBootRefl) ptTy;
+          term = T.mkApp
+            (T.mkApp
+              (T.mkApp
+                (T.mkApp
+                  (T.mkApp
+                    (T.mkApp
+                      (T.mkApp
+                        T.mkFunext
+                        (T.mkLevelLit 0))
+                      (T.mkLevelLit 1))
+                    A)
+                  B)
+                f)
+              f)
+            pointwise;
+          fVal = E.eval [ ] (inferTm ctx0 f).term;
+          expectedTy = V.vBootEq
+            (V.vPi "_" V.vUnit (V.mkClosure [ ] descTy))
+            fVal
+            fVal;
+        in
+        (checkTm ctx0 term expectedTy).tag;
       expected = "app";
     };
 

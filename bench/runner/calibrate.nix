@@ -151,4 +151,5 @@ let
       fi
     '';
   };
-in script
+in
+script

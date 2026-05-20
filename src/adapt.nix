@@ -11,7 +11,7 @@
 #
 # This enables modular handler composition: each handler manages its own
 # state slice, and adapt wires them together.
-{ ... }:
+{ api, ... }:
 
 let
   adapt = { get, set }: handler: { param, state }:
@@ -19,28 +19,25 @@ let
       childState = get state;
       result = handler { inherit param; state = childState; };
     in
-      if result ? abort then {
-        abort = result.abort;
-        state = set state result.state;
-      }
-      else {
-        resume = result.resume;
-        state = set state result.state;
-      };
+    if result ? abort then {
+      abort = result.abort;
+      state = set state result.state;
+    }
+    else {
+      resume = result.resume;
+      state = set state result.state;
+    };
 
   adaptHandlers = lens: handlers:
     builtins.mapAttrs (_: handler: adapt lens handler) handlers;
 
-in {
-  inherit adapt adaptHandlers;
-
-  __docs = {
-    _self = {
-      description = "Handler context transformation: `adapt`/`adaptHandlers` reposition handlers onto larger state via lenses — contravariant on context, covariant on continuation.";
-      doc = "Handler context transformation. Contravariant on context, covariant on continuation.";
-    };
-
-    adapt = {
+in
+api.namespace {
+  description = "Handler context transformation: `adapt`/`adaptHandlers` reposition handlers onto larger state via lenses — contravariant on context, covariant on continuation.";
+  doc = "Handler context transformation. Contravariant on context, covariant on continuation.";
+  value = {
+    adapt = api.leaf {
+      value = adapt;
       description = "adapt: lift a child-state handler through a `get`/`set` lens onto parent state; contravariant on context extraction, covariant on result incorporation.";
       signature = "adapt : { get : P -> S, set : P -> S -> P } -> Handler S -> Handler P";
       doc = ''
@@ -61,54 +58,67 @@ in {
           expr =
             let
               inner = { param, state }: { resume = null; state = state + param; };
-              outer = adapt {
-                get = s: s.counter;
-                set = s: c: s // { counter = c; };
-              } inner;
+              outer = adapt
+                {
+                  get = s: s.counter;
+                  set = s: c: s // { counter = c; };
+                }
+                inner;
               result = outer { param = 5; state = { counter = 10; other = true; }; };
-            in result.state.counter;
+            in
+            result.state.counter;
           expected = 15;
         };
         "preserves-parent-state" = {
           expr =
             let
               inner = { param, state }: { resume = null; state = state + param; };
-              outer = adapt {
-                get = s: s.counter;
-                set = s: c: s // { counter = c; };
-              } inner;
+              outer = adapt
+                {
+                  get = s: s.counter;
+                  set = s: c: s // { counter = c; };
+                }
+                inner;
               result = outer { param = 5; state = { counter = 10; other = true; }; };
-            in result.state.other;
+            in
+            result.state.other;
           expected = true;
         };
         "passes-resume-through" = {
           expr =
             let
               inner = { param, state }: { resume = param * 2; inherit state; };
-              outer = adapt {
-                get = s: s;
-                set = _: s: s;
-              } inner;
+              outer = adapt
+                {
+                  get = s: s;
+                  set = _: s: s;
+                }
+                inner;
               result = outer { param = 21; state = null; };
-            in result.resume;
+            in
+            result.resume;
           expected = 42;
         };
         "propagates-abort" = {
           expr =
             let
               inner = { param, state }: { abort = "stopped"; inherit state; };
-              outer = adapt {
-                get = s: s.x;
-                set = s: x: s // { inherit x; };
-              } inner;
+              outer = adapt
+                {
+                  get = s: s.x;
+                  set = s: x: s // { inherit x; };
+                }
+                inner;
               result = outer { param = null; state = { x = 0; y = 1; }; };
-            in { gotAbort = result ? abort; abortVal = result.abort; yPreserved = result.state.y; };
+            in
+            { gotAbort = result ? abort; abortVal = result.abort; yPreserved = result.state.y; };
           expected = { gotAbort = true; abortVal = "stopped"; yPreserved = 1; };
         };
       };
     };
 
-    adaptHandlers = {
+    adaptHandlers = api.leaf {
+      value = adaptHandlers;
       description = "adaptHandlers: lift an entire handler set through the same `get`/`set` lens; equivalent to mapping `adapt` over each handler in the attrset.";
       signature = "adaptHandlers : { get : P -> S, set : P -> S -> P } -> Handlers S -> Handlers P";
       doc = ''
@@ -131,17 +141,19 @@ in {
                 inc = { param, state }: { resume = null; state = state + param; };
                 get = { param, state }: { resume = state; inherit state; };
               };
-              adapted = adaptHandlers {
-                get = s: s.n;
-                set = s: n: s // { inherit n; };
-              } handlers;
+              adapted = adaptHandlers
+                {
+                  get = s: s.n;
+                  set = s: n: s // { inherit n; };
+                }
+                handlers;
               r1 = adapted.inc { param = 5; state = { n = 10; }; };
               r2 = adapted.get { param = null; state = r1.state; };
-            in r2.resume;
+            in
+            r2.resume;
           expected = 15;
         };
       };
     };
   };
 }
-

@@ -575,11 +575,10 @@ nix flake check
 # Run all tests via nix-unit (non-flake)
 nix-unit ./tests.nix
 
-# Evaluate test results directly
+# Inspect the generated nix-unit tree
 nix eval --impure --expr \
   'let fx = import ./. { lib = (builtins.getFlake "nixpkgs").lib; };
-   in fx.tests.allPass'
-# => true
+   in builtins.attrNames fx.tests.nix-unit.integration'
 ```
 
 Tests cover algebraic laws (functor, monad), all type constructors

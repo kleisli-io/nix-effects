@@ -46,12 +46,12 @@
 { fx }:
 
 let
-  K  = fx.src.kernel;
-  D  = fx.src.diag.error;
-  H  = fx.src.tc.hoas;
-  E  = fx.src.tc.eval;
+  K = fx.src.kernel;
+  D = fx.src.diag.error;
+  H = fx.src.tc.hoas;
+  E = fx.src.tc.eval;
   TR = fx.src.trampoline;
-  G  = fx.src.tc.generic;
+  G = fx.src.tc.generic;
 
   # 2000-deep arg-chain description. Each layer wraps the inner sub-
   # description in `descArg Unit 0 Unit (λ_:Unit. ...)`; the deepest
@@ -66,17 +66,19 @@ let
       (H.retI H.unit 0 H.tt)
       (builtins.genList (x: x) 2000);
 
-  argChainVal = E.eval [] (H.elab argChainHoas);
+  argChainVal = E.eval [ ] (H.elab argChainHoas);
 
   # Fast-path fold: every handler returns `K.pure …`. Counter handler
   # accumulates depth (1 for `ret`, 1 + sub for `arg`). The result
   # discharges to a Pure 5001 with no impure-effect node.
   foldMCount =
-    G.desc.foldDescM {
-      ret = _: K.pure 1;
-      arg = x: K.pure (1 + x.sample);
-      default = _: K.pure 0;
-    } argChainVal;
+    G.desc.foldDescM
+      {
+        ret = _: K.pure 1;
+        arg = x: K.pure (1 + x.sample);
+        default = _: K.pure 0;
+      }
+      argChainVal;
 
   # Slow-path fold: ret handler emits typeError. Each arg-layer's
   # bindP wraps the captured leaf error under `DArgBody`. The outer
@@ -88,29 +90,36 @@ let
   };
 
   blameComp =
-    G.desc.foldDescWithPath [] {
-      ret = _: K.send "typeError" { error = leafErr; };
-      arg = x: K.pure x.sample;
-      default = _: K.pure null;
-    } argChainVal;
+    G.desc.foldDescWithPath [ ]
+      {
+        ret = _: K.send "typeError" { error = leafErr; };
+        arg = x: K.pure x.sample;
+        default = _: K.pure null;
+      }
+      argChainVal;
 
-  surfaced = TR.handle {
-    handlers.typeError = { param, state }: {
-      abort = { __surfacedError = param.error; };
-      inherit state;
-    };
-  } blameComp;
+  surfaced = TR.handle
+    {
+      handlers.typeError = { param, state }: {
+        abort = { __surfacedError = param.error; };
+        inherit state;
+      };
+    }
+    blameComp;
 
   # Walk the surfaced error tree counting edges to the leaf. Returns
   # an integer so the runner can pin the result deterministically.
   chainLength = err:
-    let go = e: acc:
-      if builtins.length e.children == 0
-      then acc
-      else go (builtins.elemAt e.children 0).error (acc + 1);
-    in go err 0;
+    let
+      go = e: acc:
+        if builtins.length e.children == 0
+        then acc
+        else go (builtins.elemAt e.children 0).error (acc + 1);
+    in
+    go err 0;
 
-in {
+in
+{
   # 2000-step fast-path fold. Result = sum of `1` over 2001 nodes
   # (2000 arg layers + the inner ret). Pins the per-node fold cost
   # at the `K.pure` discharge.

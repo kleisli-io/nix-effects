@@ -1,13 +1,12 @@
-# Flag workloads in bench/workloads/**/*.nix whose body references
-# `.allPass` but which are not in budgets.toml's `allocNoiseLimited`.
-# `.allPass` definitionally folds over every test in a sub-tree, so
-# alloc counts scale with unrelated test additions.
+# Flag workloads in bench/workloads/**/*.nix whose body forces the full
+# test result map but which are not in budgets.toml's `allocNoiseLimited`.
+# Full-suite predicates fold over every test in a sub-tree, so alloc counts
+# scale with unrelated test additions.
 #
 # Text-based: scans indent-2 bindings per file, reconstructs workload
 # path from path (default.nix is its parent namespace), skips `let`
-# blocks. Iteration-driven tree-forcers that don't use `.allPass`
-# (e.g. a let-bound helper that folds over an `.tests` attrset) are
-# out of scope for static detection and need manual registration in
+# blocks. Iteration-driven tree-forcers that hide the fold behind a helper
+# are out of scope for static detection and need manual registration in
 # `allocNoiseLimited`.
 { pkgs }:
 
@@ -23,9 +22,9 @@ let
         cat >&2 <<'EOF'
       Usage: nix-effects-bench-lint-workloads [options]
 
-      Scan bench/workloads/**/*.nix for top-level workload bindings whose
-      body references `.allPass`. Every such workload must appear in
-      bench/budgets.toml's `allocNoiseLimited` array.
+      Scan bench/workloads/**/*.nix for top-level workload bindings that
+      predicate on a full test result map. Every such workload must appear
+      in bench/budgets.toml's `allocNoiseLimited` array.
 
       Options:
         --strict          Exit 1 on any violation (default: report only).
@@ -70,7 +69,7 @@ let
         gawk -v prefix="$prefix" -v file="$f" '
           function flush() {
             if (name != "") {
-              if (body ~ /\.allPass/) {
+              if (body ~ /deepSeq[[:space:]\n]+fx\.tests\.nix-unit/) {
                 print prefix "." name "\t" file ":" startline
               }
               name = ""; body = ""; startline = 0
@@ -96,11 +95,11 @@ let
       done < <(find "$bench_dir/workloads" -type f -name '*.nix' ! -name 'meta.nix' -print0 | sort -z)
 
       if [[ ! -s "$report" ]]; then
-        echo "bench-lint-workloads: no workloads reference .allPass" >&2
+        echo "bench-lint-workloads: no full-suite result predicates found" >&2
         exit 0
       fi
 
-      echo "bench-lint-workloads: workloads referencing .allPass" >&2
+      echo "bench-lint-workloads: workloads using full-suite result predicates" >&2
       echo "" >&2
       printf '%-50s  %s\n' "WORKLOAD" "ALLOCNOISELIMITED" >&2
       printf '%-50s  %s\n' "--------" "-----------------" >&2
@@ -125,7 +124,8 @@ let
         exit 0
       fi
 
-      echo "bench-lint-workloads: all .allPass workloads are in allocNoiseLimited" >&2
+      echo "bench-lint-workloads: all full-suite workloads are in allocNoiseLimited" >&2
     '';
   };
-in script
+in
+script

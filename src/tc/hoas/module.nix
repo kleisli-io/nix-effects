@@ -7,10 +7,9 @@
 # prelude instances + surface forwarders), and `elaborate.nix` (HOAS → Tm
 # elaborator + kernel-checker convenience wrappers); `partTests` is the
 # aggregated test map.
-{ self, partTests, partDocs, api, ... }:
+{ self, partTests, api, ... }:
 
-api.mkModule {
-  inherit partDocs;
+api.mk {
   description = "fx.tc.hoas: HOAS surface combinators for kernel terms — types, binders, descriptions, datatypes, ornaments, and the elaborator that compiles to de Bruijn `Tm`.";
   doc = ''
     # fx.types.hoas — HOAS Surface Combinators
@@ -18,8 +17,6 @@ api.mkModule {
     Higher-Order Abstract Syntax layer that lets you write kernel terms
     using Nix lambdas for variable binding. The `elaborate` function
     compiles HOAS trees to de Bruijn indexed Tm terms.
-
-    Spec reference: kernel-spec.md §2.
 
     ## Example
 
@@ -31,7 +28,8 @@ api.mkModule {
     ## Type Combinators
 
     - `nat`, `bool`, `unit`, `void` — base types
-    - `string`, `int_`, `float_`, `attrs`, `path`, `derivation`, `derivationThunk`, `function_`, `any` — primitive types
+    - `string`, `int_`, `float_`, `attrs`, `path`, `derivation`, `function_`, `any` — primitive types
+    - `thunk` (parametric: `thunk : Hoas -> Hoas`) — generic deepSeq-safe carrier
     - `listOf : Hoas → Hoas` — List(elem)
     - `sum : Hoas → Hoas → Hoas` — Sum(left, right)
     - `eq : Hoas → Hoas → Hoas → Hoas` — generated EqDT(type, lhs, rhs)
@@ -52,7 +50,7 @@ api.mkModule {
     - `let_ : String → Hoas → Hoas → (Hoas → Hoas) → Hoas` — let binding
     - `zero`, `succ`, `true_`, `false_`, `tt`, `refl` — intro forms; `refl` is check-mode only
     - `nil`, `cons`, `pair`, `inl`, `inr` — data constructors
-    - `stringLit`, `intLit`, `floatLit`, `attrsLit`, `pathLit`, `derivationLit`, `derivationThunkLit`, `fnLit`, `anyLit` — primitive literals
+    - `stringLit`, `intLit`, `floatLit`, `attrsLit`, `pathLit`, `derivationLit`, `fnLit`, `anyLit` — primitive literals
     - `absurd`, `ann`, `app`, `fst_`, `snd_` — elimination/annotation
 
     ## Eliminators
@@ -91,35 +89,39 @@ api.mkModule {
   '';
   value = {
     inherit (self)
-      False True WDT absurd absurdFin0 algArg algOrn algOrnDiagnosticRecords
+      False True WDT absurd absurdFin0 absurdPrim algArg algOrn algOrnDiagnosticRecords
       algOrnDiagnostics algPiKeep algPlus algRec algRet allD and ann any
-      anyLit app attrs attrsLit bool boolElim canonApp checkFunctionalLaws
-      checkHoas con conI congSuc cons datatype datatypeI datatypeP datatypePI
+      annTrusted anyLit app attrs attrsLit bool boolElim canonApp checkFunctionalLaws
+      checkHoas con conI cong congSuc cons datatype datatypeI datatypeP datatypePI
       dec decAnd decElim decNot decOr decideEqIntZ decideEqNat decideLeIntZ
-      decideLeNat derivation derivationLit derivationThunk derivationThunkLit
+      decideLeNat derivation derivationLit
       desc descArg descCon descDesc descElim descInd descPi descRec descRet
-      elab elab2 elaborate eq eqCongSucc eqDT eqDTToEq eqDesc eqInjSucc
+      elab elab2 elaborate embedTm eq eqCongSucc eqDT eqDTToEq eqDesc eqInjSucc
       eqIsoBwd eqIsoFwd eqRefutSuccZero eqRefutZeroSucc eqToEqDT everywhereD
       false_ field fieldD fin finDesc finElim floatLit float_ fnLit forall
+      implicitApp implicitForall implicitLam plicity surfacePlicity
       fst_ fsuc function_ functionalCompose functionalLawDiagnosticRecords
       functionalLawDiagnostics functionalOrnament
       functionalOrnamentDiagnosticRecords functionalOrnamentDiagnostics fzero
       iff ind inferHoas inl inr intLit int_ interpD intz intzDecode intzDesc
       intzElim intzLe intzLit intzNegSucc intzNegSuccCong intzNegSuccInjective
-      intzPos intzPosCong intzPosInjective j lam le leDesc leElim leInjSS
-      leRefutSuccZero leSS leZ let_ level levelMax levelSuc levelZero listDesc
-      listElim listOf maxSucDom maybe mu nat natCaseU natDesc natLit
+      intzPos intzPosCong intzPosInjective isLeafOrn j lam le leDesc leElim leInjSS
+      leRefutSuccZero leSS leZ leafOrnament leafOrnamentDiagnosticRecords
+      leafOrnamentDiagnostics let_ level levelMax levelSuc levelZero listDesc
+      listElim listOf litVal maxSucDom maybe mu nat natCaseU natDesc natLit
       natPredCase natToLevel nil no not opaqueLam or_ ornArgInsert ornArgKeep
       ornBuild ornCompose ornDesc ornForget ornI ornId ornIndexProof
       ornLiftFold ornLiftProducer ornLiftTransform ornMu ornPiKeep ornPlus
       ornPullback ornRec ornRet ornSection ornTargetIndex ornament
+      empty
       ornamentDiagnosticRecords ornamentDiagnostics pair path pathLit piField
       piFieldD plus predNat product recField recFieldAt record refinementPred
       refl reflDT reifyLevel retI sigma signsDiffer signsDifferRev snd_
       sourceMapOf squash squashElim squashIntro strEq string stringLit succ
-      sum sumDesc sumElim sup true_ tryAlgOrn tryFunctionalOrnament
-      tryOrnament tt u unit validateAlgOrn validateFunctionalLaws
-      validateFunctionalOrnament validateOrnament variant vcons vec vecDesc
+      sum sumDesc sumElim sup thunk thunkOrnament trans true_ tryAlgOrn
+      tryFunctionalOrnament tryLeafOrnament tryOrnament tt u unit validateAlgOrn
+      validateFunctionalLaws validateFunctionalOrnament validateLeafOrnament
+      validateOrnament variant vcons vec vecDesc
       vecElim vhead vnil void vtail w wDesc wElim withConLabel withDescLabel
       yes zero;
 
@@ -145,15 +147,15 @@ api.mkModule {
     # `fx.tc.hoas._internal._encoders.<binding>` (Tm/Val encoders), or
     # `fx.tc.hoas._internal._indexed.<binding>` (indexed-variant scaffolding),
     # opting in explicitly at the call site.
-    _internal = api.mk {
-      description = "Unstable internal surface — boot-sum/boot-eq helpers, kernel-Tm encoders, and indexed-variant scaffolding. Prefer SumDT/EqDT-generated forms and the matching non-indexed surface combinators for end-user code.";
+    _internal = api.namespace {
+      description = "Unstable internal surface — boot-sum/boot-eq helpers, kernel-Tm encoders, and indexed-variant scaffolding; prefer SumDT/EqDT-generated forms in user code.";
       value = {
         inherit (self) bootEq bootRefl bootJ bootSum bootInl bootInr bootSumElim;
-        _encoders = api.mk {
-          description = "Kernel-Tm and Val-level encoders for surface description combinators. Used by `tc/eval` (descDescVal in `mkDescDescAppVF`) and `tc/generic` (the `encodeDescXTm` pre-evaluations in `desc.nix`'s `reconstruct`).";
+        _encoders = api.namespace {
+          description = "Kernel-Tm and Val-level encoders for surface description combinators; consumed by `tc/eval` (descDescVal) and `tc/generic` (encodeDescXTm pre-evaluations).";
           value = {
             inherit (self)
-              __descDesc descDescApp descDescTm descDescVal encodeDescArg
+              __descDesc descDescApp descDescAppAtI descDescTm descDescVal encodeDescArg
               encodeDescArgAt encodeDescArgAtTm encodeDescArgTm encodeDescElim
               encodeDescElimTm encodeDescElimVal encodeDescPi encodeDescPiAt
               encodeDescPiAtTm encodeDescPiTm encodeDescPlus encodeDescPlusTm
@@ -161,17 +163,26 @@ api.mkModule {
               natDescTm;
           };
         };
-        _indexed = api.mk {
-          description = "Indexed/equality-aligned variants of public surface combinators. Used by ornament construction (`muI` in `tc/generic/ornaments`), indexed-datatype test fixtures (`piI`/`recI`/`plusI`/`inrAt` in `tc/eval`/`tc/check`/`tc/conv`/`tc/quote`), and indexed-field construction (`fieldAt`/`piFieldAtIndex` in `tc/generic/derive`).";
+        _indexed = api.namespace {
+          description = "Indexed/equality-aligned combinators (`muI`, `piI`, `recI`, `plusI`, `inrAt`, `fieldAt`) consumed by ornament construction and indexed-datatype test fixtures.";
           value = {
             inherit (self)
               datatypeAt datatypePAt descArgAt descArgWithEq descAt descI
-              descIAt descPiAt descPiWithEq fieldAt fieldAtWithEq fieldDAt
-              fieldDAtWithEq inlAt inrAt liftAt LiftAt liftAtWithEq
-              LiftAtWithEq lowerAt lowerAtWithEq muI piFieldAt piFieldAtIndex
+              descIAt descIAtI descIAtAtI descPiAt descPiWithEq descArgAtI descArgAtAtI
+              fieldAt fieldAtWithEq fieldDAt
+              fieldDAtWithEq inlAt inlAtExplicit inrAt inrAtExplicit liftAt LiftAt liftAtWithEq
+              LiftAtWithEq lowerAt lowerAtWithEq muI muIAtI piFieldAt piFieldAtIndex
+              nilAtExplicit consAtExplicit
               piFieldAtIndexWithEq piFieldAtWithEq piFieldDAt piFieldDAtIndex
-              piFieldDAtIndexWithEq piFieldDAtWithEq piI piIAt piIWithEq plusI
-              recI sumAt sumElimAt;
+              piFieldDAtIndexWithEq piFieldDAtWithEq piI piIAt piIAtI
+              piIAtAtI piIWithEq plusI plusIAtI recI recIAtI retIAtI
+              sumAt sumElimAt;
+          };
+        };
+        _forced = api.namespace {
+          description = "Forced-argument analysis helpers for datatype constructors; consumed by datatype elaboration and tests that inspect recoverable constructor fields.";
+          value = {
+            inherit (self) forcedFieldNames forcedFieldSet isFieldForced mentionsOf;
           };
         };
       };

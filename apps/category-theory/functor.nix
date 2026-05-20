@@ -29,7 +29,7 @@
 
 let
   inherit (prelude) H verify Nat U0 Unit Eq Refl Pi lam app
-                    addHoas symProof transProof congAddRight;
+    addHoas symProof transProof congAddRight;
   inherit (arithmetic) annAddAssoc annAddComm;
   inherit (algebra) natAddMonoid natCategory;
 
@@ -42,25 +42,32 @@ let
   # so it uses the function form of `kind` — the same `ms:` idiom as the
   # `Hom` parameter of `CategoryDT`.
   MonoidHomDT = H.datatypeP "MonoidHom"
-    [ { name = "A";   kind = U0; }
-      { name = "opA"; kind = ms:
+    [{ name = "A"; kind = U0; }
+      {
+        name = "opA";
+        kind = ms:
           let A = builtins.elemAt ms 0;
-          in Pi "_" A (_: Pi "_" A (_: A)); }
-      { name = "eA";  kind = ms: builtins.elemAt ms 0; }
-      { name = "B";   kind = U0; }
-      { name = "opB"; kind = ms:
+          in Pi "_" A (_: Pi "_" A (_: A));
+      }
+      { name = "eA"; kind = ms: builtins.elemAt ms 0; }
+      { name = "B"; kind = U0; }
+      {
+        name = "opB";
+        kind = ms:
           let B = builtins.elemAt ms 3;
-          in Pi "_" B (_: Pi "_" B (_: B)); }
-      { name = "eB";  kind = ms: builtins.elemAt ms 3; }
-    ]
+          in Pi "_" B (_: Pi "_" B (_: B));
+      }
+      { name = "eB"; kind = ms: builtins.elemAt ms 3; }]
     (ps:
-      let A   = builtins.elemAt ps 0;
-          opA = builtins.elemAt ps 1;
-          eA  = builtins.elemAt ps 2;
-          B   = builtins.elemAt ps 3;
-          opB = builtins.elemAt ps 4;
-          eB  = builtins.elemAt ps 5;
-      in [
+      let
+        A = builtins.elemAt ps 0;
+        opA = builtins.elemAt ps 1;
+        eA = builtins.elemAt ps 2;
+        B = builtins.elemAt ps 3;
+        opB = builtins.elemAt ps 4;
+        eB = builtins.elemAt ps 5;
+      in
+      [
         (H.con "mk" [
           (H.field "map" (Pi "_" A (_: B)))
           (H.fieldD "preserveId" (prev:
@@ -79,43 +86,62 @@ let
   # data fields describe the functor action (fobj, fmap) and the two
   # laws (preserveId, preserveComp).
   FunctorDT = H.datatypeP "Functor"
-    [ { name = "ObjC"; kind = U0; }
-      { name = "HomC"; kind = ms:
+    [{ name = "ObjC"; kind = U0; }
+      {
+        name = "HomC";
+        kind = ms:
           let O = builtins.elemAt ms 0;
-          in Pi "_" O (_: Pi "_" O (_: U0)); }
-      { name = "idC";  kind = ms:
+          in Pi "_" O (_: Pi "_" O (_: U0));
+      }
+      {
+        name = "idC";
+        kind = ms:
           let O = builtins.elemAt ms 0; Hom = builtins.elemAt ms 1;
-          in Pi "a" O (a: app (app Hom a) a); }
-      { name = "compC"; kind = ms:
+          in Pi "a" O (a: app (app Hom a) a);
+      }
+      {
+        name = "compC";
+        kind = ms:
           let O = builtins.elemAt ms 0; Hom = builtins.elemAt ms 1;
           in Pi "a" O (a: Pi "b" O (b: Pi "c" O (c:
-               Pi "_" (app (app Hom b) c) (_:
-               Pi "_" (app (app Hom a) b) (_:
-                 app (app Hom a) c))))); }
+            Pi "_" (app (app Hom b) c) (_:
+              Pi "_" (app (app Hom a) b) (_:
+                app (app Hom a) c)))));
+      }
       { name = "ObjD"; kind = U0; }
-      { name = "HomD"; kind = ms:
+      {
+        name = "HomD";
+        kind = ms:
           let O = builtins.elemAt ms 4;
-          in Pi "_" O (_: Pi "_" O (_: U0)); }
-      { name = "idD";  kind = ms:
+          in Pi "_" O (_: Pi "_" O (_: U0));
+      }
+      {
+        name = "idD";
+        kind = ms:
           let O = builtins.elemAt ms 4; Hom = builtins.elemAt ms 5;
-          in Pi "a" O (a: app (app Hom a) a); }
-      { name = "compD"; kind = ms:
+          in Pi "a" O (a: app (app Hom a) a);
+      }
+      {
+        name = "compD";
+        kind = ms:
           let O = builtins.elemAt ms 4; Hom = builtins.elemAt ms 5;
           in Pi "a" O (a: Pi "b" O (b: Pi "c" O (c:
-               Pi "_" (app (app Hom b) c) (_:
-               Pi "_" (app (app Hom a) b) (_:
-                 app (app Hom a) c))))); }
-    ]
+            Pi "_" (app (app Hom b) c) (_:
+              Pi "_" (app (app Hom a) b) (_:
+                app (app Hom a) c)))));
+      }]
     (ps:
-      let ObjC  = builtins.elemAt ps 0;
-          HomC  = builtins.elemAt ps 1;
-          idC   = builtins.elemAt ps 2;
-          compC = builtins.elemAt ps 3;
-          ObjD  = builtins.elemAt ps 4;
-          HomD  = builtins.elemAt ps 5;
-          idD   = builtins.elemAt ps 6;
-          compD = builtins.elemAt ps 7;
-      in [
+      let
+        ObjC = builtins.elemAt ps 0;
+        HomC = builtins.elemAt ps 1;
+        idC = builtins.elemAt ps 2;
+        compC = builtins.elemAt ps 3;
+        ObjD = builtins.elemAt ps 4;
+        HomD = builtins.elemAt ps 5;
+        idD = builtins.elemAt ps 6;
+        compD = builtins.elemAt ps 7;
+      in
+      [
         (H.con "mk" [
           (H.field "fobj" (Pi "_" ObjC (_: ObjD)))
           (H.fieldD "fmap" (prev:
@@ -130,43 +156,72 @@ let
           (H.fieldD "preserveComp" (prev:
             Pi "a" ObjC (a: Pi "b" ObjC (b: Pi "c" ObjC (c:
               Pi "g" (app (app HomC b) c) (g:
-              Pi "f" (app (app HomC a) b) (f:
-                Eq (app (app HomD (app prev.fobj a)) (app prev.fobj c))
-                  (app (app (app prev.fmap a) c)
-                    (app (app (app (app (app compC a) b) c) g) f))
-                  (app (app (app (app (app compD
-                        (app prev.fobj a)) (app prev.fobj b)) (app prev.fobj c))
-                      (app (app (app prev.fmap b) c) g))
-                    (app (app (app prev.fmap a) b) f)))))))))
+                Pi "f" (app (app HomC a) b) (f:
+                  Eq (app (app HomD (app prev.fobj a)) (app prev.fobj c))
+                    (app (app (app prev.fmap a) c)
+                      (app (app (app (app (app compC a) b) c) g) f))
+                    (app
+                      (app
+                        (app
+                          (app
+                            (app compD
+                              (app prev.fobj a))
+                            (app prev.fobj b))
+                          (app prev.fobj c))
+                        (app (app (app prev.fmap b) c) g))
+                      (app (app (app prev.fmap a) b) f)))))))))
         ])
       ]);
 
-in rec {
+in
+rec {
 
   inherit MonoidHomDT FunctorDT;
 
   # Type constructors packaging the six-/eight-tuple of parameters.
   MonoidHomOf = src: tgt:
-    app (app (app (app (app (app MonoidHomDT.T
-      src.A) src.op) src.e)
-      tgt.A) tgt.op) tgt.e;
+    app
+      (app
+        (app
+          (app
+            (app
+              (app MonoidHomDT.T
+                src.A)
+              src.op)
+            src.e)
+          tgt.A)
+        tgt.op)
+      tgt.e;
 
   FunctorOf = C: D:
-    app (app (app (app (app (app (app (app FunctorDT.T
-      C.Obj) C.Hom) C.id_) C.comp)
-      D.Obj) D.Hom) D.id_) D.comp;
+    app
+      (app
+        (app
+          (app
+            (app
+              (app
+                (app
+                  (app FunctorDT.T
+                    C.Obj)
+                  C.Hom)
+                C.id_)
+              C.comp)
+            D.Obj)
+          D.Hom)
+        D.id_)
+      D.comp;
 
   # -- The doubling map -------------------------------------------------
 
-  doubleTy   = Pi "f" Nat (_: Nat);
+  doubleTy = Pi "f" Nat (_: Nat);
   doubleImpl = lam "f" Nat (f: addHoas f f);
-  double     = verify doubleTy doubleImpl;
+  double = verify doubleTy doubleImpl;
 
   # -- preserveId: double(0) = 0 ----------------------------------------
   # Free by computation: add(0, 0) reduces to 0.
-  preserveIdTy   = Eq Nat (addHoas H.zero H.zero) H.zero;
+  preserveIdTy = Eq Nat (addHoas H.zero H.zero) H.zero;
   preserveIdImpl = Refl;
-  preserveId     = verify preserveIdTy preserveIdImpl;
+  preserveId = verify preserveIdTy preserveIdImpl;
 
   # -- preserveComp (raw): double(g+f) = double(g) + double(f) ---------
   #
@@ -227,11 +282,13 @@ in rec {
         (addHoas g (addHoas g ff))
         (app (app (app annAddAssoc g) g) ff);
 
-    in transProof Nat
+    in
+    transProof Nat
       (addHoas gf gf)
       (addHoas g (addHoas g ff))
       (addHoas gg ff)
-      s1234 s5));
+      s1234
+      s5));
 
   preserveComp = verify preserveCompTy preserveCompImpl;
 
@@ -247,15 +304,23 @@ in rec {
   # since `opA = opB = add` and `map = double`, it reduces to the same
   # equation and the same proof witnesses it.
   doubleHom = rec {
-    map_        = doubleImpl;
+    map_ = doubleImpl;
     preserveId_ = preserveIdImpl;
     preserveOp_ = preserveCompImpl;
 
     ty = MonoidHomOf natAddMonoid natAddMonoid;
     impl = builtins.foldl' app MonoidHomDT.mk
-      [ natAddMonoid.A natAddMonoid.op natAddMonoid.e
-        natAddMonoid.A natAddMonoid.op natAddMonoid.e
-        map_ preserveId_ preserveOp_ ];
+      [
+        natAddMonoid.A
+        natAddMonoid.op
+        natAddMonoid.e
+        natAddMonoid.A
+        natAddMonoid.op
+        natAddMonoid.e
+        map_
+        preserveId_
+        preserveOp_
+      ];
   };
 
   # -- doubleFunctor : FunctorOf natCategory natCategory ---------------
@@ -270,7 +335,7 @@ in rec {
   doubleFunctor = rec {
     fobj = lam "_" Unit (u: u);
     fmap = lam "_" Unit (_: lam "_" Unit (_:
-             lam "f" Nat (f: addHoas f f)));
+      lam "f" Nat (f: addHoas f f)));
 
     preserveId_ =
       lam "_" Unit (_: Refl);
@@ -282,8 +347,19 @@ in rec {
 
     ty = FunctorOf natCategory natCategory;
     impl = builtins.foldl' app FunctorDT.mk
-      [ natCategory.Obj natCategory.Hom natCategory.id_ natCategory.comp
-        natCategory.Obj natCategory.Hom natCategory.id_ natCategory.comp
-        fobj fmap preserveId_ preserveComp_ ];
+      [
+        natCategory.Obj
+        natCategory.Hom
+        natCategory.id_
+        natCategory.comp
+        natCategory.Obj
+        natCategory.Hom
+        natCategory.id_
+        natCategory.comp
+        fobj
+        fmap
+        preserveId_
+        preserveComp_
+      ];
   };
 }

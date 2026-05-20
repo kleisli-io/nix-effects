@@ -40,8 +40,8 @@ let
         (k: permilleDelta (baselineAllocs.${k} or 0) currentAllocs.${k})
         keys;
     in
-      if builtins.length deltas == 0 then 0
-      else builtins.foldl' (acc: d: if d > acc then d else acc) (builtins.head deltas) (builtins.tail deltas);
+    if builtins.length deltas == 0 then 0
+    else builtins.foldl' (acc: d: if d > acc then d else acc) (builtins.head deltas) (builtins.tail deltas);
 
   # Which alloc fields regressed past tolerance, and by how much. For blame.
   # Both workload and code-size fields appear here so the report shows the
@@ -54,67 +54,75 @@ let
           let d = permilleDelta (baselineAllocs.${k} or 0) currentAllocs.${k};
           in { field = k; deltaPermille = d; baseline = baselineAllocs.${k} or 0; current = currentAllocs.${k}; codeSize = isCodeSize k; })
         keys;
-    in builtins.filter (e: e.deltaPermille > tolerance) entries;
+    in
+    builtins.filter (e: e.deltaPermille > tolerance) entries;
 
-  classify = {
-    workload,
-    baseline,
-    current,
-    cpuBudgetPct,                 # Int or null. Null = alloc-only gating.
-    allocTolerancePermille,
-    allocGated ? true             # When false, alloc regressions are silently
-                                  # passed. Used for workloads whose alloc
-                                  # count scales with unrelated work (e.g.
-                                  # test-count-monotonic suites).
-  }:
+  classify =
+    { workload
+    , baseline
+    , current
+    , cpuBudgetPct
+    , # Int or null. Null = alloc-only gating.
+      allocTolerancePermille
+    , allocGated ? true             # When false, alloc regressions are silently
+      # passed. Used for workloads whose alloc
+      # count scales with unrelated work (e.g.
+      # test-count-monotonic suites).
+    }:
     let
       bothDeterministic = (baseline.alloc_deterministic or false) && (current.alloc_deterministic or false);
-      allocDelta = if bothDeterministic
-                   then maxAllocDeltaPermille baseline.allocs current.allocs
-                   else 0;
-      allocBlame = if bothDeterministic
-                   then allocRegressions allocTolerancePermille baseline.allocs current.allocs
-                   else [ ];
+      allocDelta =
+        if bothDeterministic
+        then maxAllocDeltaPermille baseline.allocs current.allocs
+        else 0;
+      allocBlame =
+        if bothDeterministic
+        then allocRegressions allocTolerancePermille baseline.allocs current.allocs
+        else [ ];
 
       cpuDelta = pctDelta baseline.cpu.p50 current.cpu.p50;
       cpuP95NonOverlap = current.cpu.p95 > baseline.cpu.p95;
 
       allocFailed = allocGated && bothDeterministic && allocDelta > allocTolerancePermille;
-      cpuFailed   = cpuBudgetPct != null && cpuDelta > cpuBudgetPct && cpuP95NonOverlap;
-      cpuWarn     = cpuBudgetPct != null && cpuDelta > 2 && cpuDelta <= cpuBudgetPct;
+      cpuFailed = cpuBudgetPct != null && cpuDelta > cpuBudgetPct && cpuP95NonOverlap;
+      cpuWarn = cpuBudgetPct != null && cpuDelta > 2 && cpuDelta <= cpuBudgetPct;
     in
-      if allocFailed then {
-        inherit workload;
-        status = "fail_allocs";
-        reason = "alloc-count regressed by ${toString allocDelta}‰ (tolerance ${toString allocTolerancePermille}‰)";
-        allocDelta_permille = allocDelta;
-        blame = allocBlame;
-      }
-      else if cpuFailed then {
-        inherit workload;
-        status = "fail_cpu";
-        reason = "cpu.p50 regressed by ${toString cpuDelta}% (budget ${toString cpuBudgetPct}%); p95 non-overlapping baseline";
-        cpuDelta_pct = cpuDelta;
-      }
-      else if cpuWarn then {
-        inherit workload;
-        status = "warn_cpu";
-        reason = "cpu.p50 regressed by ${toString cpuDelta}% (under budget but past 2% warn threshold)";
-        cpuDelta_pct = cpuDelta;
-      }
-      else {
-        inherit workload;
-        status = "pass";
-        reason = "";
-      };
+    if allocFailed then {
+      inherit workload;
+      status = "fail_allocs";
+      reason = "alloc-count regressed by ${toString allocDelta}‰ (tolerance ${toString allocTolerancePermille}‰)";
+      allocDelta_permille = allocDelta;
+      blame = allocBlame;
+    }
+    else if cpuFailed then {
+      inherit workload;
+      status = "fail_cpu";
+      reason = "cpu.p50 regressed by ${toString cpuDelta}% (budget ${toString cpuBudgetPct}%); p95 non-overlapping baseline";
+      cpuDelta_pct = cpuDelta;
+    }
+    else if cpuWarn then {
+      inherit workload;
+      status = "warn_cpu";
+      reason = "cpu.p50 regressed by ${toString cpuDelta}% (under budget but past 2% warn threshold)";
+      cpuDelta_pct = cpuDelta;
+    }
+    else {
+      inherit workload;
+      status = "pass";
+      reason = "";
+    };
 
-  gate = {
-    baseline,         # { results = { <workload> = <WorkloadSummary>; }; meta ? {}; }
-    current,
-    budgets,          # { cpu = { <workload> = Int; ... }; allocTolerancePermille = Int; }
-    trailers ? [ ],   # [{ workload, reason }]. See gate.nix runner for syntax.
-    allocNoiseLimited ? [ ],      # Workloads excluded from alloc gating.
-  }:
+  gate =
+    { baseline
+    , # { results = { <workload> = <WorkloadSummary>; }; meta ? {}; }
+      current
+    , budgets
+    , # { cpu = { <workload> = Int; ... }; allocTolerancePermille = Int; }
+      trailers ? [ ]
+    , # [{ workload, reason }]. See gate.nix runner for syntax.
+      allocNoiseLimited ? [ ]
+    , # Workloads excluded from alloc gating.
+    }:
     let
       overrideMap = builtins.listToAttrs
         (map (t: { name = t.workload; value = t; }) trailers);
@@ -154,10 +162,12 @@ let
       missingWorkloads = builtins.filter (n: ! (baseline.results ? ${n})) currentNames;
       newWorkloads = missingWorkloads;
       retiredWorkloads = builtins.filter (n: ! (current.results ? ${n})) baselineNames;
-    in {
+    in
+    {
       pass = builtins.length hardFails == 0;
       inherit hardFails softWarns overridden classifications;
       inherit newWorkloads retiredWorkloads;
     };
 
-in { inherit gate classify maxAllocDeltaPermille allocRegressions; }
+in
+{ inherit gate classify maxAllocDeltaPermille allocRegressions; }

@@ -20,7 +20,7 @@
 # accessed. We break this chain by making `key` depend on `builtins.deepSeq`
 # of the new state — since genericClosure forces `key`, this eagerly evaluates
 # the state at each step. Validated: 1,000,000 operations in ~3 seconds.
-{ lib, fx, ... }:
+{ lib, fx, api, ... }:
 
 let
   queue = fx.queue;
@@ -38,14 +38,14 @@ let
       vl = queue.viewl q;
       result = vl.head val;
     in
-      if vl.tail == null then result
-      else if !(isPure result) then
-        impure result.effect (queue.append result.queue vl.tail)
-      else if depth >= 500 then
-        # Deep pure chain: switch to genericClosure for stack safety.
-        qAppSlow vl.tail result.value
-      else
-        applyQueue vl.tail (builtins.seq result.value result.value) (depth + 1);
+    if vl.tail == null then result
+    else if !(isPure result) then
+      impure result.effect (queue.append result.queue vl.tail)
+    else if depth >= 500 then
+    # Deep pure chain: switch to genericClosure for stack safety.
+      qAppSlow vl.tail result.value
+    else
+      applyQueue vl.tail (builtins.seq result.value result.value) (depth + 1);
 
   # genericClosure-based queue application for deep pure chains (>500
   # continuations). Iterates via genericClosure for stack safety.
@@ -58,17 +58,20 @@ let
             vl = queue.viewl state._queue;
             result = vl.head state._val;
           in
-            if vl.tail != null && isPure result
-            then [{ key = builtins.seq result.value (state.key + 1);
-                    _queue = vl.tail; _val = result.value; }]
-            else [];
+          if vl.tail != null && isPure result
+          then [{
+            key = builtins.seq result.value (state.key + 1);
+            _queue = vl.tail;
+            _val = result.value;
+          }]
+          else [ ];
       };
       last = lib.last steps;
       vl = queue.viewl last._queue;
       result = vl.head last._val;
     in
-      if vl.tail == null then result
-      else impure result.effect (queue.append result.queue vl.tail);
+    if vl.tail == null then result
+    else impure result.effect (queue.append result.queue vl.tail);
 
   # -- Interpreter --
 
@@ -85,9 +88,9 @@ let
       if isPure r then
         resumeWithQueue q r.value
       else
-        # Impure: append original continuation queue to computation's queue.
-        # The computation's effects run first; when it reaches Pure,
-        # the original continuation picks up the result.
+      # Impure: append original continuation queue to computation's queue.
+      # The computation's effects run first; when it reaches Pure,
+      # the original continuation picks up the result.
         impure r.effect (queue.append r.queue q)
     else
       resumeWithQueue q r;
@@ -101,7 +104,7 @@ let
           _state = initialState;
         }];
         operator = step:
-          if isPure step._comp then []
+          if isPure step._comp then [ ]
           else
             let
               eff = step._comp.effect;
@@ -112,36 +115,39 @@ let
                   if eff.name == "has-handler"
                   then { resume = false; state = step._state; }
                   else throw "nix-effects: unhandled effect '${eff.name}'"
-                else handler {
-                  param = eff.param;
-                  state = step._state;
-                };
-              newState = if result ? state then result.state
+                else
+                  handler {
+                    param = eff.param;
+                    state = step._state;
+                  };
+              newState =
+                if result ? state then result.state
                 else throw "nix-effects: handler for '${eff.name}' must include 'state' in return value";
               # deepSeq newState in key: genericClosure forces key for dedup,
               # which forces newState, breaking the thunk chain.
               k = builtins.deepSeq newState (step.key + 1);
             in
-              if result ? abort then
-                [{ key = k; _comp = pure result.abort; _state = newState; }]
-              else if result ? resume then
-                let
-                  # Deep handler semantics: rotated effects tag their
-                  # continuation queue with __rawResume. For those, pass
-                  # the resume as-is so the rotation continuation can
-                  # route effectful resumes through inner scope handlers.
-                  resume =
-                    if step._comp.queue.__rawResume or false then
-                      resumeWithQueue step._comp.queue result.resume
-                    else
-                      resumeCompOrValue step._comp.queue result.resume;
-                in
-                [{ key = k; _comp = resume; _state = newState; }]
-              else
-                throw "nix-effects: handler for '${eff.name}' must return { resume; state; } or { abort; state; }";
+            if result ? abort then
+              [{ key = k; _comp = pure result.abort; _state = newState; }]
+            else if result ? resume then
+              let
+                # Deep handler semantics: rotated effects tag their
+                # continuation queue with __rawResume. For those, pass
+                # the resume as-is so the rotation continuation can
+                # route effectful resumes through inner scope handlers.
+                resume =
+                  if step._comp.queue.__rawResume or false then
+                    resumeWithQueue step._comp.queue result.resume
+                  else
+                    resumeCompOrValue step._comp.queue result.resume;
+              in
+              [{ key = k; _comp = resume; _state = newState; }]
+            else
+              throw "nix-effects: handler for '${eff.name}' must return { resume; state; } or { abort; state; }";
       };
       final = lib.last steps;
-    in { value = final._comp.value; state = final._state; };
+    in
+    { value = final._comp.value; state = final._state; };
 
   # -- Selective interpreter (handler rotation) --
 
@@ -158,37 +164,42 @@ let
       steps = builtins.genericClosure {
         startSet = [{ key = 0; _comp = comp; _state = state; }];
         operator = step:
-          if isPure step._comp then []
+          if isPure step._comp then [ ]
           else
             let
               eff = step._comp.effect;
               handler = localHandler handlers eff;
-            in if handler != null then
+            in
+            if handler != null then
               let
                 result = handler {
                   param = eff.param;
                   state = step._state;
                 };
-                newState = if result ? state then result.state
+                newState =
+                  if result ? state then result.state
                   else throw "nix-effects: handler for '${eff.name}' must include 'state' in return value";
                 k = builtins.deepSeq newState (step.key + 1);
               in
-                if result ? abort then
-                  [{ key = k; _comp = pure (done result.abort newState); _state = newState; }]
-                else if result ? resume then
-                  [{ key = k;
-                     _comp = resumeCompOrValue step._comp.queue result.resume;
-                     _state = newState; }]
-                else
-                  throw "nix-effects: handler for '${eff.name}' must return { resume; state; } or { abort; state; }"
-            else [];
+              if result ? abort then
+                [{ key = k; _comp = pure (done result.abort newState); _state = newState; }]
+              else if result ? resume then
+                [{
+                  key = k;
+                  _comp = resumeCompOrValue step._comp.queue result.resume;
+                  _state = newState;
+                }]
+              else
+                throw "nix-effects: handler for '${eff.name}' must return { resume; state; } or { abort; state; }"
+            else [ ];
       };
       last = lib.last steps;
     in
-      if isPure last._comp then pure (done last._comp.value last._state)
-      else
-        impure last._comp.effect ((queue.singleton (outerResume:
-          effectRotate {
+    if isPure last._comp then pure (done last._comp.value last._state)
+    else
+      impure last._comp.effect ((queue.singleton (outerResume:
+        effectRotate
+          {
             comp = resumeCompOrValue last._comp.queue outerResume;
             handlers = handlers;
             state = last._state;
@@ -201,82 +212,89 @@ let
       let
         eff = comp.effect;
         handler = localHandler handlers eff;
-      in if handler != null then
+      in
+      if handler != null then
         let
           result = handler {
             param = eff.param;
             inherit state;
           };
-          newState = if result ? state then result.state
+          newState =
+            if result ? state then result.state
             else throw "nix-effects: handler for '${eff.name}' must include 'state' in return value";
         in
-          if result ? abort then
-            pure (done result.abort newState)
-          else if result ? resume then
-            if depth >= 500 then
-              effectRotateSlow {
+        if result ? abort then
+          pure (done result.abort newState)
+        else if result ? resume then
+          if depth >= 500 then
+            effectRotateSlow
+              {
                 comp = resumeCompOrValue comp.queue result.resume;
                 inherit handlers done;
                 state = newState;
               }
-            else
-              effectRotate {
+          else
+            effectRotate
+              {
                 comp = resumeCompOrValue comp.queue result.resume;
                 inherit handlers done;
                 state = newState;
-              } (depth + 1)
-          else
-            throw "nix-effects: handler for '${eff.name}' must return { resume; state; } or { abort; state; }"
+              }
+              (depth + 1)
+        else
+          throw "nix-effects: handler for '${eff.name}' must return { resume; state; } or { abort; state; }"
       else
-        # Effect not in scoped handlers — rotate outward.
-        # Deep handler semantics: the continuation routes the outer handler's
-        # resume back through effectRotate. If the resume is a computation
-        # (effectful handler), its effects pass through the inner handlers
-        # first. This matches Koka/Eff behavior where continuations capture
-        # the full handler stack.
+      # Effect not in scoped handlers — rotate outward.
+      # Deep handler semantics: the continuation routes the outer handler's
+      # resume back through effectRotate. If the resume is a computation
+      # (effectful handler), its effects pass through the inner handlers
+      # first. This matches Koka/Eff behavior where continuations capture
+      # the full handler stack.
         impure eff ((queue.singleton (outerResume:
-          effectRotate {
-            comp = resumeCompOrValue comp.queue outerResume;
-            inherit handlers state done;
-          } 0)) // { __rawResume = true; });
+          effectRotate
+            {
+              comp = resumeCompOrValue comp.queue outerResume;
+              inherit handlers state done;
+            } 0)) // { __rawResume = true; });
 
   run = comp: handlers: initialState:
     assert (isComp comp)
       || throw "nix-effects: run expects a computation (Pure or Impure), got ${builtins.typeOf comp}";
     interpret { inherit comp handlers initialState; };
 
-  handle = {
-    return ? (value: state: { inherit value state; }),
-    handlers,
-    state ? null,
-  }: comp:
-    assert (isComp comp)
-      || throw "nix-effects: handle expects a computation (Pure or Impure), got ${builtins.typeOf comp}";
-    let r = interpret { inherit comp handlers; initialState = state; };
-    in return r.value r.state;
+  handle =
+    { return ? (value: state: { inherit value state; })
+    , handlers
+    , state ? null
+    ,
+    }: comp:
+      assert (isComp comp)
+        || throw "nix-effects: handle expects a computation (Pure or Impure), got ${builtins.typeOf comp}";
+      let r = interpret { inherit comp handlers; initialState = state; };
+      in return r.value r.state;
 
-  rotate = {
-    return ? (value: state: { inherit value state; }),
-    handlers,
-    state ? null,
-  }: comp:
-    assert (isComp comp)
-      || throw "nix-effects: rotate expects a computation (Pure or Impure), got ${builtins.typeOf comp}";
-    effectRotate {
-      inherit comp handlers state;
-      done = return;
-    } 0;
+  rotate =
+    { return ? (value: state: { inherit value state; })
+    , handlers
+    , state ? null
+    ,
+    }: comp:
+      assert (isComp comp)
+        || throw "nix-effects: rotate expects a computation (Pure or Impure), got ${builtins.typeOf comp}";
+      effectRotate
+        {
+          inherit comp handlers state;
+          done = return;
+        } 0;
 
-in {
-  inherit run handle rotate;
+in
+api.namespace {
+  description = "Trampolined interpreter: `run`/`handle`/`rotate` drive computations via `builtins.genericClosure` at O(1) stack depth and Kyo-style rotation.";
+  doc = "Trampolined interpreter using `builtins.genericClosure` for O(1) stack depth.";
 
-  __docs = {
-    _self = {
-      description = "Trampolined interpreter: `run`/`handle`/`rotate` drive computations via `builtins.genericClosure` for O(1) stack depth and Kyo-style rotation of unhandled effects.";
-      doc = "Trampolined interpreter using `builtins.genericClosure` for O(1) stack depth.";
-    };
-
-    run = {
+  value = {
+    run = api.leaf {
+      value = run;
       description = "run: drive a computation through the `genericClosure` trampoline with a handler attrset and initial state; returns `{ value, state }` at O(1) stack depth.";
       signature = "run : Computation a -> Handlers -> State -> { value : a, state : State }";
       doc = ''
@@ -302,7 +320,8 @@ in {
       '';
     };
 
-    handle = {
+    handle = api.leaf {
+      value = handle;
       description = "handle: trampolined handler combinator with a custom `return` clause; interprets the computation through `handlers` from initial `state` then folds the pair via `return`.";
       signature = "handle : { return ? Identity, handlers, state ? null } -> Computation a -> { value, state }";
       doc = ''
@@ -323,21 +342,27 @@ in {
               send' = name: param:
                 fx.comp.impure { inherit name param; } (fx.queue.singleton pure);
               comp = send' "double" 21;
-              result = handle {
-                handlers.double = { param, state }: { resume = param * 2; inherit state; };
-              } comp;
-            in result.value;
+              result = handle
+                {
+                  handlers.double = { param, state }: { resume = param * 2; inherit state; };
+                }
+                comp;
+            in
+            result.value;
           expected = 42;
         };
         "handle-with-custom-return" = {
           expr =
             let
               comp = pure 21;
-              result = handle {
-                return = v: s: { value = v * 2; state = s; };
-                handlers = {};
-              } comp;
-            in result.value;
+              result = handle
+                {
+                  return = v: s: { value = v * 2; state = s; };
+                  handlers = { };
+                }
+                comp;
+            in
+            result.value;
           expected = 42;
         };
         "handle-abort-discards-continuation" = {
@@ -349,13 +374,16 @@ in {
                 if isPure comp then f comp.value
                 else fx.comp.impure comp.effect (fx.queue.snoc comp.queue f);
               comp = kernelBind (send' "fail" "boom") (_: send' "get" null);
-              result = handle {
-                handlers = {
-                  fail = { param, state }: { abort = { error = param; }; inherit state; };
-                  get = { param, state }: { resume = state; inherit state; };
-                };
-              } comp;
-            in result.value;
+              result = handle
+                {
+                  handlers = {
+                    fail = { param, state }: { abort = { error = param; }; inherit state; };
+                    get = { param, state }: { resume = state; inherit state; };
+                  };
+                }
+                comp;
+            in
+            result.value;
           expected = { error = "boom"; };
         };
         "effectful-resume-runs-sub-computation" = {
@@ -364,19 +392,22 @@ in {
               send' = fx.kernel.send;
               bind' = fx.kernel.bind;
               comp = send' "outer" null;
-              result = handle {
-                handlers = {
-                  "outer" = { param, state }: {
-                    resume = bind' (send' "inner" 10) (x: pure (x * 2));
-                    inherit state;
+              result = handle
+                {
+                  handlers = {
+                    "outer" = { param, state }: {
+                      resume = bind' (send' "inner" 10) (x: pure (x * 2));
+                      inherit state;
+                    };
+                    "inner" = { param, state }: {
+                      resume = param + 1;
+                      inherit state;
+                    };
                   };
-                  "inner" = { param, state }: {
-                    resume = param + 1;
-                    inherit state;
-                  };
-                };
-              } comp;
-            in result.value;
+                }
+                comp;
+            in
+            result.value;
           expected = 22;
         };
         "effectful-resume-threads-state" = {
@@ -385,20 +416,23 @@ in {
               send' = fx.kernel.send;
               bind' = fx.kernel.bind;
               comp = send' "resolve" null;
-              result = handle {
-                handlers = {
-                  "resolve" = { param, state }: {
-                    resume = bind' (send' "count" null) (_: send' "count" null);
-                    state = state // { resolved = true; };
+              result = handle
+                {
+                  handlers = {
+                    "resolve" = { param, state }: {
+                      resume = bind' (send' "count" null) (_: send' "count" null);
+                      state = state // { resolved = true; };
+                    };
+                    "count" = { param, state }: {
+                      resume = null;
+                      state = state // { n = (state.n or 0) + 1; };
+                    };
                   };
-                  "count" = { param, state }: {
-                    resume = null;
-                    state = state // { n = (state.n or 0) + 1; };
-                  };
-                };
-                state = {};
-              } comp;
-            in { n = result.state.n; resolved = result.state.resolved; };
+                  state = { };
+                }
+                comp;
+            in
+            { n = result.state.n; resolved = result.state.resolved; };
           expected = { n = 2; resolved = true; };
         };
         "effectful-resume-with-continuation" = {
@@ -407,35 +441,42 @@ in {
               send' = fx.kernel.send;
               bind' = fx.kernel.bind;
               comp = bind' (send' "fetch" null) (x: pure (x + 100));
-              result = handle {
-                handlers = {
-                  "fetch" = { param, state }: {
-                    resume = bind' (send' "db" null) (row: pure row.value);
-                    inherit state;
+              result = handle
+                {
+                  handlers = {
+                    "fetch" = { param, state }: {
+                      resume = bind' (send' "db" null) (row: pure row.value);
+                      inherit state;
+                    };
+                    "db" = { param, state }: {
+                      resume = { value = 42; };
+                      inherit state;
+                    };
                   };
-                  "db" = { param, state }: {
-                    resume = { value = 42; };
-                    inherit state;
-                  };
-                };
-              } comp;
-            in result.value;
+                }
+                comp;
+            in
+            result.value;
           expected = 142;
         };
         "plain-resume-unchanged" = {
           expr =
             let
               comp = fx.kernel.send "x" 5;
-              result = handle {
-                handlers.x = { param, state }: { resume = param + 1; inherit state; };
-              } comp;
-            in result.value;
+              result = handle
+                {
+                  handlers.x = { param, state }: { resume = param + 1; inherit state; };
+                }
+                comp;
+            in
+            result.value;
           expected = 6;
         };
       };
     };
 
-    rotate = {
+    rotate = api.leaf {
+      value = rotate;
       description = "rotate: selectively handle known effects and rotate unknown ones outward; matches the Kyo-style handler-rotation law for nested scopes.";
       signature = "rotate : { return ? Identity, handlers, state ? null } -> Computation a -> Computation b";
       doc = ''
@@ -458,27 +499,33 @@ in {
           expr =
             let
               comp = fx.kernel.send "inc" 1;
-              rotated = rotate {
-                handlers = {
-                  inc = { param, state }: { resume = null; state = state + param; };
-                };
-                state = 0;
-              } comp;
-              result = handle { handlers = {}; } rotated;
-            in result.value.state;
+              rotated = rotate
+                {
+                  handlers = {
+                    inc = { param, state }: { resume = null; state = state + param; };
+                  };
+                  state = 0;
+                }
+                comp;
+              result = handle { handlers = { }; } rotated;
+            in
+            result.value.state;
           expected = 1;
         };
         "rotate-preserves-unhandled-effect" = {
           expr =
             let
               comp = fx.kernel.send "outer" 7;
-              rotated = rotate {
-                handlers = {
-                  inc = { param, state }: { resume = null; state = state + param; };
-                };
-                state = 0;
-              } comp;
-            in rotated.effect.name;
+              rotated = rotate
+                {
+                  handlers = {
+                    inc = { param, state }: { resume = null; state = state + param; };
+                  };
+                  state = 0;
+                }
+                comp;
+            in
+            rotated.effect.name;
           expected = "outer";
         };
         "rotate-handles-after-outer-resume" = {
@@ -486,18 +533,23 @@ in {
             let
               comp = fx.kernel.bind (fx.kernel.send "outer" 7) (_:
                 fx.kernel.send "inc" 1);
-              rotated = rotate {
-                handlers = {
-                  inc = { param, state }: { resume = null; state = state + param; };
-                };
-                state = 0;
-              } comp;
-              result = handle {
-                handlers = {
-                  outer = { param, state }: { resume = param * 2; inherit state; };
-                };
-              } rotated;
-            in result.value.state;
+              rotated = rotate
+                {
+                  handlers = {
+                    inc = { param, state }: { resume = null; state = state + param; };
+                  };
+                  state = 0;
+                }
+                comp;
+              result = handle
+                {
+                  handlers = {
+                    outer = { param, state }: { resume = param * 2; inherit state; };
+                  };
+                }
+                rotated;
+            in
+            result.value.state;
           expected = 1;
         };
         "effectful-resume-in-rotate" = {
@@ -506,20 +558,23 @@ in {
               send' = fx.kernel.send;
               bind' = fx.kernel.bind;
               comp = send' "a" null;
-              rotated = rotate {
-                handlers = {
-                  "a" = { param, state }: {
-                    resume = bind' (send' "b" 5) (x: pure (x + 1));
-                    inherit state;
+              rotated = rotate
+                {
+                  handlers = {
+                    "a" = { param, state }: {
+                      resume = bind' (send' "b" 5) (x: pure (x + 1));
+                      inherit state;
+                    };
+                    "b" = { param, state }: {
+                      resume = param * 2;
+                      inherit state;
+                    };
                   };
-                  "b" = { param, state }: {
-                    resume = param * 2;
-                    inherit state;
-                  };
-                };
-              } comp;
-              result = handle { handlers = {}; } rotated;
-            in result.value.value;
+                }
+                comp;
+              result = handle { handlers = { }; } rotated;
+            in
+            result.value.value;
           expected = 11;
         };
       };

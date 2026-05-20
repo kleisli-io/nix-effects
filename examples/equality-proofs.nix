@@ -29,18 +29,160 @@
 let
   H = fx.types.hoas;
   inherit (H) nat bool eq u
-              forall
-              lam zero succ true_ refl
-              natLit app
-              ind boolElim j
-              checkHoas;
+    forall
+    lam zero succ true_ refl
+    natLit app
+    ind boolElim j
+    checkHoas;
 
   # Helper: addition via NatElim
   add = m: n:
     ind 0 (lam "_" nat (_: nat)) n
-      (lam "k" nat (_: lam "ih" nat (ih: succ ih))) m;
+      (lam "k" nat (_: lam "ih" nat (ih: succ ih)))
+      m;
 
-in rec {
+in
+rec {
+  __example = {
+    title = "Equality Proofs";
+    description = "Derive reusable equality combinators from the J eliminator and check them through the kernel.";
+    introduction = ''
+      The J eliminator is the primitive way to reason from equality. These
+      examples build the familiar combinators by checking generic theorem
+      terms, then apply the same shapes to concrete values that reduce by
+      computation.
+    '';
+    sections = [
+      {
+        title = "Congruence";
+        prose = ''
+          Congruence says that equal inputs stay equal after applying the same
+          function. The generic term is checked for arbitrary `A`, `B`, `f`,
+          `x`, and `y`; the concrete term exercises the same pattern after
+          normalizing arithmetic.
+        '';
+        code = ''
+          congType =
+            let
+              ty = forall "A" (u 0) (a:
+                forall "B" (u 0) (b:
+                  forall "f" (forall "_" a (_: b)) (f:
+                    forall "x" a (x:
+                      forall "y" a (y:
+                        forall "_" (eq a x y) (_:
+                          eq b (app f x) (app f y)))))));
+              tm = lam "A" (u 0) (a:
+                lam "B" (u 0) (b:
+                  lam "f" (forall "_" a (_: b)) (f:
+                    lam "x" a (x:
+                      lam "y" a (y:
+                        lam "p" (eq a x y) (p:
+                          j a x
+                            (lam "y'" a (y':
+                              lam "_" (eq a x y') (_: eq b (app f x) (app f y'))))
+                            refl
+                            y
+                            p))))));
+            in
+            (checkHoas ty tm).tag == "lam";
+        '';
+        tests = [
+          "congType"
+          "congConcrete"
+        ];
+      }
+      {
+        title = "Symmetry and transitivity";
+        prose = ''
+          Symmetry flips an equality. Transitivity composes two equalities by
+          eliminating over the second proof and carrying the first proof as the
+          base case.
+        '';
+        code = ''
+          symType =
+            let
+              ty = forall "A" (u 0) (a:
+                forall "x" a (x:
+                  forall "y" a (y:
+                    forall "_" (eq a x y) (_:
+                      eq a y x))));
+              tm = lam "A" (u 0) (a:
+                lam "x" a (x:
+                  lam "y" a (y:
+                    lam "p" (eq a x y) (p:
+                      j a x
+                        (lam "y'" a (y': lam "_" (eq a x y') (_: eq a y' x)))
+                        refl
+                        y
+                        p))));
+            in
+            (checkHoas ty tm).tag == "lam";
+        '';
+        tests = [
+          "symType"
+          "symConcrete"
+          "transType"
+          "transConcrete"
+        ];
+      }
+      {
+        title = "Transport";
+        prose = ''
+          Transport moves evidence through an equality in a dependent family.
+          The concrete example uses a boolean-indexed family that chooses
+          between `Nat` and `Bool`.
+        '';
+        code = ''
+          transportConcrete =
+            let
+              motiveP = b: boolElim 1 (lam "_" bool (_: u 0)) nat bool b;
+              proofTm = j bool true_
+                (lam "y" bool (y: lam "_" (eq bool true_ y) (_: motiveP y)))
+                zero
+                true_
+                refl;
+            in
+            (checkHoas nat proofTm).tag == "app";
+        '';
+        tests = [
+          "transportType"
+          "transportConcrete"
+        ];
+      }
+      {
+        title = "Combining proof steps";
+        prose = ''
+          The final example feeds a congruence proof into symmetry. It is a
+          small proof pipeline, and the useful invariant is that both
+          intermediate proof terms are still checked by the same kernel.
+        '';
+        code = ''
+          combinedProof =
+            let
+              add21 = add (natLit 2) (succ zero);
+              three = natLit 3;
+              sadd21 = succ add21;
+              sthree = succ three;
+              congStep = j nat add21
+                (lam "y" nat (y: lam "_" (eq nat add21 y) (_: eq nat sadd21 (succ y))))
+                refl
+                three
+                refl;
+              proofTy = eq nat sthree sadd21;
+              proofTm = j nat sadd21
+                (lam "y" nat (y: lam "_" (eq nat sadd21 y) (_: eq nat y sadd21)))
+                refl
+                sthree
+                congStep;
+            in
+            (checkHoas proofTy proofTm).tag == "app";
+        '';
+        tests = [
+          "combinedProof"
+        ];
+      }
+    ];
+  };
 
   # ===== 1. Congruence (cong) =====
   #
@@ -67,8 +209,11 @@ in rec {
                 lam "p" (eq a x y) (p:
                   j a x
                     (lam "y'" a (y': lam "_" (eq a x y') (_: eq b (app f x) (app f y'))))
-                    refl y p))))));
-    in (checkHoas ty tm).tag == "lam";
+                    refl
+                    y
+                    p))))));
+    in
+    (checkHoas ty tm).tag == "lam";
 
   # Concrete: from add(2,1) = 3, derive succ(add(2,1)) = succ(3)
   congConcrete =
@@ -78,8 +223,11 @@ in rec {
       proofTy = eq nat (succ add21) (succ three);
       proofTm = j nat add21
         (lam "y" nat (y: lam "_" (eq nat add21 y) (_: eq nat (succ add21) (succ y))))
-        refl three refl;
-    in (checkHoas proofTy proofTm).tag == "app";
+        refl
+        three
+        refl;
+    in
+    (checkHoas proofTy proofTm).tag == "app";
 
 
   # ===== 2. Symmetry (sym) =====
@@ -103,8 +251,11 @@ in rec {
             lam "p" (eq a x y) (p:
               j a x
                 (lam "y'" a (y': lam "_" (eq a x y') (_: eq a y' x)))
-                refl y p))));
-    in (checkHoas ty tm).tag == "lam";
+                refl
+                y
+                p))));
+    in
+    (checkHoas ty tm).tag == "lam";
 
   # Concrete: Eq(Nat, add(0,3), 3) → Eq(Nat, 3, add(0,3))
   symConcrete =
@@ -114,8 +265,11 @@ in rec {
       proofTy = eq nat three add03;
       proofTm = j nat add03
         (lam "y" nat (y: lam "_" (eq nat add03 y) (_: eq nat y add03)))
-        refl three refl;
-    in (checkHoas proofTy proofTm).tag == "app";
+        refl
+        three
+        refl;
+    in
+    (checkHoas proofTy proofTm).tag == "app";
 
 
   # ===== 3. Transitivity (trans) =====
@@ -144,8 +298,11 @@ in rec {
                 lam "q" (eq a y z) (q:
                   j a y
                     (lam "z'" a (z': lam "_" (eq a y z') (_: eq a x z')))
-                    p z q))))));
-    in (checkHoas ty tm).tag == "lam";
+                    p
+                    z
+                    q))))));
+    in
+    (checkHoas ty tm).tag == "lam";
 
   # Concrete: chain add(1,2) = 3 and 3 = add(0,3) to get add(1,2) = add(0,3)
   transConcrete =
@@ -157,8 +314,11 @@ in rec {
       proofTy = eq nat add12 add03;
       proofTm = j nat three
         (lam "z" nat (z: lam "_" (eq nat three z) (_: eq nat add12 z)))
-        refl add03 refl;
-    in (checkHoas proofTy proofTm).tag == "app";
+        refl
+        add03
+        refl;
+    in
+    (checkHoas proofTy proofTm).tag == "app";
 
 
   # ===== 4. Transport =====
@@ -186,8 +346,11 @@ in rec {
                 lam "px" (app bigP x) (px:
                   j a x
                     (lam "y'" a (y': lam "_" (eq a x y') (_: app bigP y')))
-                    px y p))))));
-    in (checkHoas ty tm).tag == "lam";
+                    px
+                    y
+                    p))))));
+    in
+    (checkHoas ty tm).tag == "lam";
 
   # Concrete: P(b) = BoolElim(λ_.U₀, Nat, Bool, b) — dependent type family
   # true ↦ Nat, false ↦ Bool. Transport zero : P(true) along Eq(Bool, true, true).
@@ -197,8 +360,10 @@ in rec {
       proofTm = j bool true_
         (lam "y" bool (y: lam "_" (eq bool true_ y) (_: motiveP y)))
         zero  # zero : Nat = P(true)
-        true_ refl;
-    in (checkHoas nat proofTm).tag == "app";
+        true_
+        refl;
+    in
+    (checkHoas nat proofTm).tag == "app";
 
 
   # ===== 5. Combined: cong + sym =====
@@ -219,21 +384,17 @@ in rec {
       # Step 1: cong succ
       congStep = j nat add21
         (lam "y" nat (y: lam "_" (eq nat add21 y) (_: eq nat sadd21 (succ y))))
-        refl three refl;
+        refl
+        three
+        refl;
       # Step 2: sym on congStep
       proofTy = eq nat sthree sadd21;
       proofTm = j nat sadd21
         (lam "y" nat (y: lam "_" (eq nat sadd21 y) (_: eq nat y sadd21)))
-        refl sthree congStep;
-    in (checkHoas proofTy proofTm).tag == "app";
+        refl
+        sthree
+        congStep;
+    in
+    (checkHoas proofTy proofTm).tag == "app";
 
-
-  # ===== All tests =====
-
-  allPass =
-    congType && congConcrete
-    && symType && symConcrete
-    && transType && transConcrete
-    && transportType && transportConcrete
-    && combinedProof;
 }

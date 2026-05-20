@@ -1,104 +1,170 @@
-# Composed state + error over `{ counter; errors; }`. The descInterp side
-# hand-rolls the unified handler instead of using `adaptHandlers` — production
-# `adaptHandlers` has no descInterp analogue yet, but production handler bodies
-# are still re-used inside each branch.
+# Composed state+error parity through the descInterp bridge.
+#
+# Effect = `Sum (EffState S) (EffError E)`; state = `Σ S (List E)`.
+# Handler = `composeHandlers handle_State uniformOf_collecting` → UniRet
+# shape `Sum (Σ Resp S) (Σ A S)`. Test program: `get; raise; put(n+1); get`.
+# Parity: `(finalCounter, errorCount) == (1, 1)`.
+#
+# `Elab.embedVal` lifts the get-response Val into HOAS so the leaf can
+# compose it under `H.succ` directly (not `H.app H.succ x` — that puts
+# a bare Nix lambda in an `app.fn` slot and trips the elaborator).
 { lib, fx }:
 
 let
-  inherit (fx) bind handle adaptHandlers;
-  inherit (fx.effects) state error;
+  inherit (fx) bind handle;
 
-  H  = fx.tc.hoas;
-  K  = fx.experimental.descInterp.kernel;
-  T  = fx.experimental.descInterp.trampoline;
-  DS = fx.experimental.descInterp.effects.state;
-  DE = fx.experimental.descInterp.effects.error;
+  H = fx.tc.hoas;
+  HI = H._internal._indexed;
+  K = fx.experimental.descInterp.kernel;
+  T = fx.experimental.descInterp.trampoline;
+  C = fx.experimental.descInterp.compose;
+  Elab = fx.tc.elaborate;
 
-  testEff  = H.bool;
-  testResp = H.lam "_" H.bool (_: H.nat);
-  bindD    = K.bind testEff testResp H.nat H.nat;
-  handleD  = T.handle testEff testResp H.nat;
+  stateMod = fx.experimental.descInterp.effects.state;
+  errorMod = fx.experimental.descInterp.effects.error;
 
-  prodErrorBody = fx.effects.error.collecting.error;
-  prodStateH    = fx.effects.state.handler;
+  inherit (stateMod) EffState Resp_State handle_State;
+  inherit (errorMod) EffError Resp_collecting uniformOf_collecting;
 
-  composedHandlerD = { param, state }:
-    if param._opTag == "get"
-    then
-      let r = prodStateH.get { state = state.counter; param = null; };
-      in { resume = r.resume; state = state // { counter = r.state; }; }
-    else if param._opTag == "put"
-    then
-      let r = prodStateH.put { state = state.counter; param = param.param; };
-      in { resume = r.resume; state = state // { counter = r.state; }; }
-    else if param._opTag == "modify"
-    then
-      let r = prodStateH.modify { state = state.counter; param = param.fn; };
-      in { resume = r.resume; state = state // { counter = r.state; }; }
-    else if param._opTag == "error"
-    then
-      let r = prodErrorBody { param = param.param; state = state.errors; };
-      in { resume = r.resume; state = state // { errors = r.state; }; }
-    else throw "composed handler: unknown op tag '${toString (param._opTag or "?")}'";
+  S = H.nat;
+  E = H.string;
+  A = H.nat;
 
-  composed = {
+  EffStateAtS = H.app EffState.T S;
+  EffErrorAtE = H.app EffError.T E;
+
+  composedEff = H.sum EffStateAtS EffErrorAtE;
+
+  Resp_Composed = C.composedRespAt EffStateAtS EffErrorAtE
+    (H.app Resp_State S)
+    (H.app Resp_collecting E);
+
+  composedHandler =
+    let
+      S_B = H.listOf E;
+      H_A = H.app (H.app handle_State S) A;
+      H_B = H.app (H.app uniformOf_collecting E) A;
+    in
+    H.app
+      (H.app
+        (H.app
+          (H.app
+            (H.app
+              (H.app
+                (H.app
+                  (H.app (H.app C.composeHandlers S) S_B)
+                  EffStateAtS)
+                EffErrorAtE)
+              (H.app Resp_State S))
+            (H.app Resp_collecting E))
+          A)
+        H_A)
+      H_B;
+
+  # `outputVal` is `Sum (Σ Resp S) (Σ A S)`; tag chooses resume/abort,
+  # payload sits at `.d.val.fst`. Mirrors `state.atType.dispatch`.
+  composedDispatch = ctx:
+    let
+      outputVal = ctx.outputVal;
+      side = outputVal.d.tag;
+      pair = outputVal.d.val.fst;
+    in
+    if side == "VBootInl" then {
+      action = "resume";
+      response = pair.fst;
+      newState = pair.snd;
+    }
+    else if side == "VBootInr" then {
+      action = "abort";
+      value = pair.fst;
+      newState = pair.snd;
+    }
+    else throw "experimental.descInterp.composed-test.dispatch: expected VBootInl/VBootInr at outputVal.d.tag, got '${side}'";
+
+  # Smart constructors over the composed effect.
+  send_ = K.send composedEff Resp_Composed;
+  liftState = effStateOp:
+    HI.inlAtExplicit H.levelZero EffStateAtS EffErrorAtE effStateOp;
+  liftError = effErrorOp:
+    HI.inrAtExplicit H.levelZero EffStateAtS EffErrorAtE effErrorOp;
+
+  composedGet = send_ (liftState (H.app EffState.get S));
+  composedPut = s: send_ (liftState (H.app (H.app EffState.put S) s));
+  composedRaise = e: send_ (liftError (H.app (H.app EffError.error E) e));
+
+  # Memoise per-A bind partials for the chain.
+  bindNN = K.bind composedEff Resp_Composed H.nat H.nat;
+  bindUN = K.bind composedEff Resp_Composed H.unit H.nat;
+
+  # ----- Prod-side mirror -----
+  #
+  # Custom handler attrset over packed state `{counter; errors;}`. The
+  # stock `state.handler` replaces the whole state on `put`, which
+  # would clobber `errors`; the stock `error.collecting` puts the
+  # error list directly in state, leaving no room for the counter.
+  prodHandlers = {
+    get = { state, ... }: { resume = state.counter; inherit state; };
+    put = { param, state, ... }: {
+      resume = null;
+      state = state // { counter = param; };
+    };
+    modify = { param, state, ... }: {
+      resume = null;
+      state = state // { counter = param state.counter; };
+    };
+    error = { param, state, ... }: {
+      resume = null;
+      state = state // { errors = state.errors ++ [ param ]; };
+    };
+  };
+
+  mixedProgram = {
     prod =
       let
-        adaptedState = adaptHandlers {
-          get = s: s.counter;
-          set = s: c: s // { counter = c; };
-        } state.handler;
-
-        adaptedError = adaptHandlers {
-          get = s: s.errors;
-          set = s: e: s // { errors = e; };
-        } error.collecting;
-
-        comp = bind (state.modify (n: n + 1)) (_:
-          bind (error.raiseWith "step2" "bad value") (_:
-            bind (state.modify (n: n + 10)) (_:
-              state.get)));
-
-        result = handle {
-          handlers = adaptedState // adaptedError;
-          state = { counter = 0; errors = []; };
-        } comp;
-      in {
+        comp = bind fx.effects.state.get (n:
+          bind (fx.effects.error.raise "warn") (_:
+            bind (fx.effects.state.put (n + 1)) (_:
+              fx.effects.state.get)));
+        result = handle
+          {
+            handlers = prodHandlers;
+            state = { counter = 0; errors = [ ]; };
+          }
+          comp;
+      in
+      {
         value = result.value;
-        errors = result.state.errors;
-        counter = result.state.counter;
+        errorCount = builtins.length result.state.errors;
       };
     desc =
       let
-        comp = bindD (DS.modify (n: n + 1)) (_:
-          bindD (DE.raiseWith "step2" "bad value") (_:
-            bindD (DS.modify (n: n + 10)) (_:
-              DS.get)));
-
-        result = handleD {
-          handlers = composedHandlerD;
-          state = { counter = 0; errors = []; };
-        } comp;
-      in {
-        value = result.value;
-        errors = result.state.errors;
-        counter = result.state.counter;
+        comp = bindNN composedGet (n:
+          bindUN (composedRaise (H.stringLit "warn")) (_:
+            bindUN (composedPut (H.succ (Elab.embedVal n))) (_:
+              composedGet)));
+        result = T.run composedEff Resp_Composed H.nat
+          { handler = composedHandler; dispatch = composedDispatch; }
+          comp
+          (H.pair H.zero (HI.nilAtExplicit E));
+      in
+      {
+        value = Elab.extract H.nat result.value;
+        # `result.state` is a kernel sigma Val (`pair counter errors`);
+        # `.snd` is the errors list Val directly — no re-embed needed.
+        errorCount = builtins.length
+          (Elab.extract (H.listOf E) result.state.snd);
       };
   };
 
-  parityOf = name: t: { inherit name; expr = t.desc; expected = t.prod; };
-
-  testCases = {
-    composedAdaptedParity = parityOf "composedAdapted" composed;
+  parityOf = name: t: {
+    inherit name;
+    expr = t.desc;
+    expected = t.prod;
   };
 
-  results = builtins.mapAttrs (_: t:
-    let actual = t.expr; in
-    { inherit actual; expected = t.expected; pass = actual == t.expected; }
-  ) testCases;
+  testCases = {
+    mixedStateErrorParity = parityOf "mixedStateError" mixedProgram;
+  };
 
-  failed = lib.filterAttrs (_: r: !r.pass) results;
-
-in testCases // {
-  allPass = (builtins.length (builtins.attrNames failed)) == 0;
-}
+in
+testCases

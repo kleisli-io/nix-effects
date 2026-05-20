@@ -10,7 +10,7 @@
 # scope.run      — run body with scoped handlers, hide scope state
 # scope.runWith  — run body with scoped handlers, expose scope state
 # scope.handlersFromAttrs — helper for creating handlers from Nix attrsets
-{ fx, lib, ... }:
+{ fx, lib, api, ... }:
 let
   inherit (fx.kernel) pure bind send;
   inherit (fx.trampoline) rotate handle;
@@ -20,9 +20,9 @@ let
 
   handlersFromAttrs =
     lib.mapAttrs (name: value:
-    if isHandler value then value
-    else if lib.isFunction value then { param, state }: { inherit state; resume = value param; }
-    else { state, ... }: { inherit state; resume = value; });
+      if isHandler value then value
+      else if lib.isFunction value then { param, state }: { inherit state; resume = value param; }
+      else { state, ... }: { inherit state; resume = value; });
 
   stateful = handlers: body:
     state.update (state: rotate { inherit handlers state; } body);
@@ -33,10 +33,11 @@ let
   val = bindings: body:
     provide (handlersFromAttrs bindings) body;
 
-  run = {
-    handlers,
-    state ? null,
-  }:
+  run =
+    { handlers
+    , state ? null
+    ,
+    }:
     rotate {
       inherit handlers state;
       return = value: _state: value;
@@ -44,18 +45,13 @@ let
 
   runWith = rotate;
 
-in {
-  inherit provide val stateful run runWith handlersFromAttrs;
-
-
-
-  __docs = {
-    _self = {
-      description = "scope effect: computation-scoped handlers via Kyo-style effect rotation; provide/val/stateful/run/runWith plus handlersFromAttrs sugar.";
-      doc = "Computation-scoped handlers via effect rotation.";
-    };
-
-    handlersFromAttrs = {
+in
+api.namespace {
+  description = "scope effect: computation-scoped handlers via Kyo-style effect rotation; provide/val/stateful/run/runWith plus handlersFromAttrs sugar.";
+  doc = "Computation-scoped handlers via effect rotation.";
+  value = {
+    handlersFromAttrs = api.leaf {
+      value = handlersFromAttrs;
       description = "scope.handlersFromAttrs: lift an attrset of handlers, functions, or constants into named effect handlers; preserves shape and state.";
       signature = "handlersFromAttrs : { <name> = handler | (param -> a) | a; ... } -> handlers";
       doc = ''
@@ -83,7 +79,8 @@ in {
       };
     };
 
-    stateful = {
+    stateful = api.leaf {
+      value = stateful;
       description = "scope.stateful: run a sub-computation under scoped handlers while preserving outer state around the rotation point; wraps state.update.";
       signature = "stateful : handlers -> Computation a -> Computation a";
       doc = ''
@@ -92,22 +89,27 @@ in {
       '';
       tests = {
         "preserves-state-around" = {
-          expr = handle {
+          expr = handle
+            {
               handlers = state.handler;
               state = 11;
-            } (stateful {
-              foo = { param, state }: {
-                state = state * 2;
-                resume = state * 3;
-              };
-           } (send "foo" null));
+            }
+            (stateful
+              {
+                foo = { param, state }: {
+                  state = state * 2;
+                  resume = state * 3;
+                };
+              }
+              (send "foo" null));
           expected.state = 22;
           expected.value = 33;
         };
       };
     };
 
-    provide = {
+    provide = api.leaf {
+      value = provide;
       description = "scope.provide: install stateless handlers for a sub-computation's dynamic extent (reader/val pattern); outer handler state survives unchanged.";
       signature = "scope.provide : handlers -> Computation a -> Computation a";
       doc = ''
@@ -126,79 +128,105 @@ in {
           expr =
             let
               comp = send "x" null;
-              result = handle { handlers = {}; }
-                (provide {
-                  x = { state, ... }: { resume = 42; inherit state; };
-                } comp);
-            in result.value;
+              result = handle { handlers = { }; }
+                (provide
+                  {
+                    x = { state, ... }: { resume = 42; inherit state; };
+                  }
+                  comp);
+            in
+            result.value;
           expected = 42;
         };
         "provide-rotates-unhandled" = {
           expr =
             let
               comp = send "outer" 7;
-              result = handle {
-                handlers.outer = { param, state }: { resume = param * 2; inherit state; };
-              } (provide {
-                inner = { state, ... }: { resume = 99; inherit state; };
-              } comp);
-            in result.value;
+              result = handle
+                {
+                  handlers.outer = { param, state }: { resume = param * 2; inherit state; };
+                }
+                (provide
+                  {
+                    inner = { state, ... }: { resume = 99; inherit state; };
+                  }
+                  comp);
+            in
+            result.value;
           expected = 14;
         };
         "provide-preserves-outer-state" = {
           expr =
             let
               comp = bind (send "count" null) (_: send "count" null);
-              result = handle {
-                handlers = {
-                  count = { param, state }: {
-                    resume = null;
-                    state = state // { n = (state.n or 0) + 1; };
+              result = handle
+                {
+                  handlers = {
+                    count = { param, state }: {
+                      resume = null;
+                      state = state // { n = (state.n or 0) + 1; };
+                    };
                   };
-                };
-                state = {};
-              } (provide {
-                x = { state, ... }: { resume = 42; inherit state; };
-              } comp);
-            in result.state.n;
+                  state = { };
+                }
+                (provide
+                  {
+                    x = { state, ... }: { resume = 42; inherit state; };
+                  }
+                  comp);
+            in
+            result.state.n;
           expected = 2;
         };
         "provide-deep-semantics" = {
           expr =
             let
               comp = bind (send "outer" null) (_: send "inner" null);
-              result = handle {
-                handlers.outer = { param, state }: {
-                  resume = send "inner" null;
-                  inherit state;
-                };
-              } (provide {
-                inner = { state, ... }: { resume = 42; inherit state; };
-              } comp);
-            in result.value;
+              result = handle
+                {
+                  handlers.outer = { param, state }: {
+                    resume = send "inner" null;
+                    inherit state;
+                  };
+                }
+                (provide
+                  {
+                    inner = { state, ... }: { resume = 42; inherit state; };
+                  }
+                  comp);
+            in
+            result.value;
           expected = 42;
         };
         "provide-nested-shadow" = {
           expr =
             let
               comp = send "x" null;
-              result = handle { handlers = {}; }
-                (provide {
-                  x = { state, ... }: { resume = 1; inherit state; };
-                } (provide {
-                  x = { state, ... }: { resume = 2; inherit state; };
-                } comp));
-            in result.value;
+              result = handle { handlers = { }; }
+                (provide
+                  {
+                    x = { state, ... }: { resume = 1; inherit state; };
+                  }
+                  (provide
+                    {
+                      x = { state, ... }: { resume = 2; inherit state; };
+                    }
+                    comp));
+            in
+            result.value;
           expected = 2;
         };
         "provide-empty-handlers" = {
           expr =
             let
               comp = send "x" 21;
-              result = handle {
-                handlers.x = { param, state }: { resume = param * 2; inherit state; };
-              } (provide {} comp);
-            in result.value;
+              result = handle
+                {
+                  handlers.x = { param, state }: { resume = param * 2; inherit state; };
+                }
+                (provide { } comp);
+            in
+            result.value;
           expected = 42;
         };
         # Deep semantics through bind chains: scope.provide inside a handler
@@ -211,24 +239,29 @@ in {
               # Inner scope shadows "probe" at root. "emit" rotates out, root handler
               # resumes with "probe" — must route back through inner scope.
               body = send "work" null;
-              result = handle {
-                handlers = {
-                  probe = { state, ... }: { resume = "root"; inherit state; };
-                  emit = { param, state }: {
-                    resume = send "probe" null;
-                    inherit state;
+              result = handle
+                {
+                  handlers = {
+                    probe = { state, ... }: { resume = "root"; inherit state; };
+                    emit = { param, state }: {
+                      resume = send "probe" null;
+                      inherit state;
+                    };
+                    work = { param, state }: {
+                      # bind chain wraps scope.provide — exercises queue.append path
+                      resume = bind (pure null) (_:
+                        provide
+                          {
+                            probe = { state, ... }: { resume = "inner"; inherit state; };
+                          }
+                          (send "emit" null));
+                      inherit state;
+                    };
                   };
-                  work = { param, state }: {
-                    # bind chain wraps scope.provide — exercises queue.append path
-                    resume = bind (pure null) (_:
-                      provide {
-                        probe = { state, ... }: { resume = "inner"; inherit state; };
-                      } (send "emit" null));
-                    inherit state;
-                  };
-                };
-              } body;
-            in result.value;
+                }
+                body;
+            in
+            result.value;
           expected = "inner";
         };
         # Companion to provide-deep-through-bind-chain: the bind sits AFTER the
@@ -239,32 +272,38 @@ in {
           expr =
             let
               body = send "work" null;
-              result = handle {
-                handlers = {
-                  probe = { state, ... }: { resume = "root"; inherit state; };
-                  emit = { param, state }: {
-                    resume = send "probe" null;
-                    inherit state;
+              result = handle
+                {
+                  handlers = {
+                    probe = { state, ... }: { resume = "root"; inherit state; };
+                    emit = { param, state }: {
+                      resume = send "probe" null;
+                      inherit state;
+                    };
+                    work = { param, state }: {
+                      # bind AFTER provide — provide returns an impure with a
+                      # __rawResume queue; kernel.bind snocs onto it.
+                      resume = bind
+                        (provide
+                          {
+                            probe = { state, ... }: { resume = "inner"; inherit state; };
+                          }
+                          (send "emit" null))
+                        (x: pure x);
+                      inherit state;
+                    };
                   };
-                  work = { param, state }: {
-                    # bind AFTER provide — provide returns an impure with a
-                    # __rawResume queue; kernel.bind snocs onto it.
-                    resume = bind
-                      (provide {
-                        probe = { state, ... }: { resume = "inner"; inherit state; };
-                      } (send "emit" null))
-                      (x: pure x);
-                    inherit state;
-                  };
-                };
-              } body;
-            in result.value;
+                }
+                body;
+            in
+            result.value;
           expected = "inner";
         };
       };
     };
 
-    val = {
+    val = api.leaf {
+      value = val;
       description = "scope.val: provide constant values as named effect handlers for a sub-computation; sugar for `provide (handlersFromAttrs bindings)`.";
       signature = "scope.val : { <name> = value; ... } -> Computation a -> Computation a";
       doc = ''
@@ -281,9 +320,10 @@ in {
           expr =
             let
               comp = bind (send "host" null) (h: pure h.name);
-              result = handle { handlers = {}; }
+              result = handle { handlers = { }; }
                 (val { host = { name = "igloo"; }; } comp);
-            in result.value;
+            in
+            result.value;
           expected = "igloo";
         };
         "val-composes" = {
@@ -292,10 +332,11 @@ in {
               comp = bind (send "host" null) (h:
                 bind (send "user" null) (u:
                   pure "${h.name}-${u.name}"));
-              result = handle { handlers = {}; }
+              result = handle { handlers = { }; }
                 (val { host = { name = "igloo"; }; }
                   (val { user = { name = "tux"; }; } comp));
-            in result.value;
+            in
+            result.value;
           expected = "igloo-tux";
         };
         "val-state-transparent" = {
@@ -305,32 +346,37 @@ in {
                 bind (send "host" null) (h:
                   bind (send "inc" 1) (_:
                     pure h.name)));
-              result = handle {
-                handlers = {
-                  inc = { param, state }: {
-                    resume = null;
-                    state = state // { n = (state.n or 0) + param; };
+              result = handle
+                {
+                  handlers = {
+                    inc = { param, state }: {
+                      resume = null;
+                      state = state // { n = (state.n or 0) + param; };
+                    };
                   };
-                };
-                state = {};
-              } (val { host = { name = "igloo"; }; } comp);
-            in { n = result.state.n; value = result.value; };
+                  state = { };
+                }
+                (val { host = { name = "igloo"; }; } comp);
+            in
+            { n = result.state.n; value = result.value; };
           expected = { n = 2; value = "igloo"; };
         };
         "val-nested-shadow" = {
           expr =
             let
               comp = send "x" null;
-              result = handle { handlers = {}; }
+              result = handle { handlers = { }; }
                 (val { x = 1; }
                   (val { x = 2; } comp));
-            in result.value;
+            in
+            result.value;
           expected = 2;
         };
       };
     };
 
-    run = {
+    run = api.leaf {
+      value = run;
       description = "scope.run: handle named effects inside a sub-computation and hide the scope's own state from the caller; rotates unknown effects outward.";
       signature = "scope.run : { handlers, state? } -> Computation a -> Computation a";
       doc = ''
@@ -343,29 +389,36 @@ in {
           expr =
             let
               comp = send "x" null;
-              scoped = run {
-                handlers.x = { state, ... }: { resume = 42; inherit state; };
-              } comp;
-              result = handle { handlers = {}; } scoped;
-            in result.value;
+              scoped = run
+                {
+                  handlers.x = { state, ... }: { resume = 42; inherit state; };
+                }
+                comp;
+              result = handle { handlers = { }; } scoped;
+            in
+            result.value;
           expected = 42;
         };
         "scope-hides-internal-state" = {
           expr =
             let
               comp = bind (send "inc" 1) (_: send "inc" 1);
-              scoped = run {
-                handlers.inc = { param, state }: { resume = null; state = state + param; };
-                state = 0;
-              } comp;
-              result = handle { handlers = {}; } scoped;
-            in result.value;
+              scoped = run
+                {
+                  handlers.inc = { param, state }: { resume = null; state = state + param; };
+                  state = 0;
+                }
+                comp;
+              result = handle { handlers = { }; } scoped;
+            in
+            result.value;
           expected = null;
         };
       };
     };
 
-    runWith = {
+    runWith = api.leaf {
+      value = runWith;
       description = "scope.runWith: like scope.run but surfaces the scope's final `{ value, state }` to the caller; raw rotation without state hiding.";
       signature = "scope.runWith : { handlers, state? } -> Computation a -> Computation { value, state }";
       doc = ''
@@ -376,12 +429,15 @@ in {
           expr =
             let
               comp = bind (send "inc" 1) (_: send "inc" 1);
-              scoped = runWith {
-                handlers.inc = { param, state }: { resume = null; state = state + param; };
-                state = 0;
-              } comp;
-              result = handle { handlers = {}; } scoped;
-            in result.value.state;
+              scoped = runWith
+                {
+                  handlers.inc = { param, state }: { resume = null; state = state + param; };
+                  state = 0;
+                }
+                comp;
+              result = handle { handlers = { }; } scoped;
+            in
+            result.value.state;
           expected = 2;
         };
       };

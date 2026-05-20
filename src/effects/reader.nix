@@ -3,7 +3,7 @@
 # Provides ask/asks operations for reading from a shared environment.
 # The handler threads an immutable environment through the computation.
 # Reader is the read-only restriction of state: no put, only get.
-{ fx, ... }:
+{ fx, api, ... }:
 let
   inherit (fx.kernel) pure bind send;
   ask = send "ask" null;
@@ -17,18 +17,13 @@ let
     local = { param, state }: { resume = null; state = param state; };
   };
 
-in {
-  inherit ask asks local handler;
-
-
-
-  __docs = {
-    _self = {
-      description = "reader effect: read-only environment threaded as immutable state; ask/asks/local with a standard handler. Read-only restriction of state.";
-      doc = "Read-only environment effect: ask/asks/local with standard handler.";
-    };
-
-    ask = {
+in
+api.namespace {
+  description = "reader effect: read-only environment threaded as immutable state; ask/asks/local with a standard handler. Read-only restriction of state.";
+  doc = "Read-only environment effect: ask/asks/local with standard handler.";
+  value = {
+    ask = api.leaf {
+      value = ask;
       description = "ask: read the current environment threaded by the reader handler; impure request whose response IS the handler state.";
       signature = "ask : Computation env";
       doc = ''
@@ -46,7 +41,8 @@ in {
       };
     };
 
-    asks = {
+    asks = api.leaf {
+      value = asks;
       description = "asks: read a projection of the environment via a user-supplied function; sugar for `bind ask (env: pure (f env))`.";
       signature = "asks : (env -> a) -> Computation a";
       doc = ''
@@ -60,7 +56,8 @@ in {
       };
     };
 
-    local = {
+    local = api.leaf {
+      value = local;
       description = "local: run a sub-computation under a modifier-transformed environment; sends `local` so handlers can install the modified env.";
       signature = "local : (env -> env) -> Computation a -> Computation a";
       doc = ''
@@ -80,7 +77,8 @@ in {
       };
     };
 
-    handler = {
+    handler = api.leaf {
+      value = handler;
       description = "reader.handler: interprets ask/local effects with state IS the (immutable) environment; ask resumes with state, local replaces it.";
       doc = ''
         Standard reader handler. Interprets ask effects.
@@ -104,6 +102,5 @@ in {
         };
       };
     };
-
   };
 }

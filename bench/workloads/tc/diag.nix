@@ -39,7 +39,8 @@ let
     baseErr
     idxs;
 
-in {
+in
+{
   # One-line pretty render of a 5000-deep chain. Exercises the
   # position-chain walker's fast (≤500) + slow (genericClosure) paths.
   pretty-one-line-5000 = builtins.stringLength (Pr.oneLine deepErr);

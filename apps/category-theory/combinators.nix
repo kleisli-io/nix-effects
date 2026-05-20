@@ -16,7 +16,8 @@
 let
   inherit (prelude) verify U0 Eq Refl J Pi lam app;
 
-in rec {
+in
+rec {
 
   # sym(A, a, b, p) = J(A, a, λy.λ_.Eq(A,y,a), refl, b, p)
   symTy = Pi "A" U0 (A: Pi "a" A (a: Pi "b" A (b:
@@ -26,7 +27,9 @@ in rec {
     lam "p" (Eq A a b) (p:
       J A a
         (lam "y" A (y: lam "_" (Eq A a y) (_: Eq A y a)))
-        Refl b p))));
+        Refl
+        b
+        p))));
 
   sym = verify symTy symImpl;
 
@@ -38,7 +41,9 @@ in rec {
     lam "p" (Eq A a b) (p: lam "q" (Eq A b c) (q:
       J A b
         (lam "y" A (y: lam "_" (Eq A b y) (_: Eq A a y)))
-        p c q))))));
+        p
+        c
+        q))))));
 
   trans = verify transTy transImpl;
 
@@ -52,7 +57,9 @@ in rec {
       lam "p" (Eq A a b) (p:
         J A a
           (lam "y" A (y: lam "_" (Eq A a y) (_: Eq B (app f a) (app f y))))
-          Refl b p))))));
+          Refl
+          b
+          p))))));
 
   cong = verify congTy congImpl;
 }

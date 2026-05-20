@@ -27,7 +27,7 @@
 # `builtins.genericClosure` beyond. The slow path's `key` depends on
 # a WHNF force of the next Error so cross-step references resolve
 # without rebuilding the chain at result-force time.
-{ lib, fx, ... }:
+{ lib, fx, api, ... }:
 
 let
   fastPathLimit = 500;
@@ -37,9 +37,9 @@ let
   # function is injective over the alphabet in `src/diag/positions.nix`
   # because the tag namespace is disjoint from parameter-value syntax.
   positionKey = pos:
-    if pos.tag == "Field"    then "Field:${pos.name}"
+    if pos.tag == "Field" then "Field:${pos.name}"
     else if pos.tag == "Elem" then "Elem:${toString pos.idx}"
-    else if pos.tag == "Tag"  then "Tag:${pos.name}"
+    else if pos.tag == "Tag" then "Tag:${pos.name}"
     else if pos.tag == "Case" then "Case:${pos.name}"
     else if pos.tag == "DConLayer" then "DConLayer:${toString pos.layer}"
     else pos.tag;
@@ -47,9 +47,9 @@ let
   mkNode = hoas: subs:
     { _tag = "SourceMap"; inherit hoas subs; };
 
-  leaf    = hoas: mkNode hoas {};
-  node    = hoas: subs: mkNode hoas subs;
-  opaque  = mkNode null {};
+  leaf = hoas: mkNode hoas { };
+  node = hoas: subs: mkNode hoas subs;
+  opaque = mkNode null { };
 
   isSourceMap = x:
     builtins.isAttrs x
@@ -77,7 +77,7 @@ let
   # Walk an Error's single-child chain, collecting `children[].position`
   # from root to first leaf or branching node. Stops when
   # `children` is empty (leaf) or has length != 1 (branching).
-  chainPositions = err: chainFast [] err 0;
+  chainPositions = err: chainFast [ ] err 0;
 
   chainFast = acc: err: depth:
     if builtins.length err.children != 1
@@ -86,7 +86,7 @@ let
     then chainSlow acc err
     else
       let edge = builtins.elemAt err.children 0;
-      in chainFast (acc ++ [edge.position]) edge.error (depth + 1);
+      in chainFast (acc ++ [ edge.position ]) edge.error (depth + 1);
 
   # Slow path: genericClosure worklist. `key` forces WHNF of `nextErr`
   # and `newAcc` so the chain does not rebuild thunks at result time.
@@ -97,38 +97,31 @@ let
       steps = builtins.genericClosure {
         startSet = [{ key = 0; _acc = acc0; _err = err0; }];
         operator = st:
-          if builtins.length st._err.children != 1 then []
+          if builtins.length st._err.children != 1 then [ ]
           else
             let
               edge = builtins.elemAt st._err.children 0;
               nextErr = edge.error;
-              newAcc = st._acc ++ [edge.position];
-            in [{
+              newAcc = st._acc ++ [ edge.position ];
+            in
+            [{
               key = builtins.seq nextErr
-                      (builtins.seq newAcc (st.key + 1));
+                (builtins.seq newAcc (st.key + 1));
               _acc = newAcc;
               _err = nextErr;
             }];
       };
-    in (lib.last steps)._acc;
+    in
+    (lib.last steps)._acc;
 
   # Back-map an Error's blame to a HOAS origin through a SourceMap.
   # Null if the chain leaves the mapped sub-tree.
   hoasAtError = err: sm: hoasAt (chainPositions err) sm;
 
-in {
+in
+{
   scope = {
-    sourceMap = {
-      inherit
-        leaf node opaque
-        positionKey descend descendChain hoasAt
-        chainPositions hoasAtError
-        isSourceMap;
-    };
-  };
-
-  __docs = {
-    sourceMap = {
+    sourceMap = api.leaf {
       description = "sourceMap: parallel structure threaded alongside elaborated `Tm` — back-maps a kernel `Error`'s `Position`-chain blame to the HOAS surface node that produced the offending sub-term.";
       doc = ''
         A SourceMap mirrors the shape of an elaborated `Tm`, carrying
@@ -159,6 +152,13 @@ in {
         `src/diag/pretty.nix` (`builtins.genericClosure` beyond 500
         steps).
       '';
+      value = {
+        inherit
+          leaf node opaque
+          positionKey descend descendChain hoasAt
+          chainPositions hoasAtError
+          isSourceMap;
+      };
     };
   };
 
@@ -208,7 +208,8 @@ in {
         builtins.foldl' (err: _: D.nestUnder P.DArgSort err)
           leafErr
           (lib.range 1 5000);
-    in {
+    in
+    {
       # -- positionKey --
       "positionKey-DArgSort" = {
         expr = positionKey P.DArgSort;
@@ -245,7 +246,7 @@ in {
         expected = true;
       };
       "node-is-sourceMap" = {
-        expr = isSourceMap (node "x" {});
+        expr = isSourceMap (node "x" { });
         expected = true;
       };
       "opaque-is-sourceMap" = {
@@ -253,12 +254,12 @@ in {
         expected = true;
       };
       "plain-attrset-is-not-sourceMap" = {
-        expr = isSourceMap { hoas = "x"; subs = {}; };
+        expr = isSourceMap { hoas = "x"; subs = { }; };
         expected = false;
       };
       "leaf-has-empty-subs" = {
         expr = (leaf "x").subs;
-        expected = {};
+        expected = { };
       };
       "leaf-carries-hoas" = {
         expr = (leaf "some-hoas").hoas;
@@ -307,7 +308,7 @@ in {
 
       # -- descendChain --
       "descendChain-empty-is-identity" = {
-        expr = (descendChain [] smDescArg).hoas;
+        expr = (descendChain [ ] smDescArg).hoas;
         expected = "outer";
       };
       "descendChain-single-hop" = {
@@ -329,7 +330,7 @@ in {
 
       # -- hoasAt --
       "hoasAt-root" = {
-        expr = hoasAt [] smNested;
+        expr = hoasAt [ ] smNested;
         expected = "root";
       };
       "hoasAt-deep" = {
@@ -344,7 +345,7 @@ in {
       # -- chainPositions --
       "chainPositions-leaf-error-is-empty" = {
         expr = chainPositions leafErr;
-        expected = [];
+        expected = [ ];
       };
       "chainPositions-one-hop" = {
         expr = map (p: p.tag) (chainPositions nested2);
@@ -358,7 +359,7 @@ in {
         expr =
           let branched = D.addChild P.PiCod nested2 leafErr;
           in map (p: p.tag) (chainPositions branched);
-        expected = [];
+        expected = [ ];
       };
 
       # -- hoasAtError --

@@ -2,7 +2,7 @@
 #
 # Evaluates the code blocks from book/src/getting-started.md to catch
 # broken examples before users hit them.
-{ lib, fx }:
+{ lib, fx, examplesDocs ? { } }:
 
 let
   # -- Test 1: "Your first type" (TargetClass example) --
@@ -14,12 +14,12 @@ let
       ok = TargetClass.check "module";
       bad = TargetClass.check "fleet";
       result = fx.run (TargetClass.validate "fleet")
-        fx.effects.typecheck.collecting [];
+        fx.effects.typecheck.collecting [ ];
     in
-      ok == true
-      && bad == false
-      && builtins.isList result.state
-      && builtins.length result.state > 0;
+    ok == true
+    && bad == false
+    && builtins.isList result.state
+    && builtins.length result.state > 0;
 
   # -- Test 2: "Your first dependent type" (DepRecord + TargetClass) --
   depRecordExample =
@@ -29,8 +29,11 @@ let
         (x: builtins.elem x [ "module" "file" "package" "check" ]);
       AspectDecl = DepRecord [
         { name = "generated"; type = Bool; }
-        { name = "target"; type = self:
-            if self.generated then TargetClass else String; }
+        {
+          name = "target";
+          type = self:
+            if self.generated then TargetClass else String;
+        }
         { name = "requires"; type = _: ListOf String; }
       ];
       ok = AspectDecl.checkFlat {
@@ -44,7 +47,7 @@ let
         requires = [ ];
       };
     in
-      ok == true && bad == false;
+    ok == true && bad == false;
 
   # -- Test 3: "Your first effect" (state doubling) --
   stateEffectExample =
@@ -54,7 +57,7 @@ let
       doubleState = bind get (s: bind (put (s * 2)) (_: pure s));
       result = run doubleState fx.effects.state.handler 21;
     in
-      result.value == 21 && result.state == 42;
+    result.value == 21 && result.state == 42;
 
   # -- Test 4: "A first generated datatype" --
   generatedDatatypeExample =
@@ -68,10 +71,10 @@ let
         ])
       ];
     in
-      Aspect ? D
-      && Aspect ? T
-      && Aspect ? aspect
-      && Aspect ? _dtypeMeta;
+    Aspect ? D
+    && Aspect ? T
+    && Aspect ? aspect
+    && Aspect ? _dtypeMeta;
 
   # -- Test 5: Verified aspect validator --
   verifiedAspectExample =
@@ -80,31 +83,32 @@ let
       v = fx.types.verified;
 
       AspectDecl = H.record [
-        { name = "name";     type = H.string; }
-        { name = "target";   type = H.string; }
+        { name = "name"; type = H.string; }
+        { name = "target"; type = H.string; }
         { name = "requires"; type = H.listOf H.string; }
       ];
 
       targets =
-        H.cons H.string (v.str "module")
-          (H.cons H.string (v.str "file")
-            (H.cons H.string (v.str "package")
-              (H.cons H.string (v.str "check") (H.nil H.string))));
+        H.cons (v.str "module")
+          (H.cons (v.str "file")
+            (H.cons (v.str "package")
+              (H.cons (v.str "check") H.nil)));
 
       validateAspect = v.verify (H.forall "a" AspectDecl (_: H.bool))
         (v.fn "a" AspectDecl (a:
           v.strElem (v.field AspectDecl "target" a) targets));
     in
-      validateAspect {
+    validateAspect
+      {
         name = "workspace-shell";
         target = "module";
         requires = [ "toolchain" ];
       }
-      && !(validateAspect {
-        name = "workspace-aspect";
-        target = "fleet";
-        requires = [ ];
-      });
+    && !(validateAspect {
+      name = "workspace-aspect";
+      target = "fleet";
+      requires = [ ];
+    });
 
   # -- Test 6: API surface sanity ("What's in the box") --
   apiSurfaceSanity =
@@ -128,16 +132,18 @@ let
       };
       docs = fx.api.extractDocs raw;
     in
-      docs.doc == "root"
-      && docs.child.doc == "child"
-      && !(docs ? data);
+    docs.doc == "root"
+    && docs.child.doc == "child"
+    && !(docs ? data);
 
-in {
+  # -- Test 8: examples render from a separate docs tree --
+  examplesAreSeparateFromApiDocs =
+    examplesDocs ? proofBasics
+    && examplesDocs.proofBasics ? sections;
+
+in
+{
   inherit targetClassExample depRecordExample stateEffectExample
-          generatedDatatypeExample verifiedAspectExample apiSurfaceSanity
-          apiDocsSkipsPlainWrapperData;
-
-  allPass = targetClassExample && depRecordExample && stateEffectExample
-            && generatedDatatypeExample && verifiedAspectExample && apiSurfaceSanity
-            && apiDocsSkipsPlainWrapperData;
+    generatedDatatypeExample verifiedAspectExample apiSurfaceSanity
+    apiDocsSkipsPlainWrapperData examplesAreSeparateFromApiDocs;
 }

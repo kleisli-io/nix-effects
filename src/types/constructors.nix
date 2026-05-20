@@ -5,7 +5,7 @@
 # (kernel faithfully represents structure) drives the approximate flag,
 # _kernelSufficient (kernel alone decides membership) drives guard presence.
 # Kernel building always uses children's _kernel regardless of flags.
-{ fx, ... }:
+{ fx, api, ... }:
 let
   inherit (fx.types.foundation) mkType check;
   inherit (fx.kernel) pure bind send;
@@ -31,14 +31,18 @@ let
           _dtypeMeta = baseKernel._dtypeMeta // { openExtras = true; };
         }
         else baseKernel;
-      guard = if allSufficient
+      guard =
+        if allSufficient
         then null
         else v:
           builtins.isAttrs v
-          && builtins.all (field:
-            v ? ${field} && (schema.${field}).check v.${field}
-          ) sortedNames;
-    in mkType {
+          && builtins.all
+            (field:
+              v ? ${field} && (schema.${field}).check v.${field}
+            )
+            sortedNames;
+    in
+    mkType {
       name = typeName;
       inherit kernelType guard;
       approximate = !allPrecise;
@@ -53,9 +57,11 @@ let
     };
 
   Record = mkRecordType { open = false; };
-  RecordTests = let
-    FP = fx.types.primitives;
-  in {
+  RecordTests =
+    let
+      FP = fx.types.primitives;
+    in
+    {
       "accepts-matching-record" = {
         expr =
           let
@@ -63,7 +69,8 @@ let
               name = FP.String;
               age = FP.Int;
             };
-          in check PersonT { name = "Alice"; age = 30; };
+          in
+          check PersonT { name = "Alice"; age = 30; };
         expected = true;
       };
       "rejects-missing-field" = {
@@ -73,7 +80,8 @@ let
               name = FP.String;
               age = FP.Int;
             };
-          in check PersonT { name = "Alice"; };
+          in
+          check PersonT { name = "Alice"; };
         expected = false;
       };
       "rejects-wrong-type" = {
@@ -83,7 +91,8 @@ let
               name = FP.String;
               age = FP.Int;
             };
-          in check PersonT { name = "Alice"; age = "thirty"; };
+          in
+          check PersonT { name = "Alice"; age = "thirty"; };
         expected = false;
       };
       "rejects-extra-fields" = {
@@ -92,7 +101,8 @@ let
             PersonT = Record {
               name = FP.String;
             };
-          in check PersonT { name = "Alice"; age = 30; };
+          in
+          check PersonT { name = "Alice"; age = 30; };
         expected = false;
       };
       "has-kernelCheck" = {
@@ -108,22 +118,28 @@ let
         expr =
           let
             PersonT = Record { n = FP.Int; s = FP.String; };
-            result = fx.trampoline.handle {
-              handlers = fx.effects.typecheck.collecting;
-              state = [];
-            } (PersonT.validate { n = "wrong"; s = 42; });
-          in builtins.length result.state;
+            result = fx.trampoline.handle
+              {
+                handlers = fx.effects.typecheck.collecting;
+                state = [ ];
+              }
+              (PersonT.validate { n = "wrong"; s = 42; });
+          in
+          builtins.length result.state;
         expected = 2;
       };
       "verify-missing-field-blame" = {
         expr =
           let
             PersonT = Record { n = FP.Int; };
-            result = fx.trampoline.handle {
-              handlers = fx.effects.typecheck.collecting;
-              state = [];
-            } (PersonT.validate {});
-          in builtins.length result.state;
+            result = fx.trampoline.handle
+              {
+                handlers = fx.effects.typecheck.collecting;
+                state = [ ];
+              }
+              (PersonT.validate { });
+          in
+          builtins.length result.state;
         expected = 1;
       };
       "verify-nested-decomposition" = {
@@ -131,11 +147,14 @@ let
           let
             Inner = Record { x = FP.Int; };
             Outer = Record { inner = Inner; };
-            result = fx.trampoline.handle {
-              handlers = fx.effects.typecheck.collecting;
-              state = [];
-            } (Outer.validate { inner = { x = "bad"; }; });
-          in builtins.length result.state;
+            result = fx.trampoline.handle
+              {
+                handlers = fx.effects.typecheck.collecting;
+                state = [ ];
+              }
+              (Outer.validate { inner = { x = "bad"; }; });
+          in
+          builtins.length result.state;
         expected = 1;
       };
       # -- Composition soundness --
@@ -144,7 +163,8 @@ let
           let
             Pos = fx.types.refinement.refined "Pos" FP.Int (x: x > 0);
             PersonT = Record { scores = ListOf Pos; name = FP.String; };
-          in (Maybe PersonT).check { scores = [(-1)]; name = "x"; };
+          in
+          (Maybe PersonT).check { scores = [ (-1) ]; name = "x"; };
         expected = false;
       };
       "kernel-sufficient-propagation" = {
@@ -158,7 +178,8 @@ let
           let
             Pos = fx.types.refinement.refined "Pos" FP.Int (x: x > 0);
             T = Maybe (Record { items = ListOf (Either Pos FP.Bool); });
-          in T._kernelPrecise;
+          in
+          T._kernelPrecise;
         expected = true;
       };
       "refined-kills-kernel-sufficient" = {
@@ -166,14 +187,16 @@ let
           let
             Pos = fx.types.refinement.refined "Pos" FP.Int (x: x > 0);
             T = Maybe (Record { items = ListOf (Either Pos FP.Bool); });
-          in T._kernelSufficient;
+          in
+          T._kernelSufficient;
         expected = false;
       };
       "record-with-refined-field-has-kernelCheck" = {
         expr =
           let
             Pos = fx.types.refinement.refined "Pos" FP.Int (x: x > 0);
-          in (Record { n = Pos; b = FP.Bool; }) ? kernelCheck;
+          in
+          (Record { n = Pos; b = FP.Bool; }) ? kernelCheck;
         expected = true;
       };
       "chained-refinement-soundness" = {
@@ -181,7 +204,8 @@ let
           let
             Pos = fx.types.foundation.refine FP.Int (x: x > 0);
             PosEven = fx.types.foundation.refine Pos (x: builtins.bitAnd x 1 == 0);
-          in (Maybe PosEven).check (-2);
+          in
+          (Maybe PosEven).check (-2);
         expected = false;
       };
       "deep-blame-nested-record" = {
@@ -189,11 +213,14 @@ let
           let
             Inner = Record { c = FP.Int; };
             Outer = Record { a = Record { b = Inner; }; };
-            result = fx.trampoline.handle {
-              handlers = fx.effects.typecheck.collecting;
-              state = [];
-            } (Outer.validate { a = { b = { c = "wrong"; }; }; });
-          in builtins.length result.state;
+            result = fx.trampoline.handle
+              {
+                handlers = fx.effects.typecheck.collecting;
+                state = [ ];
+              }
+              (Outer.validate { a = { b = { c = "wrong"; }; }; });
+          in
+          builtins.length result.state;
         expected = 1;
       };
       "deep-blame-nested-record-path" = {
@@ -201,22 +228,28 @@ let
           let
             Inner = Record { c = FP.Int; };
             Outer = Record { a = Record { b = Inner; }; };
-            result = fx.trampoline.handle {
-              handlers = fx.effects.typecheck.collecting;
-              state = [];
-            } (Outer.validate { a = { b = { c = "wrong"; }; }; });
-          in (builtins.head result.state).path;
+            result = fx.trampoline.handle
+              {
+                handlers = fx.effects.typecheck.collecting;
+                state = [ ];
+              }
+              (Outer.validate { a = { b = { c = "wrong"; }; }; });
+          in
+          (builtins.head result.state).path;
         expected = [ (P.Field "a") (P.Field "b") (P.Field "c") ];
       };
       "verify-per-field-blame-paths" = {
         expr =
           let
             PersonT = Record { n = FP.Int; s = FP.String; };
-            result = fx.trampoline.handle {
-              handlers = fx.effects.typecheck.collecting;
-              state = [];
-            } (PersonT.validate { n = "wrong"; s = 42; });
-          in map (e: e.path) result.state;
+            result = fx.trampoline.handle
+              {
+                handlers = fx.effects.typecheck.collecting;
+                state = [ ];
+              }
+              (PersonT.validate { n = "wrong"; s = 42; });
+          in
+          map (e: e.path) result.state;
         # Field order is sorted (n, s)
         expected = [ [ (P.Field "n") ] [ (P.Field "s") ] ];
       };
@@ -224,11 +257,14 @@ let
         expr =
           let
             PersonT = Record { n = FP.Int; };
-            result = fx.trampoline.handle {
-              handlers = fx.effects.typecheck.collecting;
-              state = [];
-            } (PersonT.validate {});
-          in (builtins.head result.state).path;
+            result = fx.trampoline.handle
+              {
+                handlers = fx.effects.typecheck.collecting;
+                state = [ ];
+              }
+              (PersonT.validate { });
+          in
+          (builtins.head result.state).path;
         expected = [ (P.Field "n") ];
       };
       # -- Position threading --
@@ -237,23 +273,26 @@ let
           let
             PersonT = Record { n = FP.Int; };
             comp = PersonT.validate 42;
-          in comp.effect.param.path;
-        expected = [];
+          in
+          comp.effect.param.path;
+        expected = [ ];
       };
       "verify-missing-field-has-Field-position" = {
         expr =
           let
             PersonT = Record { n = FP.Int; };
-            comp = PersonT.validate {};
-          in map (p: p.tag) comp.effect.param.path;
+            comp = PersonT.validate { };
+          in
+          map (p: p.tag) comp.effect.param.path;
         expected = [ "Field" ];
       };
       "verify-missing-field-position-carries-field-name" = {
         expr =
           let
             PersonT = Record { n = FP.Int; };
-            comp = PersonT.validate {};
-          in (builtins.elemAt comp.effect.param.path 0).name;
+            comp = PersonT.validate { };
+          in
+          (builtins.elemAt comp.effect.param.path 0).name;
         expected = "n";
       };
       "verify-bad-field-threads-path-through-primitive" = {
@@ -262,9 +301,12 @@ let
             PersonT = Record { n = FP.Int; };
             comp = PersonT.validate { n = "wrong"; };
             pos = comp.effect.param.path;
-          in { length = builtins.length pos;
-               tag = (builtins.elemAt pos 0).tag;
-               name = (builtins.elemAt pos 0).name; };
+          in
+          {
+            length = builtins.length pos;
+            tag = (builtins.elemAt pos 0).tag;
+            name = (builtins.elemAt pos 0).name;
+          };
         expected = { length = 1; tag = "Field"; name = "n"; };
       };
       "verify-nested-record-threads-two-Field-positions" = {
@@ -273,7 +315,8 @@ let
             Inner = Record { x = FP.Int; };
             Outer = Record { y = Inner; };
             comp = Outer.validate { y = { x = "wrong"; }; };
-          in map (p: p.name) comp.effect.param.path;
+          in
+          map (p: p.name) comp.effect.param.path;
         expected = [ "y" "x" ];
       };
       # -- Adequacy: kernel-exact types have check == kernelCheck --
@@ -296,7 +339,8 @@ let
             T = Record { a = FP.Int; b = FP.Bool; };
             info = fx.tc.generic.datatype.datatypeInfo T._kernel;
             con = builtins.head info.constructors;
-          in {
+          in
+          {
             n = builtins.length info.constructors;
             con = con.name;
             fields = map (f: f.name) con.fields;
@@ -310,9 +354,11 @@ let
     };
 
   RecordOpen = mkRecordType { open = true; };
-  RecordOpenTests = let
-    FP = fx.types.primitives;
-  in {
+  RecordOpenTests =
+    let
+      FP = fx.types.primitives;
+    in
+    {
       "accepts-matching-record" = {
         expr =
           let PersonT = RecordOpen { name = FP.String; age = FP.Int; };
@@ -350,9 +396,11 @@ let
       isPrecise = elemType._kernelPrecise;
       isSufficient = elemType._kernelSufficient;
       kernelType = H.listOf elemType._kernel;
-      guard = if isSufficient then null
+      guard =
+        if isSufficient then null
         else v: builtins.isList v && builtins.all elemType.check v;
-    in mkType {
+    in
+    mkType {
       name = "List[${elemType.name}]";
       inherit kernelType guard;
       approximate = !isPrecise;
@@ -364,166 +412,178 @@ let
         fx.tc.generic.check.deriveCheck self._kernel path v;
     };
   ListOfTests = let FP = fx.types.primitives; in {
-      "accepts-matching-list" = {
-        expr =
-          let intList = ListOf FP.Int;
-          in check intList [1 2 3];
-        expected = true;
-      };
-      "rejects-mixed-list" = {
-        expr =
-          let intList = ListOf FP.Int;
-          in check intList [1 "two" 3];
-        expected = false;
-      };
-      "accepts-empty-list" = {
-        expr =
-          let intList = ListOf FP.Int;
-          in check intList [];
-        expected = true;
-      };
-      "kernel-propagates" = {
-        expr = (ListOf FP.Bool) ? kernelCheck;
-        expected = true;
-      };
-      "kernelCheck-accepts" = {
-        expr = (ListOf FP.Bool).kernelCheck [true false];
-        expected = true;
-      };
-      "kernelCheck-rejects-bad-elem" = {
-        expr = (ListOf FP.Bool).kernelCheck [42];
-        expected = false;
-      };
-      # -- Description-backed kernel: datatypeInfo surfaces nil/cons --
-      "datatypeInfo-on-listof-surfaces-list-constructors" = {
-        expr =
-          let
-            T = ListOf FP.Int;
-            info = fx.tc.generic.datatype.datatypeInfo T._kernel;
-          in {
-            name = info.name;
-            params = builtins.length info.params;
-            args = builtins.length info.paramArgs;
-            constructors = map (c: c.name) info.constructors;
-          };
-        expected = {
-          name = "List";
-          params = 1;
-          args = 1;
-          constructors = [ "nil" "cons" ];
+    "accepts-matching-list" = {
+      expr =
+        let intList = ListOf FP.Int;
+        in check intList [ 1 2 3 ];
+      expected = true;
+    };
+    "rejects-mixed-list" = {
+      expr =
+        let intList = ListOf FP.Int;
+        in check intList [ 1 "two" 3 ];
+      expected = false;
+    };
+    "accepts-empty-list" = {
+      expr =
+        let intList = ListOf FP.Int;
+        in check intList [ ];
+      expected = true;
+    };
+    "kernel-propagates" = {
+      expr = (ListOf FP.Bool) ? kernelCheck;
+      expected = true;
+    };
+    "kernelCheck-accepts" = {
+      expr = (ListOf FP.Bool).kernelCheck [ true false ];
+      expected = true;
+    };
+    "kernelCheck-rejects-bad-elem" = {
+      expr = (ListOf FP.Bool).kernelCheck [ 42 ];
+      expected = false;
+    };
+    # -- Description-backed kernel: datatypeInfo surfaces nil/cons --
+    "datatypeInfo-on-listof-surfaces-list-constructors" = {
+      expr =
+        let
+          T = ListOf FP.Int;
+          info = fx.tc.generic.datatype.datatypeInfo T._kernel;
+        in
+        {
+          name = info.name;
+          params = builtins.length info.params;
+          args = builtins.length info.paramArgs;
+          constructors = map (c: c.name) info.constructors;
         };
+      expected = {
+        name = "List";
+        params = 1;
+        args = 1;
+        constructors = [ "nil" "cons" ];
       };
-      # -- Per-element blame with paths --
-      "listof-primitive-blames-by-index" = {
-        expr =
-          let
-            intList = ListOf FP.Int;
-            result = fx.trampoline.handle {
+    };
+    # -- Per-element blame with paths --
+    "listof-primitive-blames-by-index" = {
+      expr =
+        let
+          intList = ListOf FP.Int;
+          result = fx.trampoline.handle
+            {
               handlers = fx.effects.typecheck.collecting;
-              state = [];
-            } (intList.validate [ 1 "two" 3 "four" ]);
-          in map (e: e.path) result.state;
-        expected = [ [ (P.Elem 1) ] [ (P.Elem 3) ] ];
-      };
-      "listof-record-decomposes-into-per-field-blame" = {
-        expr =
-          let
-            Iface = Record { name = FP.String; mtu = FP.Int; };
-            ifaces = ListOf Iface;
-            result = fx.trampoline.handle {
+              state = [ ];
+            }
+            (intList.validate [ 1 "two" 3 "four" ]);
+        in
+        map (e: e.path) result.state;
+      expected = [ [ (P.Elem 1) ] [ (P.Elem 3) ] ];
+    };
+    "listof-record-decomposes-into-per-field-blame" = {
+      expr =
+        let
+          Iface = Record { name = FP.String; mtu = FP.Int; };
+          ifaces = ListOf Iface;
+          result = fx.trampoline.handle
+            {
               handlers = fx.effects.typecheck.collecting;
-              state = [];
-            } (ifaces.validate [
+              state = [ ];
+            }
+            (ifaces.validate [
               { name = "eth0"; mtu = 1500; }
               { name = 42; mtu = "bad"; }
             ]);
-          in map (e: e.path) result.state;
-        # Element 1 has two bad fields; they appear in sorted field order
-        # (mtu, name). Element 0 passes cleanly. This is Gap 2 — previously
-        # the failing element blamed as a whole, not per field.
-        expected = [
-          [ (P.Elem 1) (P.Field "mtu") ]
-          [ (P.Elem 1) (P.Field "name") ]
-        ];
-      };
-      # -- Elem-tagged Position threading --
-      "listof-element-carries-Elem-position" = {
-        expr =
-          let
-            intList = ListOf FP.Int;
-            comp = intList.validate [ "bad" ];
-            pos = comp.effect.param.path;
-          in { length = builtins.length pos;
-               tag = (builtins.elemAt pos 0).tag;
-               idx = (builtins.elemAt pos 0).idx; };
-        expected = { length = 1; tag = "Elem"; idx = 0; };
-      };
-      "listof-of-record-threads-Elem-then-Field" = {
-        expr =
-          let
-            Iface = Record { name = FP.String; };
-            ifaces = ListOf Iface;
-            comp = ifaces.validate [ { name = 42; } ];
-          in map (p: p.tag) comp.effect.param.path;
-        expected = [ "Elem" "Field" ];
-      };
+        in
+        map (e: e.path) result.state;
+      # Element 1 has two bad fields; they appear in sorted field order
+      # (mtu, name). Element 0 passes cleanly.
+      expected = [
+        [ (P.Elem 1) (P.Field "mtu") ]
+        [ (P.Elem 1) (P.Field "name") ]
+      ];
     };
+    # -- Elem-tagged Position threading --
+    "listof-element-carries-Elem-position" = {
+      expr =
+        let
+          intList = ListOf FP.Int;
+          comp = intList.validate [ "bad" ];
+          pos = comp.effect.param.path;
+        in
+        {
+          length = builtins.length pos;
+          tag = (builtins.elemAt pos 0).tag;
+          idx = (builtins.elemAt pos 0).idx;
+        };
+      expected = { length = 1; tag = "Elem"; idx = 0; };
+    };
+    "listof-of-record-threads-Elem-then-Field" = {
+      expr =
+        let
+          Iface = Record { name = FP.String; };
+          ifaces = ListOf Iface;
+          comp = ifaces.validate [{ name = 42; }];
+        in
+        map (p: p.tag) comp.effect.param.path;
+      expected = [ "Elem" "Field" ];
+    };
+  };
 
   Maybe = innerType:
     let
       isPrecise = innerType._kernelPrecise;
       isSufficient = innerType._kernelSufficient;
       kernelType = H.maybe innerType._kernel;
-      guard = if isSufficient then null
+      guard =
+        if isSufficient then null
         else v: v == null || innerType.check v;
-    in mkType {
+    in
+    mkType {
       name = "Maybe[${innerType.name}]";
       inherit kernelType guard;
       approximate = !isPrecise;
     };
   MaybeTests = let FP = fx.types.primitives; in {
-      "accepts-null" = {
-        expr = check (Maybe FP.Int) null;
-        expected = true;
-      };
-      "accepts-value" = {
-        expr = check (Maybe FP.Int) 42;
-        expected = true;
-      };
-      "rejects-wrong-type" = {
-        expr = check (Maybe FP.Int) "hello";
-        expected = false;
-      };
-      "has-kernelCheck" = {
-        expr = (Maybe FP.Int) ? kernelCheck;
-        expected = true;
-      };
-      # -- Soundness: refined types through Maybe --
-      "soundness-maybe-refined-rejects" = {
-        expr =
-          let Nat = fx.types.refinement.refined "Nat" FP.Int (x: x >= 0);
-          in (Maybe Nat).check (-1);
-        expected = false;
-      };
-      "soundness-maybe-refined-accepts-null" = {
-        expr =
-          let Nat = fx.types.refinement.refined "Nat" FP.Int (x: x >= 0);
-          in (Maybe Nat).check null;
-        expected = true;
-      };
-      "soundness-maybe-refined-accepts-valid" = {
-        expr =
-          let Nat = fx.types.refinement.refined "Nat" FP.Int (x: x >= 0);
-          in (Maybe Nat).check 5;
-        expected = true;
-      };
-      "refined-not-kernel-sufficient" = {
-        expr =
-          let Nat = fx.types.refinement.refined "Nat" FP.Int (x: x >= 0);
-          in Nat._kernelSufficient;
-        expected = false;
-      };
+    "accepts-null" = {
+      expr = check (Maybe FP.Int) null;
+      expected = true;
     };
+    "accepts-value" = {
+      expr = check (Maybe FP.Int) 42;
+      expected = true;
+    };
+    "rejects-wrong-type" = {
+      expr = check (Maybe FP.Int) "hello";
+      expected = false;
+    };
+    "has-kernelCheck" = {
+      expr = (Maybe FP.Int) ? kernelCheck;
+      expected = true;
+    };
+    # -- Soundness: refined types through Maybe --
+    "soundness-maybe-refined-rejects" = {
+      expr =
+        let Nat = fx.types.refinement.refined "Nat" FP.Int (x: x >= 0);
+        in (Maybe Nat).check (-1);
+      expected = false;
+    };
+    "soundness-maybe-refined-accepts-null" = {
+      expr =
+        let Nat = fx.types.refinement.refined "Nat" FP.Int (x: x >= 0);
+        in (Maybe Nat).check null;
+      expected = true;
+    };
+    "soundness-maybe-refined-accepts-valid" = {
+      expr =
+        let Nat = fx.types.refinement.refined "Nat" FP.Int (x: x >= 0);
+        in (Maybe Nat).check 5;
+      expected = true;
+    };
+    "refined-not-kernel-sufficient" = {
+      expr =
+        let Nat = fx.types.refinement.refined "Nat" FP.Int (x: x >= 0);
+        in Nat._kernelSufficient;
+      expected = false;
+    };
+  };
 
   Either = leftType: rightType:
     let
@@ -535,16 +595,18 @@ let
       # leaks into blame paths — the kernel knows about Either as a
       # 2-tag variant rather than a μ-encoded SumDT.
       kernelType = H.variant [
-        { tag = "Left";  type = leftType._kernel; }
+        { tag = "Left"; type = leftType._kernel; }
         { tag = "Right"; type = rightType._kernel; }
       ];
-      guard = if allSufficient then null
+      guard =
+        if allSufficient then null
         else v:
           builtins.isAttrs v
           && v ? _tag && v ? value
           && ((v._tag == "Left" && leftType.check v.value)
-              || (v._tag == "Right" && rightType.check v.value));
-    in mkType {
+          || (v._tag == "Right" && rightType.check v.value));
+    in
+    mkType {
       name = "Either[${leftType.name}, ${rightType.name}]";
       inherit kernelType guard;
       approximate = !allPrecise;
@@ -552,37 +614,37 @@ let
         fx.tc.generic.check.deriveCheck self._kernel path v;
     };
   EitherTests = let FP = fx.types.primitives; in {
-      "accepts-left" = {
-        expr =
-          let e = Either FP.String FP.Int;
-          in check e { _tag = "Left"; value = "error"; };
-        expected = true;
-      };
-      "accepts-right" = {
-        expr =
-          let e = Either FP.String FP.Int;
-          in check e { _tag = "Right"; value = 42; };
-        expected = true;
-      };
-      "rejects-wrong-tag" = {
-        expr =
-          let e = Either FP.String FP.Int;
-          in check e { _tag = "Other"; value = 42; };
-        expected = false;
-      };
-      "kernel-propagates" = {
-        expr = (Either FP.Int FP.Bool) ? kernelCheck;
-        expected = true;
-      };
-      "kernelCheck-accepts-left" = {
-        expr = (Either FP.Int FP.Bool).kernelCheck { _tag = "Left"; value = 42; };
-        expected = true;
-      };
-      "kernelCheck-rejects-wrong-val" = {
-        expr = (Either FP.Int FP.Bool).kernelCheck { _tag = "Left"; value = true; };
-        expected = false;
-      };
+    "accepts-left" = {
+      expr =
+        let e = Either FP.String FP.Int;
+        in check e { _tag = "Left"; value = "error"; };
+      expected = true;
     };
+    "accepts-right" = {
+      expr =
+        let e = Either FP.String FP.Int;
+        in check e { _tag = "Right"; value = 42; };
+      expected = true;
+    };
+    "rejects-wrong-tag" = {
+      expr =
+        let e = Either FP.String FP.Int;
+        in check e { _tag = "Other"; value = 42; };
+      expected = false;
+    };
+    "kernel-propagates" = {
+      expr = (Either FP.Int FP.Bool) ? kernelCheck;
+      expected = true;
+    };
+    "kernelCheck-accepts-left" = {
+      expr = (Either FP.Int FP.Bool).kernelCheck { _tag = "Left"; value = 42; };
+      expected = true;
+    };
+    "kernelCheck-rejects-wrong-val" = {
+      expr = (Either FP.Int FP.Bool).kernelCheck { _tag = "Left"; value = true; };
+      expected = false;
+    };
+  };
 
   Variant = schema:
     let
@@ -596,105 +658,117 @@ let
       # type's own walker. No synthetic `Pos.Field "value"` ever
       # appears in the blame path — the kernel is honest about
       # variants without going through a μ-encoding.
-      kernelType = if sortedTags != []
-        then H.variant
-          (map (t: { tag = t; type = schema.${t}._kernel; }) sortedTags)
+      kernelType =
+        if sortedTags != [ ]
+        then
+          H.variant
+            (map (t: { tag = t; type = schema.${t}._kernel; }) sortedTags)
         else H.any;
-      guard = if allSufficient && sortedTags != []
+      guard =
+        if allSufficient && sortedTags != [ ]
         then null
         else v:
           builtins.isAttrs v
           && v ? _tag && v ? value
           && schema ? ${v._tag}
           && (schema.${v._tag}).check v.value;
-    in mkType {
+    in
+    mkType {
       name = typeName;
       inherit kernelType guard;
-      approximate = !(allPrecise && sortedTags != []);
+      approximate = !(allPrecise && sortedTags != [ ]);
       verify = self: path: v:
         fx.tc.generic.check.deriveCheck self._kernel path v;
     };
   VariantTests = let FP = fx.types.primitives; in {
-      "accepts-valid-variant" = {
-        expr =
-          let
-            Shape = Variant {
-              circle = FP.Float;
-              rect = FP.Attrs;
-            };
-          in check Shape { _tag = "circle"; value = 5.0; };
-        expected = true;
-      };
-      "rejects-unknown-tag" = {
-        expr =
-          let
-            Shape = Variant {
-              circle = FP.Float;
-            };
-          in check Shape { _tag = "triangle"; value = null; };
-        expected = false;
-      };
-      "has-kernelCheck" = {
-        expr = (Variant { a = FP.Int; b = FP.Bool; }) ? kernelCheck;
-        expected = true;
-      };
-      # -- Per-branch blame tracking --
-      "verify-variant-active-branch" = {
-        expr =
-          let
-            Shape = Variant { circle = FP.Float; rect = FP.Attrs; };
-            result = fx.trampoline.handle {
-              handlers = fx.effects.typecheck.collecting;
-              state = [];
-            } (Shape.validate { _tag = "circle"; value = "not-float"; });
-          in builtins.length result.state;
-        expected = 1;
-      };
-      "verify-variant-active-branch-path" = {
-        expr =
-          let
-            Shape = Variant { circle = FP.Float; rect = FP.Attrs; };
-            result = fx.trampoline.handle {
-              handlers = fx.effects.typecheck.collecting;
-              state = [];
-            } (Shape.validate { _tag = "circle"; value = "not-float"; });
-          in (builtins.head result.state).path;
-        expected = [ (P.Tag "circle") ];
-      };
-      # -- Tag-tagged Position threading --
-      "verify-variant-active-branch-carries-Tag-position" = {
-        expr =
-          let
-            Shape = Variant { circle = FP.Float; };
-            comp = Shape.validate { _tag = "circle"; value = "not-float"; };
-            pos = comp.effect.param.path;
-          in { length = builtins.length pos;
-               tag = (builtins.elemAt pos 0).tag;
-               name = (builtins.elemAt pos 0).name; };
-        expected = { length = 1; tag = "Tag"; name = "circle"; };
-      };
-      "verify-variant-of-record-threads-Tag-then-Field" = {
-        expr =
-          let
-            Inner = Record { x = FP.Int; };
-            V = Variant { some = Inner; };
-            comp = V.validate { _tag = "some"; value = { x = "bad"; }; };
-          in map (p: p.tag) comp.effect.param.path;
-        expected = [ "Tag" "Field" ];
-      };
+    "accepts-valid-variant" = {
+      expr =
+        let
+          Shape = Variant {
+            circle = FP.Float;
+            rect = FP.Attrs;
+          };
+        in
+        check Shape { _tag = "circle"; value = 5.0; };
+      expected = true;
     };
-
-in {
-  inherit Record RecordOpen ListOf Maybe Either Variant;
-
-
-  __docs = {
-    _self = {
-      description = "Type constructors: Record/RecordOpen/ListOf/Maybe/Either/Variant — higher-kinded builders that compose simpler types into structured ones with per-component blame.";
-      doc = "Type constructors: Record, RecordOpen, ListOf, Maybe, Either, Variant.";
+    "rejects-unknown-tag" = {
+      expr =
+        let
+          Shape = Variant {
+            circle = FP.Float;
+          };
+        in
+        check Shape { _tag = "triangle"; value = null; };
+      expected = false;
     };
+    "has-kernelCheck" = {
+      expr = (Variant { a = FP.Int; b = FP.Bool; }) ? kernelCheck;
+      expected = true;
+    };
+    # -- Per-branch blame tracking --
+    "verify-variant-active-branch" = {
+      expr =
+        let
+          Shape = Variant { circle = FP.Float; rect = FP.Attrs; };
+          result = fx.trampoline.handle
+            {
+              handlers = fx.effects.typecheck.collecting;
+              state = [ ];
+            }
+            (Shape.validate { _tag = "circle"; value = "not-float"; });
+        in
+        builtins.length result.state;
+      expected = 1;
+    };
+    "verify-variant-active-branch-path" = {
+      expr =
+        let
+          Shape = Variant { circle = FP.Float; rect = FP.Attrs; };
+          result = fx.trampoline.handle
+            {
+              handlers = fx.effects.typecheck.collecting;
+              state = [ ];
+            }
+            (Shape.validate { _tag = "circle"; value = "not-float"; });
+        in
+        (builtins.head result.state).path;
+      expected = [ (P.Tag "circle") ];
+    };
+    # -- Tag-tagged Position threading --
+    "verify-variant-active-branch-carries-Tag-position" = {
+      expr =
+        let
+          Shape = Variant { circle = FP.Float; };
+          comp = Shape.validate { _tag = "circle"; value = "not-float"; };
+          pos = comp.effect.param.path;
+        in
+        {
+          length = builtins.length pos;
+          tag = (builtins.elemAt pos 0).tag;
+          name = (builtins.elemAt pos 0).name;
+        };
+      expected = { length = 1; tag = "Tag"; name = "circle"; };
+    };
+    "verify-variant-of-record-threads-Tag-then-Field" = {
+      expr =
+        let
+          Inner = Record { x = FP.Int; };
+          V = Variant { some = Inner; };
+          comp = V.validate { _tag = "some"; value = { x = "bad"; }; };
+        in
+        map (p: p.tag) comp.effect.param.path;
+      expected = [ "Tag" "Field" ];
+    };
+  };
 
-    Record = {
+in
+api.namespace {
+  description = "Type constructors: Record/RecordOpen/ListOf/Maybe/Either/Variant — higher-kinded builders composing simpler types with per-component blame.";
+  doc = "Type constructors: Record, RecordOpen, ListOf, Maybe, Either, Variant.";
+  value = {
+    Record = api.leaf {
+      value = Record;
       description = "Record: closed record type constructor; `Record { f = T; ... }` checks that values carry exactly the declared fields with matching types and rejects extras.";
       signature = "Record : { <field> = Type; ... } -> Type";
       doc = ''
@@ -708,7 +782,8 @@ in {
       '';
       tests = RecordTests;
     };
-    RecordOpen = {
+    RecordOpen = api.leaf {
+      value = RecordOpen;
       description = "RecordOpen: open-record type constructor; like `Record` but undeclared fields are accepted untouched, useful for records carrying optional metadata slots.";
       signature = "RecordOpen : { <field> = Type; ... } -> Type";
       doc = ''
@@ -722,7 +797,8 @@ in {
       '';
       tests = RecordOpenTests;
     };
-    ListOf = {
+    ListOf = api.leaf {
+      value = ListOf;
       description = "ListOf: homogeneous list type constructor; `ListOf T` checks every element has type `T`, blames per-index, never short-circuits — handler picks error policy.";
       signature = "ListOf : Type -> Type";
       doc = ''
@@ -735,13 +811,15 @@ in {
       '';
       tests = ListOfTests;
     };
-    Maybe = {
+    Maybe = api.leaf {
+      value = Maybe;
       description = "Maybe: option type constructor; `Maybe T` accepts null or any value of type `T`; kernel precision and sufficiency inherit from the inner type.";
       signature = "Maybe : Type -> Type";
       doc = "Option type. Maybe Type accepts null or a value of Type.";
       tests = MaybeTests;
     };
-    Either = {
+    Either = api.leaf {
+      value = Either;
       description = "Either: tagged sum type constructor; `Either L R` accepts `{ _tag = \"Left\"; value : L }` or `{ _tag = \"Right\"; value : R }`.";
       signature = "Either : Type -> Type -> Type";
       doc = ''
@@ -750,7 +828,8 @@ in {
       '';
       tests = EitherTests;
     };
-    Variant = {
+    Variant = api.leaf {
+      value = Variant;
       description = "Variant: discriminated-union type constructor; `Variant { tag = T; ... }` accepts `{ _tag = name; value }` checked against the named branch.";
       signature = "Variant : { <tag> = Type; ... } -> Type";
       doc = ''

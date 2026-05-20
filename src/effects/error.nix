@@ -7,7 +7,7 @@
 # The contextual stack trace is built by handlers accumulating context
 # from nested effect operations — each raise carries a context string
 # that handlers can collect.
-{ fx, ... }:
+{ fx, api, ... }:
 let
   inherit (fx.kernel) send;
   raise = message: send "error" { inherit message; context = ""; };
@@ -19,16 +19,18 @@ let
   strict = {
     error = { param, ... }:
       let
-        prefix = if param.context != ""
-                 then "[${param.context}] "
-                 else "";
-      in builtins.throw "${prefix}Error: ${param.message}";
+        prefix =
+          if param.context != ""
+          then "[${param.context}] "
+          else "";
+      in
+      builtins.throw "${prefix}Error: ${param.message}";
   };
 
   collecting = {
     error = { param, state }: {
       resume = null;
-      state = state ++ [param];
+      state = state ++ [ param ];
     };
   };
 
@@ -39,18 +41,13 @@ let
     };
   };
 
-in {
-  inherit raise raiseWith strict collecting result;
-
-
-
-  __docs = {
-    _self = {
-      description = "error effect: raise/raiseWith with three handler strategies — strict (throw), collecting (accumulate list), and result (tagged abort).";
-      doc = "Error effect with contextual messages and multiple handler strategies.";
-    };
-
-    raise = {
+in
+api.namespace {
+  description = "error effect: raise/raiseWith with three handler strategies — strict (throw), collecting (accumulate list), and result (tagged abort).";
+  doc = "Error effect with contextual messages and multiple handler strategies.";
+  value = {
+    raise = api.leaf {
+      value = raise;
       description = "raise: send an `error` effect carrying a message and empty context; the handler decides whether to throw, collect, or recover.";
       signature = "raise : string -> Computation a";
       doc = ''
@@ -73,7 +70,8 @@ in {
       };
     };
 
-    raiseWith = {
+    raiseWith = api.leaf {
+      value = raiseWith;
       description = "raiseWith: raise an error with a context string; handlers can collect contexts to assemble stack-trace-style reports.";
       signature = "raiseWith : string -> string -> Computation a";
       doc = ''
@@ -89,7 +87,8 @@ in {
       };
     };
 
-    strict = {
+    strict = api.leaf {
+      value = strict;
       description = "error.strict: handler that throws on the first error via `builtins.throw`, prefixing context when present; halts evaluation immediately.";
       doc = ''
         Strict error handler: throws on first error via builtins.throw.
@@ -99,7 +98,8 @@ in {
       '';
     };
 
-    collecting = {
+    collecting = api.leaf {
+      value = collecting;
       description = "error.collecting: handler that accumulates every error into state as a list of `{ message, context }` and resumes computation with null.";
       doc = ''
         Collecting error handler: accumulates errors in state as a list.
@@ -111,23 +111,26 @@ in {
       tests = {
         "collects-error" = {
           expr =
-            let r = collecting.error { param = { message = "bad"; context = "test"; }; state = []; };
+            let r = collecting.error { param = { message = "bad"; context = "test"; }; state = [ ]; };
             in builtins.length r.state;
           expected = 1;
         };
         "preserves-existing" = {
           expr =
-            let r = collecting.error {
-              param = { message = "second"; context = ""; };
-              state = [{ message = "first"; context = ""; }];
-            };
-            in builtins.length r.state;
+            let
+              r = collecting.error {
+                param = { message = "second"; context = ""; };
+                state = [{ message = "first"; context = ""; }];
+              };
+            in
+            builtins.length r.state;
           expected = 2;
         };
       };
     };
 
-    result = {
+    result = api.leaf {
+      value = result;
       description = "error.result: handler that aborts with a tagged `{ _tag = \"Error\"; message; context; }` value; uses the non-resumption protocol.";
       doc = ''
         Result error handler: aborts computation with tagged Error value.

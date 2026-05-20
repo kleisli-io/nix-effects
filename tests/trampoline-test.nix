@@ -20,83 +20,98 @@ let
 
   # -- Test 1: Pure computation, no effects --
   pureComputation =
-    let result = run (pure 42) {} {};
+    let result = run (pure 42) { } { };
     in result.value == 42;
 
   # -- Test 2: Single effect --
   singleEffect =
     let
-      result = run (send "double" 21) {
-        double = { param, state }: { resume = param * 2; inherit state; };
-      } null;
-    in result.value == 42;
+      result = run (send "double" 21)
+        {
+          double = { param, state }: { resume = param * 2; inherit state; };
+        }
+        null;
+    in
+    result.value == 42;
 
   # -- Test 3: Simple counter — 10 increments --
   simpleCounter =
     let
-      result = run (buildChain "inc" 1 10) {
-        inc = { param, state }: { resume = null; state = state + param; };
-      } 0;
-    in result.state == 10;
+      result = run (buildChain "inc" 1 10)
+        {
+          inc = { param, state }: { resume = null; state = state + param; };
+        } 0;
+    in
+    result.state == 10;
 
   # -- Test 4: 10,000 operations — validates O(1) stack depth --
   tenThousandOps =
     let
-      result = run (buildChain "inc" 1 10000) {
-        inc = { param, state }: { resume = null; state = state + param; };
-      } 0;
-    in result.state == 10000;
+      result = run (buildChain "inc" 1 10000)
+        {
+          inc = { param, state }: { resume = null; state = state + param; };
+        } 0;
+    in
+    result.state == 10000;
 
   # -- Test 5: 100,000 operations — stress test --
   hundredThousandOps =
     let
-      result = run (buildChain "inc" 1 100000) {
-        inc = { param, state }: { resume = null; state = state + param; };
-      } 0;
-    in result.state == 100000;
+      result = run (buildChain "inc" 1 100000)
+        {
+          inc = { param, state }: { resume = null; state = state + param; };
+        } 0;
+    in
+    result.state == 100000;
 
   # -- Test 6: Multiple effect types compose --
   multipleEffects =
     let
       comp =
         bind (send "get" null) (counter:
-        bind (send "log" "step ${toString counter}") (_:
-        bind (send "inc" 1) (_:
-        bind (send "get" null) (newCounter:
-        pure { oldCounter = counter; newCounter = newCounter; }))));
+          bind (send "log" "step ${toString counter}") (_:
+            bind (send "inc" 1) (_:
+              bind (send "get" null) (newCounter:
+                pure { oldCounter = counter; newCounter = newCounter; }))));
 
-      result = run comp {
-        get = { param, state }: { resume = state.counter; inherit state; };
-        inc = { param, state }: {
-          resume = null;
-          state = state // { counter = state.counter + param; };
-        };
-        log = { param, state }: {
-          resume = null;
-          state = state // { logs = state.logs ++ [ param ]; };
-        };
-      } { counter = 0; logs = []; };
-    in result.value.oldCounter == 0
-       && result.value.newCounter == 1
-       && result.state.logs == [ "step 0" ];
+      result = run comp
+        {
+          get = { param, state }: { resume = state.counter; inherit state; };
+          inc = { param, state }: {
+            resume = null;
+            state = state // { counter = state.counter + param; };
+          };
+          log = { param, state }: {
+            resume = null;
+            state = state // { logs = state.logs ++ [ param ]; };
+          };
+        }
+        { counter = 0; logs = [ ]; };
+    in
+    result.value.oldCounter == 0
+    && result.value.newCounter == 1
+    && result.state.logs == [ "step 0" ];
 
   # -- Test 7: Effect return values flow through continuations --
   returnValueFlow =
     let
       comp =
         bind (send "add" { a = 10; b = 20; }) (sum:
-        bind (send "double" sum) (doubled:
-        bind (send "negate" doubled) (negated:
-        pure { inherit sum doubled negated; })));
+          bind (send "double" sum) (doubled:
+            bind (send "negate" doubled) (negated:
+              pure { inherit sum doubled negated; })));
 
-      result = run comp {
-        add = { param, state }: { resume = param.a + param.b; inherit state; };
-        double = { param, state }: { resume = param * 2; inherit state; };
-        negate = { param, state }: { resume = 0 - param; inherit state; };
-      } null;
-    in result.value.sum == 30
-       && result.value.doubled == 60
-       && result.value.negated == (0 - 60);
+      result = run comp
+        {
+          add = { param, state }: { resume = param.a + param.b; inherit state; };
+          double = { param, state }: { resume = param * 2; inherit state; };
+          negate = { param, state }: { resume = 0 - param; inherit state; };
+        }
+        null;
+    in
+    result.value.sum == 30
+    && result.value.doubled == 60
+    && result.value.negated == (0 - 60);
 
   # -- Test 8: Stateful accumulation across many effects --
   statefulAccumulation =
@@ -106,48 +121,56 @@ let
         if n <= 0 then pure null
         else bind (send "add" n) (_: sumChain (n - 1));
 
-      result = run (sumChain 100) {
-        add = { param, state }: { resume = null; state = state + param; };
-      } 0;
-    in result.state == 5050;  # Gauss's formula: 100*101/2
+      result = run (sumChain 100)
+        {
+          add = { param, state }: { resume = null; state = state + param; };
+        } 0;
+    in
+    result.state == 5050; # Gauss's formula: 100*101/2
 
   # -- Test 9: Early termination via pure in middle of chain --
   earlyPure =
     let
       comp =
         bind (send "inc" 1) (_:
-        bind (pure 99) (x:
-        pure x));
+          bind (pure 99) (x:
+            pure x));
 
-      result = run comp {
-        inc = { param, state }: { resume = null; state = state + param; };
-      } 0;
-    in result.value == 99 && result.state == 1;
+      result = run comp
+        {
+          inc = { param, state }: { resume = null; state = state + param; };
+        } 0;
+    in
+    result.value == 99 && result.state == 1;
 
   # -- Test 10: Bind with pure (no effects at all) --
   pureBindChain =
     let
       comp =
         bind (pure 1) (a:
-        bind (pure 2) (b:
-        bind (pure 3) (c:
-        pure (a + b + c))));
+          bind (pure 2) (b:
+            bind (pure 3) (c:
+              pure (a + b + c))));
 
-      result = run comp {} null;
-    in result.value == 6;
+      result = run comp { } null;
+    in
+    result.value == 6;
 
   # -- Test 11: handle combinator with custom return clause --
   handleWithReturn =
     let
       comp = bind (send "inc" 5) (_: send "inc" 3);
-      result = handle {
-        return = v: s: { value = "done:${toString s}"; state = s; };
-        handlers = {
-          inc = { param, state }: { resume = null; state = state + param; };
-        };
-        state = 0;
-      } comp;
-    in result.value == "done:8";
+      result = handle
+        {
+          return = v: s: { value = "done:${toString s}"; state = s; };
+          handlers = {
+            inc = { param, state }: { resume = null; state = state + param; };
+          };
+          state = 0;
+        }
+        comp;
+    in
+    result.value == "done:8";
 
   # -- Test 12: adapt transforms handler state --
   adaptState =
@@ -156,14 +179,17 @@ let
       incHandler = { param, state }: { resume = null; state = state + param; };
 
       # Adapt to work with { counter, logs } parent state
-      adapted = adapt {
-        get = s: s.counter;
-        set = s: c: s // { counter = c; };
-      } incHandler;
+      adapted = adapt
+        {
+          get = s: s.counter;
+          set = s: c: s // { counter = c; };
+        }
+        incHandler;
 
       comp = buildChain "inc" 1 5;
-      result = run comp { inc = adapted; } { counter = 0; logs = []; };
-    in result.state.counter == 5 && result.state.logs == [];
+      result = run comp { inc = adapted; } { counter = 0; logs = [ ]; };
+    in
+    result.state.counter == 5 && result.state.logs == [ ];
 
   # -- Test 13: adaptHandlers adapts entire handler set --
   adaptHandlersTest =
@@ -173,18 +199,21 @@ let
         get = { param, state }: { resume = state; inherit state; };
       };
 
-      adapted = adaptHandlers {
-        get = s: s.n;
-        set = s: n: s // { inherit n; };
-      } innerHandlers;
+      adapted = adaptHandlers
+        {
+          get = s: s.n;
+          set = s: n: s // { inherit n; };
+        }
+        innerHandlers;
 
       comp =
         bind (send "inc" 10) (_:
-        bind (send "get" null) (val:
-        pure val));
+          bind (send "get" null) (val:
+            pure val));
 
       result = run comp adapted { n = 5; extra = true; };
-    in result.value == 15 && result.state.extra == true;
+    in
+    result.value == 15 && result.state.extra == true;
 
   # -- Test 14: FTCQueue correctness — left-nested bind --
   leftNestedBind =
@@ -195,10 +224,12 @@ let
         else leftChain (n - 1) (bind acc (_: send "inc" 1));
 
       comp = leftChain 100 (send "inc" 1);
-      result = run comp {
-        inc = { param, state }: { resume = null; state = state + param; };
-      } 0;
-    in result.state == 101;  # 100 + 1 initial
+      result = run comp
+        {
+          inc = { param, state }: { resume = null; state = state + param; };
+        } 0;
+    in
+    result.state == 101; # 100 + 1 initial
 
   # -- Test: qApp consecutive Pure chain (stress test) --
   # One effect followed by 5000 pure binds: qApp chains all Pure returns
@@ -209,10 +240,13 @@ let
         (acc: _: bind acc (x: pure (x + 1)))
         (send "start" 0)
         (lib.range 1 5000);
-      result = run comp {
-        start = { param, state }: { resume = param; inherit state; };
-      } null;
-    in result.value == 5000;
+      result = run comp
+        {
+          start = { param, state }: { resume = param; inherit state; };
+        }
+        null;
+    in
+    result.value == 5000;
 
   # -- Test 16: viewlGo deep left-nested bind (stress test) --
   # 1000-deep left-nested bind chain
@@ -222,10 +256,12 @@ let
         if n <= 0 then acc
         else leftChain (n - 1) (bind acc (_: send "inc" 1));
       comp = leftChain 1000 (send "inc" 1);
-      result = run comp {
-        inc = { param, state }: { resume = null; state = state + param; };
-      } 0;
-    in result.state == 1001;
+      result = run comp
+        {
+          inc = { param, state }: { resume = null; state = state + param; };
+        } 0;
+    in
+    result.state == 1001;
 
   # -- Test 17: selective handler rotation (Kyo-style) --
   # Unhandled effects are rotated outward and resumed by outer handlers.
@@ -233,34 +269,42 @@ let
     let
       comp =
         bind (send "outer" 3) (x:
-        bind (send "inc" x) (_:
-        pure "ok"));
+          bind (send "inc" x) (_:
+            pure "ok"));
 
-      rotated = fx.rotate {
-        handlers = {
-          inc = { param, state }: { resume = null; state = state + param; };
-        };
-        state = 0;
-      } comp;
+      rotated = fx.rotate
+        {
+          handlers = {
+            inc = { param, state }: { resume = null; state = state + param; };
+          };
+          state = 0;
+        }
+        comp;
 
-      result = handle {
-        handlers = {
-          outer = { param, state }: { resume = param * 2; inherit state; };
-        };
-      } rotated;
-    in result.value == { value = "ok"; state = 6; };
+      result = handle
+        {
+          handlers = {
+            outer = { param, state }: { resume = param * 2; inherit state; };
+          };
+        }
+        rotated;
+    in
+    result.value == { value = "ok"; state = 6; };
 
   # -- Test 18: rotation leaves unknown effect suspended --
   effectRotationSuspendsUnknown =
     let
       comp = send "unknown" 1;
-      rotated = fx.rotate {
-        handlers = {
-          inc = { param, state }: { resume = null; state = state + param; };
-        };
-        state = 0;
-      } comp;
-    in (!fx.isPure rotated) && rotated.effect.name == "unknown";
+      rotated = fx.rotate
+        {
+          handlers = {
+            inc = { param, state }: { resume = null; state = state + param; };
+          };
+          state = 0;
+        }
+        comp;
+    in
+    (!fx.isPure rotated) && rotated.effect.name == "unknown";
 
   # -- Test: rotation stack safety — 10,000 handled effects --
   # rotateInterpret recursively calls itself for each handled effect.
@@ -268,39 +312,47 @@ let
   effectRotationStackSafety =
     let
       comp = buildChain "inc" 1 10000;
-      rotated = fx.rotate {
-        handlers = {
-          inc = { param, state }: { resume = null; state = state + param; };
-        };
-        state = 0;
-      } comp;
-      result = handle { handlers = {}; } rotated;
-    in result.value.state == 10000;
+      rotated = fx.rotate
+        {
+          handlers = {
+            inc = { param, state }: { resume = null; state = state + param; };
+          };
+          state = 0;
+        }
+        comp;
+      result = handle { handlers = { }; } rotated;
+    in
+    result.value.state == 10000;
 
   # -- Test 19: rotation supports nested selective handlers --
   effectRotationNestedHandlers =
     let
       comp =
         bind (send "outer" 5) (v:
-        bind (send "inner" v) (_:
-        pure "done"));
+          bind (send "inner" v) (_:
+            pure "done"));
 
-      innerRotated = fx.rotate {
-        handlers = {
-          inner = { param, state }: { resume = null; state = state + param; };
-        };
-        state = 0;
-      } comp;
+      innerRotated = fx.rotate
+        {
+          handlers = {
+            inner = { param, state }: { resume = null; state = state + param; };
+          };
+          state = 0;
+        }
+        comp;
 
-      outerRotated = fx.rotate {
-        handlers = {
-          outer = { param, state }: { resume = param + 1; inherit state; };
-        };
-        state = null;
-      } innerRotated;
+      outerRotated = fx.rotate
+        {
+          handlers = {
+            outer = { param, state }: { resume = param + 1; inherit state; };
+          };
+          state = null;
+        }
+        innerRotated;
 
-      result = handle { handlers = {}; } outerRotated;
-    in result.value == {
+      result = handle { handlers = { }; } outerRotated;
+    in
+    result.value == {
       value = {
         value = "done";
         state = 6;
@@ -312,45 +364,36 @@ let
     let
       comp = bind (buildChain "inc" 1 501) (_: send "compute" null);
 
-      rotated = fx.rotate {
-        handlers = {
-          inc     = { param, state }: { resume = null; state = state + param; };
-          compute = { param, state }: {
-            resume = bind (send "aux" null) (x: pure (x * 10));
-            inherit state;
+      rotated = fx.rotate
+        {
+          handlers = {
+            inc = { param, state }: { resume = null; state = state + param; };
+            compute = { param, state }: {
+              resume = bind (send "aux" null) (x: pure (x * 10));
+              inherit state;
+            };
+            aux = { param, state }: { resume = 7; inherit state; };
           };
-          aux     = { param, state }: { resume = 7; inherit state; };
-        };
-        state = 0;
-      } comp;
+          state = 0;
+        }
+        comp;
 
-      result = handle { handlers = {}; } rotated;
-    in result.value.value == 70;
+      result = handle { handlers = { }; } rotated;
+    in
+    result.value.value == 70;
 
-in {
+in
+{
   inherit pureComputation singleEffect simpleCounter
-          tenThousandOps hundredThousandOps
-          multipleEffects returnValueFlow
-          statefulAccumulation earlyPure pureBindChain
-          handleWithReturn adaptState adaptHandlersTest
-          leftNestedBind
-          qAppPureChain viewlGoLeftNested
-          effectRotationResumesInner
-          effectRotationSuspendsUnknown
-          effectRotationStackSafety
-          effectRotationNestedHandlers
-          effectRotationSlowPathEffectfulResume;
-
-  allPass = pureComputation && singleEffect && simpleCounter
-            && tenThousandOps && hundredThousandOps
-            && multipleEffects && returnValueFlow
-            && statefulAccumulation && earlyPure && pureBindChain
-            && handleWithReturn && adaptState && adaptHandlersTest
-            && leftNestedBind
-            && qAppPureChain && viewlGoLeftNested
-            && effectRotationResumesInner
-            && effectRotationSuspendsUnknown
-            && effectRotationStackSafety
-            && effectRotationNestedHandlers
-            && effectRotationSlowPathEffectfulResume;
+    tenThousandOps hundredThousandOps
+    multipleEffects returnValueFlow
+    statefulAccumulation earlyPure pureBindChain
+    handleWithReturn adaptState adaptHandlersTest
+    leftNestedBind
+    qAppPureChain viewlGoLeftNested
+    effectRotationResumesInner
+    effectRotationSuspendsUnknown
+    effectRotationStackSafety
+    effectRotationNestedHandlers
+    effectRotationSlowPathEffectfulResume;
 }

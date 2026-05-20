@@ -15,16 +15,22 @@ bind state.get (n:
 and with sugar, two forms:
 
 ```nix
-# Combinator
-do [ (_: state.get) (n: state.put (n + 1)) (_: state.get) ]
+# Combinator (sequence effects, discard intermediates)
+steps [ (_: state.get) (n: state.put (n + 1)) (_: state.get) ]
 
 # Operator
 state.get / (n: state.put (n + 1)) / (_: state.get)
 ```
 
-Both evaluate to the same value under the state handler. A third form
-— `letM` — applies to parallel effects whose results you want under
-named bindings:
+Both evaluate to the same value under the state handler. `do` is the
+companion combinator: rather than producing a `Comp` directly it
+returns a Kleisli arrow `(a -> M b)` that you apply to a seed —
+trading one keystroke (`(... ) null`) for composability,
+point-free use, and auto-lifting of plain functions. The two are
+covered side-by-side in [Effect combinators](#effect-combinators).
+
+A third form — `letM` — applies to parallel effects whose results
+you want under named bindings:
 
 ```nix
 # Without sugar
@@ -46,14 +52,14 @@ other's values.
 ## Opting in
 
 Sugar is a hybrid namespace. Effect combinators sit at the top level
-of `fx.sugar`, so `with fx.sugar;` brings `do`, `letM`, `pure`,
-`bind`, `run`, and `handle` into scope immediately. Division and
-types are one level deeper, under `operators` and `types`
+of `fx.sugar`, so `with fx.sugar;` brings `do`, `steps`, `letM`,
+`pure`, `bind`, `run`, and `handle` into scope immediately. Division
+and types are one level deeper, under `operators` and `types`
 respectively.
 
 ```
 fx.sugar
-  ├── do, letM
+  ├── do, steps, letM
   ├── pure, bind, map, seq, pipe, kleisli
   ├── run, handle
   ├── operators
@@ -67,8 +73,8 @@ The combinator-only form is safe under every Nix dialect. No operator
 magic, no `with`, no chance of surprising anyone:
 
 ```nix
-let inherit (fx.sugar) do letM;
-in do [
+let inherit (fx.sugar) steps letM;
+in steps [
   (_: state.get)
   (n: state.put (n * 3))
   (_: state.get)
@@ -100,25 +106,62 @@ namespace is hybrid.
 
 ## Effect combinators
 
-### `do`: sequence of steps
+### `do`: composable Kleisli arrow
 
-`do` takes a list of functions, each of which receives the previous
-step's value and returns the next computation. The first step gets
-`null`:
+`do` takes a list of functions and returns a Kleisli arrow
+`(a -> M b)`. Apply it to a seed value to obtain the computation:
 
 ```nix
-do [
-  (_: pure 1)
-  (x: pure (x + 1))
-  (x: pure (x * 10))
-]
+(do [
+  (x: x + 1)            # plain function — auto-lifted via `pure`
+  (x: pure (x * 10))    # already monadic — passes through
+]) 1
 # runs to 20
 ```
 
-Empty lists produce `pure null`. Singletons are equivalent to calling
-the one step on `null`. The argument binding is positional: `(n: ...)`
-means "the previous step's value is bound to `n`." If you don't need
-it, use `_`.
+Three properties follow from returning an arrow rather than a `Comp`
+directly.
+
+**Composable.** Two pipelines glue via `kleisli` without re-wrapping:
+
+```nix
+kleisli (do [ f g ]) (do [ h i ])  ==  do [ f g h i ]
+```
+
+**Data-last.** The seed is the final argument, so `do` slots into
+`map` point-free:
+
+```nix
+map (do [ validate enrich ]) userIds
+```
+
+**Auto-lifting.** Each step may be plain `(a -> b)` or monadic
+`(a -> M b)`. The runtime dispatches via `isComp`: a `Comp` result
+passes through `bind`, anything else is wrapped in `pure`. Pure and
+effectful steps mix freely without manual lifting.
+
+The empty list gives the identity arrow `x: pure x`; the singleton
+list applies its single step.
+
+### `steps`: sequence of effects
+
+`steps` is the original `do` semantics, renamed. It takes a list of
+functions, threads each through `bind`, and returns a `Comp` directly:
+
+```nix
+steps [
+  (_: state.get)
+  (n: state.put (n + 1))
+  (_: state.get)
+]
+```
+
+The seed is `pure null`, so the first step receives `null`. Empty
+lists produce `pure null`. Use `steps` when the intent is "sequence
+these effects" rather than "thread a value through a pipeline" —
+analogous to Haskell's `sequence_`. When the first step is producer-
+shaped (`_: pure x`), the leading `null` is harmless boilerplate; for
+anything more elaborate, reach for `do` so the seed is explicit.
 
 ### `letM`: named results
 
@@ -302,7 +345,7 @@ Lix <sup>2</sup> deprecated the pattern of binding a name prefixed
 with `__` that shadows a builtin-reserved operator slot. As of Lix
 2.92, `let inherit (ops) __div; in ...` produces
 `shadow-internal-symbols` errors during parse. If your codebase
-targets Lix, stick to `do` and `letM` — they don't touch this
+targets Lix, stick to `do`, `steps`, and `letM` — they don't touch this
 mechanism.
 
 This is not a CppNix limitation. `__div` works under CppNix 2.18+ and
@@ -363,10 +406,15 @@ Active witness tests for each of these live in
 
 ## When to reach for which form
 
-`do` and `letM` are the default. Reach for `__div` when a pipeline
-has three or more obvious-effect steps and the parentheses are
-hurting readability. Reach for `with fx.sugar;` when you're writing a
-file that's mostly computation, not mostly plumbing.
+`steps` is the default for "run these effects, in order, for their
+side effects." `do` is the default when a pipeline threads a value
+through several steps, when the pipeline needs to compose with another
+pipeline, or when you want point-free use under `map` and friends.
+`letM` covers the case where bound values are siblings rather than a
+left-to-right pipeline. Reach for `__div` when a pipeline has three or
+more obvious-effect steps and the parentheses are hurting readability.
+Reach for `with fx.sugar;` when you're writing a file that's mostly
+computation, not mostly plumbing.
 
 For types, use `fx.sugar.types` for one-off refinements inside Record
 schemas. Drop back to `fx.types.refined` when the type deserves a

@@ -45,7 +45,7 @@
 # References:
 #   Orchard et al. (2019) "Quantitative Program Reasoning with Graded Modal Types"
 #   Mesquita & Toninho (2026) "Lazy Linearity" (POPL 2026)
-{ fx, ... }:
+{ fx, api, ... }:
 let
   inherit (fx.types.foundation) mkType check;
   inherit (fx.trampoline) handle;
@@ -64,157 +64,177 @@ let
   # LINEAR TYPE — exactly one consume required
   # ===========================================================================
 
-  Linear = innerType: mkType {
-    name = "Linear(${innerType.name})";
-    kernelType = H.any;
-    guard = tokenCheck innerType;
-  } // {
+  Linear = innerType: mkType
+    {
+      name = "Linear(${innerType.name})";
+      kernelType = H.any;
+      guard = tokenCheck innerType;
+    } // {
     innerType = innerType;
   };
 
   LinearTests = {
-      "linear-accepts-valid-token" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-            LIntT = Linear IntT;
-          in check LIntT { _linear = true; id = 0; resource = 42; };
-        expected = true;
-      };
-      "linear-rejects-bad-inner-type" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-            LIntT = Linear IntT;
-          in check LIntT { _linear = true; id = 0; resource = "not-int"; };
-        expected = false;
-      };
-      "linear-rejects-non-token" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-            LIntT = Linear IntT;
-          in check LIntT 42;
-        expected = false;
-      };
-      "linear-rejects-missing-linear-tag" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-            LIntT = Linear IntT;
-          in check LIntT { id = 0; resource = 42; };
-        expected = false;
-      };
-      "linear-has-innerType" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-            LIntT = Linear IntT;
-          in LIntT.innerType.name;
-        expected = "Int";
-      };
-      "linear-name" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-          in (Linear IntT).name;
-        expected = "Linear(Int)";
-      };
-      "linear-has-validate" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-          in (Linear IntT) ? validate;
-        expected = true;
-      };
-      "linear-validate-is-impure" = {
-        # Fail-only emission: drive impurity with an invalid token
-        # (missing `_linear` marker). Valid tokens return `pure v`.
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-            LIntT = Linear IntT;
-          in fx.comp.isPure (LIntT.validate { id = 0; resource = 42; });
-        expected = false;
-      };
-      # Adequacy invariant: check ⟺ all-pass handler state
-      "linear-adequacy-valid" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-            LIntT = Linear IntT;
-            token = { _linear = true; id = 0; resource = 42; };
-            guardResult = check LIntT token;
-            validateResult = handle {
+    "linear-accepts-valid-token" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+          LIntT = Linear IntT;
+        in
+        check LIntT { _linear = true; id = 0; resource = 42; };
+      expected = true;
+    };
+    "linear-rejects-bad-inner-type" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+          LIntT = Linear IntT;
+        in
+        check LIntT { _linear = true; id = 0; resource = "not-int"; };
+      expected = false;
+    };
+    "linear-rejects-non-token" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+          LIntT = Linear IntT;
+        in
+        check LIntT 42;
+      expected = false;
+    };
+    "linear-rejects-missing-linear-tag" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+          LIntT = Linear IntT;
+        in
+        check LIntT { id = 0; resource = 42; };
+      expected = false;
+    };
+    "linear-has-innerType" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+          LIntT = Linear IntT;
+        in
+        LIntT.innerType.name;
+      expected = "Int";
+    };
+    "linear-name" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+        in
+        (Linear IntT).name;
+      expected = "Linear(Int)";
+    };
+    "linear-has-validate" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+        in
+        (Linear IntT) ? validate;
+      expected = true;
+    };
+    "linear-validate-is-impure" = {
+      # Fail-only emission: drive impurity with an invalid token
+      # (missing `_linear` marker). Valid tokens return `pure v`.
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+          LIntT = Linear IntT;
+        in
+        fx.comp.isPure (LIntT.validate { id = 0; resource = 42; });
+      expected = false;
+    };
+    # Adequacy invariant: check ⟺ all-pass handler state
+    "linear-adequacy-valid" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+          LIntT = Linear IntT;
+          token = { _linear = true; id = 0; resource = 42; };
+          guardResult = check LIntT token;
+          validateResult = handle
+            {
               handlers.typeCheck = { param, state }: {
                 resume = param.type.check param.value;
                 state = state && (param.type.check param.value);
               };
               state = true;
-            } (LIntT.validate token);
-          in guardResult == true && validateResult.state == true;
-        expected = true;
-      };
-      "linear-adequacy-invalid" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-            LIntT = Linear IntT;
-            badToken = { _linear = true; id = 0; resource = "not-int"; };
-            guardResult = check LIntT badToken;
-            validateResult = handle {
+            }
+            (LIntT.validate token);
+        in
+        guardResult == true && validateResult.state == true;
+      expected = true;
+    };
+    "linear-adequacy-invalid" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+          LIntT = Linear IntT;
+          badToken = { _linear = true; id = 0; resource = "not-int"; };
+          guardResult = check LIntT badToken;
+          validateResult = handle
+            {
               handlers.typeCheck = { param, state }: {
                 resume = param.type.check param.value;
                 state = state && (param.type.check param.value);
               };
               state = true;
-            } (LIntT.validate badToken);
-          in guardResult == false && validateResult.state == false;
-        expected = true;
-      };
+            }
+            (LIntT.validate badToken);
+        in
+        guardResult == false && validateResult.state == false;
+      expected = true;
+    };
   };
 
   # ===========================================================================
   # AFFINE TYPE — at most one consume (release allowed)
   # ===========================================================================
 
-  Affine = innerType: mkType {
-    name = "Affine(${innerType.name})";
-    kernelType = H.any;
-    guard = tokenCheck innerType;
-  } // {
+  Affine = innerType: mkType
+    {
+      name = "Affine(${innerType.name})";
+      kernelType = H.any;
+      guard = tokenCheck innerType;
+    } // {
     innerType = innerType;
   };
 
   AffineTests = {
-      "affine-accepts-valid-token" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-          in check (Affine IntT) { _linear = true; id = 0; resource = 42; };
-        expected = true;
-      };
-      "affine-rejects-non-token" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-          in check (Affine IntT) "not-a-token";
-        expected = false;
-      };
-      "affine-name" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-          in (Affine IntT).name;
-        expected = "Affine(Int)";
-      };
-      "affine-has-innerType" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-          in (Affine IntT).innerType.name;
-        expected = "Int";
-      };
+    "affine-accepts-valid-token" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+        in
+        check (Affine IntT) { _linear = true; id = 0; resource = 42; };
+      expected = true;
+    };
+    "affine-rejects-non-token" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+        in
+        check (Affine IntT) "not-a-token";
+      expected = false;
+    };
+    "affine-name" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+        in
+        (Affine IntT).name;
+      expected = "Affine(Int)";
+    };
+    "affine-has-innerType" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+        in
+        (Affine IntT).innerType.name;
+      expected = "Int";
+    };
   };
 
   # ===========================================================================
@@ -224,103 +244,113 @@ let
   Graded = { maxUses, innerType }:
     let
       gradeStr = if maxUses == null then "ω" else toString maxUses;
-    in mkType {
-      name = "Graded(${gradeStr}, ${innerType.name})";
-      kernelType = H.any;
-      guard = tokenCheck innerType;
-    } // {
+    in
+    mkType
+      {
+        name = "Graded(${gradeStr}, ${innerType.name})";
+        kernelType = H.any;
+        guard = tokenCheck innerType;
+      } // {
       inherit innerType maxUses;
     };
 
   GradedTests = {
-      "graded-1-is-linear" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-            G1 = Graded { maxUses = 1; innerType = IntT; };
-          in check G1 { _linear = true; id = 0; resource = 42; };
-        expected = true;
-      };
-      "graded-omega-name" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-          in (Graded { maxUses = null; innerType = IntT; }).name;
-        expected = "Graded(ω, Int)";
-      };
-      "graded-5-name" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-          in (Graded { maxUses = 5; innerType = IntT; }).name;
-        expected = "Graded(5, Int)";
-      };
-      "graded-has-maxUses" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-          in (Graded { maxUses = 3; innerType = IntT; }).maxUses;
-        expected = 3;
-      };
-      "graded-has-innerType" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-          in (Graded { maxUses = 1; innerType = IntT; }).innerType.name;
-        expected = "Int";
-      };
-      "graded-rejects-non-token" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-          in check (Graded { maxUses = 1; innerType = IntT; }) 42;
-        expected = false;
-      };
-      # Adequacy for Graded
-      "graded-adequacy-valid" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-            GT = Graded { maxUses = 3; innerType = IntT; };
-            token = { _linear = true; id = 0; resource = 7; };
-            guardResult = check GT token;
-            validateResult = handle {
+    "graded-1-is-linear" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+          G1 = Graded { maxUses = 1; innerType = IntT; };
+        in
+        check G1 { _linear = true; id = 0; resource = 42; };
+      expected = true;
+    };
+    "graded-omega-name" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+        in
+        (Graded { maxUses = null; innerType = IntT; }).name;
+      expected = "Graded(ω, Int)";
+    };
+    "graded-5-name" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+        in
+        (Graded { maxUses = 5; innerType = IntT; }).name;
+      expected = "Graded(5, Int)";
+    };
+    "graded-has-maxUses" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+        in
+        (Graded { maxUses = 3; innerType = IntT; }).maxUses;
+      expected = 3;
+    };
+    "graded-has-innerType" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+        in
+        (Graded { maxUses = 1; innerType = IntT; }).innerType.name;
+      expected = "Int";
+    };
+    "graded-rejects-non-token" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+        in
+        check (Graded { maxUses = 1; innerType = IntT; }) 42;
+      expected = false;
+    };
+    # Adequacy for Graded
+    "graded-adequacy-valid" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+          GT = Graded { maxUses = 3; innerType = IntT; };
+          token = { _linear = true; id = 0; resource = 7; };
+          guardResult = check GT token;
+          validateResult = handle
+            {
               handlers.typeCheck = { param, state }: {
                 resume = param.type.check param.value;
                 state = state && (param.type.check param.value);
               };
               state = true;
-            } (GT.validate token);
-          in guardResult == true && validateResult.state == true;
-        expected = true;
-      };
-      "graded-adequacy-invalid" = {
-        expr =
-          let
-            IntT = mkType { name = "Int"; kernelType = H.int_; };
-            GT = Graded { maxUses = 1; innerType = IntT; };
-            notToken = "just-a-string";
-            guardResult = check GT notToken;
-            validateResult = handle {
+            }
+            (GT.validate token);
+        in
+        guardResult == true && validateResult.state == true;
+      expected = true;
+    };
+    "graded-adequacy-invalid" = {
+      expr =
+        let
+          IntT = mkType { name = "Int"; kernelType = H.int_; };
+          GT = Graded { maxUses = 1; innerType = IntT; };
+          notToken = "just-a-string";
+          guardResult = check GT notToken;
+          validateResult = handle
+            {
               handlers.typeCheck = { param, state }: {
                 resume = param.type.check param.value;
                 state = state && (param.type.check param.value);
               };
               state = true;
-            } (GT.validate notToken);
-          in guardResult == false && validateResult.state == false;
-        expected = true;
-      };
+            }
+            (GT.validate notToken);
+        in
+        guardResult == false && validateResult.state == false;
+      expected = true;
+    };
   };
 
-in {
-  inherit Linear Affine Graded;
-
-
-  __docs = {
-    _self = {
-      description = "Linear type constructors: `Linear`/`Affine`/`Graded` — pure structural guards for capability tokens; usage enforcement lives in the linear effect handler.";
-      doc = ''
+in
+api.namespace {
+  description = "Linear type constructors: `Linear`/`Affine`/`Graded` — pure structural guards for capability tokens; usage enforcement lives in the linear effect handler.";
+  doc = ''
     Linear type constructors: structural guards for capability tokens.
 
     Pure type predicates that check token structure without consuming.
@@ -332,9 +362,9 @@ in {
 
     See Orchard et al. (2019) for graded modal types.
   '';
-    };
-
-    Linear = {
+  value = {
+    Linear = api.leaf {
+      value = Linear;
       description = "Linear: structural type constructor for capability tokens that must be consumed exactly once; checks token shape, leaves usage tracking to the linear effect handler.";
       signature = "Linear : Type -> Type";
       doc = ''
@@ -365,7 +395,8 @@ in {
       '';
       tests = LinearTests;
     };
-    Affine = {
+    Affine = api.leaf {
+      value = Affine;
       description = "Affine: structural type constructor for capability tokens that may be consumed at most once; identical shape to `Linear`, release is permitted.";
       signature = "Affine : Type -> Type";
       doc = ''
@@ -387,7 +418,8 @@ in {
       '';
       tests = AffineTests;
     };
-    Graded = {
+    Graded = api.leaf {
+      value = Graded;
       description = "Graded: structural type constructor for capability tokens with declared usage multiplicity; generalises Linear/Affine via the `maxUses` parameter.";
       signature = "Graded : { maxUses : Int | null, innerType : Type } -> Type";
       doc = ''

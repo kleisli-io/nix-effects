@@ -95,7 +95,7 @@ type_a ≡ type_b         (definitional equality, via normalization)
 Terms are Nix attrsets. Each has a `tag` field for the constructor:
 
 ```nix
-# Core constructors (see kernel-spec.md §2 for the full grammar)
+# Core constructors
 { tag = "var"; idx = 0; }                     # de Bruijn index
 { tag = "pi"; name = "x"; domain = ...; codomain = ...; }  # Π type
 { tag = "lam"; name = "x"; domain = ...; body = ...; }     # λ abstraction

@@ -16,14 +16,14 @@
 #   Pitman (1990) "Condition Handling in the Lisp Language Family"
 #   Kent (2001) "Common Lisp HyperSpec" §9 Conditions
 #   Plotkin & Pretnar (2009) "Handlers of Algebraic Effects"
-{ fx, ... }:
+{ fx, api, ... }:
 let
   inherit (fx.kernel) pure bind send;
   signal = name: data: restarts:
     send "condition" { inherit name data restarts; };
 
   warn = name: data:
-    bind (send "condition" { inherit name data; restarts = ["muffle-warning"]; }) (response:
+    bind (send "condition" { inherit name data; restarts = [ "muffle-warning" ]; }) (response:
       if builtins.isAttrs response && response.restart or "" == "muffle-warning"
       then pure null
       else pure null);
@@ -59,18 +59,13 @@ let
       else builtins.throw "Unhandled condition '${param.name}'";
   };
 
-in {
-  inherit signal warn fail ignore collectConditions withRestart;
-
-
-
-  __docs = {
-    _self = {
-      description = "conditions effect: Common-Lisp-style signal/warn with restart-based recovery; handler IS the algebra choosing among offered restarts.";
-      doc = "CL-style condition system: signal/warn with restart-based recovery.";
-    };
-
-    signal = {
+in
+api.namespace {
+  description = "conditions effect: Common-Lisp-style signal/warn with restart-based recovery; handler IS the algebra choosing among offered restarts.";
+  doc = "CL-style condition system: signal/warn with restart-based recovery.";
+  value = {
+    signal = api.leaf {
+      value = signal;
       description = "signal: raise a CL-style condition with name, data, and available restart names; the handler returns `{ restart, value }` to choose recovery.";
       signature = "signal : string -> any -> [string] -> Computation any";
       doc = ''
@@ -86,21 +81,22 @@ in {
       '';
       tests = {
         "signal-is-impure" = {
-          expr = fx.comp.isPure (signal "test" {} ["use-value" "abort"]);
+          expr = fx.comp.isPure (signal "test" { } [ "use-value" "abort" ]);
           expected = false;
         };
         "signal-carries-name" = {
-          expr = (signal "division-by-zero" { divisor = 0; } ["use-value" "abort"]).effect.param.name;
+          expr = (signal "division-by-zero" { divisor = 0; } [ "use-value" "abort" ]).effect.param.name;
           expected = "division-by-zero";
         };
         "signal-carries-restarts" = {
-          expr = builtins.length (signal "test" {} ["a" "b" "c"]).effect.param.restarts;
+          expr = builtins.length (signal "test" { } [ "a" "b" "c" ]).effect.param.restarts;
           expected = 3;
         };
       };
     };
 
-    warn = {
+    warn = api.leaf {
+      value = warn;
       description = "warn: raise a warning condition with the conventional `muffle-warning` restart; if the handler doesn't muffle, computation continues.";
       signature = "warn : string -> any -> Computation null";
       doc = ''
@@ -116,7 +112,8 @@ in {
       };
     };
 
-    fail = {
+    fail = api.leaf {
+      value = fail;
       description = "conditions.fail: last-resort handler that throws on any condition (via `builtins.throw`); ignores available restarts.";
       doc = ''
         Fail handler: throws on any condition. Ignores available restarts.
@@ -124,7 +121,8 @@ in {
       '';
     };
 
-    ignore = {
+    ignore = api.leaf {
+      value = ignore;
       description = "conditions.ignore: handler that silently discards every condition by resuming with `{ restart = \"continue\"; value = null; }`.";
       doc = ''
         Ignore handler: resumes with null for any condition.
@@ -132,7 +130,8 @@ in {
       '';
     };
 
-    collectConditions = {
+    collectConditions = api.leaf {
+      value = collectConditions;
       description = "conditions.collectConditions: handler that accumulates each condition into state as `{ name, data }` and resumes with `continue`.";
       doc = ''
         Collecting handler: accumulates conditions in state, resumes with continue.
@@ -142,17 +141,20 @@ in {
       tests = {
         "collects-condition" = {
           expr =
-            let r = collectConditions.condition {
-              param = { name = "test"; data = { x = 1; }; restarts = []; };
-              state = [];
-            };
-            in builtins.length r.state;
+            let
+              r = collectConditions.condition {
+                param = { name = "test"; data = { x = 1; }; restarts = [ ]; };
+                state = [ ];
+              };
+            in
+            builtins.length r.state;
           expected = 1;
         };
       };
     };
 
-    withRestart = {
+    withRestart = api.leaf {
+      value = withRestart;
       description = "withRestart: handler factory invoking a named restart with a given value for one matched condition; throws on every other condition.";
       signature = "withRestart : string -> string -> any -> handler";
       doc = ''
@@ -169,8 +171,9 @@ in {
           expr =
             let
               h = withRestart "division-by-zero" "use-value" 0;
-              r = h.condition { param = { name = "division-by-zero"; data = {}; restarts = ["use-value"]; }; state = null; };
-            in r.resume.restart;
+              r = h.condition { param = { name = "division-by-zero"; data = { }; restarts = [ "use-value" ]; }; state = null; };
+            in
+            r.resume.restart;
           expected = "use-value";
         };
       };

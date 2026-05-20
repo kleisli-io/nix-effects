@@ -9,8 +9,8 @@
 # (the flake-package name stem). For shell use we also expose shorter
 # `bench-*` aliases via a symlink shim, since the CONTRIBUTING docs,
 # handoffs, and error messages all refer to the short names.
-{
-  pkgs ? import ./nixpkgs.nix { },
+{ pkgs ? import ./nixpkgs.nix { }
+,
 }:
 let
   nix-effects = import ./. { inherit pkgs; };

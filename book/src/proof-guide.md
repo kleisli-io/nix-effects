@@ -548,12 +548,13 @@ folds that primitive over a generated list of allowed target classes.
 
 The nix-effects kernel implements Martin-Löf type theory with
 universes, dependent functions, dependent pairs, identity types,
-natural numbers, lists, sums, unit, an indexed-description family
-(`Desc I`, `μ`, `desc-ind`), and seven axiomatized Nix primitives
-(String, Int, Float, Attrs, Path, Function, Any). Booleans and Void
-are derived — `H.bool` as `μ ⊤ (plus (retI tt) (retI tt)) tt`,
-`H.void` as `Fin 0` — and come with derived eliminators
-(`H.boolElim` via `desc-ind`, `H.absurd` via a direct `J`-transport).
+natural numbers, lists, sums, unit, the empty type, an indexed-
+description family (`Desc I`, `μ`, `desc-ind`), and seven axiomatized
+Nix primitives (String, Int, Float, Attrs, Path, Function, Any).
+Booleans are derived — `H.bool` as `μ ⊤ (plus (retI tt) (retI tt)) tt`
+with eliminator `H.boolElim` via `desc-ind`. `Empty` is a kernel
+primitive (the initial-object dual of `Unit`) with eliminator
+`H.absurd : Π(P:U(k)). Empty → P`.
 The kernel can prove any property that reduces to a comparison of
 normal forms.
 

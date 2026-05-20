@@ -42,14 +42,16 @@ let
 
   # Recursively generate { name (relative path), path (store path) } entries.
   genEntries = prefix: node:
-    lib.foldlAttrs (acc: key: value:
-      if isContainer value
-      then acc ++ genEntries "${prefix}${key}/" value
-      else acc ++ [{
-        name = "${prefix}${key}.md";
-        path = pkgs.writeText "${key}.md" (renderPage key value);
-      }]
-    ) [] (children node);
+    lib.foldlAttrs
+      (acc: key: value:
+        if isContainer value
+        then acc ++ genEntries "${prefix}${key}/" value
+        else acc ++ [{
+          name = "${prefix}${key}.md";
+          path = pkgs.writeText "${key}.md" (renderPage key value);
+        }]
+      ) [ ]
+      (children node);
 
 in
-  pkgs.linkFarm "nix-effects-api-docs" (genEntries "" docs)
+pkgs.linkFarm "nix-effects-api-docs" (genEntries "" docs)

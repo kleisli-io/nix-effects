@@ -25,9 +25,10 @@ let
   deepAppSpine = n:
     let head = H.ann (natFunBody n) (natFunTy n);
     in builtins.foldl' (acc: _: H.app acc H.zero) head
-         (builtins.genList (x: x) n);
+      (builtins.genList (x: x) n);
 
-in {
+in
+{
   # 100-frame saturated app spine. The inferred top-level type is
   # `Nat`; the inference walk traverses all 100 app frames, popping a
   # `Pi` codomain at each level.

@@ -8,9 +8,9 @@
 - [Typed Validation](typed-validation.md)
 - [Generated Datatypes](generated-datatypes.md)
 - [Generic Programming](generic-programming.md)
-- [Sugar](sugar.md)
 - [Ornaments and Description-Backed Data](ornaments.md)
 - [Proof Guide](proof-guide.md)
+- [Sugar](sugar.md)
 
 ## Concepts
 

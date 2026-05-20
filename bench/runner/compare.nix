@@ -100,4 +100,5 @@ let
       if [[ "$pass" == "true" ]]; then exit 0; else exit 1; fi
     '';
   };
-in script
+in
+script

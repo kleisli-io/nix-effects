@@ -52,9 +52,10 @@ let
           (k: results.${k}.pass or false)
           (keysFor m);
     in
-      builtins.listToAttrs (map (m: { name = m; value = passedAll m; }) modules);
+    builtins.listToAttrs (map (m: { name = m; value = passedAll m; }) modules);
 
-in {
+in
+{
   # Full tc test suite — single boolean across ~1000 inline + integration
   # tests, EXCLUDING `heavyProofTestNames`. Forces every kernel-tested
   # path covered by `src/tc/**/tests.nix` that fits the quick-tier
@@ -77,18 +78,20 @@ in {
   # Full check of the category-theory app — 24 algebraic-law proofs
   # (`compComm`, `natAddMonoid`, `natCategory`, monoid laws, etc.),
   # each a `verifyAndExtract` invocation on a typed implementation.
-  category-theory-verify = catApp.tests.allPass;
+  category-theory-verify = builtins.all (x: x) (builtins.attrValues catApp.tests);
 
   # Repeated forcing of the two named proofs from `apps/category-theory`.
   # Nix's let-binding sharing means the typecheck cost is paid once;
   # subsequent iterations re-walk the already-forced result. Useful as a
   # multi-pass forced-walk benchmark over already-elaborated proof terms.
   synthetic-large-proof =
-    let proofs = [ catApp.tests.compComm catApp.tests.natAddMonoid ];
-        force = acc: p: builtins.deepSeq p acc;
-        loop = builtins.concatMap (_: proofs)
-                 (builtins.genList (x: x) 100);
-    in builtins.foldl' force true loop;
+    let
+      proofs = [ catApp.tests.compComm catApp.tests.natAddMonoid ];
+      force = acc: p: builtins.deepSeq p acc;
+      loop = builtins.concatMap (_: proofs)
+        (builtins.genList (x: x) 100);
+    in
+    builtins.foldl' force true loop;
 
   # 20-field single-constructor datatype, application of the constructor
   # checked end-to-end. Stresses macro-driven datatype elaboration plus
@@ -100,14 +103,15 @@ in {
       DT = H.datatype "Big" [ (H.con "mk" fields) ];
       args = builtins.genList (_: H.zero) 20;
       applied = builtins.foldl' (acc: a: H.app acc a) DT.mk args;
-    in (H.checkHoas DT.T applied).tag;
+    in
+    (H.checkHoas DT.T applied).tag;
 
   # `fzero (natLit 99) : Fin 100`. Drives the indexed-family check
   # path: elaborator builds `app fin (natLit 100)` and `fzero (natLit
   # 99)` deeply over Nat, kernel checks the constructor against the
   # indexed type.
   datatypeI-fin-deep =
-    (H.checkHoas (H.app H.fin (H.natLit 100)) (H.fzero (H.natLit 99))).tag;
+    (H.checkHoas (H.app H.fin (H.natLit 100)) H.fzero).tag;
 
   # 100-deep nested `let` chain:
   #   let x0:Nat = 0 in let x1:Nat = 0 in ... let x99:Nat = 0 in 0.
@@ -121,5 +125,6 @@ in {
         (inner: i: H.let_ "x${toString i}" H.nat H.zero (_: inner))
         H.zero
         (builtins.genList (x: x) 100);
-    in (H.checkHoas H.nat body).tag;
+    in
+    (H.checkHoas H.nat body).tag;
 }

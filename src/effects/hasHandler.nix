@@ -9,9 +9,9 @@ let
 
   hasHandler = send "has-handler";
 
-in {
-  inherit hasHandler;
-  __docs._self = {
+in
+api.leaf {
+    value = hasHandler;
     description = "hasHandler: ask the runtime whether a handler with the given effect name exists in the surrounding scope; impure query.";
     signature = "hasHandler : String -> Computation Bool";
     doc = ''
@@ -26,33 +26,42 @@ in {
         expr =
           let
             comp = hasHandler "myEffect";
-            result = handle {
-              handlers.myEffect = { state, ... }: { resume = 42; inherit state; };
-              state = null;
-            } comp;
-          in result.value;
+            result = handle
+              {
+                handlers.myEffect = { state, ... }: { resume = 42; inherit state; };
+                state = null;
+              }
+              comp;
+          in
+          result.value;
         expected = true;
       };
       "hasHandler-missing-handler-returns-false" = {
         expr =
           let
             comp = hasHandler "missing";
-            result = handle {
-              handlers.myEffect = { state, ... }: { resume = 42; inherit state; };
-              state = null;
-            } comp;
-          in result.value;
+            result = handle
+              {
+                handlers.myEffect = { state, ... }: { resume = 42; inherit state; };
+                state = null;
+              }
+              comp;
+          in
+          result.value;
         expected = false;
       };
       "hasHandler-nested-scope" = {
         expr =
           let
             scope = fx.effects.scope;
-            scoped = scope.run {
-              handlers.inner = { state, ... }: { resume = null; inherit state; };
-            } (hasHandler "inner");
-            result = handle { handlers = {}; } scoped;
-          in result.value;
+            scoped = scope.run
+              {
+                handlers.inner = { state, ... }: { resume = null; inherit state; };
+              }
+              (hasHandler "inner");
+            result = handle { handlers = { }; } scoped;
+          in
+          result.value;
         expected = true;
       };
       "hasHandler-escapes-scope" = {
@@ -60,15 +69,19 @@ in {
           let
             scope = fx.effects.scope;
             comp = hasHandler "outer";
-            scoped = scope.run {
-              handlers.inner = { state, ... }: { resume = null; inherit state; };
-            } comp;
-            result = handle {
-              handlers.outer = { state, ... }: { resume = null; inherit state; };
-            } scoped;
-          in result.value;
+            scoped = scope.run
+              {
+                handlers.inner = { state, ... }: { resume = null; inherit state; };
+              }
+              comp;
+            result = handle
+              {
+                handlers.outer = { state, ... }: { resume = null; inherit state; };
+              }
+              scoped;
+          in
+          result.value;
         expected = true;
       };
     };
-  };
 }

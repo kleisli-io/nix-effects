@@ -9,7 +9,7 @@
 # This module is the single source of truth for the Computation
 # representation. All construction and destruction of Computation
 # values goes through these functions.
-{ ... }:
+{ api, ... }:
 
 let
   pure = value: { _tag = "Pure"; inherit value; };
@@ -27,16 +27,13 @@ let
 
   isPure = comp: comp._tag == "Pure";
 
-in {
-  inherit pure impure match isPure isComp;
-
-  __docs = {
-    _self = {
-      description = "Computation ADT: `pure`/`impure` constructors plus `match`/`isComp`/`isPure` eliminators — the freer-monad value representation other modules build on.";
-      doc = "Computation ADT: introduction and elimination forms for `Pure | Impure`.";
-    };
-
-    pure = {
+in
+api.namespace {
+  description = "Computation ADT: `pure`/`impure` constructors plus `match`/`isComp`/`isPure` eliminators — the freer-monad value representation other modules build on.";
+  doc = "Computation ADT: introduction and elimination forms for `Pure | Impure`.";
+  value = {
+    pure = api.leaf {
+      value = pure;
       description = "pure: lift a value into a pure computation (`Pure` constructor); the trivial computation that returns the value without performing any effect.";
       signature = "pure : a -> Computation a";
       doc = "Lift a value into a pure computation. The Return constructor of the freer monad.";
@@ -52,7 +49,8 @@ in {
       };
     };
 
-    impure = {
+    impure = api.leaf {
+      value = impure;
       description = "impure: build a suspended computation (`Impure` constructor) carrying an effect request and a continuation queue to resume against.";
       signature = "impure : { name, param } -> FTCQueue -> Computation a";
       doc = "Create a suspended computation. The OpCall constructor of the freer monad — pairs an effect with the continuation queue.";
@@ -68,7 +66,8 @@ in {
       };
     };
 
-    match = {
+    match = api.leaf {
+      value = match;
       description = "match: eliminate a computation by cases, dispatching to `pure` or `impure` clauses; consumers should use this instead of inspecting `_tag` directly.";
       signature = "match : Computation a -> { pure : a -> b, impure : Effect -> FTCQueue -> b } -> b";
       doc = ''
@@ -106,7 +105,8 @@ in {
       };
     };
 
-    isComp = {
+    isComp = api.leaf {
+      value = isComp;
       description = "isComp: test whether a value is a computation (has `_tag` of `Pure` or `Impure`); returns `false` for any other Nix value.";
       signature = "isComp : a -> Bool";
       doc = "Test whether a value is a computation. Returns `true` iff `_tag` is `Pure` or `Impure`.";
@@ -126,7 +126,8 @@ in {
       };
     };
 
-    isPure = {
+    isPure = api.leaf {
+      value = isPure;
       description = "isPure: hot-path predicate for `_tag == \"Pure\"`; cheaper than `match` for branching since it avoids the case-record allocation.";
       signature = "isPure : Computation a -> Bool";
       doc = "Test whether a computation is `Pure`. For hot-path conditionals where `match` would allocate a case record.";
@@ -143,4 +144,3 @@ in {
     };
   };
 }
-

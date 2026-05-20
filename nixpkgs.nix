@@ -5,4 +5,5 @@ let
     url = url;
     sha256 = narHash;
   };
-in import nixpkgs
+in
+import nixpkgs

@@ -8,7 +8,7 @@ let
   inherit (fx.pipeline) mkStage run pure bind asks raiseWith warn;
   BuildStep = fx.build.types.BuildStep;
 
-  plan = { name, steps, sources ? {}, context ? {} }:
+  plan = { name, steps, sources ? { }, context ? { } }:
     let
       validate = mkStage {
         name = "validate-steps";
@@ -27,7 +27,8 @@ let
                   "step ${toString x.i}: invalid (requires name: non-empty string, run: string)"))
               (pure null)
               invalid;
-          in bind raiseAll (_: pure { steps = valid; });
+          in
+          bind raiseAll (_: pure { steps = valid; });
       };
 
       filterConditions = mkStage {
@@ -43,98 +44,113 @@ let
                   warn "step '${s.name}' skipped: condition not met"))
                 (pure null)
                 skipped;
-            in bind warnAll (_: pure { steps = kept; }));
+            in
+            bind warnAll (_: pure { steps = kept; }));
       };
 
       result = run context [ validate filterConditions ];
-    in {
-      plan = { inherit name sources; steps = result.value.steps or []; };
+    in
+    {
+      plan = { inherit name sources; steps = result.value.steps or [ ]; };
       inherit (result) errors warnings typeErrors;
     };
 
-in {
-  inherit plan;
-  __docs._self = {
-    description = "plan: validate build steps against `BuildStep`, filter by `when` predicates against reader context, and collect errors/warnings without throwing.";
-    signature = "plan : { name, steps, sources ? {}, context ? {} } -> { plan : BuildPlan, errors : [Err], warnings : [Warn], typeErrors : [Err] }";
-    doc = ''
-      Validate and process build steps into a `BuildPlan`.
+in
+{
+  scope = {
+    plan = api.leaf {
+        value = plan;
+        description = "plan: validate build steps against `BuildStep`, filter by `when` predicates against reader context, and collect errors/warnings without throwing.";
+        signature = "plan : { name, steps, sources ? {}, context ? {} } -> { plan : BuildPlan, errors : [Err], warnings : [Warn], typeErrors : [Err] }";
+        doc = ''
+          Validate and process build steps into a `BuildPlan`.
 
-      Runs an eval-time pipeline that validates each step against
-      `BuildStep`, filters steps by `when` predicates using reader
-      context, and collects all errors without throwing.
-    '';
-    tests = {
-      "all-valid-steps" = {
-        expr =
-          let r = plan {
-            name = "test";
-            steps = [
-              { name = "a"; run = "echo a"; }
-              { name = "b"; run = "echo b"; }
-            ];
+          Runs an eval-time pipeline that validates each step against
+          `BuildStep`, filters steps by `when` predicates using reader
+          context, and collects all errors without throwing.
+        '';
+        tests = {
+          "all-valid-steps" = {
+            expr =
+              let
+                r = plan {
+                  name = "test";
+                  steps = [
+                    { name = "a"; run = "echo a"; }
+                    { name = "b"; run = "echo b"; }
+                  ];
+                };
+              in
+              { stepCount = builtins.length r.plan.steps; errors = r.errors; };
+            expected = { stepCount = 2; errors = [ ]; };
           };
-          in { stepCount = builtins.length r.plan.steps; errors = r.errors; };
-        expected = { stepCount = 2; errors = []; };
-      };
-      "collects-error-for-invalid-step" = {
-        expr =
-          let r = plan {
-            name = "test";
-            steps = [
-              { name = "good"; run = "echo ok"; }
-              { bad = true; }
-            ];
+          "collects-error-for-invalid-step" = {
+            expr =
+              let
+                r = plan {
+                  name = "test";
+                  steps = [
+                    { name = "good"; run = "echo ok"; }
+                    { bad = true; }
+                  ];
+                };
+              in
+              { validCount = builtins.length r.plan.steps; errorCount = builtins.length r.errors; };
+            expected = { validCount = 1; errorCount = 1; };
           };
-          in { validCount = builtins.length r.plan.steps; errorCount = builtins.length r.errors; };
-        expected = { validCount = 1; errorCount = 1; };
-      };
-      "filters-conditional-step" = {
-        expr =
-          let r = plan {
-            name = "test";
-            context = { mode = "dev"; };
-            steps = [
-              { name = "always"; run = "echo always"; }
-              { name = "prod-only"; run = "echo prod"; when = ctx: ctx.mode == "production"; }
-            ];
+          "filters-conditional-step" = {
+            expr =
+              let
+                r = plan {
+                  name = "test";
+                  context = { mode = "dev"; };
+                  steps = [
+                    { name = "always"; run = "echo always"; }
+                    { name = "prod-only"; run = "echo prod"; when = ctx: ctx.mode == "production"; }
+                  ];
+                };
+              in
+              {
+                stepCount = builtins.length r.plan.steps;
+                warningCount = builtins.length r.warnings;
+                stepName = (builtins.elemAt r.plan.steps 0).name;
+              };
+            expected = { stepCount = 1; warningCount = 1; stepName = "always"; };
           };
-          in {
-            stepCount = builtins.length r.plan.steps;
-            warningCount = builtins.length r.warnings;
-            stepName = (builtins.elemAt r.plan.steps 0).name;
+          "keeps-step-when-condition-met" = {
+            expr =
+              let
+                r = plan {
+                  name = "test";
+                  context = { mode = "production"; };
+                  steps = [
+                    { name = "always"; run = "echo always"; }
+                    { name = "prod-only"; run = "echo prod"; when = ctx: ctx.mode == "production"; }
+                  ];
+                };
+              in
+              builtins.length r.plan.steps;
+            expected = 2;
           };
-        expected = { stepCount = 1; warningCount = 1; stepName = "always"; };
-      };
-      "keeps-step-when-condition-met" = {
-        expr =
-          let r = plan {
-            name = "test";
-            context = { mode = "production"; };
-            steps = [
-              { name = "always"; run = "echo always"; }
-              { name = "prod-only"; run = "echo prod"; when = ctx: ctx.mode == "production"; }
-            ];
+          "preserves-name-and-sources" = {
+            expr =
+              let
+                r = plan {
+                  name = "my-css";
+                  sources = { src = /tmp; };
+                  steps = [{ name = "s"; run = "e"; }];
+                };
+              in
+              { name = r.plan.name; hasSources = r.plan ? sources; };
+            expected = { name = "my-css"; hasSources = true; };
           };
-          in builtins.length r.plan.steps;
-        expected = 2;
-      };
-      "preserves-name-and-sources" = {
-        expr =
-          let r = plan {
-            name = "my-css";
-            sources = { src = /tmp; };
-            steps = [{ name = "s"; run = "e"; }];
+          "empty-steps" = {
+            expr =
+              let r = plan { name = "empty"; steps = [ ]; };
+              in { stepCount = builtins.length r.plan.steps; errors = r.errors; };
+            expected = { stepCount = 0; errors = [ ]; };
           };
-          in { name = r.plan.name; hasSources = r.plan ? sources; };
-        expected = { name = "my-css"; hasSources = true; };
-      };
-      "empty-steps" = {
-        expr =
-          let r = plan { name = "empty"; steps = []; };
-          in { stepCount = builtins.length r.plan.steps; errors = r.errors; };
-        expected = { stepCount = 0; errors = []; };
-      };
+        };
     };
   };
 }

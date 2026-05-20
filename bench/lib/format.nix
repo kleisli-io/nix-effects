@@ -12,8 +12,9 @@
 let
   sortKeys = v:
     if builtins.isAttrs v then
-      lib.listToAttrs (map (k: { name = k; value = sortKeys v.${k}; })
-                           (lib.sort (a: b: a < b) (builtins.attrNames v)))
+      lib.listToAttrs
+        (map (k: { name = k; value = sortKeys v.${k}; })
+          (lib.sort (a: b: a < b) (builtins.attrNames v)))
     else if builtins.isList v then map sortKeys v
     else v;
 
@@ -85,17 +86,19 @@ let
       wallWidth = 8;
 
       row = w:
-        let r = run.results.${w};
-            allocs = toString (r.allocs.values or 0);
-            thunks = toString (r.allocs.thunks or 0);
-            cpuMs = toString (builtins.floor (r.cpu.p50 * 1000));
-            wallMs = toString r.wall.p50;
-        in "| ${padRight workloadWidth w} | ${padLeft valuesWidth allocs} | ${padLeft thunksWidth thunks} | ${padLeft cpuWidth cpuMs} | ${padLeft wallWidth wallMs} |";
+        let
+          r = run.results.${w};
+          allocs = toString (r.allocs.values or 0);
+          thunks = toString (r.allocs.thunks or 0);
+          cpuMs = toString (builtins.floor (r.cpu.p50 * 1000));
+          wallMs = toString r.wall.p50;
+        in
+        "| ${padRight workloadWidth w} | ${padLeft valuesWidth allocs} | ${padLeft thunksWidth thunks} | ${padLeft cpuWidth cpuMs} | ${padLeft wallWidth wallMs} |";
 
       header = "| ${padRight workloadWidth "Workload"} | ${padLeft valuesWidth "values"} | ${padLeft thunksWidth "thunks"} | ${padLeft cpuWidth "cpu ms"} | ${padLeft wallWidth "wall ms"} |";
       sep = "|" + leftAlignSep (workloadWidth + 2) + "|"
-          + rightAlignSep (valuesWidth + 2) + "|" + rightAlignSep (thunksWidth + 2) + "|"
-          + rightAlignSep (cpuWidth + 2) + "|" + rightAlignSep (wallWidth + 2) + "|";
+        + rightAlignSep (valuesWidth + 2) + "|" + rightAlignSep (thunksWidth + 2) + "|"
+        + rightAlignSep (cpuWidth + 2) + "|" + rightAlignSep (wallWidth + 2) + "|";
       rows = map row names;
 
       meta = ''
@@ -107,7 +110,8 @@ let
         - **Runs per workload**: ${toString (run.runsPerWorkload or 0)}
 
       '';
-    in meta + header + "\n" + sep + "\n" + builtins.concatStringsSep "\n" rows + "\n";
+    in
+    meta + header + "\n" + sep + "\n" + builtins.concatStringsSep "\n" rows + "\n";
 
   # ---- Gate report ----
 
@@ -129,8 +133,8 @@ let
 
       header = "| ${padRight workloadWidth "Workload"} | ${padRight statusWidth "Status"} | ${padRight reasonWidth "Reason"} |";
       sep = "|" + leftAlignSep (workloadWidth + 2) + "|"
-          + leftAlignSep (statusWidth + 2) + "|"
-          + leftAlignSep (reasonWidth + 2) + "|";
+        + leftAlignSep (statusWidth + 2) + "|"
+        + leftAlignSep (reasonWidth + 2) + "|";
       rows = map row classifications;
 
       summary = ''
@@ -144,13 +148,14 @@ let
         - **Verdict**: ${if gateResult.pass then "PASS" else "FAIL"}
 
       '';
-    in summary + header + "\n" + sep + "\n" + builtins.concatStringsSep "\n" rows + "\n";
+    in
+    summary + header + "\n" + sep + "\n" + builtins.concatStringsSep "\n" rows + "\n";
 
   # ---- Open-regressions audit ----
 
   emitOpenRegressionsMarkdown = { entries, since }:
     let
-      commitWidth = 10;  # substring-capped in the finalizer.
+      commitWidth = 10; # substring-capped in the finalizer.
       workloadWidth = maxLen
         (builtins.stringLength "Workload")
         (map (e: e.workload) entries);
@@ -166,9 +171,9 @@ let
 
       header = "| ${padRight commitWidth "Commit"} | ${padRight workloadWidth "Workload"} | ${padRight statusWidth "Status"} | ${padRight reasonWidth "Reason"} |";
       sep = "|" + leftAlignSep (commitWidth + 2) + "|"
-          + leftAlignSep (workloadWidth + 2) + "|"
-          + leftAlignSep (statusWidth + 2) + "|"
-          + leftAlignSep (reasonWidth + 2) + "|";
+        + leftAlignSep (workloadWidth + 2) + "|"
+        + leftAlignSep (statusWidth + 2) + "|"
+        + leftAlignSep (reasonWidth + 2) + "|";
       rows = map row entries;
 
       openCount = builtins.length (builtins.filter (e: e.status != "recovered") entries);
@@ -186,9 +191,11 @@ let
         if entries == [ ]
         then "_No Perf-regression trailers in range._\n"
         else header + "\n" + sep + "\n" + builtins.concatStringsSep "\n" rows + "\n";
-    in summary + body;
+    in
+    summary + body;
 
-in {
+in
+{
   inherit sortKeys emitJSON emitRunMarkdown emitGateMarkdown emitOpenRegressionsMarkdown;
   inherit padLeft padRight signed maxLen;
 }

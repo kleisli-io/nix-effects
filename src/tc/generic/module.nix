@@ -1,10 +1,9 @@
 # fx.tc.generic — datatype-generic reflection helpers.
 #
 # Public export assembly for description-backed generic programming.
-{ self, partTests, partDocs, api, ... }:
+{ self, partTests, api, ... }:
 
-api.mkModule {
-  inherit partDocs;
+api.mk {
   description = "fx.tc.generic: datatype-generic reflection over levitated descriptions — desc/datatype/value/derive helpers plus the algebraic/functional ornaments surface.";
   doc = ''
     # fx.tc.generic — Generic Programming
@@ -27,7 +26,13 @@ api.mkModule {
     functional output sections while existing pullback remains forget-then-run.
   '';
   value = {
-    desc = api.mk {
+    desc = api.namespace {
+      value = {
+        inherit (self)
+          evalDesc descView foldDesc foldDescM paraDM foldDescWithPath
+          mapDesc deepEqualDesc children shape
+          isRet isArg isRec isPi isPlus;
+      };
       description = "desc: views and folds over levitated descriptions — `descView` peels one layer, `foldDesc` recurses, `mapDesc` rewrites, predicates split by constructor.";
       doc = ''
         # generic.desc — description views and folds
@@ -68,15 +73,15 @@ api.mkModule {
         introspection surface for callers that want lightweight
         structural queries without writing a full fold.
       '';
-      value = {
-        inherit (self)
-          evalDesc descView foldDesc foldDescM paraDM foldDescWithPath
-          mapDesc deepEqualDesc children shape
-          isRet isArg isRec isPi isPlus;
-      };
     };
 
-    datatype = api.mk {
+    datatype = api.namespace {
+      value = {
+        inherit (self)
+          isDatatype normalizeMetadata datatypeInfo instantiate
+          constructors fields constructorByName constructorByIx
+          targetIndex fieldType fieldRole;
+      };
       description = "datatype: normalise + lookup over `_dtypeMeta` — extract canonical constructor / field lists, resolve dependent field types, instantiate polymorphic parameters.";
       doc = ''
         # generic.datatype — datatype metadata canonicalisation
@@ -106,15 +111,14 @@ api.mkModule {
         used by generic derivations to distinguish payload from
         proof-bearing fields.
       '';
-      value = {
-        inherit (self)
-          isDatatype normalizeMetadata datatypeInfo instantiate
-          constructors fields constructorByName constructorByIx
-          targetIndex fieldType fieldRole;
-      };
     };
 
-    value = api.mk {
+    value = api.namespace {
+      value = {
+        inherit (self)
+          view review toConstructorRecord fromConstructorRecord
+          fold mapChildren;
+      };
       description = "value: bidirectional views over generated datatypes — `view`/`review` swap HOAS and Nix constructor records; `fold` and `mapChildren` operate generically.";
       doc = ''
         # generic.value — value views over generated datatypes
@@ -143,14 +147,14 @@ api.mkModule {
         fields pass through unchanged. The result is normalised by
         `view` so it round-trips with `review`.
       '';
-      value = {
-        inherit (self)
-          view review toConstructorRecord fromConstructorRecord
-          fold mapChildren;
-      };
     };
 
-    derive = api.mk {
+    derive = api.namespace {
+      value = {
+        inherit (self)
+          typeDescriptor deriveDescriptor deriveSchema deriveDocs
+          deriveDeps deriveFold;
+      };
       description = "derive: structured artifacts from datatype metadata — type descriptors, JSON-Schema, docs scaffolds, fold scaffolds, and node-and-edge dependency graphs.";
       doc = ''
         # generic.derive — derived artifacts
@@ -183,14 +187,12 @@ api.mkModule {
         fields. The output is consumable by the generic graph
         renderer and by build-time dependency analysers.
       '';
-      value = {
-        inherit (self)
-          typeDescriptor deriveDescriptor deriveSchema deriveDocs
-          deriveDeps deriveFold;
-      };
     };
 
-    check = api.mk {
+    check = api.namespace {
+      value = {
+        inherit (self) deriveCheck deriveElaborate checkWithGuard;
+      };
       description = "check: canonical typed walker over the HOAS algebra — one fold at two carriers (unit for validation, HOAS for elaboration), plus refinement-guard composition.";
       doc = ''
         # generic.check — canonical typed walker
@@ -227,12 +229,34 @@ api.mkModule {
         `extra-field`, `predicate-failed`, or `deferred-pi`, routed by
         handlers under `fx.effects.typecheck.*`.
       '';
-      value = {
-        inherit (self) deriveCheck deriveElaborate checkWithGuard;
-      };
     };
 
-    ornaments = api.mk {
+    checkD = api.namespace {
+      value = {
+        inherit (self) checkD checkDAt inferD inferDAt;
+      };
+      description = "checkD: generic bidirectional checker for Desc payloads — validates terms against `interpD level I D X i` by walking the description.";
+    };
+
+    ornaments = api.namespace {
+      value = {
+        inherit (self)
+          ornament forget forgetHoas compose algOrn
+          algSupportedFragment algShape algShapeDiagnostics checkAlgShape
+          pullbackHoas liftFold pullback checkSpec
+          functional validateFunctional tryFunctional diagnoseFunctional
+          validateFunctionalLaws diagnoseFunctionalLaws composeFunctional
+          functionalSection functionalTargetIndex
+          functionalBuildIndexed functionalBuild
+          liftProducerIndexed liftProducer
+          liftTransformIndexed liftTransform
+          validateSpec tryOrnament diagnoseSpec
+          validateAlgOrn tryAlgOrn diagnoseAlgOrn
+          lift;
+        section = self.functionalSection;
+        buildIndexed = self.functionalBuildIndexed;
+        build = self.functionalBuild;
+      };
       description = "ornaments: algebraic + functional ornament constructions over generated datatypes — spec validation, fold/producer/transform lifting, and forgetful maps.";
       doc = ''
         # generic.ornaments — ornament constructions
@@ -267,23 +291,6 @@ api.mkModule {
         and `build` re-export the corresponding `functional*` entries
         for callers writing in the functional-ornament idiom.
       '';
-      value = {
-        inherit (self)
-          ornament forget forgetHoas compose algOrn
-          algSupportedFragment algShape algShapeDiagnostics checkAlgShape
-          pullbackHoas liftFold pullback checkSpec
-          functional validateFunctional tryFunctional diagnoseFunctional
-          validateFunctionalLaws diagnoseFunctionalLaws composeFunctional
-          functionalSection functionalTargetIndex
-          functionalBuildIndexed functionalBuild
-          liftProducerIndexed liftProducer
-          liftTransformIndexed liftTransform
-          validateSpec tryOrnament diagnoseSpec
-          validateAlgOrn tryAlgOrn diagnoseAlgOrn;
-        section = self.functionalSection;
-        buildIndexed = self.functionalBuildIndexed;
-        build = self.functionalBuild;
-      };
     };
 
     inherit (self) path;

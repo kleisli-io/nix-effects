@@ -7,7 +7,7 @@
 # The FTCQueue gives O(1) bind (snoc onto queue) instead of O(n)
 # continuation composition. Left-nested bind chains are now O(n) total
 # instead of O(n²).
-{ fx, ... }:
+{ fx, api, ... }:
 
 let
   queue = fx.queue;
@@ -37,20 +37,27 @@ let
 
   kleisli = f: g: x: bind (f x) g;
 
-in {
-  inherit pure impure send bind;
-  map = mapComp;
-  inherit seq pipe kleisli;
-  # Expose queue for advanced use (handler composition, adapt)
-  inherit queue;
-
-  __docs = {
-    _self = {
-      description = "Freer monad kernel: `send`/`bind`/`map`/`seq`/`pipe`/`kleisli` over the `Computation` ADT with FTCQueue continuations for O(1) bind.";
-      doc = "Freer monad kernel: Return/OpCall ADT with FTCQueue bind, `send`, `map`, `seq`, `pipe`, `kleisli`.";
+in
+api.namespace {
+  description = "Freer monad kernel: `send`/`bind`/`map`/`seq`/`pipe`/`kleisli` over the `Computation` ADT with FTCQueue continuations for O(1) bind.";
+  doc = "Freer monad kernel: Return/OpCall ADT with FTCQueue bind, `send`, `map`, `seq`, `pipe`, `kleisli`.";
+  value = {
+    pure = api.leaf {
+      value = pure;
+      description = "pure: re-export of `fx.comp.pure` for kernel consumers.";
+      signature = "pure : a -> Computation a";
+      doc = "Re-export of the computation `Pure` constructor.";
     };
 
-    send = {
+    impure = api.leaf {
+      value = impure;
+      description = "impure: re-export of `fx.comp.impure` for kernel consumers.";
+      signature = "impure : Effect -> FTCQueue -> Computation a";
+      doc = "Re-export of the computation `Impure` constructor.";
+    };
+
+    send = api.leaf {
+      value = send;
       description = "send: lift an effect request named `name` carrying `param` into a computation suspended at that effect; the handler's response resumes via the continuation queue.";
       signature = "send : String -> a -> Computation b";
       doc = "Send an effect request. Returns an `Impure` computation whose continuation queue resolves to the handler's response.";
@@ -66,7 +73,8 @@ in {
       };
     };
 
-    bind = {
+    bind = api.leaf {
+      value = bind;
       description = "bind: sequence two computations; if the first is `Pure`, apply `f` to its value; otherwise snoc `f` onto the FTCQueue for O(1) per-step composition.";
       signature = "bind : Computation a -> (a -> Computation b) -> Computation b";
       doc = ''
@@ -78,7 +86,7 @@ in {
           Impure e q -> Impure e (snoc q f)
         ```
 
-        O(1) per bind via FTCQueue snoc (Kiselyov & Ishii 2015, §3.1).
+        O(1) per bind via FTCQueue snoc (Kiselyov & Ishii 2015, section 3.1).
       '';
       tests = {
         "pure-bind-applies-f" = {
@@ -93,13 +101,15 @@ in {
           expr =
             let
               comp = bind (send "get" null) (x: pure (x + 1));
-            in comp.queue._variant;
+            in
+            comp.queue._variant;
           expected = "Leaf";
         };
       };
     };
 
-    map = {
+    map = api.leaf {
+      value = mapComp;
       description = "mapComp (exported as `map`): apply `f` to the eventual result of a computation (Functor instance); implemented as `bind comp (x: pure (f x))`.";
       signature = "map : (a -> b) -> Computation a -> Computation b";
       doc = "Map a function over the result of a computation (Functor instance). Exposed as `map` at the module's top-level.";
@@ -111,29 +121,31 @@ in {
       };
     };
 
-    seq = {
+    seq = api.leaf {
+      value = seq;
       description = "seq: thread a list of computations left-to-right via bind, discarding intermediate values and returning only the last; the empty list yields `pure null`.";
       signature = "seq : [Computation a] -> Computation a";
       doc = "Sequence a list of computations, threading effects via `bind`. Returns the last result; intermediate values are discarded.";
       tests = {
         "sequences-empty" = {
-          expr = isPure (seq []);
+          expr = isPure (seq [ ]);
           expected = true;
         };
       };
     };
 
-    pipe = {
+    pipe = api.leaf {
+      value = pipe;
       description = "pipe: chain a computation through a list of Kleisli arrows, threading each result into the next via bind; the empty arrow list yields `init` unchanged.";
       signature = "pipe : Computation a -> [(a -> Computation b)] -> Computation b";
       doc = "Chain a computation through a list of Kleisli arrows. Each arrow's input is the previous arrow's output.";
       tests = {
         "pipe-empty-returns-init" = {
-          expr = (pipe (pure 42) []).value;
+          expr = (pipe (pure 42) [ ]).value;
           expected = 42;
         };
         "pipe-single-arrow" = {
-          expr = (pipe (pure 21) [(x: pure (x * 2))]).value;
+          expr = (pipe (pure 21) [ (x: pure (x * 2)) ]).value;
           expected = 42;
         };
         "pipe-chains-results" = {
@@ -142,23 +154,24 @@ in {
             (x: pure (x * 3))
             (x: pure (x + 1))
           ]).value;
-          expected = 34;  # (1 + 10) * 3 + 1
+          expected = 34; # (1 + 10) * 3 + 1
         };
         "pipe-threads-through-effects" = {
-          expr = (pipe (send "get" null) [(x: pure (x + 1))]).effect.name;
+          expr = (pipe (send "get" null) [ (x: pure (x + 1)) ]).effect.name;
           expected = "get";
         };
       };
     };
 
-    kleisli = {
+    kleisli = api.leaf {
+      value = kleisli;
       description = "kleisli: compose two Kleisli arrows `(a -> M b)` and `(b -> M c)` into a single `(a -> M c)`; the arrow product of the freer-monad Kleisli category.";
       signature = "kleisli : (a -> Computation b) -> (b -> Computation c) -> a -> Computation c";
       doc = "Kleisli composition. Compose two Kleisli arrows into a single arrow. The associative `>=>` operator in Haskell terminology.";
       tests = {
         "kleisli-composes-pure" = {
           expr = (kleisli (x: pure (x + 1)) (x: pure (x * 2)) 10).value;
-          expected = 22;  # (10 + 1) * 2
+          expected = 22; # (10 + 1) * 2
         };
         "kleisli-identity-left" = {
           expr = (kleisli pure (x: pure (x * 3)) 7).value;
@@ -174,16 +187,24 @@ in {
               f = x: pure (x + 1);
               g = x: pure (x * 2);
               h = x: pure (x - 3);
-            in {
+            in
+            {
               lhs = (kleisli (kleisli f g) h 5).value;
               rhs = (kleisli f (kleisli g h) 5).value;
             };
           expected = {
-            lhs = 9;  # ((5 + 1) * 2) - 3
+            lhs = 9; # ((5 + 1) * 2) - 3
             rhs = 9;
           };
         };
       };
+    };
+
+    queue = api.leaf {
+      value = queue;
+      description = "queue: re-export of the FTCQueue namespace for advanced handler composition and adaptation.";
+      signature = "queue : Namespace";
+      doc = "Re-export of `fx.queue` for advanced use.";
     };
   };
 }

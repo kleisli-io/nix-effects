@@ -1,8 +1,8 @@
 # Opt-in syntax-livability layer. Nothing in the kernel imports this.
-{ self, partTests, partDocs, api, ... }:
+{ self, partTests, api, ... }:
 
-api.mkModule {
-  inherit partDocs;
+api.mk {
+  description = "fx.sugar: opt-in syntax layer for the effect substrate — do, /, steps, letM, with, wrap — that compiles down to plain bind/pure/send.";
   doc = ''
     Opt-in syntax-livability layer for nix-effects.
 

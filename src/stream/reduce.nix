@@ -1,7 +1,7 @@
 # nix-effects stream/reduce: Stream consumption/folding
 #
 # Terminal operations that consume a stream into a single value.
-{ fx, ... }:
+{ fx, api, ... }:
 let
   inherit (fx.kernel) pure bind;
   fold = f: z: stream:
@@ -9,7 +9,7 @@ let
       if step._tag == "Done" then pure z
       else fold f (f z step.head) step.tail);
 
-  toList = stream: fold (acc: x: acc ++ [ x ]) [] stream;
+  toList = stream: fold (acc: x: acc ++ [ x ]) [ ] stream;
 
   length = stream: fold (n: _: n + 1) 0 stream;
 
@@ -20,12 +20,16 @@ let
       go = current: s:
         bind s (step:
           if step._tag == "Done" then pure step
-          else let next = step.head;
-                   same = cmp current next;
-               in if same
-                  then go current step.tail
-                  else  fx.stream.core.more next (go next step.tail));
-    in fx.stream.core.more z (go z stream);
+          else
+            let
+              next = step.head;
+              same = cmp current next;
+            in
+            if same
+            then go current step.tail
+            else fx.stream.core.more next (go next step.tail));
+    in
+    fx.stream.core.more z (go z stream);
 
   signal = z: stream: signalOn z (x: y: x == y) stream;
 
@@ -41,18 +45,13 @@ let
       else if !(pred step.head) then pure false
       else all pred step.tail);
 
-in {
-  inherit fold toList length sum signal signalOn any all;
-
-
-
-  __docs = {
-    _self = {
-      description = "Stream reduction: `fold`/`toList`/`length`/`sum`/`signal`/`signalOn`/`any`/`all` — terminal operations that consume a stream into a single computation.";
-      doc = "Stream reduction: fold, toList, length, sum, signal, signalOn, any, all.";
-    };
-
-    fold = {
+in
+api.namespace {
+  description = "Stream reduction: `fold`/`toList`/`length`/`sum`/`signal`/`signalOn`/`any`/`all` — terminal operations that consume a stream into a single computation.";
+  doc = "Stream reduction: fold, toList, length, sum, signal, signalOn, any, all.";
+  value = {
+    fold = api.leaf {
+      value = fold;
       description = "fold: left-fold a stream into a single value with initial accumulator `z`; the canonical terminal combinator other reducers delegate to.";
       signature = "fold : (b -> a -> b) -> b -> Computation (Step r a) -> Computation b";
       doc = ''
@@ -61,7 +60,8 @@ in {
       '';
     };
 
-    toList = {
+    toList = api.leaf {
+      value = toList;
       description = "toList: collect all stream elements into a list in emission order; equivalent to `fold (acc: x: acc ++ [x]) []`.";
       signature = "toList : Computation (Step r a) -> Computation [a]";
       doc = ''
@@ -69,7 +69,8 @@ in {
       '';
     };
 
-    length = {
+    length = api.leaf {
+      value = length;
       description = "length: count the number of elements in a stream; equivalent to `fold (n: _: n + 1) 0` over the stream's element steps.";
       signature = "length : Computation (Step r a) -> Computation Int";
       doc = ''
@@ -77,7 +78,8 @@ in {
       '';
     };
 
-    sum = {
+    sum = api.leaf {
+      value = sum;
       description = "sum: sum all numeric elements in a stream starting from 0; equivalent to `fold (acc: x: acc + x) 0`.";
       signature = "sum : Computation (Step r Number) -> Computation Number";
       doc = ''
@@ -85,7 +87,8 @@ in {
       '';
     };
 
-    signalOn = {
+    signalOn = api.leaf {
+      value = signalOn;
       description = "signalOn: emit `z` then forward only values the comparator deems different from the previous emission; suppresses runs of equivalent inputs.";
       signature = "signalOn : a -> (a -> a -> Bool) -> Computation (Step r a) -> Computation (Step r a)";
       doc = ''
@@ -97,7 +100,7 @@ in {
       '';
       tests = {
         "signalOn-empty-stream" = {
-          expr = (fx.stream.reduce.toList (signalOn 42 (x: y: x == y) (fx.stream.core.fromList []))).value;
+          expr = (fx.stream.reduce.toList (signalOn 42 (x: y: x == y) (fx.stream.core.fromList [ ]))).value;
           expected = [ 42 ];
         };
         "signalOn-skips-duplicate-values" = {
@@ -111,7 +114,8 @@ in {
       };
     };
 
-    signal = {
+    signal = api.leaf {
+      value = signal;
       description = "signal: emit `z` then forward only values not structurally equal to the previous emission; specialisation of `signalOn` over `==`.";
       signature = "signal : a -> Computation (Step r a) -> Computation (Step r a)";
       doc = ''
@@ -127,7 +131,8 @@ in {
       };
     };
 
-    any = {
+    any = api.leaf {
+      value = any;
       description = "any: return `true` if any element satisfies the predicate; short-circuits on first match via lazy evaluation of the stream tail.";
       signature = "any : (a -> Bool) -> Computation (Step r a) -> Computation Bool";
       doc = ''
@@ -136,7 +141,8 @@ in {
       '';
     };
 
-    all = {
+    all = api.leaf {
+      value = all;
       description = "all: return `true` if every element satisfies the predicate; short-circuits on first miss via lazy evaluation of the stream tail.";
       signature = "all : (a -> Bool) -> Computation (Step r a) -> Computation Bool";
       doc = ''

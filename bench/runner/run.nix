@@ -225,4 +225,5 @@ let
       echo "bench-run: wrote $md_file" >&2
     '';
   };
-in script
+in
+script

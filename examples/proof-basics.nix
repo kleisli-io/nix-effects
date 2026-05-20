@@ -18,11 +18,12 @@
 let
   H = fx.types.hoas;
   inherit (H) nat bool void listOf sum eq u
-              forall sigma
-              lam zero succ true_ false_ nil cons pair inl inr refl
-              natLit absurd
-              ind boolElim listElim sumElim
-              checkHoas;
+    forall sigma
+    lam zero succ true_ false_ nil cons pair inl inr refl ann
+    natLit absurd
+    ind boolElim listElim sumElim
+    checkHoas;
+  HI = H._internal._indexed;
 
   # ----- Recursive functions defined via eliminators -----
 
@@ -30,7 +31,8 @@ let
   # Recurses on first argument: add(0,n) = n, add(S(k),n) = S(add(k,n))
   add = m: n:
     ind 0 (lam "_" nat (_: nat)) n
-      (lam "k" nat (_: lam "ih" nat (ih: succ ih))) m;
+      (lam "k" nat (_: lam "ih" nat (ih: succ ih)))
+      m;
 
   # not(b) = BoolElim(λ_.Bool, false, true, b)
   not_ = b:
@@ -40,22 +42,145 @@ let
   length = xs:
     listElim 0 nat (lam "_" (listOf nat) (_: nat)) zero
       (lam "h" nat (_: lam "t" (listOf nat) (_:
-        lam "ih" nat (ih: succ ih)))) xs;
+        lam "ih" nat (ih: succ ih))))
+      xs;
 
   # append(xs, ys) = ListElim(Nat, λ_.List Nat, ys, λh.λt.λih.h::ih, xs)
   append = xs: ys:
     listElim 0 nat (lam "_" (listOf nat) (_: listOf nat)) ys
       (lam "h" nat (h: lam "t" (listOf nat) (_:
-        lam "ih" (listOf nat) (ih: cons nat h ih)))) xs;
+        lam "ih" (listOf nat) (ih: cons h ih))))
+      xs;
 
   # ----- Concrete data -----
 
-  list123 = cons nat (natLit 1) (cons nat (natLit 2) (cons nat (natLit 3) (nil nat)));
-  list12  = cons nat (natLit 1) (cons nat (natLit 2) (nil nat));
-  list3   = cons nat (natLit 3) (nil nat);
-  list012 = cons nat zero (cons nat (natLit 1) (cons nat (natLit 2) (nil nat)));
+  list123 = ann (cons (natLit 1) (cons (natLit 2) (cons (natLit 3) nil))) (listOf nat);
+  list12 = ann (cons (natLit 1) (cons (natLit 2) nil)) (listOf nat);
+  list3 = ann (cons (natLit 3) nil) (listOf nat);
+  list012 = ann (cons zero (cons (natLit 1) (cons (natLit 2) nil))) (listOf nat);
 
-in rec {
+in
+rec {
+  __example = {
+    title = "Proof Basics";
+    description = "Computational proof examples checked by the HOAS kernel and exposed as ordinary Nix values.";
+    introduction = ''
+      The first proof examples stay close to computation. You write a HOAS
+      proposition, give `refl` as evidence, and let the kernel normalize both
+      sides. When the normal forms match, the checker accepts the proof.
+
+      Later sections use the same checker with dependent pairs and eliminators.
+      The full source lives at `examples/proof-basics.nix`.
+    '';
+    sections = [
+      {
+        title = "Computational equality";
+        prose = ''
+          Addition, boolean negation, list length, and append are defined with
+          eliminators. The equality proof is still `refl`; the work happens in
+          normalization.
+        '';
+        code = ''
+          add = m: n:
+            ind 0 (lam "_" nat (_: nat)) n
+              (lam "k" nat (_: lam "ih" nat (ih: succ ih)))
+              m;
+
+          addThreeFive =
+            (checkHoas (eq nat (add (natLit 3) (natLit 5)) (natLit 8)) refl)
+              .tag == "desc-con";
+
+          doubleNegTrue =
+            (checkHoas (eq bool (not_ (not_ true_)) true_) refl).tag == "desc-con";
+        '';
+        tests = [
+          "addZeroZero"
+          "addThreeFive"
+          "addTenSeven"
+          "doubleNegTrue"
+          "doubleNegFalse"
+          "lengthThree"
+          "appendTwoOne"
+        ];
+      }
+      {
+        title = "Dependent witnesses";
+        prose = ''
+          A sigma value packages a witness with proof that the witness has the
+          requested property. These examples use concrete witnesses whose proof
+          component reduces to reflexivity.
+        '';
+        code = ''
+          witnessAddResult =
+            let
+              ty = sigma "x" nat (x: eq nat (add (natLit 3) (natLit 5)) x);
+              tm = pair (natLit 8) refl;
+            in
+            (checkHoas ty tm).tag == "pair";
+        '';
+        tests = [
+          "witnessZero"
+          "witnessAddResult"
+          "witnessDoubleNeg"
+        ];
+      }
+      {
+        title = "Eliminators as programs";
+        prose = ''
+          Natural, boolean, list, and sum eliminators let the proof examples
+          define small programs inside HOAS. Each checked assertion ties the
+          computed result back to an equality.
+        '';
+        code = ''
+          listSum =
+            let
+              sumList = xs: listElim 0 nat (lam "_" (listOf nat) (_: nat)) zero
+                (lam "h" nat (h: lam "t" (listOf nat) (_:
+                  lam "ih" nat (ih: add h ih))))
+                xs;
+            in
+            (checkHoas (eq nat (sumList list123) (natLit 6)) refl).tag == "desc-con";
+        '';
+        tests = [
+          "natElimDouble"
+          "natElimMul"
+          "boolElimTrue"
+          "boolElimFalse"
+          "listSum"
+          "listMapSucc"
+          "sumElimLeft"
+          "sumElimRight"
+        ];
+      }
+      {
+        title = "Polymorphism and impossibility";
+        prose = ''
+          The final examples leave concrete computation and check reusable
+          functions: a universe-polymorphic identity and the eliminator from
+          `Void`.
+        '';
+        code = ''
+          polyId =
+            let
+              ty = forall "A" (u 0) (a: forall "x" a (_: a));
+              tm = lam "A" (u 0) (a: lam "x" a (x: x));
+            in
+            (checkHoas ty tm).tag == "lam";
+
+          exFalso =
+            let
+              ty = forall "A" (u 0) (a: forall "x" void (_: a));
+              tm = lam "A" (u 0) (a: lam "x" void (x: absurd a x));
+            in
+            (checkHoas ty tm).tag == "lam";
+        '';
+        tests = [
+          "polyId"
+          "exFalso"
+        ];
+      }
+    ];
+  };
 
   # ===== 1. Computational Equality =====
   #
@@ -101,21 +226,24 @@ in rec {
     let
       ty = sigma "x" nat (x: eq nat x zero);
       tm = pair zero refl;
-    in (checkHoas ty tm).tag == "pair";
+    in
+    (checkHoas ty tm).tag == "pair";
 
   # (8, Refl) : Σ(x:Nat). 3+5 = x
   witnessAddResult =
     let
       ty = sigma "x" nat (x: eq nat (add (natLit 3) (natLit 5)) x);
       tm = pair (natLit 8) refl;
-    in (checkHoas ty tm).tag == "pair";
+    in
+    (checkHoas ty tm).tag == "pair";
 
   # (true, Refl) : Σ(b:Bool). not(not(b)) = b
   witnessDoubleNeg =
     let
       ty = sigma "b" bool (b: eq bool (not_ (not_ b)) b);
       tm = pair true_ refl;
-    in (checkHoas ty tm).tag == "pair";
+    in
+    (checkHoas ty tm).tag == "pair";
 
 
   # ===== 3. NatElim — Recursion on Naturals =====
@@ -128,15 +256,19 @@ in rec {
   natElimDouble =
     let
       double = n: ind 0 (lam "_" nat (_: nat)) zero
-        (lam "k" nat (_: lam "ih" nat (ih: succ (succ ih)))) n;
-    in (checkHoas (eq nat (double (natLit 4)) (natLit 8)) refl).tag == "desc-con";
+        (lam "k" nat (_: lam "ih" nat (ih: succ (succ ih))))
+        n;
+    in
+    (checkHoas (eq nat (double (natLit 4)) (natLit 8)) refl).tag == "desc-con";
 
   # mul(3,4) = 12 — mul(0,n)=0, mul(S(k),n)=add(n,mul(k,n))
   natElimMul =
     let
       mul = m: n: ind 0 (lam "_" nat (_: nat)) zero
-        (lam "k" nat (_: lam "ih" nat (ih: add n ih))) m;
-    in (checkHoas (eq nat (mul (natLit 3) (natLit 4)) (natLit 12)) refl).tag == "desc-con";
+        (lam "k" nat (_: lam "ih" nat (ih: add n ih)))
+        m;
+    in
+    (checkHoas (eq nat (mul (natLit 3) (natLit 4)) (natLit 12)) refl).tag == "desc-con";
 
 
   # ===== 4. BoolElim — Case Analysis on Booleans =====
@@ -145,13 +277,15 @@ in rec {
   boolElimTrue =
     let
       result = boolElim 0 (lam "_" bool (_: nat)) (natLit 42) zero true_;
-    in (checkHoas (eq nat result (natLit 42)) refl).tag == "desc-con";
+    in
+    (checkHoas (eq nat result (natLit 42)) refl).tag == "desc-con";
 
   # if false then 42 else 0 = 0
   boolElimFalse =
     let
       result = boolElim 0 (lam "_" bool (_: nat)) (natLit 42) zero false_;
-    in (checkHoas (eq nat result zero) refl).tag == "desc-con";
+    in
+    (checkHoas (eq nat result zero) refl).tag == "desc-con";
 
 
   # ===== 5. ListElim — Structural Recursion on Lists =====
@@ -165,17 +299,21 @@ in rec {
     let
       sumList = xs: listElim 0 nat (lam "_" (listOf nat) (_: nat)) zero
         (lam "h" nat (h: lam "t" (listOf nat) (_:
-          lam "ih" nat (ih: add h ih)))) xs;
-    in (checkHoas (eq nat (sumList list123) (natLit 6)) refl).tag == "desc-con";
+          lam "ih" nat (ih: add h ih))))
+        xs;
+    in
+    (checkHoas (eq nat (sumList list123) (natLit 6)) refl).tag == "desc-con";
 
   # map succ [0,1,2] = [1,2,3]
   listMapSucc =
     let
       mapSucc = xs: listElim 0 nat (lam "_" (listOf nat) (_: listOf nat))
-        (nil nat)
+        nil
         (lam "h" nat (h: lam "t" (listOf nat) (_:
-          lam "ih" (listOf nat) (ih: cons nat (succ h) ih)))) xs;
-    in (checkHoas (eq (listOf nat) (mapSucc list012) list123) refl).tag == "desc-con";
+          lam "ih" (listOf nat) (ih: cons (succ h) ih))))
+        xs;
+    in
+    (checkHoas (eq (listOf nat) (mapSucc list012) list123) refl).tag == "desc-con";
 
 
   # ===== 6. SumElim — Case Analysis on Coproducts =====
@@ -186,22 +324,24 @@ in rec {
   # case Left(5) of { Left n → n; Right _ → 0 } = 5
   sumElimLeft =
     let
-      scrut = inl nat bool (natLit 5);
+      scrut = HI.inlAtExplicit 0 nat bool (natLit 5);
       result = sumElim 0 nat bool (lam "_" (sum nat bool) (_: nat))
         (lam "n" nat (n: n))
         (lam "b" bool (_: zero))
         scrut;
-    in (checkHoas (eq nat result (natLit 5)) refl).tag == "desc-con";
+    in
+    (checkHoas (eq nat result (natLit 5)) refl).tag == "desc-con";
 
   # case Right(true) of { Left n → n; Right b → if b then 1 else 0 } = 1
   sumElimRight =
     let
-      scrut = inr nat bool true_;
+      scrut = HI.inrAtExplicit 0 nat bool true_;
       result = sumElim 0 nat bool (lam "_" (sum nat bool) (_: nat))
         (lam "n" nat (n: n))
         (lam "b" bool (b: boolElim 0 (lam "_" bool (_: nat)) (natLit 1) zero b))
         scrut;
-    in (checkHoas (eq nat result (natLit 1)) refl).tag == "desc-con";
+    in
+    (checkHoas (eq nat result (natLit 1)) refl).tag == "desc-con";
 
 
   # ===== 7. Polymorphic Identity =====
@@ -213,7 +353,8 @@ in rec {
     let
       ty = forall "A" (u 0) (a: forall "x" a (_: a));
       tm = lam "A" (u 0) (a: lam "x" a (x: x));
-    in (checkHoas ty tm).tag == "lam";
+    in
+    (checkHoas ty tm).tag == "lam";
 
 
   # ===== 8. Ex Falso =====
@@ -226,19 +367,7 @@ in rec {
     let
       ty = forall "A" (u 0) (a: forall "x" void (_: a));
       tm = lam "A" (u 0) (a: lam "x" void (x: absurd a x));
-    in (checkHoas ty tm).tag == "lam";
+    in
+    (checkHoas ty tm).tag == "lam";
 
-
-  # ===== All tests =====
-
-  allPass =
-    addZeroZero && addThreeFive && addTenSeven
-    && doubleNegTrue && doubleNegFalse
-    && lengthThree && appendTwoOne
-    && witnessZero && witnessAddResult && witnessDoubleNeg
-    && natElimDouble && natElimMul
-    && boolElimTrue && boolElimFalse
-    && listSum && listMapSucc
-    && sumElimLeft && sumElimRight
-    && polyId && exFalso;
 }

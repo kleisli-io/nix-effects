@@ -26,26 +26,27 @@ let
   '';
 
 in
-  if !enable then
-    pkgs.runCommand "docs-resolves-skipped" { } ''
-      printf 'skipped: set KLEISLI_DOCS_BASE to enable live docs probes\n' > $out
-    ''
-  else
-    # FOD: pinned output hash legitimises network access in the build sandbox.
-    # Probe failure exits before $out is written, so the build fails.
-    pkgs.runCommand "docs-resolves" {
-      nativeBuildInputs = [ pkgs.curl pkgs.cacert ];
-      outputHashAlgo = "sha256";
-      outputHashMode = "flat";
-      outputHash = "sha256-3FG4yWwtdF3zvVWQ2ZAjCkgv0kcSNZlUjgYy/b+X/CI=";
-      SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
-    } ''
-      set -eu
-      failed=0
-      ${lib.concatMapStringsSep "\n" probeScript links}
-      if [ "$failed" = "1" ]; then
-        echo "One or more diag Hint docLinks failed verification."
-        exit 1
-      fi
-      printf 'ok\n' > $out
-    ''
+if !enable then
+  pkgs.runCommand "docs-resolves-skipped" { } ''
+    printf 'skipped: set KLEISLI_DOCS_BASE to enable live docs probes\n' > $out
+  ''
+else
+# FOD: pinned output hash legitimises network access in the build sandbox.
+# Probe failure exits before $out is written, so the build fails.
+  pkgs.runCommand "docs-resolves"
+  {
+    nativeBuildInputs = [ pkgs.curl pkgs.cacert ];
+    outputHashAlgo = "sha256";
+    outputHashMode = "flat";
+    outputHash = "sha256-3FG4yWwtdF3zvVWQ2ZAjCkgv0kcSNZlUjgYy/b+X/CI=";
+    SSL_CERT_FILE = "${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt";
+  } ''
+    set -eu
+    failed=0
+    ${lib.concatMapStringsSep "\n" probeScript links}
+    if [ "$failed" = "1" ]; then
+      echo "One or more diag Hint docLinks failed verification."
+      exit 1
+    fi
+    printf 'ok\n' > $out
+  ''

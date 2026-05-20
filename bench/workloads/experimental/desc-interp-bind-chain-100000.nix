@@ -8,17 +8,17 @@ let
   K = fx.experimental.descInterp.kernel;
   T = fx.experimental.descInterp.trampoline;
 
-  testEff  = H.bool;
+  testEff = H.bool;
   testResp = H.lam "_" H.bool (_: H.nat);
 
   pureD = K.pure testEff testResp H.nat;
   bindD = K.bind testEff testResp H.nat H.nat;
   sendD = K.send testEff testResp;
-  runD  = T.run testEff testResp H.nat;
+  runD = T.run testEff testResp H.nat;
 
   mkBindChain = n:
     let
-      sendInit    = sendD { _opTag = "init"; };
+      sendInit = sendD { _opTag = "init"; };
       initHandler = { param, state }: { resume = 0; inherit state; };
 
       comp = builtins.foldl'
@@ -27,8 +27,10 @@ let
         (builtins.genList (x: x) n);
 
       r = runD initHandler comp null;
-    in r.value;
+    in
+    r.value;
 
-in {
+in
+{
   s100k = mkBindChain 100000;
 }

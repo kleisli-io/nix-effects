@@ -1,41 +1,38 @@
 # nix-effects stream/limit: Stream limiting combinators
 #
 # Take a prefix of a stream by count or predicate.
-{ fx, ... }:
+{ fx, api, ... }:
 let
   core = fx.stream.core;
   inherit (fx.kernel) pure bind;
   take = n: stream:
     if n <= 0 then core.done null
-    else bind stream (step:
-      if step._tag == "Done" then pure step
-      else pure { _tag = "More"; inherit (step) head; tail = take (n - 1) step.tail; });
+    else
+      bind stream (step:
+        if step._tag == "Done" then pure step
+        else pure { _tag = "More"; inherit (step) head; tail = take (n - 1) step.tail; });
 
   takeWhile = pred: stream:
     bind stream (step:
       if step._tag == "Done" then pure step
       else if pred step.head
-        then pure { _tag = "More"; inherit (step) head; tail = takeWhile pred step.tail; }
-        else core.done null);
+      then pure { _tag = "More"; inherit (step) head; tail = takeWhile pred step.tail; }
+      else core.done null);
 
   drop = n: stream:
     if n <= 0 then stream
-    else bind stream (step:
-      if step._tag == "Done" then pure step
-      else drop (n - 1) step.tail);
+    else
+      bind stream (step:
+        if step._tag == "Done" then pure step
+        else drop (n - 1) step.tail);
 
-in {
-  inherit take takeWhile drop;
-
-
-
-  __docs = {
-    _self = {
-      description = "Stream limiting: `take`/`takeWhile`/`drop` — bound stream length by count or predicate.";
-      doc = "Stream limiting: take, takeWhile, drop.";
-    };
-
-    take = {
+in
+api.namespace {
+  description = "Stream limiting: `take`/`takeWhile`/`drop` — bound stream length by count or predicate.";
+  doc = "Stream limiting: take, takeWhile, drop.";
+  value = {
+    take = api.leaf {
+      value = take;
       description = "take: yield at most the first `n` elements of a stream, then `Done null`; non-positive `n` yields the empty stream immediately.";
       signature = "take : Int -> Computation (Step r a) -> Computation (Step null a)";
       doc = ''
@@ -50,7 +47,8 @@ in {
       };
     };
 
-    takeWhile = {
+    takeWhile = api.leaf {
+      value = takeWhile;
       description = "takeWhile: yield prefix elements while the predicate holds; terminates on the first element that fails the predicate.";
       signature = "takeWhile : (a -> Bool) -> Computation (Step r a) -> Computation (Step null a)";
       doc = ''
@@ -59,14 +57,16 @@ in {
       '';
       tests = {
         "takeWhile-false-immediately" = {
-          expr = let s = takeWhile (_: false) (core.fromList [ 1 2 3 ]);
-                 in (bind s (step: pure step._tag)).value;
+          expr =
+            let s = takeWhile (_: false) (core.fromList [ 1 2 3 ]);
+            in (bind s (step: pure step._tag)).value;
           expected = "Done";
         };
       };
     };
 
-    drop = {
+    drop = api.leaf {
+      value = drop;
       description = "drop: skip the first `n` elements and forward the remainder unchanged; non-positive `n` is a no-op.";
       signature = "drop : Int -> Computation (Step r a) -> Computation (Step r a)";
       doc = ''

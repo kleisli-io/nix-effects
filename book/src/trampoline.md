@@ -101,18 +101,20 @@ and `deepSeq` has no cycle detection. A raw drv in handler state hangs the
 evaluator, and `tryEval` cannot recover — only `throw` and `assert false`
 are catchable.
 
-For this case the library ships `fx.state.mkDerivationThunk` / `forceDerivationThunk`
-(`src/state/derivation-thunk.nix`). The carrier wraps a drv as
-`{ _tag = "DerivationThunk"; _force = _: drv; }` — a closure shields the drv
-from deepSeq. The companion user type `fx.types.DerivationThunk` is decided
-structurally at the kernel level (`kernelType = H.derivationThunk`, no guard):
-the kernel's native predicate accepts attrsets with `_tag = "DerivationThunk"`
-and a `_force` field, and rejects everything else — including raw drvs.
+For this case the library ships `fx.state.mkThunk` / `forceThunk`
+(`src/state/thunk.nix`). The carrier wraps any value as
+`{ _tag = "Thunk"; _force = _: value; }` — a closure shields the value
+from deepSeq. The companion kernel type former `H.thunk : Hoas → Hoas`
+is decided by a *lazy structural* walker: it verifies `is attrset ∧ has
+_force closure` and does NOT recurse into `_force`. Inner-type validation
+runs at forget time, post-forced. Forcing in the validator would defeat
+the deepSeq-shielding the whole construct exists for.
+
 Effect descriptions that carry derivations through state type their payload
-fields as `H.derivationThunk`, not `H.derivation`, so `fx.send`-time validation
-rejects unwrapped drvs before they reach the trampoline. Because the
-discrimination is kernel-primitive, descriptor-field typing is a one-line
-change — no guard combinator, no refined-attrs scaffolding.
+fields as `H.thunk H.derivation`, not `H.derivation`, so `fx.send`-time
+validation rejects unwrapped drvs before they reach the trampoline. The
+inner type is parametric: any value category that needs trampoline transit
+can ride through `H.thunk a` with no bespoke primitive.
 
 ## Defunctionalization
 

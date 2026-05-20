@@ -7,6 +7,7 @@
 
 let
   H = fx.types.hoas;
+  HI = fx.types.hoas._internal._indexed;
   G = fx.types.generic;
 
   Box = H.datatype "BenchOrnBox" [
@@ -78,12 +79,15 @@ let
     J = H.nat;
     erase = eraseNatToUnit;
     D = piVoidD;
-    algebra = H.algPiKeep {
-      branchIndex = x: H.absurd H.nat x;
-    } (H.algRet H.zero);
+    algebra = H.algPiKeep
+      {
+        branchIndex = x: H.absurd H.nat x;
+      }
+      (H.algRet H.zero);
   };
 
-in {
+in
+{
   ornDesc-normalize = (H.elab (H.ornDesc Tagged.ornament)).tag;
 
   ornForget-elaborate = (H.elab Tagged.forget0).tag;
@@ -97,15 +101,17 @@ in {
       forget = H.ornForget composed;
       D = H.ornDesc composed;
       ty = H.forall "i" H.unit (i:
-        H.forall "_" (H.muI H.unit D i) (_:
+        H.forall "_" (HI.muI H.unit D i) (_:
           Box.T));
-    in (H.checkHoas ty forget).tag;
+    in
+    (H.checkHoas ty forget).tag;
 
   functional-synthesis-build =
     let
       built = G.ornaments.build FunctionalTagged functionalBaseValue;
       forgot = G.ornaments.forget FunctionalTagged built;
-    in (H.checkHoas Box.T forgot).tag;
+    in
+    (H.checkHoas Box.T forgot).tag;
 
   functional-diagnostics-missing-builder =
     builtins.length (G.ornaments.validateFunctional {
@@ -117,7 +123,7 @@ in {
           { keep = "value"; }
         ];
       };
-      synth = {};
+      synth = { };
     }).diagnostics;
 
   functional-liftProducer-check =
@@ -127,23 +133,26 @@ in {
           FunctionalTagged
           functionalProducer
           functionalBaseValue;
-    in (H.checkHoas FunctionalTagged.meta.ornamented.T built).tag;
+    in
+    (H.checkHoas FunctionalTagged.meta.ornamented.T built).tag;
 
   alg-list-to-vec-check =
     let
       D = H.ornDesc ListVec;
       forgetTy =
         H.forall "n" H.nat (n:
-          H.forall "_" (H.muI H.nat D n) (_:
-            H.muI H.unit listNatD H.tt));
-    in (H.checkHoas forgetTy (G.ornaments.forgetHoas ListVec)).tag;
+          H.forall "_" (HI.muI H.nat D n) (_:
+            HI.muI H.unit listNatD H.tt));
+    in
+    (H.checkHoas forgetTy (G.ornaments.forgetHoas ListVec)).tag;
 
   alg-pi-keep-check =
     let
       D = H.ornDesc PiKeep;
       forgetTy =
         H.forall "n" H.nat (n:
-          H.forall "_" (H.muI H.nat D n) (_:
-            H.muI H.unit piVoidD H.tt));
-    in (H.checkHoas forgetTy (G.ornaments.forgetHoas PiKeep)).tag;
+          H.forall "_" (HI.muI H.nat D n) (_:
+            HI.muI H.unit piVoidD H.tt));
+    in
+    (H.checkHoas forgetTy (G.ornaments.forgetHoas PiKeep)).tag;
 }

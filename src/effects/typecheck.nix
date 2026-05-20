@@ -21,8 +21,7 @@
 #               "deferred-pi"       — Π domain/codomain check at an
 #                                     application site (Findler-Felleisen
 #                                     deferred contract)
-#             Defaults to "shape-mismatch" when omitted, preserving back-compat
-#             with handlers that don't read the field.
+#             Defaults to "shape-mismatch" when omitted.
 #
 # Six handlers, all exposed under `fx.effects.policy.*`:
 #   strict / collecting / logging / firstN N / summarize / pretty cfg
@@ -38,7 +37,7 @@
 #      callers pass the documented initial state to `fx.handle`.
 #
 # Pattern: Plotkin & Pretnar (2009); freer encoding: Kiselyov & Ishii (2015).
-{ fx, ... }:
+{ fx, api, ... }:
 let
   inherit (fx.diag.positions) renderSegment;
 
@@ -50,8 +49,8 @@ let
     builtins.concatStringsSep "" (map renderSegment path);
 
   blameLocation = param:
-    let path = param.path or []; in
-    if path == [] then param.context else renderPath path;
+    let path = param.path or [ ]; in
+    if path == [ ] then param.context else renderPath path;
 
   # Render the offending value's shape for diagnostics. Plain
   # `builtins.typeOf` collapses every record to `"set"`; if the record
@@ -71,17 +70,17 @@ let
   # for the blame location.
   mkMessage = param:
     let
-      path = param.path or [];
+      path = param.path or [ ];
       typeName = param.type.name;
       ctx = param.context or "";
       loc =
-        if path == [] then ""
+        if path == [ ] then ""
         else " at ${renderPath path}";
       note =
-        if path != [] || ctx == "" || ctx == typeName then ""
+        if path != [ ] || ctx == "" || ctx == typeName then ""
         else " (${ctx})";
     in
-      "Expected ${typeName}${loc}, got ${describeValue param.value}${note}";
+    "Expected ${typeName}${loc}, got ${describeValue param.value}${note}";
 
   strict = {
     typeCheck = { param, state }:
@@ -102,7 +101,7 @@ let
           context = param.context;
           typeName = param.type.name;
           actual = describeValue param.value;
-          path = param.path or [];
+          path = param.path or [ ];
           reason = param.reason or "shape-mismatch";
           message = mkMessage param;
         }];
@@ -117,7 +116,7 @@ let
         state = state ++ [{
           context = param.context;
           typeName = param.type.name;
-          path = param.path or [];
+          path = param.path or [ ];
           reason = param.reason or "shape-mismatch";
           inherit passed;
         }];
@@ -130,7 +129,7 @@ let
     context = param.context;
     typeName = param.type.name;
     actual = describeValue param.value;
-    path = param.path or [];
+    path = param.path or [ ];
     reason = param.reason or "shape-mismatch";
     message = mkMessage param;
   };
@@ -144,15 +143,15 @@ let
           current = state.collected;
           n = builtins.length current;
         in
-          if state.aborted || n >= N
-          then { resume = false; state = state // { aborted = true; }; }
-          else {
-            resume = false;
-            state = {
-              collected = current ++ [ (mkErrorRecord param) ];
-              aborted = (n + 1) >= N;
-            };
+        if state.aborted || n >= N
+        then { resume = false; state = state // { aborted = true; }; }
+        else {
+          resume = false;
+          state = {
+            collected = current ++ [ (mkErrorRecord param) ];
+            aborted = (n + 1) >= N;
           };
+        };
   };
 
   summarize = {
@@ -171,7 +170,8 @@ let
             passed = state.passed + 1;
             failed = state.failed;
           };
-        in {
+        in
+        {
           resume = true;
           state = builtins.deepSeq newState newState;
         }
@@ -183,50 +183,50 @@ let
           names = builtins.attrNames merged;
           # Rebuild byReason as a flat literal attrset so the next step's
           # lookups are O(1) and don't traverse a //-chain back to step 0.
-          newByReason = builtins.listToAttrs (builtins.map (n:
-            { name = n; value = merged.${n}; }
-          ) names);
+          newByReason = builtins.listToAttrs (builtins.map
+            (n:
+              { name = n; value = merged.${n}; }
+            )
+            names);
           newState = {
             byReason = newByReason;
             passed = state.passed;
             failed = state.failed + 1;
           };
-        in {
+        in
+        {
           resume = false;
           state = builtins.deepSeq newState newState;
         };
   };
 
-  pretty = cfg: let _sourceMap = cfg.sourceMap or null; in {
-    typeCheck = { param, state }:
-      if param.type.check param.value
-      then { resume = true; inherit state; }
-      else
-        let
-          reason = param.reason or "shape-mismatch";
-          line = "[${reason}] ${mkMessage param}";
-        in {
-          resume = false;
-          state = state ++ [ line ];
-        };
-  };
+  pretty = cfg:
+    let _sourceMap = cfg.sourceMap or null; in {
+      typeCheck = { param, state }:
+        if param.type.check param.value
+        then { resume = true; inherit state; }
+        else
+          let
+            reason = param.reason or "shape-mismatch";
+            line = "[${reason}] ${mkMessage param}";
+          in
+          {
+            resume = false;
+            state = state ++ [ line ];
+          };
+    };
 
   policy = {
     inherit strict collecting logging firstN summarize pretty;
   };
 
-in {
-  inherit strict collecting logging firstN summarize pretty policy;
-
-
-
-  __docs = {
-    _self = {
-      description = "typecheck effect handlers: strict / collecting / logging / firstN / summarize / pretty under `policy.*`; bridge between the type system and effects.";
-      doc = "Reusable typeCheck handlers. Use `policy.<name>` for the canonical surface; legacy `strict`/`collecting`/`logging` attributes are preserved for back-compat.";
-    };
-
-    strict = {
+in
+api.namespace {
+  description = "typecheck effect handlers: strict / collecting / logging / firstN / summarize / pretty under `policy.*`; bridge between the type system and effects.";
+  doc = "Reusable typeCheck handlers. Use `policy.<name>` for the canonical surface; legacy `strict`/`collecting`/`logging` attributes are preserved for back-compat.";
+  value = {
+    strict = api.leaf {
+      value = strict;
       description = "policy.strict: throws on the first failing typeCheck via `builtins.throw`; resumes with true on success. Halts evaluation on error.";
       doc = ''
         Strict typeCheck handler: throws on first type error.
@@ -237,7 +237,8 @@ in {
       '';
     };
 
-    collecting = {
+    collecting = api.leaf {
+      value = collecting;
       description = "policy.collecting: accumulates every failing typeCheck into state as a list of `{ context, typeName, actual, message, path, reason }`.";
       doc = ''
         Collecting typeCheck handler: accumulates errors in state.
@@ -252,10 +253,11 @@ in {
             let
               IntT = { name = "Int"; check = builtins.isInt; };
               r = collecting.typeCheck {
-                param = { type = IntT; context = "test"; value = 42; path = []; };
-                state = [];
+                param = { type = IntT; context = "test"; value = 42; path = [ ]; };
+                state = [ ];
               };
-            in r.resume;
+            in
+            r.resume;
           expected = true;
         };
         "collects-bad-value" = {
@@ -263,10 +265,11 @@ in {
             let
               IntT = { name = "Int"; check = builtins.isInt; };
               r = collecting.typeCheck {
-                param = { type = IntT; context = "test"; value = "nope"; path = []; };
-                state = [];
+                param = { type = IntT; context = "test"; value = "nope"; path = [ ]; };
+                state = [ ];
               };
-            in builtins.length r.state;
+            in
+            builtins.length r.state;
           expected = 1;
         };
         "carries-path-in-state" = {
@@ -277,9 +280,10 @@ in {
               path = [ (P.Field "a") (P.Field "b") (P.Field "c") ];
               r = collecting.typeCheck {
                 param = { type = IntT; context = "Int"; value = "nope"; inherit path; };
-                state = [];
+                state = [ ];
               };
-            in (builtins.head r.state).path;
+            in
+            (builtins.head r.state).path;
           expected = [
             (fx.diag.positions.Field "a")
             (fx.diag.positions.Field "b")
@@ -291,10 +295,11 @@ in {
             let
               IntT = { name = "Int"; check = builtins.isInt; };
               r = collecting.typeCheck {
-                param = { type = IntT; context = "Int"; value = "nope"; path = []; };
-                state = [];
+                param = { type = IntT; context = "Int"; value = "nope"; path = [ ]; };
+                state = [ ];
               };
-            in (builtins.head r.state).reason;
+            in
+            (builtins.head r.state).reason;
           expected = "shape-mismatch";
         };
         "carries-reason-in-state" = {
@@ -303,18 +308,23 @@ in {
               IntT = { name = "Int"; check = builtins.isInt; };
               r = collecting.typeCheck {
                 param = {
-                  type = IntT; context = "Int"; value = null; path = [];
+                  type = IntT;
+                  context = "Int";
+                  value = null;
+                  path = [ ];
                   reason = "missing-field";
                 };
-                state = [];
+                state = [ ];
               };
-            in (builtins.head r.state).reason;
+            in
+            (builtins.head r.state).reason;
           expected = "missing-field";
         };
       };
     };
 
-    logging = {
+    logging = api.leaf {
+      value = logging;
       description = "policy.logging: records every typeCheck (pass and fail) in state with `passed` boolean; useful for tracing without aborting computation.";
       doc = ''
         Logging typeCheck handler: records every check (pass or fail) in state.
@@ -329,10 +339,11 @@ in {
             let
               IntT = { name = "Int"; check = builtins.isInt; };
               r = logging.typeCheck {
-                param = { type = IntT; context = "test"; value = 42; path = []; };
-                state = [];
+                param = { type = IntT; context = "test"; value = 42; path = [ ]; };
+                state = [ ];
               };
-            in (builtins.head r.state).passed;
+            in
+            (builtins.head r.state).passed;
           expected = true;
         };
         "logs-failing-check" = {
@@ -340,10 +351,11 @@ in {
             let
               IntT = { name = "Int"; check = builtins.isInt; };
               r = logging.typeCheck {
-                param = { type = IntT; context = "test"; value = "no"; path = []; };
-                state = [];
+                param = { type = IntT; context = "test"; value = "no"; path = [ ]; };
+                state = [ ];
               };
-            in (builtins.head r.state).passed;
+            in
+            (builtins.head r.state).passed;
           expected = false;
         };
         "logging-records-reason" = {
@@ -352,12 +364,16 @@ in {
               IntT = { name = "Int"; check = builtins.isInt; };
               r = logging.typeCheck {
                 param = {
-                  type = IntT; context = "test"; value = 42; path = [];
+                  type = IntT;
+                  context = "test";
+                  value = 42;
+                  path = [ ];
                   reason = "deferred-pi";
                 };
-                state = [];
+                state = [ ];
               };
-            in (builtins.head r.state).reason;
+            in
+            (builtins.head r.state).reason;
           expected = "deferred-pi";
         };
         "logging-default-reason" = {
@@ -365,16 +381,18 @@ in {
             let
               IntT = { name = "Int"; check = builtins.isInt; };
               r = logging.typeCheck {
-                param = { type = IntT; context = "test"; value = 42; path = []; };
-                state = [];
+                param = { type = IntT; context = "test"; value = 42; path = [ ]; };
+                state = [ ];
               };
-            in (builtins.head r.state).reason;
+            in
+            (builtins.head r.state).reason;
           expected = "shape-mismatch";
         };
       };
     };
 
-    firstN = {
+    firstN = api.leaf {
+      value = firstN;
       description = "policy.firstN N: bounded-collection handler keeping up to N failures, then setting `aborted = true` and dropping the rest. State stays bounded.";
       signature = "firstN : Int -> Handler";
       doc = ''
@@ -394,11 +412,12 @@ in {
             let
               IntT = { name = "Int"; check = builtins.isInt; };
               h = (firstN 1).typeCheck;
-              s0 = { collected = []; aborted = false; };
-              s1 = (h { param = { type = IntT; context = "a"; value = "x"; path = []; }; state = s0; }).state;
-              s2 = (h { param = { type = IntT; context = "b"; value = "y"; path = []; }; state = s1; }).state;
-              s3 = (h { param = { type = IntT; context = "c"; value = "z"; path = []; }; state = s2; }).state;
-            in {
+              s0 = { collected = [ ]; aborted = false; };
+              s1 = (h { param = { type = IntT; context = "a"; value = "x"; path = [ ]; }; state = s0; }).state;
+              s2 = (h { param = { type = IntT; context = "b"; value = "y"; path = [ ]; }; state = s1; }).state;
+              s3 = (h { param = { type = IntT; context = "c"; value = "z"; path = [ ]; }; state = s2; }).state;
+            in
+            {
               len = builtins.length s3.collected;
               firstCtx = (builtins.head s3.collected).context;
               aborted = s3.aborted;
@@ -410,10 +429,11 @@ in {
             let
               IntT = { name = "Int"; check = builtins.isInt; };
               r = (firstN 2).typeCheck {
-                param = { type = IntT; context = "ok"; value = 42; path = []; };
-                state = { collected = []; aborted = false; };
+                param = { type = IntT; context = "ok"; value = 42; path = [ ]; };
+                state = { collected = [ ]; aborted = false; };
               };
-            in r.resume && r.state.collected == [] && !r.state.aborted;
+            in
+            r.resume && r.state.collected == [ ] && !r.state.aborted;
           expected = true;
         };
         "firstN-aborts-exactly-at-N" = {
@@ -421,10 +441,11 @@ in {
             let
               IntT = { name = "Int"; check = builtins.isInt; };
               h = (firstN 2).typeCheck;
-              s0 = { collected = []; aborted = false; };
-              s1 = (h { param = { type = IntT; context = "a"; value = "x"; path = []; }; state = s0; }).state;
-              s2 = (h { param = { type = IntT; context = "b"; value = "y"; path = []; }; state = s1; }).state;
-            in { afterFirst = s1.aborted; afterSecond = s2.aborted; };
+              s0 = { collected = [ ]; aborted = false; };
+              s1 = (h { param = { type = IntT; context = "a"; value = "x"; path = [ ]; }; state = s0; }).state;
+              s2 = (h { param = { type = IntT; context = "b"; value = "y"; path = [ ]; }; state = s1; }).state;
+            in
+            { afterFirst = s1.aborted; afterSecond = s2.aborted; };
           expected = { afterFirst = false; afterSecond = true; };
         };
         "firstN-carries-reason-in-record" = {
@@ -433,18 +454,23 @@ in {
               IntT = { name = "Int"; check = builtins.isInt; };
               r = (firstN 3).typeCheck {
                 param = {
-                  type = IntT; context = "Int"; value = "x"; path = [];
+                  type = IntT;
+                  context = "Int";
+                  value = "x";
+                  path = [ ];
                   reason = "predicate-failed";
                 };
-                state = { collected = []; aborted = false; };
+                state = { collected = [ ]; aborted = false; };
               };
-            in (builtins.head r.state.collected).reason;
+            in
+            (builtins.head r.state.collected).reason;
           expected = "predicate-failed";
         };
       };
     };
 
-    summarize = {
+    summarize = api.leaf {
+      value = summarize;
       description = "policy.summarize: bounded-memory grouping by `reason`; tracks counts per reason plus pass/fail totals. State is O(K) in distinct reasons, not O(N).";
       doc = ''
         Bounded-memory grouping handler: counts failures by `reason`, drops
@@ -464,12 +490,13 @@ in {
             let
               IntT = { name = "Int"; check = builtins.isInt; };
               h = summarize.typeCheck;
-              s0 = { byReason = {}; passed = 0; failed = 0; };
-              mk_ = reason: { type = IntT; context = "c"; value = "x"; path = []; inherit reason; };
+              s0 = { byReason = { }; passed = 0; failed = 0; };
+              mk_ = reason: { type = IntT; context = "c"; value = "x"; path = [ ]; inherit reason; };
               s1 = (h { param = mk_ "shape-mismatch"; state = s0; }).state;
               s2 = (h { param = mk_ "shape-mismatch"; state = s1; }).state;
               s3 = (h { param = mk_ "predicate-failed"; state = s2; }).state;
-            in s3.byReason;
+            in
+            s3.byReason;
           expected = { shape-mismatch = 2; predicate-failed = 1; };
         };
         "summarize-counts-pass-and-fail" = {
@@ -477,11 +504,12 @@ in {
             let
               IntT = { name = "Int"; check = builtins.isInt; };
               h = summarize.typeCheck;
-              s0 = { byReason = {}; passed = 0; failed = 0; };
-              s1 = (h { param = { type = IntT; context = "ok"; value = 42; path = []; }; state = s0; }).state;
-              s2 = (h { param = { type = IntT; context = "bad"; value = "x"; path = []; }; state = s1; }).state;
-              s3 = (h { param = { type = IntT; context = "ok"; value = 7;  path = []; }; state = s2; }).state;
-            in { passed = s3.passed; failed = s3.failed; };
+              s0 = { byReason = { }; passed = 0; failed = 0; };
+              s1 = (h { param = { type = IntT; context = "ok"; value = 42; path = [ ]; }; state = s0; }).state;
+              s2 = (h { param = { type = IntT; context = "bad"; value = "x"; path = [ ]; }; state = s1; }).state;
+              s3 = (h { param = { type = IntT; context = "ok"; value = 7; path = [ ]; }; state = s2; }).state;
+            in
+            { passed = s3.passed; failed = s3.failed; };
           expected = { passed = 2; failed = 1; };
         };
         "summarize-default-reason" = {
@@ -489,10 +517,11 @@ in {
             let
               IntT = { name = "Int"; check = builtins.isInt; };
               r = summarize.typeCheck {
-                param = { type = IntT; context = "c"; value = "x"; path = []; };
-                state = { byReason = {}; passed = 0; failed = 0; };
+                param = { type = IntT; context = "c"; value = "x"; path = [ ]; };
+                state = { byReason = { }; passed = 0; failed = 0; };
               };
-            in r.state.byReason;
+            in
+            r.state.byReason;
           expected = { shape-mismatch = 1; };
         };
         "summarize-bounded-memory-10K-stream" = {
@@ -503,29 +532,33 @@ in {
             let
               IntT = { name = "Int"; check = builtins.isInt; };
               h = summarize.typeCheck;
-              s0 = { byReason = {}; passed = 0; failed = 0; };
+              s0 = { byReason = { }; passed = 0; failed = 0; };
               step = state: i:
                 let reason = if i / 2 * 2 == i then "shape-mismatch" else "predicate-failed";
                 in (h {
-                  param = { type = IntT; context = "c"; value = "x"; path = []; inherit reason; };
+                  param = { type = IntT; context = "c"; value = "x"; path = [ ]; inherit reason; };
                   inherit state;
                 }).state;
               final = builtins.foldl' step s0 (builtins.genList (i: i) 10000);
-            in {
+            in
+            {
               shape = final.byReason."shape-mismatch";
               pred = final.byReason."predicate-failed";
               total = final.failed;
               keys = builtins.attrNames final;
             };
           expected = {
-            shape = 5000; pred = 5000; total = 10000;
+            shape = 5000;
+            pred = 5000;
+            total = 10000;
             keys = [ "byReason" "failed" "passed" ];
           };
         };
       };
     };
 
-    pretty = {
+    pretty = api.leaf {
+      value = pretty;
       description = "policy.pretty cfg: emits one pre-formatted `[reason] expected T at <loc>, got <actualType>` line per failure; renders the Position-list path with per-segment separators.";
       signature = "pretty : { sourceMap? } -> Handler";
       doc = ''
@@ -550,15 +583,18 @@ in {
             let
               P = fx.diag.positions;
               IntT = { name = "Int"; check = builtins.isInt; };
-              r = (pretty {}).typeCheck {
+              r = (pretty { }).typeCheck {
                 param = {
-                  type = IntT; context = "Int"; value = "nope";
+                  type = IntT;
+                  context = "Int";
+                  value = "nope";
                   path = [ (P.Field "user") (P.Field "age") ];
                   reason = "shape-mismatch";
                 };
-                state = [];
+                state = [ ];
               };
-            in builtins.head r.state;
+            in
+            builtins.head r.state;
           expected = "[shape-mismatch] Expected Int at .user.age, got string";
         };
         "pretty-renders-mixed-segments" = {
@@ -566,40 +602,48 @@ in {
             let
               P = fx.diag.positions;
               IntT = { name = "Int"; check = builtins.isInt; };
-              r = (pretty {}).typeCheck {
+              r = (pretty { }).typeCheck {
                 param = {
-                  type = IntT; context = "Int"; value = "nope";
+                  type = IntT;
+                  context = "Int";
+                  value = "nope";
                   path = [ (P.Field "user") (P.Field "age") (P.Elem 0) ];
                   reason = "missing-field";
                 };
-                state = [];
+                state = [ ];
               };
-            in builtins.head r.state;
+            in
+            builtins.head r.state;
           expected = "[missing-field] Expected Int at .user.age[0], got string";
         };
         "pretty-falls-back-to-context-when-no-path" = {
           expr =
             let
               IntT = { name = "Int"; check = builtins.isInt; };
-              r = (pretty {}).typeCheck {
+              r = (pretty { }).typeCheck {
                 param = {
-                  type = IntT; context = "Int"; value = "x"; path = [];
+                  type = IntT;
+                  context = "Int";
+                  value = "x";
+                  path = [ ];
                   reason = "shape-mismatch";
                 };
-                state = [];
+                state = [ ];
               };
-            in builtins.head r.state;
+            in
+            builtins.head r.state;
           expected = "[shape-mismatch] Expected Int, got string";
         };
         "pretty-skips-passing-checks" = {
           expr =
             let
               IntT = { name = "Int"; check = builtins.isInt; };
-              r = (pretty {}).typeCheck {
-                param = { type = IntT; context = "Int"; value = 42; path = []; };
+              r = (pretty { }).typeCheck {
+                param = { type = IntT; context = "Int"; value = 42; path = [ ]; };
                 state = [ "earlier" ];
               };
-            in r.state;
+            in
+            r.state;
           expected = [ "earlier" ];
         };
         "pretty-deterministic-over-multiple-failures" = {
@@ -607,11 +651,12 @@ in {
             let
               P = fx.diag.positions;
               IntT = { name = "Int"; check = builtins.isInt; };
-              h = (pretty {}).typeCheck;
-              s0 = [];
+              h = (pretty { }).typeCheck;
+              s0 = [ ];
               s1 = (h { param = { type = IntT; context = "a"; value = "x"; path = [ (P.Field "p") (P.Field "q") ]; reason = "shape-mismatch"; }; state = s0; }).state;
-              s2 = (h { param = { type = IntT; context = "b"; value = false; path = []; reason = "predicate-failed"; }; state = s1; }).state;
-            in s2;
+              s2 = (h { param = { type = IntT; context = "b"; value = false; path = [ ]; reason = "predicate-failed"; }; state = s1; }).state;
+            in
+            s2;
           expected = [
             "[shape-mismatch] Expected Int at .p.q, got string"
             "[predicate-failed] Expected Int, got bool (b)"
@@ -620,5 +665,10 @@ in {
       };
     };
 
+    policy = api.leaf {
+      value = policy;
+      description = "policy: canonical grouped surface for typecheck handlers.";
+      doc = "Grouped `strict`/`collecting`/`logging`/`firstN`/`summarize`/`pretty` handlers.";
+    };
   };
 }

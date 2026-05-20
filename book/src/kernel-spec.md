@@ -77,6 +77,10 @@ Tm ::=
   | Unit                                -- ⊤
   | Tt                                  -- tt
 
+  -- Empty
+  | Empty                               -- ⊥
+  | Absurd(P : Tm, x : Tm)              -- empty-type eliminator
+
   -- Bootstrap coproduct, private to descPlus interpretation
   | BootSum(A : Tm, B : Tm)             -- A + B
   | BootInl(A : Tm, B : Tm, t : Tm)     -- inl t
@@ -145,7 +149,6 @@ Tm ::=
   | Attrs                               -- attribute set type
   | Path                                -- path type
   | Derivation                          -- derivation attrset type
-  | DerivationThunk                     -- carrier type: closure-wrapped derivation
   | Function                            -- opaque function type
   | Any                                 -- dynamic/any type
 
@@ -159,12 +162,14 @@ Tm ::=
   | AttrsLit                            -- attribute set literal
   | PathLit                             -- path literal
   | DerivationLit                       -- derivation attrset literal
-  | DerivationThunkLit                  -- derivation-thunk carrier literal
   | FnLit                               -- opaque function literal
   | AnyLit                              -- any literal
 
   -- Opaque lambda trust boundary for extracted Nix functions
   | OpaqueLam(fnBox, piTy : Tm)
+
+  -- Closed-Val splice (two-level TT reflection)
+  | LitVal(v : Val)                     -- opaque carrier; eval is identity on v
 
 ```
 
@@ -225,6 +230,9 @@ Val ::=
   | VUnit
   | VTt
 
+  -- Empty
+  | VEmpty
+
   -- Bootstrap coproduct, private to descPlus interpretation
   | VBootSum(A : Val, B : Val)
   | VBootInl(A : Val, B : Val, v : Val)
@@ -267,11 +275,11 @@ Val ::=
   | VLiftIntro(l : Val, m : Val, eq : Val, A : Val, a : Val)
 
   -- Axiomatized primitive types
-  | VString | VInt | VFloat | VAttrs | VPath | VDerivation | VDerivationThunk | VFunction | VAny
+  | VString | VInt | VFloat | VAttrs | VPath | VDerivation | VFunction | VAny
 
   -- Primitive literal values
   | VStringLit(s) | VIntLit(n) | VFloatLit(f)
-  | VAttrsLit | VPathLit | VDerivationLit | VDerivationThunkLit | VFnLit | VAnyLit
+  | VAttrsLit | VPathLit | VDerivationLit | VFnLit | VAnyLit
   | VOpaqueLam(fnBox, piTy : Val)
 
   -- Neutrals (stuck computations)
@@ -284,6 +292,7 @@ Elim ::=
   | EBootSumElim(A : Val, B : Val, P : Val, l : Val, r : Val)
   | EBootJ(A : Val, a : Val, P : Val, pr : Val, b : Val)
   | EStrEq(arg : Val)
+  | EAbsurd(P : Val)
   | EDescInd(D : Val, motive : Val, step : Val, i : Val)
   | EInterpD(level : Val, I : Val, X : Val, i : Val)
   | EAllD(level : Val, I : Val, K : Val, X : Val, M : Val, i : Val, d : Val)
@@ -430,7 +439,24 @@ eval(ρ, SquashElim(A,B,f,x))           = vSquashElim(eval(ρ,A), eval(ρ,B), ev
 
 eval(ρ, Funext)                        = VFunext
 eval(ρ, OpaqueLam(fnBox, piTy))        = VOpaqueLam(fnBox, eval(ρ,piTy))
+eval(ρ, LitVal(v))                     = v
 ```
+
+`LitVal v` is the splice operator of two-level type theory (Kovács,
+"Staged Compilation with Two-Level Type Theory", POPL 2024;
+Annenkov–Capriotti–Kraus–Sattler 2019): a closed semantic value
+reflected into the syntactic domain. The eval rule discards the
+environment, so the carried `v` must be closed (free de Bruijn levels
+would never resolve). Quotation reads through to the underlying value
+— `LitVal` is invisible at the Val layer, so conv, quote, and the
+ι/β/η rules operate on `v` directly without any new transparency rule.
+
+The kernel uses `LitVal` as the canonical Val→Tm lift on paths that
+would otherwise call `quote 0 v` on a value destined for re-evaluation
+(notably the effect-handler bridge in
+`src/experimental/desc-interp/trampoline.nix`). Reflection avoids
+the O(size v) structural walk of `quote`, which would compound across
+iterated bridge steps.
 
 `Lift l m eq A` collapses definitionally to `A` when `l` and `m` are
 level-convertible; nested Lifts compose; `lower (lift a)` reduces to
@@ -461,6 +487,36 @@ neutral of type ⊤ converts against `VTt` (see §6.3). Sound in the
 type-free conv because conv is always called on values sharing a type;
 if one side is `VTt`, the shared type is ⊤ and the neutral's only
 inhabitant is `Tt`.
+
+### 4.6′ Empty
+
+```
+eval(ρ, Empty) = VEmpty
+```
+
+Empty has no introduction. The eliminator `Absurd` (§4.6″) discharges
+any neutral of type Empty.
+
+### 4.6″ Absurd
+
+```
+eval(ρ, Absurd(P, x)) = vAbsurd(eval(ρ, P), eval(ρ, x))
+
+vAbsurd(P, VNe(l, sp)) = VNe(l, sp ++ [EAbsurd(P)])
+vAbsurd(P, _)          = THROW "kernel bug: vAbsurd on non-neutral"
+```
+
+`Absurd(P, x)` is the unique map from the initial object to any type
+`P` at any universe level. It is well-typed only when `x : Empty`;
+since `Empty` has no canonical inhabitants, `x` is always neutral in
+sound code. The non-neutral case is a kernel invariant violation —
+THROW rather than silently propagate, matching `vFst`/`vBootJ`
+hygiene.
+
+There is no β-rule for `Absurd`: it only fires on neutrals, and no
+canonical inhabitant of `Empty` exists to trigger reduction. Two
+`Absurd` redexes on the same neutral with definitionally equal `P`
+are conv-equal via the `EAbsurd` spine frame (§6.4).
 
 ### 4.7 Bootstrap coproduct
 
@@ -532,7 +588,6 @@ eval(ρ, Float)        = VFloat
 eval(ρ, Attrs)        = VAttrs
 eval(ρ, Path)         = VPath
 eval(ρ, Derivation)   = VDerivation
-eval(ρ, DerivationThunk) = VDerivationThunk
 eval(ρ, Function)     = VFunction
 eval(ρ, Any)          = VAny
 
@@ -542,7 +597,6 @@ eval(ρ, FloatLit(f))  = VFloatLit(f)
 eval(ρ, AttrsLit)     = VAttrsLit
 eval(ρ, PathLit)      = VPathLit
 eval(ρ, DerivationLit) = VDerivationLit
-eval(ρ, DerivationThunkLit) = VDerivationThunkLit
 eval(ρ, FnLit)        = VFnLit
 eval(ρ, AnyLit)       = VAnyLit
 
@@ -603,6 +657,7 @@ quote(d, VSigma(n, A, cl)) = Sigma(n, quote(d, A), quote(d+1, instantiate(cl, fr
 quote(d, VPair(a, b))      = Pair(quote(d, a), quote(d, b), _)
 quote(d, VUnit)            = Unit
 quote(d, VTt)              = Tt
+quote(d, VEmpty)           = Empty
 quote(d, VBootSum(A, B))       = BootSum(quote(d, A), quote(d, B))
 quote(d, VBootInl(A, B, v))    = BootInl(quote(d, A), quote(d, B), quote(d, v))
 quote(d, VBootInr(A, B, v))    = BootInr(quote(d, A), quote(d, B), quote(d, v))
@@ -615,7 +670,6 @@ quote(d, VFloat)           = Float
 quote(d, VAttrs)           = Attrs
 quote(d, VPath)            = Path
 quote(d, VDerivation)      = Derivation
-quote(d, VDerivationThunk) = DerivationThunk
 quote(d, VFunction)        = Function
 quote(d, VAny)             = Any
 quote(d, VStringLit(s))    = StringLit(s)
@@ -624,7 +678,6 @@ quote(d, VFloatLit(f))     = FloatLit(f)
 quote(d, VAttrsLit)        = AttrsLit
 quote(d, VPathLit)         = PathLit
 quote(d, VDerivationLit)   = DerivationLit
-quote(d, VDerivationThunkLit) = DerivationThunkLit
 quote(d, VFnLit)           = FnLit
 quote(d, VAnyLit)          = AnyLit
 quote(d, VNe(l, sp))       = quoteSp(d, Var(d - l - 1), sp)
@@ -639,6 +692,8 @@ quoteSp(d, head, [EBootJ(A,a,P,pr,b) | rest]) =
   quoteSp(d, BootJ(quote(d,A), quote(d,a), quote(d,P), quote(d,pr), quote(d,b), head), rest)
 quoteSp(d, head, [EStrEq(arg) | rest]) =
   quoteSp(d, StrEq(head, quote(d, arg)), rest)
+quoteSp(d, head, [EAbsurd(P) | rest]) =
+  quoteSp(d, Absurd(quote(d, P), head), rest)
 
 fresh(d) = VNe(d, [])
 
@@ -658,6 +713,7 @@ conversion is purely structural on normalized values.
 conv(d, VU(i),    VU(j))    = (i == j)
 conv(d, VUnit,    VUnit)    = true
 conv(d, VTt,      VTt)      = true
+conv(d, VEmpty,   VEmpty)   = true
 conv(d, VBootRefl, VBootRefl) = true
 conv(d, VString,      VString)      = true
 conv(d, VInt,         VInt)         = true
@@ -665,7 +721,6 @@ conv(d, VFloat,       VFloat)       = true
 conv(d, VAttrs,       VAttrs)       = true
 conv(d, VPath,        VPath)        = true
 conv(d, VDerivation,  VDerivation)  = true
-conv(d, VDerivationThunk, VDerivationThunk) = true
 conv(d, VFunction,    VFunction)    = true
 conv(d, VAny,         VAny)         = true
 conv(d, VStringLit(s₁), VStringLit(s₂)) = (s₁ == s₂)
@@ -674,7 +729,6 @@ conv(d, VFloatLit(f₁),  VFloatLit(f₂))  = (f₁ == f₂)
 conv(d, VAttrsLit,    VAttrsLit)    = true
 conv(d, VPathLit,     VPathLit)     = true
 conv(d, VDerivationLit, VDerivationLit) = true
-conv(d, VDerivationThunkLit, VDerivationThunkLit) = true
 conv(d, VFnLit,       VFnLit)       = true
 conv(d, VAnyLit,      VAnyLit)      = true
 
@@ -757,6 +811,7 @@ convElim(d, EBootSumElim(A₁,B₁,P₁,l₁,r₁), EBootSumElim(A₂,B₂,P₂,
 convElim(d, EBootJ(A₁,a₁,P₁,pr₁,b₁), EBootJ(A₂,a₂,P₂,pr₂,b₂)) =
   conv(d, A₁, A₂) ∧ conv(d, a₁, a₂) ∧ conv(d, P₁, P₂) ∧ conv(d, pr₁, pr₂) ∧ conv(d, b₁, b₂)
 convElim(d, EStrEq(arg₁), EStrEq(arg₂)) = conv(d, arg₁, arg₂)
+convElim(d, EAbsurd(P₁), EAbsurd(P₂)) = conv(d, P₁, P₂)
 convElim(_, _, _) = false
 
 ```
@@ -1003,7 +1058,7 @@ inhabitants of `U(0)`:
 
 ```
 
-(Similarly for Float, Attrs, Path, Derivation, DerivationThunk, Function, Any — all at level 0.)
+(Similarly for Float, Attrs, Path, Derivation, Function, Any — all at level 0.)
 
 **Primitive literals** (synthesis)
 
@@ -1022,8 +1077,7 @@ Literals synthesize their corresponding type:
 ```
 
 (Similarly for AttrsLit → VAttrs, PathLit → VPath,
-DerivationLit → VDerivation, DerivationThunkLit → VDerivationThunk,
-FnLit → VFunction, AnyLit → VAny.)
+DerivationLit → VDerivation, FnLit → VFunction, AnyLit → VAny.)
 
 **StrEq** (string equality)
 
@@ -1129,10 +1183,6 @@ rejected.
                 ──────────────────────
                 Γ ⊢ DerivationLit ⇐ A  ↝  DerivationLit
 
-                whnf(A) = VDerivationThunk
-                ──────────────────────
-                Γ ⊢ DerivationThunkLit ⇐ A  ↝  DerivationThunkLit
-
                 whnf(A) = VFunction
                 ──────────────────────
                 Γ ⊢ FnLit ⇐ A  ↝  FnLit
@@ -1187,9 +1237,18 @@ levels are computed structurally during the type formation check
                 Γ ⊢ Unit type  ↝  Unit
 
                 ──────────────────────
+                Γ ⊢ Empty type  ↝  Empty
+
+                Γ ⊢ P type  ↝  P'    level(P') = k
+                Γ ⊢ x ⇐ Empty  ↝  x'
+                ──────────────────────
+                Γ ⊢ Absurd(P, x) ⇒ P̂      (P̂ = eval(Γ.env, P'))
+                  ↝  Absurd(P', x')
+
+                ──────────────────────
                 Γ ⊢ String type  ↝  String
 
-                (Similarly for Int, Float, Attrs, Path, Derivation, DerivationThunk, Function, Any)
+                (Similarly for Int, Float, Attrs, Path, Derivation, Function, Any)
 
                 ──────────────────────
                 Γ ⊢ U(i) type  ↝  U(i)
@@ -1362,13 +1421,13 @@ for `checkTypeLevel(Γ, A).level`.
 
 ```
 checkTypeLevel(Γ, Unit)        = { Unit,    0 }
+checkTypeLevel(Γ, Empty)       = { Empty,   0 }
 checkTypeLevel(Γ, String)      = { String,  0 }
 checkTypeLevel(Γ, Int)         = { Int,     0 }
 checkTypeLevel(Γ, Float)       = { Float,   0 }
 checkTypeLevel(Γ, Attrs)       = { Attrs,   0 }
 checkTypeLevel(Γ, Path)        = { Path,    0 }
 checkTypeLevel(Γ, Derivation)  = { Derivation, 0 }
-checkTypeLevel(Γ, DerivationThunk) = { DerivationThunk, 0 }
 checkTypeLevel(Γ, Function)    = { Function, 0 }
 checkTypeLevel(Γ, Any)         = { Any,     0 }
 checkTypeLevel(Γ, BootSum(A,B))= { BootSum(A',B'), max(level(A), level(B)) }
@@ -1773,7 +1832,7 @@ where `normal_form(t)` is the expected normal form.
 | ℕ | Natural numbers |
 | 𝔹 | Booleans (derived: `μ ⊤ (plus (retI tt) (retI tt)) tt`) |
 | ⊤ | Unit type |
-| ⊥ | Void / empty type (derived: `Fin 0`) |
+| ⊥ | Empty type |
 | U(i) | Universe at level i |
 | Id_A(a,b) | Identity type |
 | TCB | Trusted computing base |

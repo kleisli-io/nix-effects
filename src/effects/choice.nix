@@ -9,13 +9,13 @@
 #
 # The listAll handler runs the computation for each choice,
 # collecting all results. This is the list monad semantics.
-{ fx, ... }:
+{ fx, api, ... }:
 let
   queue = fx.queue;
   inherit (fx.kernel) pure bind send;
   choose = alternatives: send "choose" alternatives;
 
-  fail = send "choose" [];
+  fail = send "choose" [ ];
 
   guard = cond: if cond then pure null else fail;
 
@@ -24,15 +24,16 @@ let
   # Results are accumulated into a list.
   listAll = {
     choose = { param, state }:
-      if param == [] then
-        # No alternatives: abort this branch
+      if param == [ ] then
+      # No alternatives: abort this branch
         { abort = null; inherit state; }
       else
-        # Resume with first alternative, queue rest as pending
+      # Resume with first alternative, queue rest as pending
         let
           first = builtins.head param;
           rest = builtins.tail param;
-        in {
+        in
+        {
           resume = first;
           state = state // {
             pending = state.pending ++ rest;
@@ -40,20 +41,15 @@ let
         };
   };
 
-  initialState = { results = []; pending = []; };
+  initialState = { results = [ ]; pending = [ ]; };
 
-in {
-  inherit choose fail guard listAll initialState;
-
-
-
-  __docs = {
-    _self = {
-      description = "choice effect: non-deterministic computation via choose/fail/guard with a listAll handler that explores every branch (list-monad semantics).";
-      doc = "Non-deterministic choice effect: choose/fail/guard with list handler.";
-    };
-
-    choose = {
+in
+api.namespace {
+  description = "choice effect: non-deterministic computation via choose/fail/guard with a listAll handler that explores every branch (list-monad semantics).";
+  doc = "Non-deterministic choice effect: choose/fail/guard with list handler.";
+  value = {
+    choose = api.leaf {
+      value = choose;
       description = "choose: non-deterministic selection from a list of alternatives; the handler determines exploration strategy (e.g. listAll for all branches).";
       signature = "choose : [a] -> Computation a";
       doc = ''
@@ -72,7 +68,8 @@ in {
       };
     };
 
-    fail = {
+    fail = api.leaf {
+      value = fail;
       description = "fail: abort the current non-deterministic branch; equivalent to `choose []` with an empty-alternatives short-circuit.";
       signature = "fail : Computation a";
       doc = ''
@@ -86,12 +83,13 @@ in {
         };
         "fail-has-empty-alternatives" = {
           expr = fail.effect.param;
-          expected = [];
+          expected = [ ];
         };
       };
     };
 
-    guard = {
+    guard = api.leaf {
+      value = guard;
       description = "guard: continue when the predicate is true, fail the branch when false; threads boolean predicates into non-deterministic search.";
       signature = "guard : bool -> Computation null";
       doc = ''
@@ -109,7 +107,8 @@ in {
       };
     };
 
-    listAll = {
+    listAll = api.leaf {
+      value = listAll;
       description = "choice.listAll: handler exploring every non-deterministic branch and accumulating results into `state.results`; list-monad semantics.";
       doc = ''
         Handler that explores all non-deterministic branches and returns
@@ -127,28 +126,29 @@ in {
         "choose-resumes-with-first" = {
           expr = (listAll.choose {
             param = [ 10 20 30 ];
-            state = { results = []; pending = []; };
+            state = { results = [ ]; pending = [ ]; };
           }).resume;
           expected = 10;
         };
         "choose-empty-aborts" = {
           expr = (listAll.choose {
-            param = [];
-            state = { results = []; pending = []; };
+            param = [ ];
+            state = { results = [ ]; pending = [ ]; };
           }) ? abort;
           expected = true;
         };
         "choose-queues-rest" = {
           expr = builtins.length (listAll.choose {
             param = [ 10 20 30 ];
-            state = { results = []; pending = []; };
+            state = { results = [ ]; pending = [ ]; };
           }).state.pending;
           expected = 2;
         };
       };
     };
 
-    initialState = {
+    initialState = api.leaf {
+      value = initialState;
       description = "choice.initialState: starting state `{ results = []; pending = []; }` for the listAll handler; pair with `handle` to run.";
       doc = "Initial state for the listAll handler.";
     };

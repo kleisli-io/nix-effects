@@ -1,4 +1,4 @@
-{ fx, ... }:
+{ fx, api, ... }:
 
 let
   inherit (fx.types.refinement) refined;
@@ -8,25 +8,10 @@ let
     __functor = self: pred: sugared (refined "${self.name}?" self pred);
     __toString = self: self.name;
   };
-in {
+in
+{
   scope = {
-    types = {
-      wrap = sugared;
-      Int    = sugared Int;
-      String = sugared String;
-      Bool   = sugared Bool;
-      Float  = sugared Float;
-      Path   = sugared Path;
-      Null   = sugared Null;
-      Unit   = sugared Unit;
-      Any    = sugared Any;
-    };
-  };
-
-  tests = {};
-
-  __docs = {
-    types = {
+    types = api.leaf {
       description = "types: refinement-applicable type wrappers — each primitive becomes a `__functor`-bearing record so `Int (n: n > 0)` chains another `refined` layer; `wrap` lifts an arbitrary type into the same callable form.";
       doc = ''
         Sugar layer over `fx.types.refinement.refined`. Each entry
@@ -38,6 +23,19 @@ in {
         `fx.types.primitives`; `wrap` lets callers lift any other
         type into the same chainable shape.
       '';
+      value = {
+        wrap = sugared;
+        Int = sugared Int;
+        String = sugared String;
+        Bool = sugared Bool;
+        Float = sugared Float;
+        Path = sugared Path;
+        Null = sugared Null;
+        Unit = sugared Unit;
+        Any = sugared Any;
+      };
     };
   };
+
+  tests = { };
 }

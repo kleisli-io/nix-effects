@@ -38,7 +38,8 @@ let
     H.zero
     (builtins.genList (x: x) 20);
 
-in {
+in
+{
   # Closed VMu walk: `succ^100 zero` extracted to integer `100`. The
   # extractInner Nat branch (src/tc/elaborate/extract.nix) trampolines
   # through a 100-deep VDescCon chain via `genericClosure` — a
@@ -55,9 +56,11 @@ in {
   # via `seq` keeps the workload value forceable by the bench
   # harness while still committing to evaluation of the extract.
   open =
-    let extracted = T.verifyAndExtract natToNat
-                      (H.opaqueLam (x: x) natToNat);
-    in builtins.seq extracted "extracted-opaque-lambda";
+    let
+      extracted = T.verifyAndExtract natToNat
+        (H.opaqueLam (x: x) natToNat);
+    in
+    builtins.seq extracted "extracted-opaque-lambda";
 
   # Reify a 20-deep VPi back to an HOAS tree. `reifyType` recurses
   # through the type Val exactly as quote recurses through its term

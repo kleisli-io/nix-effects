@@ -10,68 +10,38 @@ let
 
   # -- readSrc: directory walker --
   #
-  # For a directory without `module.nix`: auto-import `.nix` files as
-  # namespace entries, recurse into subdirectories as nested namespaces.
-  # Each leaf receives `{ fx, api, lib, ... }:` and returns `api.mk { doc;
-  # value; tests }`.
+  # Walks `src/` building the fx tree. Every documented binding is an
+  # `api.mk` wrap (or its aliases `api.leaf` / `api.namespace`) carrying
+  # `{ description; doc; signature; value; tests }`. Docs are co-located
+  # with values on each wrap; there is no sibling `__docs` map.
   #
-  # For a directory with `module.nix`: treat as a split module. Build
-  # `self` as the disjoint-union fixpoint of sibling parts' `scope`
-  # attrsets. Build `partTests` similarly from parts' `tests`, and
-  # `partDocs` similarly from parts' `__docs`. Pass all three to
-  # `module.nix`, which is expected to call `api.mkModule` to produce
-  # the final `api.mk`-wrapped result. The walker does not
-  # post-process `module.nix`'s return — the invariant
-  # (`flat-leaf-key-set of value == attrNames partDocs`) and the
-  # `__docs` injection are performed inside `api.mkModule`.
+  # Two directory shapes:
   #
-  # Each part receives `{ self, fx, api, lib, ... }:` and returns
-  # `{ scope; tests ? {}; __docs ? {} }`. Cross-part references go through
-  # `self.<binding>`.
+  #   Split module (`module.nix` present): sibling `<name>.nix` files
+  #     are "parts" returning `{ scope; tests ? {} }`. `scope` is an
+  #     attrset of bindings — typically `api.leaf` / `api.namespace`
+  #     wraps; un-documented internal helpers may remain bare. `tests`
+  #     are aggregated into `partTests` and threaded to `module.nix`,
+  #     which assembles the curated public `value` via
+  #     `inherit (self) ...;` and returns the wrap.
   #
-  # `__docs` is name-keyed per-binding metadata at the same key-level as
-  # `scope` (never inside `scope`); each entry is the standalone-file
-  # `__docs.<name>` shape `{ description? signature? doc? tests? }`. The
-  # name matches the value-tree convention: in a standalone file `__docs`
-  # is a sibling of the bindings; in a split-module part `__docs` is a
-  # sibling of `scope` (which holds the bindings).
+  #   Plain dir (no `module.nix`): each `<name>.nix` file's return
+  #     value becomes the dir's `<name>` slot. Files are expected to
+  #     return an `api.mk` / `api.namespace` / `api.leaf` wrap; the
+  #     dir aggregates them in an `api.mk` wrap with empty identity.
+  #     Dirs that need their own description/doc carry a `module.nix`.
   #
-  # Standalone files may use the `__docs._self` convention instead of a
-  # file-level `api.mk` wrap. `__docs._self` carries the file's
-  # module-level metadata (description, doc, signature, tests). readSrc
-  # routes it to the parent dir's `__docs.<filename>` slot — the slot
-  # that holds the file's identity in the parent namespace's docs tree.
+  # `self` (cross-part fixpoint) is built two-view:
+  #   - `selfForParts` — part-bindings shallow-unwrapped to bare values;
+  #     subdirs left as wraps. Preserves call-site semantics:
+  #     `self.<part-binding>` is the bare function/value, `self.<subdir>`
+  #     is the wrap (with `.value`, `.tests`, etc.).
+  #   - `selfRaw` — wraps everywhere. Passed to `module.nix` so that
+  #     `value = { inherit (self) ...; }` carries the docs-bearing form.
   #
-  # Two shapes use the convention:
-  #
-  #   - Single-binding file whose one binding matches the filename:
-  #       { <name> = <bare>; __docs._self = { ... }; }
-  #     readSrc hoists `<name>` as the file's namespace identity, so
-  #     `fx.<dir>.<name>` is the bare value (function, attrset, etc.) —
-  #     no wrap. `__docs._self` becomes `parent.__docs.<name>`.
-  #
-  #   - Multi-binding file (or single-binding with non-matching name):
-  #       { <b1> = ...; <b2> = ...; ...; __docs = { _self = { ... };
-  #         <b1> = { ... }; ...; }; }
-  #     readSrc treats the file as a sub-namespace under `<filename>`;
-  #     `_self` is hoisted to `parent.__docs.<filename>` (module-level
-  #     metadata), per-binding `__docs.<n>` entries stay inside the
-  #     file as the namespace's own docs sibling.
-  #
-  # Shape guard (strict): every `__docs.<n>` entry other than `_self`
-  # must correspond to a top-level binding in the file — no orphan docs.
-  # Top-level bindings without docs are allowed (lenient at the
-  # standalone-file level; the strict bijection invariant applies only
-  # to split-module groups via `api.mkModule`).
-  #
-  # Files without `__docs._self` keep using a file-level `api.mk` wrap;
-  # the two conventions co-exist file-by-file during migration.
-  #
-  # Collisions (duplicate scope keys, duplicate test names, duplicate
-  # doc names) are hard errors — never silent merges. There is no
-  # priority system, no `mkDefault`/`mkForce`, no `options`. Each
-  # binding has exactly one definition site and exactly one
-  # documentation site (always the same part).
+  # Collisions (duplicate scope keys, duplicate test names, subdir name
+  # vs. scope binding) are hard errors. Each binding has exactly one
+  # definition site.
   readSrc = dir: ctx:
     let
       entries = builtins.readDir dir;
@@ -82,156 +52,122 @@ let
         && !(builtins.elem name excluded);
       isSplitModule = entries ? "module.nix";
 
-      # Subdirectories are nested namespaces in both split-module and
-      # plain-namespace modes. Recursing once here keeps the treatment
-      # uniform: a subdir's readSrc result is always an api.mk-wrapped
-      # node (split dirs via their module.nix; plain dirs via the wrap
-      # below), so parent-level traversals see only mk-wrapped children.
-      subDirs = lib.foldlAttrs (acc: name: type:
-        if type == "directory"
-        then acc // { ${name} = readSrc (dir + "/${name}") ctx; }
-        else acc
-      ) {} entries;
+      # Subdirectories are nested namespaces in both modes. Each subdir's
+      # readSrc result is an mk-wrapped node, so parent-level traversals
+      # see only mk-wrapped children.
+      subDirs = lib.foldlAttrs
+        (acc: name: type:
+          if type == "directory"
+          then acc // { ${name} = readSrc (dir + "/${name}") ctx; }
+          else acc
+        )
+        { }
+        entries;
+
+      legacyDocsHint = path:
+        "readSrc: ${path}: uses legacy `__docs` sibling; co-locate docs into per-leaf `api.leaf` / `api.namespace` wraps (see .kli/tasks/2026-05-18-nix-effects-principled-co-locate-leaf-value-doc/plan.md)";
     in
-      if isSplitModule then
-        let
-          partNames = builtins.attrNames (lib.filterAttrs isNixFile entries);
-          importPart = n: s: import (dir + "/${n}") (ctx // { self = s; });
+    if isSplitModule then
+      let
+        partNames = builtins.attrNames (lib.filterAttrs isNixFile entries);
+        importPart = n: s: import (dir + "/${n}") (ctx // { self = s; });
 
-          # Sibling parts contribute flat bindings; subdirectories enter
-          # self under their directory name. Collisions between the two
-          # (a scope binding colliding with a subdir name) are a hard
-          # error — each binding has exactly one definition site.
-          self = lib.fix (s:
-            let
-              partsScope = builtins.foldl' (acc: n:
+        isWrap = v:
+          builtins.isAttrs v && (v._type or null) == "nix-effects-api";
+
+        # Shallow unwrap: strip a top-level `api.leaf`/`api.mk` wrap to
+        # its bare `.value` for `self.<binding>` consumption. MUST be
+        # shallow — `api.extractValue` recurses via `mapAttrs` into every
+        # nested attrset, which adds a thunk layer per HOAS term level
+        # and stack-overflows on deep terms (e.g. 5000-element cons).
+        # Bare bindings (un-documented helpers) pass through unchanged.
+        unwrapTop = v: if isWrap v then v.value else v;
+
+        # Single fix over both views. Parts see `selfForParts` (wraps
+        # shallow-unwrapped to bare values; subdirs left as wraps).
+        # `module.nix` sees `selfRaw` (wraps everywhere) so its curated
+        # `value` inherits the docs-bearing form.
+        selves = lib.fix (s:
+          let
+            partsScope = builtins.foldl'
+              (acc: n:
                 let
-                  part = importPart n s;
-                  scope = part.scope;
+                  part = importPart n s.selfForParts;
+                  scope =
+                    if (part.__docs or { }) != { }
+                    then throw (legacyDocsHint "${toString dir}/${n}")
+                    else part.scope;
                   collisions = lib.intersectLists
-                                 (builtins.attrNames acc)
-                                 (builtins.attrNames scope);
+                    (builtins.attrNames acc)
+                    (builtins.attrNames scope);
                 in
-                  if collisions != []
-                  then throw "readSrc: ${toString dir}: duplicate binding(s) ${toString collisions}"
-                  else acc // scope
-              ) {} partNames;
-              sdCollisions = lib.intersectLists
-                               (builtins.attrNames partsScope)
-                               (builtins.attrNames subDirs);
-            in
-              if sdCollisions != []
-              then throw "readSrc: ${toString dir}: subdirectory name(s) collide with scope binding(s): ${toString sdCollisions}"
-              else partsScope // subDirs);
+                if collisions != [ ]
+                then throw "readSrc: ${toString dir}: duplicate binding(s) ${toString collisions}"
+                else acc // scope
+              )
+              { }
+              partNames;
+            sdCollisions = lib.intersectLists
+              (builtins.attrNames partsScope)
+              (builtins.attrNames subDirs);
+          in
+          if sdCollisions != [ ]
+          then throw "readSrc: ${toString dir}: subdirectory name(s) collide with scope binding(s): ${toString sdCollisions}"
+          else {
+            inherit partsScope;
+            selfForParts = (builtins.mapAttrs (_: unwrapTop) partsScope)
+              // subDirs;
+            selfRaw = partsScope // subDirs;
+          });
 
-          partTests = builtins.foldl' (acc: n:
+        self = selves.selfRaw;
+
+        partTests = builtins.foldl'
+          (acc: n:
             let
-              part = importPart n self;
-              t = part.tests or {};
+              part = importPart n selves.selfForParts;
+              t = part.tests or { };
               collisions = lib.intersectLists
-                             (builtins.attrNames acc)
-                             (builtins.attrNames t);
+                (builtins.attrNames acc)
+                (builtins.attrNames t);
             in
-              if collisions != []
-              then throw "readSrc: ${toString dir}: duplicate test name(s) ${toString collisions}"
-              else acc // t
-          ) {} partNames;
+            if collisions != [ ]
+            then throw "readSrc: ${toString dir}: duplicate test name(s) ${toString collisions}"
+            else acc // t
+          )
+          { }
+          partNames;
 
-          partDocs = builtins.foldl' (acc: n:
-            let
-              part = importPart n self;
-              d = part.__docs or {};
-              collisions = lib.intersectLists
-                             (builtins.attrNames acc)
-                             (builtins.attrNames d);
-            in
-              if collisions != []
-              then throw "readSrc: ${toString dir}: duplicate doc name(s) ${toString collisions}"
-              else acc // d
-          ) {} partNames;
-
-        in
-          import (dir + "/module.nix") (ctx // { inherit self partTests partDocs; })
-      else
-        let
-          rawFiles = lib.foldlAttrs (acc: name: type:
+      in
+      import (dir + "/module.nix") (ctx // { inherit self partTests; })
+    else
+      let
+        rawFiles = lib.foldlAttrs
+          (acc: name: type:
             if isNixFile name type
-            then acc // { ${lib.removeSuffix ".nix" name} = import (dir + "/${name}") ctx; }
-            else acc
-          ) {} entries;
-
-          # `__docs._self` convention. Predicate: file return is a
-          # plain (non-mk) attrset whose `__docs` carries a `_self` entry.
-          hasSelfDocs = r:
-            builtins.isAttrs r
-            && (r._type or null) != "nix-effects-api"
-            && r ? __docs
-            && builtins.isAttrs r.__docs
-            && r.__docs ? _self;
-
-          # Shape guard: every `__docs.<n>` entry other than `_self`
-          # must correspond to a top-level binding in the file.
-          # Top-level bindings without docs are allowed.
-          checkSelfDocsShape = name: r:
-            let
-              bindings = lib.subtractLists [ "__docs" ] (builtins.attrNames r);
-              allowed  = [ "_self" ] ++ bindings;
-              docKs    = builtins.attrNames r.__docs;
-              docExtra = lib.subtractLists allowed docKs;
-            in
-              if docExtra != []
-              then throw "readSrc: ${toString dir}/${name}.nix: __docs entries with no matching binding: ${toString docExtra}"
-              else true;
-
-          # Hoist iff the file has exactly one binding whose name
-          # matches the filename. Otherwise the file is a sub-namespace.
-          shouldHoist = name: r:
-            let bindings = lib.subtractLists [ "__docs" ] (builtins.attrNames r);
-            in bindings == [ name ];
-
-          # Per-file processing:
-          #  - Hoist single-binding-matching-filename to the parent slot.
-          #  - For sub-namespace files, strip `_self` from the file's
-          #    `__docs` (it's now routed to the parent's `__docs.<file>`)
-          #    and pass the rest through. If `__docs` becomes empty after
-          #    `_self` removal, drop it entirely.
-          #  - Files without `__docs._self` pass through unchanged.
-          files = lib.mapAttrs (name: r:
-            if hasSelfDocs r
             then
-              assert checkSelfDocsShape name r;
-              if shouldHoist name r
-              then r.${name}
-              else
-                let
-                  restDocs = removeAttrs r.__docs [ "_self" ];
-                  rest     = removeAttrs r [ "__docs" ];
-                in
-                  rest //
-                  (lib.optionalAttrs (restDocs != {}) { __docs = restDocs; })
-            else r
-          ) rawFiles;
-
-          # Aggregate `__docs._self` entries into a single `__docs`
-          # sibling for the parent dir's plain-namespace wrap.
-          selfDocs = lib.foldlAttrs (acc: name: r:
-            if hasSelfDocs r
-            then acc // { ${name} = r.__docs._self; }
+              let
+                r = import (dir + "/${name}") ctx;
+                isLegacy =
+                  builtins.isAttrs r
+                  && (r._type or null) != "nix-effects-api"
+                  && (r.__docs or { }) != { };
+                bare = lib.removeSuffix ".nix" name;
+              in
+              if isLegacy
+              then throw (legacyDocsHint "${toString dir}/${name}")
+              else acc // { ${bare} = r; }
             else acc
-          ) {} rawFiles;
-
-          docsConflict = (selfDocs != {})
-                         && ((files ? __docs) || (subDirs ? __docs));
-        in
-          if docsConflict
-          then throw "readSrc: ${toString dir}: __docs._self aggregation collides with existing `__docs` key in namespace (file named __docs.nix or subdir __docs/)"
-          else api.mk {
-            doc = "";
-            value = files // subDirs
-                    // (lib.optionalAttrs (selfDocs != {})
-                          { __docs = selfDocs; });
-            tests = {};
-          };
+          )
+          { }
+          entries;
+      in
+      api.mk {
+        doc = "";
+        description = "";
+        value = rawFiles // subDirs;
+        tests = { };
+      };
 
   # -- Library fixpoint via lib.fix --
   #
@@ -292,7 +228,7 @@ let
 
       # Primitives
       inherit (types.primitives) String Int Bool Float Attrs Path
-              Derivation Function Null Unit Any;
+        Derivation Function Null Unit Any;
 
       # Constructors
       inherit (types.constructors) Record ListOf Maybe Either Variant;
@@ -305,7 +241,7 @@ let
 
       # Refinement
       inherit (types.refinement) refined allOf anyOf negate
-              positive nonNegative inRange nonEmpty matching;
+        positive nonNegative inRange nonEmpty matching;
 
       # Universe
       inherit (types.universe) typeAt level Type_0 Type_1 Type_2 Type_3 Type_4;
@@ -369,6 +305,16 @@ let
     # Sugar (opt-in syntax-livability layer — see src/sugar/)
     sugar = src.sugar;
 
+    # Type-checker prototype namespace. Exposes the full HOAS surface
+    # (`fx.tc.hoas`), elaboration bridge (`fx.tc.elaborate` — `extract`,
+    # `embedVal`, `verifyAndExtract`, …), eval (`fx.tc.eval`), quote
+    # (`fx.tc.quote`), and downstream layers. Opt-in by reference: stable
+    # consumers reach for the curated `fx.types.*` re-exports above.
+    tc = src.tc;
+
+    # Surface-language extension framework over the HOAS elaborator.
+    surface = src.tc.surface;
+
     # Parallel-namespace prototypes. Opt-in, never aliased over the stable
     # surface; consumers must reach for `fx.experimental.<name>` explicitly.
     experimental = {
@@ -381,8 +327,11 @@ let
     inherit api;
   };
 
-  integrationTests = import ./tests { inherit lib fx; };
+  integrationTests = import ./tests { inherit lib fx api; };
+  examplesModule = import ./examples { inherit lib fx api; };
   inlineTests = api.extractTests internals.raw;
+  examplesDocs = api.extractDocs examplesModule.module;
+  examplesValue = api.extractValue examplesModule.module;
 
   # nix-unit compatible test attrset. nix-unit requires the "test" prefix on
   # test case attrs; non-prefixed attrs are recursed into as namespaces.
@@ -401,40 +350,29 @@ let
       value = if builtins.isAttrs value then prefixTests value else value;
     });
 
-  # Normalize integration tests without forcing boolean leaves while building
-  # the nix-unit namespace. Mixed boolean/{ expr; expected; } tests cannot be
-  # shape-checked eagerly without evaluating the boolean tests.
-  normalizeTest = value:
-    {
-      expr =
-        if builtins.isAttrs value && value ? expr && value ? expected
-        then value.expr == value.expected
-        else value;
-      expected = true;
-    };
   nixUnitTests = {
     # Inline tests: { expr; expected; } pairs, prefixed for nix-unit
     inline = prefixTests inlineTests;
-    # Integration tests: normalized and prefixed
-    integration = prefixTests (builtins.mapAttrs
-      (_: normalizeTest)
-      (removeAttrs integrationTests [ "allPass" ])
-    );
+    # Integration tests: module metadata extracted by tests/default.nix
+    integration = prefixTests (integrationTests.tree // { examples = examplesModule.tree; });
   };
 
   extractDocs = api.extractDocs internals.raw;
 
   bench = import ./bench { inherit lib pkgs; };
 
-in fx // {
-  inherit extractDocs bench;
+in
+fx // {
+  inherit extractDocs bench examplesDocs;
+  examples = examplesValue;
 
-  # Content derivation for docs.kleisli.io.
+  # Content derivation for an external documentation hub.
   # Returns a directory of markdown files with front matter, structured as
-  # nix-effects/{section}/{page}.md for the kleisli-docs multi-project hub.
-  mkKleisliDocsContent = pkgs: import ./book/gen/kleisli-docs.nix {
+  # nix-effects/{section}/{page}.md. No hub-specific assumptions live in
+  # the producer beyond the layout contract.
+  mkDocsContent = pkgs: import ./book/gen/docs-content.nix {
     inherit pkgs lib;
-    nix-effects = fx // { inherit extractDocs src; };
+    nix-effects = fx // { inherit extractDocs src examplesDocs; raw = internals.raw; };
   };
 
   # Maintenance tool: regenerate the heading-anchor golden file consumed
@@ -446,19 +384,11 @@ in fx // {
   tests =
     let
       perModule = builtins.mapAttrs (_: api.runTests) inlineTests;
-      # Collect all failed tests across modules
-      inlineFailed = lib.foldlAttrs (acc: modName: modResult:
-        acc // (lib.mapAttrs' (testName: test: {
-          name = "${modName}.${testName}";
-          value = test;
-        }) modResult.failed)
-      ) {} perModule;
-    in perModule // {
+    in
+    perModule // {
       integration = integrationTests;
+      examples = examplesModule;
       inline = inlineTests;
-      allPass = integrationTests.allPass
-                && lib.all (m: m.allPass) (builtins.attrValues perModule);
-      failed = inlineFailed;
       # For nix-unit (flake.nix exposes this as the tests output)
       nix-unit = nixUnitTests;
       # Live HTTP probe of every diag Hint docLink (see file header).
@@ -466,13 +396,13 @@ in fx // {
         inherit pkgs lib src;
       };
       # Schema-driven anchor stability: every Hint key has a matching
-      # per-key page + in-page heading in the rendered kleisli-docs
-      # derivation (see file header).
+      # per-key page + in-page heading in the rendered docs corpus
+      # (see file header).
       anchors-schema = import ./tests/anchors-schema.nix {
         inherit pkgs lib src;
-        kleisliDocs = import ./book/gen/kleisli-docs.nix {
+        corpus = import ./book/gen/docs-content.nix {
           inherit pkgs lib;
-          nix-effects = fx // { inherit extractDocs src; };
+          nix-effects = fx // { inherit extractDocs src examplesDocs; raw = internals.raw; };
         };
       };
       # Golden-file gate for hand-written book chapters: any H2/H3
@@ -482,6 +412,15 @@ in fx // {
         inherit pkgs lib;
         bookSrc = ./book/src;
         goldenFile = ./tests/anchors-golden.txt;
+      };
+      # Schema gate: every .md in the produced docs corpus has a
+      # path shape the consumer's route table can serve (see file header).
+      routing-coverage = import ./tests/routing-coverage.nix {
+        inherit pkgs lib;
+        corpus = import ./book/gen/docs-content.nix {
+          inherit pkgs lib;
+          nix-effects = fx // { inherit extractDocs src examplesDocs; raw = internals.raw; };
+        };
       };
     };
 } // lib.optionalAttrs exposeInternals {

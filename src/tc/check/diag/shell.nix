@@ -39,18 +39,18 @@
 # `{ _tag="Hint"; text; category; severity; docLink; }`) and
 # `surface` (the SourceMap's hoas payload at the blame chain's leaf,
 # or null).
-{ self, fx, ... }:
+{ self, fx, api, ... }:
 
 let
-  C  = fx.tc.check;
-  H  = fx.diag.hints;
+  C = fx.tc.check;
+  H = fx.diag.hints;
   SM = self.sourceMap;
 
   runCheckD = sm: comp:
     let r = C.runCheck comp; in
     if builtins.isAttrs r && r ? error
     then r // {
-      hint    = H.resolve r.error;
+      hint = H.resolve r.error;
       surface = SM.hoasAtError r.error sm;
     }
     else r;
@@ -59,21 +59,18 @@ let
     let r = C.runCheck comp; in
     if builtins.isAttrs r && r ? error
     then r // {
-      hint    = H.resolve r.error;
+      hint = H.resolve r.error;
       surface = SM.hoasAtError r.error (mkSm null);
     }
     else r;
 
   checkD = ctx: tm: ty: sm: runCheckD sm (C.check ctx tm ty);
-  inferD = ctx: tm:      sm: runCheckD sm (C.infer ctx tm);
+  inferD = ctx: tm: sm: runCheckD sm (C.infer ctx tm);
 
-in {
+in
+{
   scope = {
-    inherit runCheckD runCheckDLazy checkD inferD;
-  };
-
-  __docs = {
-    runCheckD = {
+    runCheckD = api.leaf {
       description = "runCheckD: kernel-result decorator — runs `C.runCheck` then, on failure, attaches a resolved hint (via `fx.diag.hints.resolve`) and a SourceMap-sourced surface back-mapping; success path untouched.";
       signature = "runCheckD : SourceMap -> Computation -> Tm | { error; msg; expected; got; hint; surface }";
       doc = ''
@@ -88,8 +85,9 @@ in {
         SourceMap's hoas payload at the blame chain's leaf, or
         `null` when the chain exits the mapped sub-tree).
       '';
+      value = runCheckD;
     };
-    runCheckDLazy = {
+    runCheckDLazy = api.leaf {
       description = "runCheckDLazy: deferred-SourceMap variant of `runCheckD` — takes a thunk that's forced only on failure, sparing the success path the full SourceMap walker allocation.";
       signature = "runCheckDLazy : (Unit -> SourceMap) -> Computation -> Tm | { error; msg; expected; got; hint; surface }";
       doc = ''
@@ -99,16 +97,20 @@ in {
         The success path pays one closure allocation instead of the
         full SourceMap construction.
       '';
+      value = runCheckDLazy;
     };
-    checkD = {
+    checkD = api.leaf {
       description = "checkD: `check` with diagnostic decoration — shorthand for `runCheckD sm (C.check ctx tm ty)`; returns the elaborated term on success, decorated error record on failure.";
       signature = "checkD : Ctx -> Tm -> Val -> SourceMap -> Tm | { error; msg; expected; got; hint; surface }";
+      value = checkD;
     };
-    inferD = {
+    inferD = api.leaf {
       description = "inferD: `infer` with diagnostic decoration — shorthand for `runCheckD sm (C.infer ctx tm)`; returns `{ term; type }` on success, decorated error record on failure.";
       signature = "inferD : Ctx -> Tm -> SourceMap -> { term; type } | { error; msg; expected; got; hint; surface }";
+      value = inferD;
     };
   };
+
   tests =
     let
       T = fx.tc.term;
@@ -132,7 +134,8 @@ in {
       smAtPiDom = SM.node "outer" {
         "PiDom" = SM.leaf "at-pi-dom";
       };
-    in {
+    in
+    {
       # -- runCheckD success pass-through --
       "runCheckD-success-pass-through" = {
         expr = runCheckD SM.opaque goodCheck;
@@ -193,12 +196,14 @@ in {
               got = { tag = "VU"; level = 1; };
             };
             fakeR = { inherit err; } // {
-              error = err; msg = err.msg;
+              error = err;
+              msg = err.msg;
               expected = err.detail.expected;
               got = err.detail.got;
             };
             h = H.resolve fakeR.error;
-          in builtins.isAttrs h && h._tag == "Hint";
+          in
+          builtins.isAttrs h && h._tag == "Hint";
         expected = true;
       };
 
@@ -211,20 +216,24 @@ in {
         expr =
           let
             err = fx.diag.error.nestUnder P.PiDom
-                    (fx.diag.error.mkKernelError {
-                      rule = "check"; msg = "type mismatch";
-                    });
+              (fx.diag.error.mkKernelError {
+                rule = "check";
+                msg = "type mismatch";
+              });
             faked = {
-              error = err; msg = err.msg;
-              expected = err.detail.expected; got = err.detail.got;
+              error = err;
+              msg = err.msg;
+              expected = err.detail.expected;
+              got = err.detail.got;
             };
             # runCheckD's decorator branch triggers on `? error`; wrap
             # `faked` in a pure computation to route it through runCheck.
             r = faked // {
-              hint    = H.resolve err;
+              hint = H.resolve err;
               surface = SM.hoasAtError err smAtPiDom;
             };
-          in r.surface;
+          in
+          r.surface;
         expected = "at-pi-dom";
       };
 
@@ -259,7 +268,7 @@ in {
       # hit `throw` and fail the test.
       "runCheckDLazy-success-does-not-force-thunk" = {
         expr = runCheckDLazy (_: throw "SM thunk forced on success")
-                 goodCheck;
+          goodCheck;
         expected = T.mkTt;
       };
       "runCheckDLazy-failure-decorates" = {
@@ -306,7 +315,8 @@ in {
               idxs;
             comp = K.send "typeError" { error = deepErr; };
             r = runCheckDLazy (_: deepSm) comp;
-          in r.surface;
+          in
+          r.surface;
         expected = "deep-leaf";
       };
     };

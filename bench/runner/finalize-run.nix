@@ -36,7 +36,8 @@ let
     inherit (input) name timestamp nix system runsPerWorkload;
     inherit results;
   };
-in {
+in
+{
   json = format.emitJSON run;
   markdown = format.emitRunMarkdown run;
   inherit run;

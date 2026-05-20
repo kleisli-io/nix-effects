@@ -21,7 +21,7 @@
 #   Mesquita & Toninho (2026) "Lazy Linearity" (POPL 2026)
 #   Congard et al. (2025) "Linear Effects" (destructors)
 #   Ahman & Bauer (2023) "Runners in Action" (return clause as runner model)
-{ fx, lib, ... }:
+{ fx, lib, api, ... }:
 let
   inherit (fx.kernel) pure bind send;
   inherit (fx.trampoline) handle;
@@ -62,7 +62,8 @@ let
       let
         id = state.nextId;
         token = { _linear = true; inherit id; resource = param.resource; };
-      in {
+      in
+      {
         resume = token;
         state = state // {
           nextId = id + 1;
@@ -84,54 +85,54 @@ let
         newUses = entry.currentUses + 1;
         withinBound = entry.maxUses == null || newUses <= entry.maxUses;
       in
-        if entry.released then {
-          abort = {
-            _tag = "LinearityError";
-            error = "consume-after-release";
-            resource = entry.resource;
-          };
-          inherit state;
-        }
-        else if !withinBound then {
-          abort = {
-            _tag = "LinearityError";
-            error = "exceeded-bound";
-            resource = entry.resource;
-            maxUses = entry.maxUses;
-            attempted = newUses;
-          };
-          inherit state;
-        }
-        else {
-          resume = param.token.resource;
-          state = state // {
-            resources = state.resources // {
-              ${id} = entry // { currentUses = newUses; };
-            };
+      if entry.released then {
+        abort = {
+          _tag = "LinearityError";
+          error = "consume-after-release";
+          resource = entry.resource;
+        };
+        inherit state;
+      }
+      else if !withinBound then {
+        abort = {
+          _tag = "LinearityError";
+          error = "exceeded-bound";
+          resource = entry.resource;
+          maxUses = entry.maxUses;
+          attempted = newUses;
+        };
+        inherit state;
+      }
+      else {
+        resume = param.token.resource;
+        state = state // {
+          resources = state.resources // {
+            ${id} = entry // { currentUses = newUses; };
           };
         };
+      };
 
     linearRelease = { param, state }:
       let
         id = toString param.token.id;
         entry = state.resources.${id};
       in
-        if entry.released then {
-          abort = {
-            _tag = "LinearityError";
-            error = "double-release";
-            resource = entry.resource;
-          };
-          inherit state;
-        }
-        else {
-          resume = null;
-          state = state // {
-            resources = state.resources // {
-              ${id} = entry // { released = true; };
-            };
+      if entry.released then {
+        abort = {
+          _tag = "LinearityError";
+          error = "double-release";
+          resource = entry.resource;
+        };
+        inherit state;
+      }
+      else {
+        resume = null;
+        state = state // {
+          resources = state.resources // {
+            ${id} = entry // { released = true; };
           };
         };
+      };
   };
 
   # ===========================================================================
@@ -154,48 +155,42 @@ let
         || r.currentUses == r.maxUses;
       violations = lib.filterAttrs (id: r: !(checkResource id r)) state.resources;
     in
-      if violations == {} then
-        { inherit value state; }
-      else {
-        value = {
-          _tag = "LinearityError";
-          error = "usage-mismatch";
-          details = lib.mapAttrsToList (_: r: {
+    if violations == { } then
+      { inherit value state; }
+    else {
+      value = {
+        _tag = "LinearityError";
+        error = "usage-mismatch";
+        details = lib.mapAttrsToList
+          (_: r: {
             resource = r.resource;
             expected = r.maxUses;
             actual = r.currentUses;
-          }) violations;
-          original = value;
-        };
-        inherit state;
+          })
+          violations;
+        original = value;
       };
+      inherit state;
+    };
 
   # ===========================================================================
   # INITIAL STATE & RUN CONVENIENCE
   # ===========================================================================
 
-  initialState = { nextId = 0; resources = {}; };
+  initialState = { nextId = 0; resources = { }; };
 
-  run = comp: handle {
-    inherit return;
-    handlers = handler;
-    state = initialState;
-  } comp;
+  run = comp: handle
+    {
+      inherit return;
+      handlers = handler;
+      state = initialState;
+    }
+    comp;
 
-in {
-  inherit acquire consume release;
-  inherit acquireLinear acquireExact acquireUnlimited;
-  inherit handler return initialState run;
-
-  # Per-binding documentation. Sibling to the bindings above; consumed by
-  # `extractDocs`/`extractTests`, stripped by `extractValue` so it doesn't
-  # appear in the public API tree.
-
-
-  __docs = {
-    _self = {
-      description = "linear effect: graded resource discipline (linear, affine, exact n, unlimited) via acquire/consume/release with a finalizer enforcing usage bounds.";
-      doc = ''
+in
+api.namespace {
+  description = "linear effect: graded resource discipline (linear, affine, exact n, unlimited) via acquire/consume/release with a finalizer enforcing usage bounds.";
+  doc = ''
     Graded linear resource tracking: acquire/consume/release with usage enforcement.
 
     Each resource gets a capability token at acquire time. The graded handler
@@ -214,9 +209,9 @@ in {
     For composition with other handlers, use handler/return/initialState with
     `adaptHandlers`.
   '';
-    };
-
-    acquire = {
+  value = {
+    acquire = api.leaf {
+      value = acquire;
       description = "acquire: take a graded linear resource and obtain a capability token; `maxUses` (or null) sets the linearity bound enforced by the handler.";
       signature = "acquire : { resource : a, maxUses : Int | null } -> Computation Token";
       doc = ''
@@ -255,7 +250,8 @@ in {
       };
     };
 
-    consume = {
+    consume = api.leaf {
+      value = consume;
       description = "consume: spend a use of a capability token and return the wrapped resource; aborts with `LinearityError` on use-after-release or bound-exceeded.";
       signature = "consume : Token -> Computation a";
       doc = ''
@@ -283,7 +279,8 @@ in {
       };
     };
 
-    release = {
+    release = api.leaf {
+      value = release;
       description = "release: drop a capability token without consuming it; the finalizer then skips it (affine usage). Aborts on double-release.";
       signature = "release : Token -> Computation null";
       doc = ''
@@ -305,7 +302,8 @@ in {
       };
     };
 
-    acquireLinear = {
+    acquireLinear = api.leaf {
+      value = acquireLinear;
       description = "acquireLinear: acquire a strictly linear resource (maxUses = 1); the finalizer fails unless exactly one consume happens before scope exit.";
       signature = "acquireLinear : a -> Computation Token";
       doc = ''
@@ -319,7 +317,8 @@ in {
       };
     };
 
-    acquireExact = {
+    acquireExact = api.leaf {
+      value = acquireExact;
       description = "acquireExact: acquire a resource that must be consumed exactly `n` times; encodes graded linearity beyond pure linear/affine.";
       signature = "acquireExact : a -> Int -> Computation Token";
       doc = ''
@@ -333,7 +332,8 @@ in {
       };
     };
 
-    acquireUnlimited = {
+    acquireUnlimited = api.leaf {
+      value = acquireUnlimited;
       description = "acquireUnlimited: acquire a resource with `maxUses = null`; the finalizer never reports usage mismatches for unlimited tokens.";
       signature = "acquireUnlimited : a -> Computation Token";
       doc = ''
@@ -347,7 +347,8 @@ in {
       };
     };
 
-    handler = {
+    handler = api.leaf {
+      value = handler;
       description = "linear.handler: interprets linearAcquire/linearConsume/linearRelease over a `{ nextId, resources }` state; emits tagged LinearityError on misuse.";
       doc = ''
         Graded linear resource handler. Interprets linearAcquire, linearConsume,
@@ -372,92 +373,127 @@ in {
       tests = {
         "handler-acquire-returns-token" = {
           expr =
-            let r = handler.linearAcquire {
-              param = { resource = "db"; maxUses = 1; };
-              state = { nextId = 0; resources = {}; };
-            };
-            in r.resume._linear && r.resume.id == 0 && r.resume.resource == "db";
+            let
+              r = handler.linearAcquire {
+                param = { resource = "db"; maxUses = 1; };
+                state = { nextId = 0; resources = { }; };
+              };
+            in
+            r.resume._linear && r.resume.id == 0 && r.resume.resource == "db";
           expected = true;
         };
         "handler-acquire-advances-nextId" = {
           expr =
-            let r = handler.linearAcquire {
-              param = { resource = "x"; maxUses = 1; };
-              state = { nextId = 5; resources = {}; };
-            };
-            in r.state.nextId;
+            let
+              r = handler.linearAcquire {
+                param = { resource = "x"; maxUses = 1; };
+                state = { nextId = 5; resources = { }; };
+              };
+            in
+            r.state.nextId;
           expected = 6;
         };
         "handler-consume-returns-resource" = {
           expr =
-            let r = handler.linearConsume {
-              param = { token = { _linear = true; id = 0; resource = "secret"; }; };
-              state = { nextId = 1; resources = {
-                "0" = { resource = "secret"; maxUses = 1; currentUses = 0; released = false; };
-              }; };
-            };
-            in r.resume;
+            let
+              r = handler.linearConsume {
+                param = { token = { _linear = true; id = 0; resource = "secret"; }; };
+                state = {
+                  nextId = 1;
+                  resources = {
+                    "0" = { resource = "secret"; maxUses = 1; currentUses = 0; released = false; };
+                  };
+                };
+              };
+            in
+            r.resume;
           expected = "secret";
         };
         "handler-consume-increments-counter" = {
           expr =
-            let r = handler.linearConsume {
-              param = { token = { _linear = true; id = 0; resource = "x"; }; };
-              state = { nextId = 1; resources = {
-                "0" = { resource = "x"; maxUses = 3; currentUses = 1; released = false; };
-              }; };
-            };
-            in r.state.resources."0".currentUses;
+            let
+              r = handler.linearConsume {
+                param = { token = { _linear = true; id = 0; resource = "x"; }; };
+                state = {
+                  nextId = 1;
+                  resources = {
+                    "0" = { resource = "x"; maxUses = 3; currentUses = 1; released = false; };
+                  };
+                };
+              };
+            in
+            r.state.resources."0".currentUses;
           expected = 2;
         };
         "handler-consume-aborts-on-exceeded-bound" = {
           expr =
-            let r = handler.linearConsume {
-              param = { token = { _linear = true; id = 0; resource = "x"; }; };
-              state = { nextId = 1; resources = {
-                "0" = { resource = "x"; maxUses = 1; currentUses = 1; released = false; };
-              }; };
-            };
-            in r.abort._tag == "LinearityError" && r.abort.error == "exceeded-bound";
+            let
+              r = handler.linearConsume {
+                param = { token = { _linear = true; id = 0; resource = "x"; }; };
+                state = {
+                  nextId = 1;
+                  resources = {
+                    "0" = { resource = "x"; maxUses = 1; currentUses = 1; released = false; };
+                  };
+                };
+              };
+            in
+            r.abort._tag == "LinearityError" && r.abort.error == "exceeded-bound";
           expected = true;
         };
         "handler-consume-aborts-on-released" = {
           expr =
-            let r = handler.linearConsume {
-              param = { token = { _linear = true; id = 0; resource = "x"; }; };
-              state = { nextId = 1; resources = {
-                "0" = { resource = "x"; maxUses = 1; currentUses = 0; released = true; };
-              }; };
-            };
-            in r.abort.error;
+            let
+              r = handler.linearConsume {
+                param = { token = { _linear = true; id = 0; resource = "x"; }; };
+                state = {
+                  nextId = 1;
+                  resources = {
+                    "0" = { resource = "x"; maxUses = 1; currentUses = 0; released = true; };
+                  };
+                };
+              };
+            in
+            r.abort.error;
           expected = "consume-after-release";
         };
         "handler-release-marks-released" = {
           expr =
-            let r = handler.linearRelease {
-              param = { token = { _linear = true; id = 0; resource = "x"; }; };
-              state = { nextId = 1; resources = {
-                "0" = { resource = "x"; maxUses = 1; currentUses = 0; released = false; };
-              }; };
-            };
-            in r.state.resources."0".released;
+            let
+              r = handler.linearRelease {
+                param = { token = { _linear = true; id = 0; resource = "x"; }; };
+                state = {
+                  nextId = 1;
+                  resources = {
+                    "0" = { resource = "x"; maxUses = 1; currentUses = 0; released = false; };
+                  };
+                };
+              };
+            in
+            r.state.resources."0".released;
           expected = true;
         };
         "handler-release-aborts-on-double" = {
           expr =
-            let r = handler.linearRelease {
-              param = { token = { _linear = true; id = 0; resource = "x"; }; };
-              state = { nextId = 1; resources = {
-                "0" = { resource = "x"; maxUses = 1; currentUses = 0; released = true; };
-              }; };
-            };
-            in r.abort.error;
+            let
+              r = handler.linearRelease {
+                param = { token = { _linear = true; id = 0; resource = "x"; }; };
+                state = {
+                  nextId = 1;
+                  resources = {
+                    "0" = { resource = "x"; maxUses = 1; currentUses = 0; released = true; };
+                  };
+                };
+              };
+            in
+            r.abort.error;
           expected = "double-release";
         };
       };
     };
 
-    return = {
+    return = api.leaf {
+      value = return;
       description = "linear.return: finalizer checking every non-released, finite-bound resource was consumed exactly `maxUses` times; wraps mismatches in LinearityError.";
       signature = "return : a -> State -> { value : a | LinearityError, state : State }";
       doc = ''
@@ -475,63 +511,74 @@ in {
       tests = {
         "return-passes-clean-state" = {
           expr =
-            let r = return "ok" {
-              nextId = 1;
-              resources = {
-                "0" = { resource = "x"; maxUses = 1; currentUses = 1; released = false; };
+            let
+              r = return "ok" {
+                nextId = 1;
+                resources = {
+                  "0" = { resource = "x"; maxUses = 1; currentUses = 1; released = false; };
+                };
               };
-            };
-            in r.value;
+            in
+            r.value;
           expected = "ok";
         };
         "return-catches-underuse" = {
           expr =
-            let r = return "ok" {
-              nextId = 1;
-              resources = {
-                "0" = { resource = "leaked"; maxUses = 1; currentUses = 0; released = false; };
+            let
+              r = return "ok" {
+                nextId = 1;
+                resources = {
+                  "0" = { resource = "leaked"; maxUses = 1; currentUses = 0; released = false; };
+                };
               };
-            };
-            in r.value._tag == "LinearityError" && r.value.error == "usage-mismatch";
+            in
+            r.value._tag == "LinearityError" && r.value.error == "usage-mismatch";
           expected = true;
         };
         "return-skips-released" = {
           expr =
-            let r = return "ok" {
-              nextId = 1;
-              resources = {
-                "0" = { resource = "dropped"; maxUses = 1; currentUses = 0; released = true; };
+            let
+              r = return "ok" {
+                nextId = 1;
+                resources = {
+                  "0" = { resource = "dropped"; maxUses = 1; currentUses = 0; released = true; };
+                };
               };
-            };
-            in r.value;
+            in
+            r.value;
           expected = "ok";
         };
         "return-skips-unlimited" = {
           expr =
-            let r = return "ok" {
-              nextId = 1;
-              resources = {
-                "0" = { resource = "free"; maxUses = null; currentUses = 42; released = false; };
+            let
+              r = return "ok" {
+                nextId = 1;
+                resources = {
+                  "0" = { resource = "free"; maxUses = null; currentUses = 42; released = false; };
+                };
               };
-            };
-            in r.value;
+            in
+            r.value;
           expected = "ok";
         };
         "return-preserves-original-on-error" = {
           expr =
-            let r = return "my-result" {
-              nextId = 1;
-              resources = {
-                "0" = { resource = "x"; maxUses = 1; currentUses = 0; released = false; };
+            let
+              r = return "my-result" {
+                nextId = 1;
+                resources = {
+                  "0" = { resource = "x"; maxUses = 1; currentUses = 0; released = false; };
+                };
               };
-            };
-            in r.value.original;
+            in
+            r.value.original;
           expected = "my-result";
         };
       };
     };
 
-    initialState = {
+    initialState = api.leaf {
+      value = initialState;
       description = "linear.initialState: `{ nextId = 0; resources = {}; }`; monotonic ID counter plus an empty resource map indexed by stringified ID.";
       doc = ''
         Initial handler state for the linear resource handler.
@@ -550,12 +597,13 @@ in {
         };
         "initialState-has-empty-resources" = {
           expr = initialState.resources;
-          expected = {};
+          expected = { };
         };
       };
     };
 
-    run = {
+    run = api.leaf {
+      value = run;
       description = "linear.run: convenience wrapper bundling handler, return, and initialState; runs a computation under the graded linear discipline.";
       signature = "run : Computation a -> { value : a | LinearityError, state : State }";
       doc = ''
@@ -581,7 +629,8 @@ in {
               comp = bind (acquireLinear "secret") (token:
                 bind (consume token) (val:
                   pure "got:${val}"));
-            in (run comp).value;
+            in
+            (run comp).value;
           expected = "got:secret";
         };
         "run-linear-leak-detected" = {
@@ -589,8 +638,9 @@ in {
             let
               comp = bind (acquireLinear "leaked") (_token:
                 pure "forgot");
-            in (run comp).value._tag == "LinearityError"
-               && (run comp).value.error == "usage-mismatch";
+            in
+            (run comp).value._tag == "LinearityError"
+            && (run comp).value.error == "usage-mismatch";
           expected = true;
         };
         "run-exceeded-bound-aborts" = {
@@ -600,8 +650,9 @@ in {
                 bind (consume token) (_:
                   bind (consume token) (_:
                     pure "unreachable")));
-            in (run comp).value._tag == "LinearityError"
-               && (run comp).value.error == "exceeded-bound";
+            in
+            (run comp).value._tag == "LinearityError"
+            && (run comp).value.error == "exceeded-bound";
           expected = true;
         };
         "run-affine-via-release" = {
@@ -610,7 +661,8 @@ in {
               comp = bind (acquireLinear "optional") (token:
                 bind (release token) (_:
                   pure "dropped"));
-            in (run comp).value;
+            in
+            (run comp).value;
           expected = "dropped";
         };
         "run-graded-exact-2" = {
@@ -620,7 +672,8 @@ in {
                 bind (consume token) (v1:
                   bind (consume token) (v2:
                     pure "${v1}+${v2}")));
-            in (run comp).value;
+            in
+            (run comp).value;
           expected = "two-shot+two-shot";
         };
         "run-unlimited" = {
@@ -631,7 +684,8 @@ in {
                   (acc: _: bind acc (_: consume token))
                   (pure null)
                   (lib.range 1 10));
-            in (run comp).value ? _tag;
+            in
+            (run comp).value ? _tag;
           expected = false;
         };
         "run-mixed-resources" = {
@@ -639,16 +693,17 @@ in {
             let
               comp =
                 bind (acquireLinear "once") (t1:
-                bind (acquireExact "twice" 2) (t2:
-                bind (acquireUnlimited "many") (t3:
-                bind (consume t1) (_:
-                bind (consume t2) (_:
-                bind (consume t2) (_:
-                bind (consume t3) (_:
-                bind (consume t3) (_:
-                bind (consume t3) (_:
-                  pure "all-correct")))))))));
-            in (run comp).value;
+                  bind (acquireExact "twice" 2) (t2:
+                    bind (acquireUnlimited "many") (t3:
+                      bind (consume t1) (_:
+                        bind (consume t2) (_:
+                          bind (consume t2) (_:
+                            bind (consume t3) (_:
+                              bind (consume t3) (_:
+                                bind (consume t3) (_:
+                                  pure "all-correct")))))))));
+            in
+            (run comp).value;
           expected = "all-correct";
         };
         "run-consume-after-release-aborts" = {
@@ -658,7 +713,8 @@ in {
                 bind (release token) (_:
                   bind (consume token) (_:
                     pure "unreachable")));
-            in (run comp).value.error;
+            in
+            (run comp).value.error;
           expected = "consume-after-release";
         };
         "run-deepSeq-100-pairs" = {
@@ -671,7 +727,8 @@ in {
                 (acc: i: bind acc (_: mkPair i))
                 (pure null)
                 (lib.range 0 99);
-            in (run comp).value ? _tag;
+            in
+            (run comp).value ? _tag;
           expected = false;
         };
       };

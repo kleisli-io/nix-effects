@@ -3,7 +3,7 @@
 # Specialized state for list accumulation. Provides emit/emitAll for
 # appending items, and collect for reading accumulated items.
 # Useful for building result lists incrementally through effects.
-{ fx, ... }:
+{ fx, api, ... }:
 let
   inherit (fx.kernel) pure bind send;
   emit = item: send "emit" item;
@@ -18,18 +18,13 @@ let
     collect = { state, ... }: { resume = state; inherit state; };
   };
 
-in {
-  inherit emit emitAll collect handler;
-
-
-
-  __docs = {
-    _self = {
-      description = "acc effect: incremental list building via emit/emitAll/collect with a default handler that appends to a list state.";
-      doc = "Accumulator effect: emit/emitAll/collect for incremental list building.";
-    };
-
-    emit = {
+in
+api.namespace {
+  description = "acc effect: incremental list building via emit/emitAll/collect with a default handler that appends to a list state.";
+  doc = "Accumulator effect: emit/emitAll/collect for incremental list building.";
+  value = {
+    emit = api.leaf {
+      value = emit;
       description = "emit: append a single item to the acc effect's accumulator; issues an impure effect request whose result is null.";
       signature = "emit : a -> Computation null";
       doc = ''
@@ -48,7 +43,8 @@ in {
       };
     };
 
-    emitAll = {
+    emitAll = api.leaf {
+      value = emitAll;
       description = "emitAll: append a list of items to the acc effect's accumulator in a single impure request; one bind instead of N from mapping emit.";
       signature = "emitAll : [a] -> Computation null";
       doc = ''
@@ -63,7 +59,8 @@ in {
       };
     };
 
-    collect = {
+    collect = api.leaf {
+      value = collect;
       description = "collect: read the acc effect's currently accumulated items as a list; impure request returning the contents captured so far.";
       signature = "collect : Computation [a]";
       doc = ''
@@ -78,7 +75,8 @@ in {
       };
     };
 
-    handler = {
+    handler = api.leaf {
+      value = handler;
       description = "acc.handler: standard accumulator handler implementing emit/emitAll/collect over a list state with `[]` as the initial value.";
       doc = ''
         Standard accumulator handler. State is the list of accumulated items,

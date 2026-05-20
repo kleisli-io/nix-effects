@@ -27,14 +27,32 @@ let
       trimmed = if m == null then "" else builtins.head m;
       lowered = lib.toLower trimmed;
       chars = lib.stringToCharacters lowered;
-      sanitized = lib.concatStrings (map (c:
-        if (c >= "a" && c <= "z") || (c >= "0" && c <= "9") || c == "-"
-        then c else "-"
-      ) chars);
+      sanitized = lib.concatStrings (map
+        (c:
+          if (c >= "a" && c <= "z") || (c >= "0" && c <= "9") || c == "-"
+          then c else "-"
+        )
+        chars);
       collapse = s:
         let s' = builtins.replaceStrings [ "--" ] [ "-" ] s;
         in if s' == s then s else collapse s';
-    in collapse sanitized;
+    in
+    collapse sanitized;
+
+  # Disambiguate `slugify text` against `used`, an attrset acting as a set
+  # of already-issued slugs for the current document. First occurrence
+  # wins the bare form; second gets `-2`, third `-3`, … so headings whose
+  # text differs only in capitalisation each receive a distinct id.
+  # Mirrors `kleisli-content:unique-slugify` and
+  # `regenerate_anchors_golden.py:unique_slugify`.
+  uniqueSlug = text: used:
+    let
+      base = slugify text;
+      pickFree = n:
+        let candidate = if n == 1 then base else "${base}-${toString n}";
+        in if used ? ${candidate} then pickFree (n + 1) else candidate;
+    in
+    pickFree 1;
 
   # Recursively collect every `.md` file under `dir` with its relative
   # path from the root.
@@ -50,48 +68,61 @@ let
       here = map (n: { rel = n; path = dir + "/${n}"; }) mdHere;
       nested = lib.concatMap
         (sub: map (e: { rel = "${sub}/${e.rel}"; path = e.path; })
-                  (walkMd (dir + "/${sub}")))
+          (walkMd (dir + "/${sub}")))
         subdirsHere;
-    in here ++ nested;
+    in
+    here ++ nested;
 
   # H2/H3-only: any other heading level is ignored. Matches the runtime
   # HTML renderer, which only emits `id=` attributes on `<h2>` / `<h3>`.
+  # Per-file fold threads the used-set so disambiguation matches the
+  # runtime walk in `kleisli-content:extract-headings`.
   fileAnchors = { rel, path }:
     let
       lines = lib.splitString "\n" (builtins.readFile path);
-      anchorOf = line:
+      headingTextOf = line:
         let m = builtins.match "(#+)[ \t]+(.*[^ \t])[ \t]*" line;
         in if m == null then null
-           else let
-             markerLen = lib.stringLength (builtins.head m);
-             text = builtins.elemAt m 1;
-           in if markerLen == 2 || markerLen == 3
-              then "${rel}#${slugify text}"
-              else null;
-    in lib.filter (a: a != null) (map anchorOf lines);
+        else
+          let
+            markerLen = lib.stringLength (builtins.head m);
+            text = builtins.elemAt m 1;
+          in
+          if markerLen == 2 || markerLen == 3 then text else null;
+      headingTexts = lib.filter (t: t != null) (map headingTextOf lines);
+      step = acc: text:
+        let slug = uniqueSlug text acc.used;
+        in {
+          used = acc.used // { ${slug} = true; };
+          anchors = acc.anchors ++ [ "${rel}#${slug}" ];
+        };
+      final = lib.foldl' step { used = { }; anchors = [ ]; } headingTexts;
+    in
+    final.anchors;
 
   allAnchors = lib.concatMap fileAnchors (walkMd bookSrc);
   expected = (lib.concatStringsSep "\n" (lib.sort (a: b: a < b) allAnchors))
-             + "\n";
+    + "\n";
 in
-  pkgs.runCommand "book-anchors-golden" {
-    inherit expected;
-    golden = goldenFile;
-    passAsFile = [ "expected" ];
-  } ''
-    set -eu
-    if diff -u "$golden" "$expectedPath" > diff.out 2>&1; then
-      lines=$(wc -l < "$expectedPath")
-      printf 'ok: %s anchors match golden\n' "$lines" > $out
-      exit 0
-    fi
-    echo "FAIL: anchor-stability golden drift detected."
-    echo ""
-    echo "Diff (- golden, + live extraction):"
-    cat diff.out
-    echo ""
-    echo "To regenerate:"
-    echo "  nix-build -A regenerateAnchorsGolden"
-    echo "  ./result/bin/regenerate-anchors-golden"
-    exit 1
-  ''
+pkgs.runCommand "book-anchors-golden"
+{
+  inherit expected;
+  golden = goldenFile;
+  passAsFile = [ "expected" ];
+} ''
+  set -eu
+  if diff -u "$golden" "$expectedPath" > diff.out 2>&1; then
+    lines=$(wc -l < "$expectedPath")
+    printf 'ok: %s anchors match golden\n' "$lines" > $out
+    exit 0
+  fi
+  echo "FAIL: anchor-stability golden drift detected."
+  echo ""
+  echo "Diff (- golden, + live extraction):"
+  cat diff.out
+  echo ""
+  echo "To regenerate:"
+  echo "  nix-build -A regenerateAnchorsGolden"
+  echo "  ./result/bin/regenerate-anchors-golden"
+  exit 1
+''

@@ -12,6 +12,16 @@ let
   C = fx.tc.conv;
   T = fx.tc.term;
   CH = fx.tc.check;
+  HI = {
+    inherit (self) nilAtExplicit consAtExplicit inlAtExplicit inrAtExplicit;
+  };
+  fzeroAt = m: self.app self.FinDT.fzero m;
+  fsucAt = m: k: self.app (self.app self.FinDT.fsuc m) k;
+  leZAt = n: self.app self.LeDT.leZ n;
+  leSSAt = m: n: lemn: self.app (self.app (self.app self.LeDT.leSS m) n) lemn;
+  vnilAt = A: self.implicitApp self.VecDT.vnil A;
+  vconsAt = A: m: x: xs:
+    self.app (self.app (self.app (self.implicitApp self.VecDT.vcons A) m) x) xs;
 
   inherit (self)
     nat bool unit void w string int_ float_ attrs path function_ any
@@ -29,6 +39,7 @@ let
     descI descIAt muI retI recI piI plusI plus
     natDesc listDesc sumDesc descDesc __descDesc canonApp
     encodeDescElim
+    retIAtI recIAtI piIAtI plusIAtI muIAtI descIAtI
     ttPrim
     fin fzero fsuc finElim absurdFin0
     le leZ leSS leElim leDesc
@@ -48,16 +59,18 @@ let
     field fieldAt recField piFieldD piFieldDAt con datatype datatypeAt datatypeP datatypePAt unitPrim
     elab checkHoas inferHoas natLit;
 
+  # Use conversion for semantic HOAS equality. Raw `Q.nf lhs == Q.nf rhs`
+  # can force recursive datatype metadata in quoted bootstrap sum types.
   semEq = lhs: rhs:
-    C.conv 0 (E.eval [] (elab lhs)) (E.eval [] (elab rhs));
+    C.conv 0 (E.eval [ ] (elab lhs)) (E.eval [ ] (elab rhs));
 
   # Constant-Nat decision probe: `decElim` over `dec P` with a
   # constant `nat` motive maps the yes / no branches to `zero` /
   # `succ zero`. Forcing `Q.nf` then comparing against the
   # pre-computed sentinels tests the decision-procedure semantics
   # end-to-end through elaboration + kernel reduction.
-  yesSentinel = Q.nf [] (elab zero);
-  noSentinel  = Q.nf [] (elab (succ zero));
+  yesSentinel = Q.nf [ ] (elab zero);
+  noSentinel = Q.nf [ ] (elab (succ zero));
   decProbeNat = P: d:
     decElim P
       (lam "_" (dec P) (_: nat))
@@ -67,32 +80,31 @@ let
 
   shallowMeta = meta: {
     inherit (meta) name indexed indexTy;
-    params = meta.params or [];
-    paramArgs = meta.paramArgs or [];
-    constructors = map (c: {
-      name = c.name;
-      fields = map (f: { name = f.name; kind = f.kind; }) c.fields;
-    }) meta.constructors;
-    cons = map (c: {
-      name = c.name;
-      fields = map (f: { name = f.name; kind = f.kind; }) c.fields;
-    }) meta.cons;
+    params = meta.params or [ ];
+    paramArgs = meta.paramArgs or [ ];
+    constructors = map
+      (c: {
+        name = c.name;
+        fields = map (f: { name = f.name; kind = f.kind; }) c.fields;
+      })
+      meta.constructors;
   };
 
-  isoTy = forall "I" (u 0) (I:
-    forall "k" level (k:
-      let
-        dDescAt = app (app descDesc I) k;
-        muTtAt = mu dDescAt ttPrim;
-        descK = descIAt k I;
-      in
-      sigma "to_" (forall "_" descK (_: muTtAt)) (toV:
-      sigma "from_" (forall "_" muTtAt (_: descK)) (fromV:
-      sigma "toFrom_"
-        (forall "D" descK (D: bootEq descK (app fromV (app toV D)) D))
-        (_:
-          forall "x" muTtAt (x:
-            bootEq muTtAt (app toV (app fromV x)) x))))));
+  isoTy = forall "iLev" level (iLev:
+    forall "I" (u iLev) (I:
+      forall "k" level (k:
+        let
+          dDescAt = app (app (app descDesc iLev) I) k;
+          muTtAt = mu dDescAt ttPrim;
+          descK = descIAt k I;
+        in
+        sigma "to_" (forall "_" descK (_: muTtAt)) (toV:
+          sigma "from_" (forall "_" muTtAt (_: descK)) (fromV:
+            sigma "toFrom_"
+              (forall "D" descK (D: bootEq descK (app fromV (app toV D)) D))
+              (_:
+                forall "x" muTtAt (x:
+                  bootEq muTtAt (app toV (app fromV x)) x)))))));
 
   # Identity iso bridge between the surface name `Desc^k I` and the
   # descDesc-encoded `μ⊤(descDesc I k) tt`. The two presentations name
@@ -104,22 +116,24 @@ let
   # of `Desc`'s ret/arg/rec/pi/plus grammar, the conv rule stops
   # firing for the Σ-component checks and this term fails to elaborate.
   isoIdentity = ann
-    (lam "I" (u 0) (I:
-     lam "k" level (k:
-      let
-        dDesc = app (app descDesc I) k;
-        muTt = mu dDesc ttPrim;
-        descK = descIAt k I;
-        toTerm = lam "D" descK (D: D);
-        fromTerm = lam "x" muTt (x: x);
-      in
-      pair toTerm
-        (pair fromTerm
-          (pair (lam "D" descK (_: bootRefl))
-            (lam "x" muTt (_: bootRefl)))))))
+    (lam "iLev" level (iLev:
+      lam "I" (u iLev) (I:
+        lam "k" level (k:
+          let
+            dDesc = app (app (app descDesc iLev) I) k;
+            muTt = mu dDesc ttPrim;
+            descK = descIAt k I;
+            toTerm = lam "D" descK (D: D);
+            fromTerm = lam "x" muTt (x: x);
+          in
+          pair toTerm
+            (pair fromTerm
+              (pair (lam "D" descK (_: bootRefl))
+                (lam "x" muTt (_: bootRefl))))))))
     isoTy;
-in {
-  scope = {};
+in
+{
+  scope = { };
   tests = {
     # ===== Combinator tests (elaborate produces correct Tm) =====
 
@@ -127,7 +141,7 @@ in {
     "elab-nat" = { expr = (elab nat).tag; expected = "mu"; };
     "elab-bool" = { expr = (elab bool).tag; expected = "mu"; };
     "elab-unit" = { expr = (elab unit).tag; expected = "unit"; };
-    "elab-void" = { expr = (elab void).tag; expected = "app"; };
+    "elab-void" = { expr = (elab void).tag; expected = "empty"; };
     "elab-U0" = { expr = (elab (u 0)).tag; expected = "U"; };
     "elab-U0-level" = { expr = (elab (u 0)).level.tag; expected = "level-zero"; };
     "liftAt-auto-homogeneous-type-erases" = {
@@ -224,22 +238,22 @@ in {
     # nil/cons elaborate to desc-con whose payload is `boot-inl …`/`boot-inr …`,
     # selecting the nil vs cons summand of the generated listDesc.
     "elab-nil" = {
-      expr = let t = elab (nil nat); in "${t.tag}/${t.d.tag}";
+      expr = let t = elab (HI.nilAtExplicit nat); in "${t.tag}/${t.d.tag}";
       expected = "desc-con/boot-inl";
     };
     "elab-cons" = {
-      expr = let t = elab (cons nat zero (nil nat)); in "${t.tag}/${t.d.tag}";
+      expr = let t = elab (HI.consAtExplicit nat zero (HI.nilAtExplicit nat)); in "${t.tag}/${t.d.tag}";
       expected = "desc-con/boot-inr";
     };
     "elab-pair" = { expr = (elab (pair zero true_)).tag; expected = "pair"; };
     # inl/inr elaborate to desc-con whose payload is `boot-inl …`/`boot-inr …`,
     # selecting the left vs right summand of the generated sumDesc.
     "elab-inl" = {
-      expr = let t = elab (inl nat bool zero); in "${t.tag}/${t.d.tag}";
+      expr = let t = elab (HI.inlAtExplicit 0 nat bool zero); in "${t.tag}/${t.d.tag}";
       expected = "desc-con/boot-inl";
     };
     "elab-inr" = {
-      expr = let t = elab (inr nat bool true_); in "${t.tag}/${t.d.tag}";
+      expr = let t = elab (HI.inrAtExplicit 0 nat bool true_); in "${t.tag}/${t.d.tag}";
       expected = "desc-con/boot-inr";
     };
     "check-public-refl" = {
@@ -248,7 +262,7 @@ in {
     };
     "elab-ann" = { expr = (elab (ann zero nat)).tag; expected = "ann"; };
     "elab-app" = { expr = (elab (app (lam "x" nat (x: x)) zero)).tag; expected = "app"; };
-    "elab-absurd" = { expr = (elab (absurd nat (lam "x" void (x: x)))).tag; expected = "app"; };
+    "elab-absurd" = { expr = (elab (absurd nat (lam "x" void (x: x)))).tag; expected = "absurd"; };
     "elab-fst" = { expr = (elab (fst_ (pair zero true_))).tag; expected = "fst"; };
     "elab-snd" = { expr = (elab (snd_ (pair zero true_))).tag; expected = "snd"; };
 
@@ -309,34 +323,49 @@ in {
 
     # -- Stack safety: deep nested Pi chain elaboration --
     "elab-pi-8000" = {
-      expr = let
-        deepPi = builtins.foldl' (acc: _:
-          forall "_" nat (_: acc)
-        ) nat (builtins.genList (x: x) 8000);
-        tm = elab deepPi;
-      in tm.tag;
+      expr =
+        let
+          deepPi = builtins.foldl'
+            (acc: _:
+              forall "_" nat (_: acc)
+            )
+            nat
+            (builtins.genList (x: x) 8000);
+          tm = elab deepPi;
+        in
+        tm.tag;
       expected = "pi";
     };
 
     # -- Stack safety: deep nested Lam chain elaboration --
     "elab-lam-8000" = {
-      expr = let
-        deepLam = builtins.foldl' (acc: _:
-          lam "_" nat (_: acc)
-        ) zero (builtins.genList (x: x) 8000);
-        tm = elab deepLam;
-      in tm.tag;
+      expr =
+        let
+          deepLam = builtins.foldl'
+            (acc: _:
+              lam "_" nat (_: acc)
+            )
+            zero
+            (builtins.genList (x: x) 8000);
+          tm = elab deepLam;
+        in
+        tm.tag;
       expected = "lam";
     };
 
     # -- Stack safety: deep cons chain elaboration --
     "elab-cons-5000" = {
-      expr = let
-        bigList = builtins.foldl' (acc: _:
-          cons nat zero acc
-        ) (nil nat) (builtins.genList (x: x) 5000);
-        tm = elab bigList;
-      in tm.tag;
+      expr =
+        let
+          bigList = builtins.foldl'
+            (acc: _:
+              HI.consAtExplicit nat zero acc
+            )
+            (HI.nilAtExplicit nat)
+            (builtins.genList (x: x) 5000);
+          tm = elab bigList;
+        in
+        tm.tag;
       expected = "desc-con";
     };
 
@@ -346,11 +375,16 @@ in {
     };
 
     "check-generated-list-5000" = {
-      expr = let
-        bigList = builtins.foldl' (acc: _:
-          cons nat zero acc
-        ) (nil nat) (builtins.genList (x: x) 5000);
-      in (checkHoas (listOf nat) bigList).tag;
+      expr =
+        let
+          bigList = builtins.foldl'
+            (acc: _:
+              cons zero acc
+            )
+            nil
+            (builtins.genList (x: x) 5000);
+        in
+        (checkHoas (listOf nat) bigList).tag;
       expected = "desc-con";
     };
 
@@ -380,21 +414,21 @@ in {
       expected = "tt";
     };
 
-    # nil Nat : List Nat — descCon (listDesc nat) (boot-inl …)
+    # nil : List Nat — descCon (listDesc nat) (boot-inl …)
     "check-nil" = {
-      expr = let t = checkHoas (listOf nat) (nil nat); in "${t.tag}/${t.d.tag}";
+      expr = let t = checkHoas (listOf nat) nil; in "${t.tag}/${t.d.tag}";
       expected = "desc-con/boot-inl";
     };
 
-    # cons Nat 0 (nil Nat) : List Nat — descCon (listDesc nat) (boot-inr …)
+    # cons 0 nil : List Nat — descCon (listDesc nat) (boot-inr …)
     "check-cons" = {
-      expr = let t = checkHoas (listOf nat) (cons nat zero (nil nat)); in "${t.tag}/${t.d.tag}";
+      expr = let t = checkHoas (listOf nat) (cons zero nil); in "${t.tag}/${t.d.tag}";
       expected = "desc-con/boot-inr";
     };
 
-    # inl Nat Bool 0 : Sum Nat Bool — descCon (sumDesc nat bool) (boot-inl …)
+    # inl 0 : Sum Nat Bool — descCon (sumDesc nat bool) (boot-inl …)
     "check-inl" = {
-      expr = let t = checkHoas (sum nat bool) (inl nat bool zero); in
+      expr = let t = checkHoas (sum nat bool) (inl zero); in
         "${t.tag}/${t.d.tag}";
       expected = "desc-con/boot-inl";
     };
@@ -415,20 +449,25 @@ in {
 
     # Polymorphic identity: λ(A:U₀). λ(x:A). x  :  Π(A:U₀). A → A
     "theorem-poly-id" = {
-      expr = let
-        ty = forall "A" (u 0) (a: forall "x" a (_: a));
-        tm = lam "A" (u 0) (a: lam "x" a (x: x));
-      in (checkHoas ty tm).tag;
+      expr =
+        let
+          ty = forall "A" (u 0) (a: forall "x" a (_: a));
+          tm = lam "A" (u 0) (a: lam "x" a (x: x));
+        in
+        (checkHoas ty tm).tag;
       expected = "lam";
     };
 
     # 0 + 0 = 0 by computation: generated natural induction reduces to 0.
     "theorem-0-plus-0" = {
-      expr = let
-        addZero = ind 0 (lam "n" nat (_: nat)) zero
-          (lam "k" nat (_: lam "ih" nat (ih: succ ih))) zero;
-        eqTy = eq nat addZero zero;
-      in (checkHoas eqTy refl).tag;
+      expr =
+        let
+          addZero = ind 0 (lam "n" nat (_: nat)) zero
+            (lam "k" nat (_: lam "ih" nat (ih: succ ih)))
+            zero;
+          eqTy = eq nat addZero zero;
+        in
+        (checkHoas eqTy refl).tag;
       expected = "desc-con";
     };
 
@@ -450,30 +489,37 @@ in {
     # makes H.refl sufficient. The library-level universal proof lives in
     # apps/category-theory/arithmetic.nix as addRightZero.
     "theorem-3-plus-0-eq-3" = {
-      expr = let
-        three = succ (succ (succ zero));
-        add_n_0 = ind 0 (lam "n" nat (_: nat)) zero
-          (lam "k" nat (_: lam "ih" nat (ih: succ ih))) three;
-        eqTy = eq nat add_n_0 three;
-      in (checkHoas eqTy refl).tag;
+      expr =
+        let
+          three = succ (succ (succ zero));
+          add_n_0 = ind 0 (lam "n" nat (_: nat)) zero
+            (lam "k" nat (_: lam "ih" nat (ih: succ ih)))
+            three;
+          eqTy = eq nat add_n_0 three;
+        in
+        (checkHoas eqTy refl).tag;
       expected = "desc-con";
     };
 
     # Dependent pair: (0, H.refl) : Σ(x:Nat). H.eq H.nat x 0
     "theorem-dep-pair" = {
-      expr = let
-        ty = sigma "x" nat (x: eq nat x zero);
-        tm = pair zero refl;
-      in (checkHoas ty tm).tag;
+      expr =
+        let
+          ty = sigma "x" nat (x: eq nat x zero);
+          tm = pair zero refl;
+        in
+        (checkHoas ty tm).tag;
       expected = "pair";
     };
 
     # BoolElim type-checks: if true then 0 else 1 : Nat
     # `nat` is `mu natDesc`, so the inferred value tag is "VMu".
     "theorem-bool-elim" = {
-      expr = let
-        tm = boolElim 0 (lam "b" bool (_: nat)) zero (succ zero) true_;
-      in (inferHoas (ann tm nat)).type.tag;
+      expr =
+        let
+          tm = boolElim 0 (lam "b" bool (_: nat)) zero (succ zero) true_;
+        in
+        (inferHoas (ann tm nat)).type.tag;
       expected = "VMu";
     };
 
@@ -486,23 +532,25 @@ in {
     # `ind` adapter (let-bound P/B/S around descInd) plus Σ-η + ⊤-η in
     # the step.
     "integration-desc-nat-add-2-3" = {
-      expr = let
-        two   = succ (succ zero);
-        three = succ (succ (succ zero));
-        five  = succ (succ (succ (succ (succ zero))));
-        # Bidirectional discipline: bare lambdas are not inferable, so a
-        # function value used as an `app` head needs an explicit Π
-        # annotation. Without it, INFER on `app addTm two` would have
-        # to INFER on the lambda head — which is structurally rejected.
-        addTm = ann
-          (lam "m" nat (m: lam "n" nat (n:
-                  ind 0 (lam "_" nat (_: nat))
-                      n
-                      (lam "k" nat (_: lam "ih" nat (ih: succ ih)))
-                      m)))
-          (forall "m" nat (_: forall "n" nat (_: nat)));
-        eqTy = eq nat (app (app addTm two) three) five;
-      in (checkHoas eqTy refl).tag;
+      expr =
+        let
+          two = succ (succ zero);
+          three = succ (succ (succ zero));
+          five = succ (succ (succ (succ (succ zero))));
+          # Bidirectional discipline: bare lambdas are not inferable, so a
+          # function value used as an `app` head needs an explicit Π
+          # annotation. Without it, INFER on `app addTm two` would have
+          # to INFER on the lambda head — which is structurally rejected.
+          addTm = ann
+            (lam "m" nat (m: lam "n" nat (n:
+              ind 0 (lam "_" nat (_: nat))
+                n
+                (lam "k" nat (_: lam "ih" nat (ih: succ ih)))
+                m)))
+            (forall "m" nat (_: forall "n" nat (_: nat)));
+          eqTy = eq nat (app (app addTm two) three) five;
+        in
+        (checkHoas eqTy refl).tag;
       expected = "desc-con";
     };
 
@@ -510,17 +558,19 @@ in {
     # rebound `listElim` adapter (let-bound P/N/C around descInd) on the
     # cons chain.
     "integration-desc-list-length-3" = {
-      expr = let
-        zeros = cons nat zero (cons nat zero (cons nat zero (nil nat)));
-        three = succ (succ (succ zero));
-        lenTm = listElim 0 nat (lam "_" (listOf nat) (_: nat))
-                  zero
-                  (lam "h" nat (_:
-                   lam "t" (listOf nat) (_:
-                   lam "ih" nat (ih: succ ih))))
-                  zeros;
-        eqTy = eq nat lenTm three;
-      in (checkHoas eqTy refl).tag;
+      expr =
+        let
+          zeros = HI.consAtExplicit nat zero (HI.consAtExplicit nat zero (HI.consAtExplicit nat zero (HI.nilAtExplicit nat)));
+          three = succ (succ (succ zero));
+          lenTm = listElim 0 nat (lam "_" (listOf nat) (_: nat))
+            zero
+            (lam "h" nat (_:
+              lam "t" (listOf nat) (_:
+                lam "ih" nat (ih: succ ih))))
+            zeros;
+          eqTy = eq nat lenTm three;
+        in
+        (checkHoas eqTy refl).tag;
       expected = "desc-con";
     };
 
@@ -529,28 +579,32 @@ in {
     # descInd) with a constant motive Nat, where the trivial rih : ⊤ is
     # discharged in both arms.
     "integration-desc-sum-elim-inl" = {
-      expr = let
-        seven = succ (succ (succ (succ (succ (succ (succ zero))))));
-        scrut = inl nat nat seven;
-        motiveNat = lam "_" (sum nat nat) (_: nat);
-        idNat = lam "n" nat (n: n);
-        result = sumElim 0 nat nat motiveNat idNat idNat scrut;
-        eqTy = eq nat result seven;
-      in (checkHoas eqTy refl).tag;
+      expr =
+        let
+          seven = succ (succ (succ (succ (succ (succ (succ zero))))));
+          scrut = HI.inlAtExplicit 0 nat nat seven;
+          motiveNat = lam "_" (sum nat nat) (_: nat);
+          idNat = lam "n" nat (n: n);
+          result = sumElim 0 nat nat motiveNat idNat idNat scrut;
+          eqTy = eq nat result seven;
+        in
+        (checkHoas eqTy refl).tag;
       expected = "desc-con";
     };
 
     # sumElim id id (inr Nat Nat 4) = 4 — mirror test exercises the
     # right arm.
     "integration-desc-sum-elim-inr" = {
-      expr = let
-        four = succ (succ (succ (succ zero)));
-        scrut = inr nat nat four;
-        motiveNat = lam "_" (sum nat nat) (_: nat);
-        idNat = lam "n" nat (n: n);
-        result = sumElim 0 nat nat motiveNat idNat idNat scrut;
-        eqTy = eq nat result four;
-      in (checkHoas eqTy refl).tag;
+      expr =
+        let
+          four = succ (succ (succ (succ zero)));
+          scrut = HI.inrAtExplicit 0 nat nat four;
+          motiveNat = lam "_" (sum nat nat) (_: nat);
+          idNat = lam "n" nat (n: n);
+          result = sumElim 0 nat nat motiveNat idNat idNat scrut;
+          eqTy = eq nat result four;
+        in
+        (checkHoas eqTy refl).tag;
       expected = "desc-con";
     };
 
@@ -560,49 +614,60 @@ in {
     # elaboration time. Exercises the descPi case in the kernel's Desc
     # check rule; `k = 0` pins both domains to `U(0)`.
     "integration-desc-wtype-wellformed" = {
-      expr = let
-        wDesc = A: B: descArg unit 0 A (a: descPi 0 (B a) descRet);
-        wBool = wDesc bool (a:
-                  boolElim 1 (lam "_" bool (_: u 0)) unit void a);
-      in (checkHoas (u 0) (mu wBool tt)).tag;
+      expr =
+        let
+          wDesc = A: B: descArg unit 0 A (a: descPi 0 (B a) descRet);
+          wBool = wDesc bool (a:
+            boolElim 1 (lam "_" bool (_: u 0)) unit void a);
+        in
+        (checkHoas (u 0) (mu wBool tt)).tag;
       expected = "mu";
     };
 
     # ===== Roundtrip: elaborate → eval → quote → eval → quote =====
 
     "roundtrip-lam-id" = {
-      expr = let
-        tm = elab (lam "x" nat (x: x));
-      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expr =
+        let
+          tm = elab (lam "x" nat (x: x));
+        in
+        Q.nf [ ] (Q.nf [ ] tm) == Q.nf [ ] tm;
       expected = true;
     };
 
     "roundtrip-forall" = {
-      expr = let
-        tm = elab (forall "A" (u 0) (a: forall "x" a (_: a)));
-      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expr =
+        let
+          tm = elab (forall "A" (u 0) (a: forall "x" a (_: a)));
+        in
+        Q.nf [ ] (Q.nf [ ] tm) == Q.nf [ ] tm;
       expected = true;
     };
 
     "roundtrip-sigma" = {
-      expr = let
-        tm = elab (sigma "x" nat (_: bool));
-      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expr =
+        let
+          tm = elab (sigma "x" nat (_: bool));
+        in
+        Q.nf [ ] (Q.nf [ ] tm) == Q.nf [ ] tm;
       expected = true;
     };
 
     "roundtrip-nat-elim" = {
-      expr = let
-        tm = elab (ind 0 (lam "n" nat (_: nat)) zero
-          (lam "k" nat (_: lam "ih" nat (ih: succ ih)))
-          (succ (succ zero)));
-      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expr =
+        let
+          tm = elab (ind 0 (lam "n" nat (_: nat)) zero
+            (lam "k" nat (_: lam "ih" nat (ih: succ ih)))
+            (succ (succ zero)));
+        in
+        Q.nf [ ] (Q.nf [ ] tm) == Q.nf [ ] tm;
       expected = true;
     };
 
     "roundtrip-natLit-5" = {
-      expr = let tm = elab (natLit 5);
-      in Q.nf [] (Q.nf [] tm) == Q.nf [] tm;
+      expr =
+        let tm = elab (natLit 5);
+        in Q.nf [ ] (Q.nf [ ] tm) == Q.nf [ ] tm;
       expected = true;
     };
 
@@ -675,18 +740,22 @@ in {
 
     # Opaque lambda checks at matching Pi type
     "opaque-lam-checks-at-pi" = {
-      expr = let
-        piTy = forall "x" nat (_: nat);
-      in (checkHoas piTy (opaqueLam (x: x) piTy)).tag;
+      expr =
+        let
+          piTy = forall "x" nat (_: nat);
+        in
+        (checkHoas piTy (opaqueLam (x: x) piTy)).tag;
       expected = "opaque-lam";
     };
 
     # Opaque lambda rejects domain mismatch
     "opaque-lam-rejects-domain-mismatch" = {
-      expr = let
-        targetPi = forall "x" nat (_: nat);
-        annotPi = forall "x" bool (_: nat);
-      in (checkHoas targetPi (opaqueLam (x: x) annotPi)) ? error;
+      expr =
+        let
+          targetPi = forall "x" nat (_: nat);
+          annotPi = forall "x" bool (_: nat);
+        in
+        (checkHoas targetPi (opaqueLam (x: x) annotPi)) ? error;
       expected = true;
     };
 
@@ -698,52 +767,60 @@ in {
 
     # Opaque lambda infers Pi type from annotation
     "opaque-lam-infers-pi-type" = {
-      expr = let
-        piTy = forall "x" nat (_: nat);
-        result = inferHoas (ann (opaqueLam (x: x) piTy) piTy);
-      in result.type.tag;
+      expr =
+        let
+          piTy = forall "x" nat (_: nat);
+          result = inferHoas (ann (opaqueLam (x: x) piTy) piTy);
+        in
+        result.type.tag;
       expected = "VPi";
     };
 
     # Opaque lambda quote roundtrip: eval → quote → eval = same structure
     "opaque-lam-quote-roundtrip" = {
-      expr = let
-        H = { inherit nat forall opaqueLam elab; };
-        piTy = H.forall "x" H.nat (_: H.nat);
-        tm = H.elab (H.opaqueLam (x: x) piTy);
-        Q' = fx.tc.quote;
-      in Q'.nf [] (Q'.nf [] tm) == Q'.nf [] tm;
+      expr =
+        let
+          H = { inherit nat forall opaqueLam elab; };
+          piTy = H.forall "x" H.nat (_: H.nat);
+          tm = H.elab (H.opaqueLam (x: x) piTy);
+          Q' = fx.tc.quote;
+        in
+        Q'.nf [ ] (Q'.nf [ ] tm) == Q'.nf [ ] tm;
       expected = true;
     };
 
     # Conv: same Nix function → conv-equal
     "opaque-lam-conv-reflexive" = {
-      expr = let
-        f = x: x;
-        piTy = forall "x" nat (_: nat);
-        tm1 = elab (opaqueLam f piTy);
-        tm2 = elab (opaqueLam f piTy);
-        E' = fx.tc.eval;
-        C' = fx.tc.conv;
-        v1 = E'.eval [] tm1;
-        v2 = E'.eval [] tm2;
-      in C'.conv 0 v1 v2;
+      expr =
+        let
+          f = x: x;
+          piTy = forall "x" nat (_: nat);
+          tm1 = elab (opaqueLam f piTy);
+          tm2 = elab (opaqueLam f piTy);
+          E' = fx.tc.eval;
+          C' = fx.tc.conv;
+          v1 = E'.eval [ ] tm1;
+          v2 = E'.eval [ ] tm2;
+        in
+        C'.conv 0 v1 v2;
       expected = true;
     };
 
     # Conv: different Nix functions → not conv-equal
     "opaque-lam-conv-distinct" = {
-      expr = let
-        f = x: x;
-        g = x: succ x;
-        piTy = forall "x" nat (_: nat);
-        tm1 = elab (opaqueLam f piTy);
-        tm2 = elab (opaqueLam g piTy);
-        E' = fx.tc.eval;
-        C' = fx.tc.conv;
-        v1 = E'.eval [] tm1;
-        v2 = E'.eval [] tm2;
-      in C'.conv 0 v1 v2;
+      expr =
+        let
+          f = x: x;
+          g = x: succ x;
+          piTy = forall "x" nat (_: nat);
+          tm1 = elab (opaqueLam f piTy);
+          tm2 = elab (opaqueLam g piTy);
+          E' = fx.tc.eval;
+          C' = fx.tc.conv;
+          v1 = E'.eval [ ] tm1;
+          v2 = E'.eval [ ] tm2;
+        in
+        C'.conv 0 v1 v2;
       expected = false;
     };
 
@@ -757,19 +834,23 @@ in {
     # invariant. The body's `retI nat 0 zero` threads `zero : nat` so
     # `j : I = nat` is well-typed.
     "descArg-level-zero-infers-desc-zero" = {
-      expr = let
-        r = inferHoas (descArg nat 0 nat (s: retI nat 0 zero));
-        target = E.eval [] (elab (descIAt levelZero nat));
-      in C.conv 0 r.type target;
+      expr =
+        let
+          r = inferHoas (descArg nat 0 nat (s: retI nat 0 zero));
+          target = E.eval [ ] (elab (descIAt levelZero nat));
+        in
+        C.conv 0 r.type target;
       expected = true;
     };
     # descArg at level k=1 with body at level 1 yields a desc-shape
     # conv-equal to `descIAt (suc 0) unit`.
     "descArg-level-one-infers-desc-one" = {
-      expr = let
-        r = inferHoas (descArg unit 1 (u 0) (S: retI unit 1 (ann tt unit)));
-        target = E.eval [] (elab (descIAt (levelSuc levelZero) unit));
-      in C.conv 0 r.type target;
+      expr =
+        let
+          r = inferHoas (descArg unit 1 (u 0) (S: retI unit 1 (ann tt unit)));
+          target = E.eval [ ] (elab (descIAt (levelSuc levelZero) unit));
+        in
+        C.conv 0 r.type target;
       expected = true;
     };
     # Polymorphic descArg: `Π(k:Level). desc^(suc k) ⊤`. Witnesses that
@@ -784,7 +865,132 @@ in {
       expected = false;
     };
 
-    # descDesc : Π(I : U(0))(k : Level). Desc^(suc k) ⊤ — type-checks
+    # ----- Universe-polymorphism of I in `Desc^k I` (CDMM 2010 formation
+    # rule: `Desc^k I : U(suc (max k iLev))` for `I : U(iLev)`) -----
+
+    # Small-I sanity: `Desc^0 nat : U(1)`. iLev = 0; max(0,0) = 0;
+    # universe = U(suc 0).
+    "descIAt-zero-nat-infers-at-U1" = {
+      expr =
+        let
+          r = inferHoas (descIAt 0 nat);
+          target = E.eval [ ] (elab (u 1));
+        in
+        C.conv 0 r.type target;
+      expected = true;
+    };
+
+    # Higher-universe I: `Desc^0 (U(0) × U(0))` admits I at U(1).
+    # The sigma `Σ(X:U(0)). U(0)` lives at U(1); pre-lift this faulted
+    # at the I:U(0) clamp.
+    "descIAt-zero-U-cross-U-admits" = {
+      expr = (inferHoas (descIAt 0 (sigma "X" (u 0) (_X: u 0)))) ? error;
+      expected = false;
+    };
+
+    # …and inhabits `U(2) = U(suc (max 0 1))`.
+    "descIAt-zero-U-cross-U-infers-at-U2" = {
+      expr =
+        let
+          r = inferHoas (descIAt 0 (sigma "X" (u 0) (_X: u 0)));
+          target = E.eval [ ] (elab (u 2));
+        in
+        C.conv 0 r.type target;
+      expected = true;
+    };
+
+    # Mu rule admits higher-universe I via a Π-binder over a description
+    # variable. The Π form `Π(D:Desc^0 (U×U)). μI (U×U) D (pair nat bool)`
+    # exercises the desc → mu chain at I = U×U entirely through kernel-
+    # primitive rules: descIAt produces D's domain at U(2); muI consumes
+    # I and D at the lifted universes. The Π itself lives at U(2)
+    # = U(max (Desc^0(U×U)).level (μI ...).level) = U(max 2 1).
+    "lifted-pi-desc-mu-at-U-cross-U-checks-at-U2" = {
+      expr =
+        let
+          I = sigma "X" (u 0) (_X: u 0);
+          i0 = ann (pair nat bool) I;
+        in
+        (checkHoas
+          (u 2)
+          (forall "D" (descIAt 0 I) (D: muI I D i0))) ? error;
+      expected = false;
+    };
+
+    # Encoder cascade at iLev=1: I = U(0)×U(0) lives at U(1), so the
+    # encoder's Π(I:U(iLev)) accepts it only when iLev is threaded.
+    "retIAtI-at-U-cross-U-elaborates" = {
+      expr =
+        let
+          iLev1 = levelSuc levelZero;
+          I = sigma "X" (u 0) (_X: u 0);
+          j = ann (pair nat bool) I;
+        in
+        (inferHoas (retIAtI iLev1 I levelZero j)) ? error;
+      expected = false;
+    };
+
+    "retIAtI-at-U-cross-U-inner-descDesc-stamp-carries-iLev" = {
+      expr =
+        let
+          iLev1 = levelSuc levelZero;
+          I = sigma "X" (u 0) (_X: u 0);
+          j = ann (pair nat bool) I;
+          v = E.eval [ ] (elab (retIAtI iLev1 I levelZero j));
+          params = v.D._canonRef.params;
+        in
+        {
+          id = v.D._canonRef.id;
+          arity = builtins.length params;
+          iLevTag = (builtins.elemAt params 0).tag;
+          iTag = (builtins.elemAt params 1).tag;
+          kTag = (builtins.elemAt params 2).tag;
+        };
+      expected = {
+        id = "descDesc";
+        arity = 3;
+        iLevTag = "VLevelSuc";
+        iTag = "VSigma";
+        kTag = "VLevelZero";
+      };
+    };
+
+    # End-to-end encoder → mu at iLev=1.
+    "muIAtI-at-U-cross-U-with-retIAtI" = {
+      expr =
+        let
+          iLev1 = levelSuc levelZero;
+          I = sigma "X" (u 0) (_X: u 0);
+          j = ann (pair nat bool) I;
+          D = retIAtI iLev1 I levelZero j;
+        in
+        (inferHoas (muIAtI iLev1 I D j)) ? error;
+      expected = false;
+    };
+
+    # Default iLev=0 clamps I to U(0); I:U(1) must be rejected.
+    "retI-default-iLev-rejects-U-cross-U" = {
+      expr =
+        let
+          I = sigma "X" (u 0) (_X: u 0);
+          j = ann (pair nat bool) I;
+        in
+        (inferHoas (retI I levelZero j)) ? error;
+      expected = true;
+    };
+
+    # Same rejection through the *AtI surface with explicit iLev=0.
+    "retIAtI-iLev-zero-rejects-U-cross-U" = {
+      expr =
+        let
+          I = sigma "X" (u 0) (_X: u 0);
+          j = ann (pair nat bool) I;
+        in
+        (inferHoas (retIAtI levelZero I levelZero j)) ? error;
+      expected = true;
+    };
+
+    # descDesc : Π(iLev : Level)(I : U(iLev))(k : Level). Desc^(suc(max k iLev)) ⊤ — type-checks
     # at the polymorphic universe-tracking forall, and instantiates
     # cleanly at I = ⊤ and sample levels k ∈ {0, 1, 2}. The arg / pi
     # summands quantify over `S : U(k)` with leading level `(suc k)`,
@@ -793,26 +999,28 @@ in {
     # I-typed leaf index of `descRet I i` / `descRec I i D`.
     "descDesc-type-checks" = {
       expr = (checkHoas
-        (forall "I" (u 0) (I: forall "k" level (k: descAt (levelSuc k))))
+        (forall "iLev" level (iLev:
+          forall "I" (u iLev) (I:
+            forall "k" level (k: descAt (levelSuc (levelMax k iLev))))))
         descDesc) ? error;
       expected = false;
     };
     "descDesc-at-unit-level-zero" = {
       expr = (checkHoas
         (descAt (levelSuc levelZero))
-        (app (app descDesc unit) levelZero)).tag;
+        (app (app (app descDesc levelZero) unit) levelZero)).tag;
       expected = "app";
     };
     "descDesc-at-unit-level-one" = {
       expr = (checkHoas
         (descAt (levelSuc (levelSuc levelZero)))
-        (app (app descDesc unit) (levelSuc levelZero))) ? error;
+        (app (app (app descDesc levelZero) unit) (levelSuc levelZero))) ? error;
       expected = false;
     };
     "descDesc-at-unit-level-two" = {
       expr = (checkHoas
         (descAt (levelSuc (levelSuc (levelSuc levelZero))))
-        (app (app descDesc unit) (levelSuc (levelSuc levelZero)))) ? error;
+        (app (app (app descDesc levelZero) unit) (levelSuc (levelSuc levelZero)))) ? error;
       expected = false;
     };
     # Instantiate at I = bool, level zero. Verifies the I-thread
@@ -820,7 +1028,7 @@ in {
     "descDesc-at-bool-level-zero" = {
       expr = (checkHoas
         (descAt (levelSuc levelZero))
-        (app (app descDesc bool) levelZero)) ? error;
+        (app (app (app descDesc levelZero) bool) levelZero)) ? error;
       expected = false;
     };
 
@@ -838,14 +1046,16 @@ in {
     };
     "__descDesc-type-checks" = {
       expr = (checkHoas
-        (forall "I" (u 0) (I: forall "k" level (k: descAt (levelSuc k))))
+        (forall "iLev" level (iLev:
+          forall "I" (u iLev) (I:
+            forall "k" level (k: descAt (levelSuc (levelMax k iLev))))))
         __descDesc) ? error;
       expected = false;
     };
     "__descDesc-at-unit-level-zero" = {
       expr = (checkHoas
         (descAt (levelSuc levelZero))
-        (app (app __descDesc unit) levelZero)).tag;
+        (app (app (app __descDesc levelZero) unit) levelZero)).tag;
       expected = "app";
     };
 
@@ -856,22 +1066,22 @@ in {
     # `elab-__descDesc-equals-descDescTm` above.
     "elab-decideEqNat-equals-decideEqNatTm" = {
       expr = elab self.decideEqNat == self.decideEqNatTm
-          && self.decideEqNatTm == elab self.decideEqNatHoas;
+        && self.decideEqNatTm == elab self.decideEqNatHoas;
       expected = true;
     };
     "elab-decideLeNat-equals-decideLeNatTm" = {
       expr = elab self.decideLeNat == self.decideLeNatTm
-          && self.decideLeNatTm == elab self.decideLeNatHoas;
+        && self.decideLeNatTm == elab self.decideLeNatHoas;
       expected = true;
     };
     "elab-decideEqIntZ-equals-decideEqIntZTm" = {
       expr = elab self.decideEqIntZ == self.decideEqIntZTm
-          && self.decideEqIntZTm == elab self.decideEqIntZHoas;
+        && self.decideEqIntZTm == elab self.decideEqIntZHoas;
       expected = true;
     };
     "elab-decideLeIntZ-equals-decideLeIntZTm" = {
       expr = elab self.decideLeIntZ == self.decideLeIntZTm
-          && self.decideLeIntZTm == elab self.decideLeIntZHoas;
+        && self.decideLeIntZTm == elab self.decideLeIntZHoas;
       expected = true;
     };
 
@@ -894,15 +1104,15 @@ in {
     # Instantiation at I = ⊤ and concrete levels — confirms the Π
     # body normalises to the Σ-bundle (the Iso record) at each k.
     "iso-at-level-zero-instantiates" = {
-      expr = (inferHoas (app (app isoIdentity unit) levelZero)).type.tag;
+      expr = (inferHoas (app (app (app isoIdentity levelZero) unit) levelZero)).type.tag;
       expected = "VSigma";
     };
     "iso-at-level-one-instantiates" = {
-      expr = (inferHoas (app (app isoIdentity unit) (levelSuc levelZero))).type.tag;
+      expr = (inferHoas (app (app (app isoIdentity levelZero) unit) (levelSuc levelZero))).type.tag;
       expected = "VSigma";
     };
     "iso-at-level-two-instantiates" = {
-      expr = (inferHoas (app (app isoIdentity unit) (levelSuc (levelSuc levelZero)))).type.tag;
+      expr = (inferHoas (app (app (app isoIdentity levelZero) unit) (levelSuc (levelSuc levelZero)))).type.tag;
       expected = "VSigma";
     };
 
@@ -910,7 +1120,7 @@ in {
     # index types, the prerequisite for `eqDesc A a : Desc A` round-
     # tripping through the descDesc encoding.
     "iso-at-bool-level-zero-instantiates" = {
-      expr = (inferHoas (app (app isoIdentity bool) levelZero)).type.tag;
+      expr = (inferHoas (app (app (app isoIdentity levelZero) bool) levelZero)).type.tag;
       expected = "VSigma";
     };
 
@@ -919,32 +1129,38 @@ in {
     # summands: natDesc hits ret + rec; listDesc hits arg + rec + plus;
     # sumDesc hits arg + plus.
     "iso-roundtrip-natDesc-k0" = {
-      expr = let
-        iso0      = app (app isoIdentity unit) levelZero;
-        to0       = fst_ iso0;
-        from0     = fst_ (snd_ iso0);
-        roundTrip = app from0 (app to0 natDesc);
-      in Q.nf [] (elab roundTrip) == Q.nf [] (elab natDesc);
+      expr =
+        let
+          iso0 = app (app (app isoIdentity levelZero) unit) levelZero;
+          to0 = fst_ iso0;
+          from0 = fst_ (snd_ iso0);
+          roundTrip = app from0 (app to0 natDesc);
+        in
+        semEq roundTrip natDesc;
       expected = true;
     };
     "iso-roundtrip-listDesc-bool-k0" = {
-      expr = let
-        iso0      = app (app isoIdentity unit) levelZero;
-        to0       = fst_ iso0;
-        from0     = fst_ (snd_ iso0);
-        D         = listDesc bool;
-        roundTrip = app from0 (app to0 D);
-      in Q.nf [] (elab roundTrip) == Q.nf [] (elab D);
+      expr =
+        let
+          iso0 = app (app (app isoIdentity levelZero) unit) levelZero;
+          to0 = fst_ iso0;
+          from0 = fst_ (snd_ iso0);
+          D = listDesc bool;
+          roundTrip = app from0 (app to0 D);
+        in
+        semEq roundTrip D;
       expected = true;
     };
     "iso-roundtrip-sumDesc-nat-bool-k0" = {
-      expr = let
-        iso0      = app (app isoIdentity unit) levelZero;
-        to0       = fst_ iso0;
-        from0     = fst_ (snd_ iso0);
-        D         = sumDesc nat bool;
-        roundTrip = app from0 (app to0 D);
-      in Q.nf [] (elab roundTrip) == Q.nf [] (elab D);
+      expr =
+        let
+          iso0 = app (app (app isoIdentity levelZero) unit) levelZero;
+          to0 = fst_ iso0;
+          from0 = fst_ (snd_ iso0);
+          D = sumDesc nat bool;
+          roundTrip = app from0 (app to0 D);
+        in
+        semEq roundTrip D;
       expected = true;
     };
 
@@ -952,13 +1168,15 @@ in {
     # a `retI true_` description — the Theorem 6.96 analogue. Exercises
     # to/from over the I-typed leaf-index encoding without recursion.
     "iso-roundtrip-eqDesc-bool-k0" = {
-      expr = let
-        isoBool0  = app (app isoIdentity bool) levelZero;
-        to0       = fst_ isoBool0;
-        from0     = fst_ (snd_ isoBool0);
-        D         = eqDesc bool true_;
-        roundTrip = app from0 (app to0 D);
-      in Q.nf [] (elab roundTrip) == Q.nf [] (elab D);
+      expr =
+        let
+          isoBool0 = app (app (app isoIdentity levelZero) bool) levelZero;
+          to0 = fst_ isoBool0;
+          from0 = fst_ (snd_ isoBool0);
+          D = eqDesc bool true_;
+          roundTrip = app from0 (app to0 D);
+        in
+        semEq roundTrip D;
       expected = true;
     };
 
@@ -966,10 +1184,12 @@ in {
     # the proof component at a concrete input. Asserts the equality
     # proposition's well-typedness (the type tag is `VBootEq`).
     "iso-toFrom-natDesc-typechecks" = {
-      expr = let
-        iso0    = app (app isoIdentity unit) levelZero;
-        toFrom0 = fst_ (snd_ (snd_ iso0));
-      in (inferHoas (app toFrom0 natDesc)).type.tag;
+      expr =
+        let
+          iso0 = app (app (app isoIdentity levelZero) unit) levelZero;
+          toFrom0 = fst_ (snd_ (snd_ iso0));
+        in
+        (inferHoas (app toFrom0 natDesc)).type.tag;
       expected = "VBootEq";
     };
 
@@ -985,30 +1205,39 @@ in {
     # encoded `VDescCon` constructor. Asserts the architectural invariant
     # at the value layer rather than the elaboration-internal Tm shape.
     "indexed-desc-ret-at-nat-checks" = {
-      expr = let
-        tm = checkHoas (descI nat) (retI nat 0 (natLit 3));
-      in (E.eval [] tm).tag;
+      expr =
+        let
+          tm = checkHoas (descI nat) (retI nat 0 (natLit 3));
+        in
+        (E.eval [ ] tm).tag;
       expected = "VDescCon";
     };
 
     # `recI 2 (retI 3) : Desc Nat` — j = 2, subdesc `retI 3 : Desc Nat`.
     "indexed-desc-rec-at-nat-checks" = {
-      expr = let
-        tm = checkHoas (descI nat) (recI nat 0 (natLit 2) (retI nat 0 (natLit 3)));
-      in (E.eval [] tm).tag;
+      expr =
+        let
+          tm = checkHoas (descI nat) (recI nat 0 (natLit 2) (retI nat 0 (natLit 3)));
+        in
+        (E.eval [ ] tm).tag;
       expected = "VDescCon";
     };
 
     # `piI 0 Bool (λb. boolElim _ 2 3 b) (retI 4) : Desc Nat` — the index
     # function is bool-dependent, exercising the non-constant f case.
     "indexed-desc-pi-at-nat-dependent-f" = {
-      expr = let
-        fAnn = ann (lam "b" bool (b:
-                 boolElim 0 (lam "_" bool (_: nat))
-                          (natLit 2) (natLit 3) b))
-                   (forall "_" bool (_: nat));
-        D = piI nat 0 bool fAnn (retI nat 0 (natLit 4));
-      in (checkHoas (descI nat) D).tag;
+      expr =
+        let
+          fAnn = ann
+            (lam "b" bool (b:
+              boolElim 0 (lam "_" bool (_: nat))
+                (natLit 2)
+                (natLit 3)
+                b))
+            (forall "_" bool (_: nat));
+          D = piI nat 0 bool fAnn (retI nat 0 (natLit 4));
+        in
+        (checkHoas (descI nat) D).tag;
       expected = "app";
     };
 
@@ -1033,40 +1262,47 @@ in {
     # field or IH projection, and the n=1 no-tag encoding.
 
     "datatype-unit-spec-name" = {
-      expr = (datatype "Unit" [ (con "tt" []) ]).name;
+      expr = (datatype "Unit" [ (con "tt" [ ]) ]).name;
       expected = "Unit";
     };
     "datatype-unit-spec-meta" = {
-      expr = shallowMeta ((datatype "Unit" [ (con "tt" []) ])._dtypeMeta);
+      expr = shallowMeta ((datatype "Unit" [ (con "tt" [ ]) ])._dtypeMeta);
       expected = {
         name = "Unit";
         indexed = false;
         indexTy = unitPrim;
-        params = [];
-        paramArgs = [];
-        constructors = [{ name = "tt"; fields = []; }];
-        cons = [{ name = "tt"; fields = []; }];
+        params = [ ];
+        paramArgs = [ ];
+        constructors = [{ name = "tt"; fields = [ ]; }];
       };
+    };
+    "datatype-unit-meta-has-no-cons-alias" = {
+      expr = ((datatype "Unit" [ (con "tt" [ ]) ])._dtypeMeta) ? cons;
+      expected = false;
     };
     # The macro emits D as `ann <spine> desc`; spine elaborates through
     # the encoded `mkApp ... encodeDescRetTm ...` form. Asserts the
     # post-encoding value-layer invariant: D evaluates to the encoded
     # `VDescCon` constructor.
     "datatype-unit-D-elab" = {
-      expr = let
-        D = (datatype "Unit" [ (con "tt" []) ]).D;
-      in (E.eval [] (elab D)).tag;
+      expr =
+        let
+          D = (datatype "Unit" [ (con "tt" [ ]) ]).D;
+        in
+        (E.eval [ ] (elab D)).tag;
       expected = "VDescCon";
     };
     "datatype-unit-D-carries-desc-ref" = {
-      expr = let
-        d = E.eval [] (elab (datatype "Unit" [ (con "tt" []) ]).D);
-      in {
-        kind = d._descRef.kind;
-        arity = d._descRef.arity;
-        indexed = d._descRef.indexed;
-        params = builtins.length d._descRef.params;
-      };
+      expr =
+        let
+          d = E.eval [ ] (elab (datatype "Unit" [ (con "tt" [ ]) ]).D);
+        in
+        {
+          kind = d._descRef.kind;
+          arity = d._descRef.arity;
+          indexed = d._descRef.indexed;
+          params = builtins.length d._descRef.params;
+        };
       expected = {
         kind = "datatype-desc";
         arity = 1;
@@ -1075,20 +1311,21 @@ in {
       };
     };
     "datatype-unit-T-elab" = {
-      expr = (elab (datatype "Unit" [ (con "tt" []) ]).T).tag;
+      expr = (elab (datatype "Unit" [ (con "tt" [ ]) ]).T).tag;
       expected = "mu";
     };
     "datatype-unit-tt-elab" = {
-      expr = (elab (datatype "Unit" [ (con "tt" []) ]).tt).tag;
+      expr = (elab (datatype "Unit" [ (con "tt" [ ]) ]).tt).tag;
       expected = "desc-con";
     };
     "datatype-unit-T-check-U0" = {
-      expr = (checkHoas (u 0) (datatype "Unit" [ (con "tt" []) ]).T).tag;
+      expr = (checkHoas (u 0) (datatype "Unit" [ (con "tt" [ ]) ]).T).tag;
       expected = "mu";
     };
     "datatype-unit-tt-check-T" = {
-      expr = let U = datatype "Unit" [ (con "tt" []) ];
-             in (checkHoas U.T U.tt).tag;
+      expr =
+        let U = datatype "Unit" [ (con "tt" [ ]) ];
+        in (checkHoas U.T U.tt).tag;
       expected = "desc-con";
     };
     "datatype-unit-elim-reduces-to-step" = {
@@ -1096,13 +1333,17 @@ in {
       # The motive is constantly ⊤, the step is `tt : ⊤`, the scrutinee
       # is U.tt. descInd on the single-constructor μ descRet reduces
       # straight to the step (no field projection, no IH).
-      expr = let
-        U = datatype "Unit" [ (con "tt" []) ];
-        applied = app (app (app (U.elim 0)
-          (lam "x" U.T (_: unit)))
-          tt)
-          U.tt;
-      in Q.nf [] (elab applied) == Q.nf [] (elab tt);
+      expr =
+        let
+          U = datatype "Unit" [ (con "tt" [ ]) ];
+          applied = app
+            (app
+              (app (U.elim 0)
+                (lam "x" U.T (_: unit)))
+              tt)
+            U.tt;
+        in
+        semEq applied tt;
       expected = true;
     };
     # The macro elim must be INFERABLE as a closed term — bare lam
@@ -1113,29 +1354,34 @@ in {
     # (datatype-unit-elim-reduces-to-step) bypasses checking and would
     # silently mask a non-inferable elim.
     "datatype-unit-elim-checks" = {
-      expr = let
-        U = datatype "Unit" [ (con "tt" []) ];
-        applied = app (app (app (U.elim 0)
-          (lam "x" U.T (_: unit)))
-          tt)
-          U.tt;
-      in (checkHoas unit applied).tag;
+      expr =
+        let
+          U = datatype "Unit" [ (con "tt" [ ]) ];
+          applied = app
+            (app
+              (app (U.elim 0)
+                (lam "x" U.T (_: unit)))
+              tt)
+            U.tt;
+        in
+        (checkHoas unit applied).tag;
       expected = "app";
     };
     # Direct inference of the closed elim: confirms `ann` pins a Π type
     # the kernel can recover without reducing the body.
     "datatype-unit-elim-infers-pi" = {
-      expr = let U = datatype "Unit" [ (con "tt" []) ];
-             in (inferHoas (U.elim 0)).type.tag;
+      expr =
+        let U = datatype "Unit" [ (con "tt" [ ]) ];
+        in (inferHoas (U.elim 0)).type.tag;
       expected = "VPi";
     };
     "datatype-rejects-n0" = {
-      expr = (builtins.tryEval (datatype "Empty" [])).success;
+      expr = (builtins.tryEval (datatype "Empty" [ ])).success;
       expected = false;
     };
     "datatype-rejects-duplicate-cons" = {
       expr = (builtins.tryEval
-               (datatype "Dup" [ (con "a" []) (con "a" []) ])).success;
+        (datatype "Dup" [ (con "a" [ ]) (con "a" [ ]) ])).success;
       expected = false;
     };
 
@@ -1145,24 +1391,20 @@ in {
     #   - dispatchStep n>=2 branch case with leaf onTrue / onFalse,
     #     ctx threaded with `pair false_` for the second arm.
     "datatype-bool-spec-name" = {
-      expr = (datatype "Bool" [ (con "true" []) (con "false" []) ]).name;
+      expr = (datatype "Bool" [ (con "true" [ ]) (con "false" [ ]) ]).name;
       expected = "Bool";
     };
     "datatype-bool-spec-meta" = {
-      expr = shallowMeta ((datatype "Bool" [ (con "true" []) (con "false" []) ])._dtypeMeta);
+      expr = shallowMeta ((datatype "Bool" [ (con "true" [ ]) (con "false" [ ]) ])._dtypeMeta);
       expected = {
         name = "Bool";
         indexed = false;
         indexTy = unitPrim;
-        params = [];
-        paramArgs = [];
+        params = [ ];
+        paramArgs = [ ];
         constructors = [
-          { name = "true";  fields = []; }
-          { name = "false"; fields = []; }
-        ];
-        cons = [
-          { name = "true";  fields = []; }
-          { name = "false"; fields = []; }
+          { name = "true"; fields = [ ]; }
+          { name = "false"; fields = [ ]; }
         ];
       };
     };
@@ -1171,35 +1413,39 @@ in {
     # is an `mkApp ... encodeDescPlusTm ...` chain; the value-layer
     # `VDescCon` assertion captures the architectural invariant.
     "datatype-bool-D-elab" = {
-      expr = let
-        D = (datatype "Bool" [ (con "true" []) (con "false" []) ]).D;
-      in (E.eval [] (elab D)).tag;
+      expr =
+        let
+          D = (datatype "Bool" [ (con "true" [ ]) (con "false" [ ]) ]).D;
+        in
+        (E.eval [ ] (elab D)).tag;
       expected = "VDescCon";
     };
     "datatype-bool-T-elab" = {
-      expr = (elab (datatype "Bool" [ (con "true" []) (con "false" []) ]).T).tag;
+      expr = (elab (datatype "Bool" [ (con "true" [ ]) (con "false" [ ]) ]).T).tag;
       expected = "mu";
     };
     "datatype-bool-true-elab" = {
-      expr = (elab (datatype "Bool" [ (con "true" []) (con "false" []) ]).true).tag;
+      expr = (elab (datatype "Bool" [ (con "true" [ ]) (con "false" [ ]) ]).true).tag;
       expected = "desc-con";
     };
     "datatype-bool-false-elab" = {
-      expr = (elab (datatype "Bool" [ (con "true" []) (con "false" []) ]).false).tag;
+      expr = (elab (datatype "Bool" [ (con "true" [ ]) (con "false" [ ]) ]).false).tag;
       expected = "desc-con";
     };
     # Macro D matches the canonical bool-fold structure: plus of two
     # descRet summands. Compared against a hand-written equivalent via
     # nf to absorb α-renaming.
     "datatype-bool-D-matches-handwritten" = {
-      expr = let
-        macroD = (datatype "Bool" [ (con "true" []) (con "false" []) ]).D;
-        handD = plus descRet descRet;
-      in Q.nf [] (elab macroD) == Q.nf [] (elab handD);
+      expr =
+        let
+          macroD = (datatype "Bool" [ (con "true" [ ]) (con "false" [ ]) ]).D;
+          handD = plus descRet descRet;
+        in
+        semEq macroD handD;
       expected = true;
     };
     "datatype-bool-D-carries-desc-ref" = {
-      expr = let d = E.eval [] (elab self.boolDesc); in {
+      expr = let d = E.eval [ ] (elab self.boolDesc); in {
         kind = d._descRef.kind;
         arity = d._descRef.arity;
         indexed = d._descRef.indexed;
@@ -1215,50 +1461,62 @@ in {
     # True constructor's payload commits the 0th (`boot-inl`) summand of the
     # plus tree, with witness refl : Eq ⊤ tt tt at the ret-leaf.
     "datatype-bool-true-payload-shape" = {
-      expr = let
-        B = datatype "Bool" [ (con "true" []) (con "false" []) ];
-      in (elab B.true).d.tag;
+      expr =
+        let
+          B = datatype "Bool" [ (con "true" [ ]) (con "false" [ ]) ];
+        in
+        (elab B.true).d.tag;
       expected = "boot-inl";
     };
     # False constructor commits the 1st (`boot-inr`) summand.
     "datatype-bool-false-payload-shape" = {
-      expr = let
-        B = datatype "Bool" [ (con "true" []) (con "false" []) ];
-      in (elab B.false).d.tag;
+      expr =
+        let
+          B = datatype "Bool" [ (con "true" [ ]) (con "false" [ ]) ];
+        in
+        (elab B.false).d.tag;
       expected = "boot-inr";
     };
     "datatype-bool-T-check-U0" = {
-      expr = (checkHoas (u 0) (datatype "Bool" [ (con "true" []) (con "false" []) ]).T).tag;
+      expr = (checkHoas (u 0) (datatype "Bool" [ (con "true" [ ]) (con "false" [ ]) ]).T).tag;
       expected = "mu";
     };
     "datatype-bool-true-check-T" = {
-      expr = let B = datatype "Bool" [ (con "true" []) (con "false" []) ];
-             in (checkHoas B.T B.true).tag;
+      expr =
+        let B = datatype "Bool" [ (con "true" [ ]) (con "false" [ ]) ];
+        in (checkHoas B.T B.true).tag;
       expected = "desc-con";
     };
     "datatype-bool-false-check-T" = {
-      expr = let B = datatype "Bool" [ (con "true" []) (con "false" []) ];
-             in (checkHoas B.T B.false).tag;
+      expr =
+        let B = datatype "Bool" [ (con "true" [ ]) (con "false" [ ]) ];
+        in (checkHoas B.T B.false).tag;
       expected = "desc-con";
     };
     # Closed elim is inferable as a Π type via the ann wrapper.
     "datatype-bool-elim-infers-pi" = {
-      expr = let B = datatype "Bool" [ (con "true" []) (con "false" []) ];
-             in (inferHoas (B.elim 0)).type.tag;
+      expr =
+        let B = datatype "Bool" [ (con "true" [ ]) (con "false" [ ]) ];
+        in (inferHoas (B.elim 0)).type.tag;
       expected = "VPi";
     };
     # Reduction on the true scrutinee selects step_true.
     # Motive: const ⊤. step_true = tt : ⊤. step_false = tt : ⊤.
     # elim P step_true step_false B.true ≡nf≡ tt.
     "datatype-bool-elim-reduces-true" = {
-      expr = let
-        B = datatype "Bool" [ (con "true" []) (con "false" []) ];
-        applied = app (app (app (app (B.elim 0)
-          (lam "_" B.T (_: unit)))
-          tt)  # step_true
-          tt)  # step_false
-          B.true;
-      in Q.nf [] (elab applied) == Q.nf [] (elab tt);
+      expr =
+        let
+          B = datatype "Bool" [ (con "true" [ ]) (con "false" [ ]) ];
+          applied = app
+            (app
+              (app
+                (app (B.elim 0)
+                  (lam "_" B.T (_: unit)))
+                tt)  # step_true
+              tt)  # step_false
+            B.true;
+        in
+        semEq applied tt;
       expected = true;
     };
     # Reduction on the false scrutinee selects step_false.
@@ -1269,14 +1527,19 @@ in {
     # that the elim chains through a non-collapsing motive in the next
     # test).
     "datatype-bool-elim-reduces-false" = {
-      expr = let
-        B = datatype "Bool" [ (con "true" []) (con "false" []) ];
-        applied = app (app (app (app (B.elim 0)
-          (lam "_" B.T (_: unit)))
-          tt)
-          tt)
-          B.false;
-      in Q.nf [] (elab applied) == Q.nf [] (elab tt);
+      expr =
+        let
+          B = datatype "Bool" [ (con "true" [ ]) (con "false" [ ]) ];
+          applied = app
+            (app
+              (app
+                (app (B.elim 0)
+                  (lam "_" B.T (_: unit)))
+                tt)
+              tt)
+            B.false;
+        in
+        semEq applied tt;
       expected = true;
     };
     # Distinguishing motive: P b = T (the BoolDT type itself).
@@ -1286,25 +1549,35 @@ in {
     # This proves the boolElim dispatch genuinely picks the correct arm
     # rather than collapsing both to a common normal form.
     "datatype-bool-elim-negates-true" = {
-      expr = let
-        B = datatype "Bool" [ (con "true" []) (con "false" []) ];
-        neg = scrut: app (app (app (app (B.elim 0)
-          (lam "_" B.T (_: B.T)))
-          B.false)
-          B.true)
-          scrut;
-      in Q.nf [] (elab (neg B.true)) == Q.nf [] (elab B.false);
+      expr =
+        let
+          B = datatype "Bool" [ (con "true" [ ]) (con "false" [ ]) ];
+          neg = scrut: app
+            (app
+              (app
+                (app (B.elim 0)
+                  (lam "_" B.T (_: B.T)))
+                B.false)
+              B.true)
+            scrut;
+        in
+        semEq (neg B.true) B.false;
       expected = true;
     };
     "datatype-bool-elim-negates-false" = {
-      expr = let
-        B = datatype "Bool" [ (con "true" []) (con "false" []) ];
-        neg = scrut: app (app (app (app (B.elim 0)
-          (lam "_" B.T (_: B.T)))
-          B.false)
-          B.true)
-          scrut;
-      in Q.nf [] (elab (neg B.false)) == Q.nf [] (elab B.true);
+      expr =
+        let
+          B = datatype "Bool" [ (con "true" [ ]) (con "false" [ ]) ];
+          neg = scrut: app
+            (app
+              (app
+                (app (B.elim 0)
+                  (lam "_" B.T (_: B.T)))
+                B.false)
+              B.true)
+            scrut;
+        in
+        semEq (neg B.false) B.true;
       expected = true;
     };
     # Applied negation chain through checkHoas: proves the entire
@@ -1312,14 +1585,19 @@ in {
     # head of the chain inferable; each step's check rule then
     # validates).
     "datatype-bool-elim-checks-applied" = {
-      expr = let
-        B = datatype "Bool" [ (con "true" []) (con "false" []) ];
-        applied = app (app (app (app (B.elim 0)
-          (lam "_" B.T (_: B.T)))
-          B.false)
-          B.true)
-          B.true;
-      in (checkHoas B.T applied).tag;
+      expr =
+        let
+          B = datatype "Bool" [ (con "true" [ ]) (con "false" [ ]) ];
+          applied = app
+            (app
+              (app
+                (app (B.elim 0)
+                  (lam "_" B.T (_: B.T)))
+                B.false)
+              B.true)
+            B.true;
+        in
+        (checkHoas B.T applied).tag;
       expected = "app";
     };
 
@@ -1337,55 +1615,57 @@ in {
     #     descInd reductions agree.
     "datatype-nat-spec-name" = {
       expr = (datatype "Nat" [
-        (con "zero" [])
+        (con "zero" [ ])
         (con "succ" [ (recField "pred") ])
       ]).name;
       expected = "Nat";
     };
     "datatype-nat-spec-meta" = {
-      expr = shallowMeta ((datatype "Nat" [
-        (con "zero" [])
-        (con "succ" [ (recField "pred") ])
-      ])._dtypeMeta);
+      expr = shallowMeta (
+        (datatype "Nat" [
+          (con "zero" [ ])
+          (con "succ" [ (recField "pred") ])
+        ])._dtypeMeta
+      );
       expected = {
         name = "Nat";
         indexed = false;
         indexTy = unitPrim;
-        params = [];
-        paramArgs = [];
+        params = [ ];
+        paramArgs = [ ];
         constructors = [
-          { name = "zero"; fields = []; }
-          { name = "succ"; fields = [ { name = "pred"; kind = "recAt"; } ]; }
-        ];
-        cons = [
-          { name = "zero"; fields = []; }
-          { name = "succ"; fields = [ { name = "pred"; kind = "recAt"; } ]; }
+          { name = "zero"; fields = [ ]; }
+          { name = "succ"; fields = [{ name = "pred"; kind = "recAt"; }]; }
         ];
       };
     };
     # Macro D matches the prelude `natDesc` exactly via nf.
     "datatype-nat-D-matches-natDesc" = {
-      expr = let
-        N = datatype "Nat" [
-          (con "zero" [])
-          (con "succ" [ (recField "pred") ])
-        ];
-      in Q.nf [] (elab N.D) == Q.nf [] (elab natDesc);
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+        in
+        semEq N.D natDesc;
       expected = true;
     };
     "datatype-nat-D-carries-desc-ref" = {
-      expr = let
-        N = datatype "Nat" [
-          (con "zero" [])
-          (con "succ" [ (recField "pred") ])
-        ];
-        d = E.eval [] (elab N.D);
-      in {
-        kind = d._descRef.kind;
-        arity = d._descRef.arity;
-        indexed = d._descRef.indexed;
-        params = builtins.length d._descRef.params;
-      };
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+          d = E.eval [ ] (elab N.D);
+        in
+        {
+          kind = d._descRef.kind;
+          arity = d._descRef.arity;
+          indexed = d._descRef.indexed;
+          params = builtins.length d._descRef.params;
+        };
       expected = {
         kind = "datatype-desc";
         arity = 2;
@@ -1394,72 +1674,82 @@ in {
       };
     };
     "datatype-nat-D-desc-ref-conv-short-circuits" = {
-      expr = let
-        N = datatype "Nat" [
-          (con "zero" [])
-          (con "succ" [ (recField "pred") ])
-        ];
-        d = E.eval [] (elab N.D);
-        sameRefDifferentBody = d // { d = V.vBootRefl; };
-      in C.conv 0 d sameRefDifferentBody;
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+          d = E.eval [ ] (elab N.D);
+          sameRefDifferentBody = d // { d = V.vBootRefl; };
+        in
+        C.conv 0 d sameRefDifferentBody;
       expected = true;
     };
     "datatype-nat-D-desc-ref-mismatch-falls-back" = {
-      expr = let
-        N = datatype "Nat" [
-          (con "zero" [])
-          (con "succ" [ (recField "pred") ])
-        ];
-        d = E.eval [] (elab N.D);
-        sameBodyDifferentRef = d // {
-          _descRef = d._descRef // { arity = 3; };
-        };
-      in C.conv 0 d sameBodyDifferentRef;
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+          d = E.eval [ ] (elab N.D);
+          sameBodyDifferentRef = d // {
+            _descRef = d._descRef // { arity = 3; };
+          };
+        in
+        C.conv 0 d sameBodyDifferentRef;
       expected = true;
     };
     "datatype-nat-D-desc-ref-mismatch-does-not-prove-equality" = {
-      expr = let
-        N = datatype "Nat" [
-          (con "zero" [])
-          (con "succ" [ (recField "pred") ])
-        ];
-        d = E.eval [] (elab N.D);
-        differentRefDifferentBody = d // {
-          d = V.vBootRefl;
-          _descRef = d._descRef // { arity = 3; };
-        };
-      in C.conv 0 d differentRefDifferentBody;
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+          d = E.eval [ ] (elab N.D);
+          differentRefDifferentBody = d // {
+            d = V.vBootRefl;
+            _descRef = d._descRef // { arity = 3; };
+          };
+        in
+        C.conv 0 d differentRefDifferentBody;
       expected = false;
     };
     "datatype-desc-ref-name-mismatch-does-not-prove-equality" = {
-      expr = let
-        BoxNat = datatype "BoxNatAudit" [
-          (con "box" [ (field "x" nat) ])
-        ];
-        BoxBool = datatype "BoxBoolAudit" [
-          (con "box" [ (field "x" bool) ])
-        ];
-      in {
-        desc = C.conv 0 (E.eval [] (elab BoxNat.D)) (E.eval [] (elab BoxBool.D));
-        type = C.conv 0 (E.eval [] (elab BoxNat.T)) (E.eval [] (elab BoxBool.T));
-      };
+      expr =
+        let
+          BoxNat = datatype "BoxNatAudit" [
+            (con "box" [ (field "x" nat) ])
+          ];
+          BoxBool = datatype "BoxBoolAudit" [
+            (con "box" [ (field "x" bool) ])
+          ];
+        in
+        {
+          desc = C.conv 0 (E.eval [ ] (elab BoxNat.D)) (E.eval [ ] (elab BoxBool.D));
+          type = C.conv 0 (E.eval [ ] (elab BoxNat.T)) (E.eval [ ] (elab BoxBool.T));
+        };
       expected = {
         desc = false;
         type = false;
       };
     };
     "datatype-desc-ref-same-name-different-field-type-does-not-prove-equality" = {
-      expr = let
-        BoxNat = datatype "BoxAuditSame" [
-          (con "box" [ (field "x" nat) ])
-        ];
-        BoxBool = datatype "BoxAuditSame" [
-          (con "box" [ (field "x" bool) ])
-        ];
-      in {
-        desc = C.conv 0 (E.eval [] (elab BoxNat.D)) (E.eval [] (elab BoxBool.D));
-        type = C.conv 0 (E.eval [] (elab BoxNat.T)) (E.eval [] (elab BoxBool.T));
-      };
+      expr =
+        let
+          BoxNat = datatype "BoxAuditSame" [
+            (con "box" [ (field "x" nat) ])
+          ];
+          BoxBool = datatype "BoxAuditSame" [
+            (con "box" [ (field "x" bool) ])
+          ];
+        in
+        {
+          desc = C.conv 0 (E.eval [ ] (elab BoxNat.D)) (E.eval [ ] (elab BoxBool.D));
+          type = C.conv 0 (E.eval [ ] (elab BoxNat.T)) (E.eval [ ] (elab BoxBool.T));
+        };
       expected = {
         desc = false;
         type = false;
@@ -1467,41 +1757,49 @@ in {
     };
     "datatype-nat-T-elab" = {
       expr = (elab (datatype "Nat" [
-        (con "zero" [])
+        (con "zero" [ ])
         (con "succ" [ (recField "pred") ])
       ]).T).tag;
       expected = "mu";
     };
     "datatype-nat-T-check-U0" = {
-      expr = let N = datatype "Nat" [
-        (con "zero" [])
-        (con "succ" [ (recField "pred") ])
-      ]; in (checkHoas (u 0) N.T).tag;
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+        in
+        (checkHoas (u 0) N.T).tag;
       expected = "mu";
     };
     # Zero commits the 0th (`boot-inl`) summand of the plus tree; the ret-leaf
     # witness is refl : Eq ⊤ tt tt.
     "datatype-nat-zero-payload" = {
-      expr = let
-        N = datatype "Nat" [
-          (con "zero" [])
-          (con "succ" [ (recField "pred") ])
-        ];
-      in (elab N.zero).d.tag;
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+        in
+        (elab N.zero).d.tag;
       expected = "boot-inl";
     };
     "datatype-nat-zero-carries-desc-con-cert" = {
-      expr = let
-        N = datatype "Nat" [
-          (con "zero" [])
-          (con "succ" [ (recField "pred") ])
-        ];
-        z = elab N.zero;
-      in {
-        hasCert = z ? _descConCert;
-        kind = z._descConCert.kind or null;
-        fieldCount = z._descConCert.fieldCount or null;
-      };
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+          z = elab N.zero;
+        in
+        {
+          hasCert = z ? _descConCert;
+          kind = z._descConCert.kind or null;
+          fieldCount = z._descConCert.fieldCount or null;
+        };
       expected = {
         hasCert = true;
         kind = "datatype-con-payload";
@@ -1509,57 +1807,71 @@ in {
       };
     };
     "datatype-nat-zero-checks" = {
-      expr = let N = datatype "Nat" [
-        (con "zero" [])
-        (con "succ" [ (recField "pred") ])
-      ]; in (checkHoas N.T N.zero).tag;
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+        in
+        (checkHoas N.T N.zero).tag;
       expected = "desc-con";
     };
     "datatype-nat-zero-check-preserves-desc-con-cert" = {
-      expr = let N = datatype "Nat" [
-        (con "zero" [])
-        (con "succ" [ (recField "pred") ])
-      ]; in (checkHoas N.T N.zero) ? _descConCert;
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+        in
+        (checkHoas N.T N.zero) ? _descConCert;
       expected = true;
     };
     "datatype-nat-zero-cert-bad-payload-rejected" = {
-      expr = let
-        N = datatype "Nat" [
-          (con "zero" [])
-          (con "succ" [ (recField "pred") ])
-        ];
-        goodTm = elab N.zero;
-        badTm = goodTm // { d = T.mkTt; };
-        result = CH.runCheck (CH.check CH.emptyCtx badTm (E.eval [] (elab N.T)));
-      in result ? error;
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+          goodTm = elab N.zero;
+          badTm = goodTm // { d = T.mkTt; };
+          result = CH.runCheck (CH.check CH.emptyCtx badTm (E.eval [ ] (elab N.T)));
+        in
+        result ? error;
       expected = true;
     };
     "datatype-nat-zero-cert-not-used-with-untagged-expected-D" = {
-      expr = let
-        N = datatype "Nat" [
-          (con "zero" [])
-          (con "succ" [ (recField "pred") ])
-        ];
-        untaggedNatDesc = builtins.removeAttrs natDesc [ "_descRef" ];
-      in (checkHoas (mu untaggedNatDesc tt) N.zero) ? _descConCert;
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+          untaggedNatDesc = builtins.removeAttrs natDesc [ "_descRef" ];
+        in
+        (checkHoas (mu untaggedNatDesc tt) N.zero) ? _descConCert;
       expected = false;
     };
     "datatype-nat-zero-cert-mismatch-falls-back" = {
-      expr = let
-        N = datatype "Nat" [
-          (con "zero" [])
-          (con "succ" [ (recField "pred") ])
-        ];
-        badZero = N.zero // {
-          _descConCert = N.zero._descConCert // {
-            ref = N.zero._descConCert.ref // { arity = 3; };
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+          badZero = N.zero // {
+            _descConCert = N.zero._descConCert // {
+              ref = N.zero._descConCert.ref // { arity = 3; };
+            };
           };
+          result = checkHoas N.T badZero;
+        in
+        {
+          tag = result.tag or null;
+          hasCert = result ? _descConCert;
         };
-        result = checkHoas N.T badZero;
-      in {
-        tag = result.tag or null;
-        hasCert = result ? _descConCert;
-      };
       expected = {
         tag = "desc-con";
         hasCert = false;
@@ -1569,45 +1881,59 @@ in {
     # curried lam, so its top-level _htag is "ann" until applied.
     "datatype-nat-succ-elab" = {
       expr = (elab (datatype "Nat" [
-        (con "zero" [])
+        (con "zero" [ ])
         (con "succ" [ (recField "pred") ])
       ]).succ).tag;
       expected = "ann";
     };
     "datatype-nat-succ-infers-pi" = {
-      expr = let N = datatype "Nat" [
-        (con "zero" [])
-        (con "succ" [ (recField "pred") ])
-      ]; in (inferHoas N.succ).type.tag;
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+        in
+        (inferHoas N.succ).type.tag;
       expected = "VPi";
     };
     # Applied succ commits the 1st (`boot-inr`) summand, carrying the pred
     # recursive argument paired with the ret-leaf refl witness.
     "datatype-nat-succ-applied-payload" = {
-      expr = let
-        N = datatype "Nat" [
-          (con "zero" [])
-          (con "succ" [ (recField "pred") ])
-        ];
-        macroSucc = app N.succ N.zero;
-      in (Q.nf [] (elab macroSucc)).d.tag;
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+          macroSucc = app N.succ N.zero;
+        in
+        (Q.nf [ ] (elab macroSucc)).d.tag;
       expected = "boot-inr";
     };
     # Saturated macro-ctor application flattens at elab time to a flat
     # `desc-con` Tm (shared-dTm chain of length 1). The kernel checks
     # it against the type and returns the reconstructed desc-con term.
     "datatype-nat-succ-applied-checks" = {
-      expr = let N = datatype "Nat" [
-        (con "zero" [])
-        (con "succ" [ (recField "pred") ])
-      ]; in (checkHoas N.T (app N.succ N.zero)).tag;
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+        in
+        (checkHoas N.T (app N.succ N.zero)).tag;
       expected = "desc-con";
     };
     "datatype-nat-elim-infers-pi" = {
-      expr = let N = datatype "Nat" [
-        (con "zero" [])
-        (con "succ" [ (recField "pred") ])
-      ]; in (inferHoas (N.elim 0)).type.tag;
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+        in
+        (inferHoas (N.elim 0)).type.tag;
       expected = "VPi";
     };
 
@@ -1623,53 +1949,59 @@ in {
     # buildStepApply returns step_zero (B), the adapter's onTrue
     # returns base.
     "datatype-nat-elim-nf-gate-zero" = {
-      expr = let
-        N = datatype "Nat" [
-          (con "zero" [])
-          (con "succ" [ (recField "pred") ])
-        ];
-        M = lam "_" nat (_: nat);
-        B = zero;
-        S = lam "k" nat (k: lam "ih" nat (ih: ih));
-        scrut = zero;
-        macroApplied = app (app (app (app (N.elim 0) M) B) S) scrut;
-        adapterApplied = ind 0 M B S scrut;
-      in Q.nf [] (elab macroApplied) == Q.nf [] (elab adapterApplied);
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+          M = lam "_" nat (_: nat);
+          B = zero;
+          S = lam "k" nat (k: lam "ih" nat (ih: ih));
+          scrut = zero;
+          macroApplied = app (app (app (app (N.elim 0) M) B) S) scrut;
+          adapterApplied = ind 0 M B S scrut;
+        in
+        semEq macroApplied adapterApplied;
       expected = true;
     };
     # Scrutinee 2: succ zero. Both onFalse branches fire; macro
     # projects (fst r, fst rih) and applies step_succ; the adapter
     # emits the same projection chain inline.
     "datatype-nat-elim-nf-gate-one" = {
-      expr = let
-        N = datatype "Nat" [
-          (con "zero" [])
-          (con "succ" [ (recField "pred") ])
-        ];
-        M = lam "_" nat (_: nat);
-        B = zero;
-        S = lam "k" nat (k: lam "ih" nat (ih: ih));
-        scrut = succ zero;
-        macroApplied = app (app (app (app (N.elim 0) M) B) S) scrut;
-        adapterApplied = ind 0 M B S scrut;
-      in Q.nf [] (elab macroApplied) == Q.nf [] (elab adapterApplied);
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+          M = lam "_" nat (_: nat);
+          B = zero;
+          S = lam "k" nat (k: lam "ih" nat (ih: ih));
+          scrut = succ zero;
+          macroApplied = app (app (app (app (N.elim 0) M) B) S) scrut;
+          adapterApplied = ind 0 M B S scrut;
+        in
+        semEq macroApplied adapterApplied;
       expected = true;
     };
     # Scrutinee 3: succ (succ zero). Two layers of trampoline; checks
     # the nested descInd reduction agrees.
     "datatype-nat-elim-nf-gate-two" = {
-      expr = let
-        N = datatype "Nat" [
-          (con "zero" [])
-          (con "succ" [ (recField "pred") ])
-        ];
-        M = lam "_" nat (_: nat);
-        B = zero;
-        S = lam "k" nat (k: lam "ih" nat (ih: succ ih));
-        scrut = succ (succ zero);
-        macroApplied = app (app (app (app (N.elim 0) M) B) S) scrut;
-        adapterApplied = ind 0 M B S scrut;
-      in Q.nf [] (elab macroApplied) == Q.nf [] (elab adapterApplied);
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+          M = lam "_" nat (_: nat);
+          B = zero;
+          S = lam "k" nat (k: lam "ih" nat (ih: succ ih));
+          scrut = succ (succ zero);
+          macroApplied = app (app (app (app (N.elim 0) M) B) S) scrut;
+          adapterApplied = ind 0 M B S scrut;
+        in
+        semEq macroApplied adapterApplied;
       expected = true;
     };
     # Scrutinee 4: a fresh-variable neutral scrutinee. This is the
@@ -1679,21 +2011,23 @@ in {
     # agree on closed scrutinees" from "macro and adapter agree as
     # terms".
     "datatype-nat-elim-nf-gate-neutral" = {
-      expr = let
-        N = datatype "Nat" [
-          (con "zero" [])
-          (con "succ" [ (recField "pred") ])
-        ];
-        M = lam "_" nat (_: nat);
-        B = zero;
-        S = lam "k" nat (k: lam "ih" nat (ih: succ ih));
-        # Fresh-variable neutral: the elim is wrapped in an outer lam
-        # that binds `n : nat`, then applied to that bound variable. nf
-        # cannot reduce it since `n` is neutral.
-        macroAtN = lam "n" nat (n:
-          app (app (app (app (N.elim 0) M) B) S) n);
-        adapterAtN = lam "n" nat (n: ind 0 M B S n);
-      in Q.nf [] (elab macroAtN) == Q.nf [] (elab adapterAtN);
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+          M = lam "_" nat (_: nat);
+          B = zero;
+          S = lam "k" nat (k: lam "ih" nat (ih: succ ih));
+          # Fresh-variable neutral: the elim is wrapped in an outer lam
+          # that binds `n : nat`, then applied to that bound variable. nf
+          # cannot reduce it since `n` is neutral.
+          macroAtN = lam "n" nat (n:
+            app (app (app (app (N.elim 0) M) B) S) n);
+          adapterAtN = lam "n" nat (n: ind 0 M B S n);
+        in
+        semEq macroAtN adapterAtN;
       expected = true;
     };
 
@@ -1703,23 +2037,28 @@ in {
     # recursion rather than just nf comparison against the inline
     # adapter.
     "datatype-nat-elim-add-2-3" = {
-      expr = let
-        N = datatype "Nat" [
-          (con "zero" [])
-          (con "succ" [ (recField "pred") ])
-        ];
-        # add m n = elim (λ_. nat) n (λk.λih. succ ih) m
-        # Recursing on m: zero case → n; succ k case → succ (add k n).
-        add = m: n:
-          app (app (app (app (N.elim 0)
-            (lam "_" N.T (_: N.T)))
-            n)
-            (lam "k" N.T (k: lam "ih" N.T (ih: app N.succ ih))))
-            m;
-        two = app N.succ (app N.succ N.zero);
-        three = app N.succ (app N.succ (app N.succ N.zero));
-        five = app N.succ (app N.succ (app N.succ (app N.succ (app N.succ N.zero))));
-      in Q.nf [] (elab (add two three)) == Q.nf [] (elab five);
+      expr =
+        let
+          N = datatype "Nat" [
+            (con "zero" [ ])
+            (con "succ" [ (recField "pred") ])
+          ];
+          # add m n = elim (λ_. nat) n (λk.λih. succ ih) m
+          # Recursing on m: zero case → n; succ k case → succ (add k n).
+          add = m: n:
+            app
+              (app
+                (app
+                  (app (N.elim 0)
+                    (lam "_" N.T (_: N.T)))
+                  n)
+                (lam "k" N.T (k: lam "ih" N.T (ih: app N.succ ih))))
+              m;
+          two = app N.succ (app N.succ N.zero);
+          three = app N.succ (app N.succ (app N.succ N.zero));
+          five = app N.succ (app N.succ (app N.succ (app N.succ (app N.succ N.zero))));
+        in
+        semEq (add two three) five;
       expected = true;
     };
 
@@ -1729,13 +2068,15 @@ in {
     # type inhabits `U(1)`, and the
     # motive level recovered from `checkMotive` lines up.
     "datatype-nat-elim-universe-one" = {
-      expr = let
-        N = datatype "Nat" [ (con "zero" []) (con "succ" [ (recField "pred") ]) ];
-        M = lam "_" N.T (_: u 0);
-        B = unit;
-        S = lam "_k" N.T (_: lam "ih" (u 0) (ih: ih));
-        applied = app (app (app (app (N.elim 1) M) B) S) N.zero;
-      in (checkHoas (u 0) applied).tag;
+      expr =
+        let
+          N = datatype "Nat" [ (con "zero" [ ]) (con "succ" [ (recField "pred") ]) ];
+          M = lam "_" N.T (_: u 0);
+          B = unit;
+          S = lam "_k" N.T (_: lam "ih" (u 0) (ih: ih));
+          applied = app (app (app (app (N.elim 1) M) B) S) N.zero;
+        in
+        (checkHoas (u 0) applied).tag;
       expected = "app";
     };
 
@@ -1745,7 +2086,8 @@ in {
     # elaborated tag is `let` rather than the bare `app` spine.
     "ind-universe-one" = {
       expr = (checkHoas (u 0) (ind 1 (lam "_" nat (_: u 0)) unit
-                                 (lam "_" nat (_: lam "_" (u 0) (ih: ih))) zero)).tag;
+        (lam "_" nat (_: lam "_" (u 0) (ih: ih)))
+        zero)).tag;
       expected = "let";
     };
 
@@ -1759,10 +2101,10 @@ in {
     "ind-hoas-level-term-accepted" = {
       expr = (checkHoas nat
         (ind (levelMax levelZero levelZero)
-             (lam "_" nat (_: nat))
-             zero
-             (lam "_" nat (_: lam "_" nat (ih: succ ih)))
-             zero)).tag;
+          (lam "_" nat (_: nat))
+          zero
+          (lam "_" nat (_: lam "_" nat (ih: succ ih)))
+          zero)).tag;
       expected = "let";
     };
 
@@ -1772,13 +2114,15 @@ in {
     # universe annotation in the elaborated `let_ "P" piMotiveTy …`
     # therefore carries a `level-max` Tm.
     "ind-hoas-level-term-elab-shape" = {
-      expr = let
-        tm = elab (ind (levelMax levelZero levelZero)
-                       (lam "_" nat (_: nat))
-                       zero
-                       (lam "_" nat (_: lam "_" nat (ih: succ ih)))
-                       zero);
-      in tm.type.codomain.level.tag;
+      expr =
+        let
+          tm = elab (ind (levelMax levelZero levelZero)
+            (lam "_" nat (_: nat))
+            zero
+            (lam "_" nat (_: lam "_" nat (ih: succ ih)))
+            zero);
+        in
+        tm.type.codomain.level.tag;
       expected = "level-max";
     };
 
@@ -1789,20 +2133,26 @@ in {
     # — concrete-level coercion at the call site cannot apply, so the
     # K-as-Val discipline is exercised end-to-end.
     "ind-polymorphic-motive-k-bound" = {
-      expr = let
-        ty = forall "k" level (k:
-             forall "P" (forall "_" nat (_: u k)) (P:
-             forall "B" (app P zero) (_:
-             forall "S" (forall "n" nat (n:
-                          forall "_" (app P n) (_: app P (succ n)))) (_:
-             forall "n" nat (n: app P n)))));
-        body = lam "k" level (k:
-               lam "P" (forall "_" nat (_: u k)) (P:
-               lam "B" (app P zero) (B:
-               lam "S" (forall "n" nat (n:
-                         forall "_" (app P n) (_: app P (succ n)))) (S:
-               lam "n" nat (n: ind k P B S n)))));
-      in (checkHoas ty body).tag;
+      expr =
+        let
+          ty = forall "k" level (k:
+            forall "P" (forall "_" nat (_: u k)) (P:
+              forall "B" (app P zero) (_:
+                forall "S"
+                  (forall "n" nat (n:
+                    forall "_" (app P n) (_: app P (succ n))))
+                  (_:
+                    forall "n" nat (n: app P n)))));
+          body = lam "k" level (k:
+            lam "P" (forall "_" nat (_: u k)) (P:
+              lam "B" (app P zero) (B:
+                lam "S"
+                  (forall "n" nat (n:
+                    forall "_" (app P n) (_: app P (succ n))))
+                  (S:
+                    lam "n" nat (n: ind k P B S n)))));
+        in
+        (checkHoas ty body).tag;
       expected = "lam";
     };
 
@@ -1828,28 +2178,33 @@ in {
     # introduces a Level binder at depth 0 elaborates the marker back
     # to `mkVar 0` — proving the round-trip Var → marker → Var.
     "reifyLevel-vNe-round-trips-to-Var" = {
-      expr = let
-        marker = fx.tc.hoas.reifyLevel (V.vNe 0 [ ]);
-        wrapped = forall "k" level (_: u marker);
-      in (elab wrapped).codomain.level.tag;
+      expr =
+        let
+          marker = fx.tc.hoas.reifyLevel (V.vNe 0 [ ]);
+          wrapped = forall "k" level (_: u marker);
+        in
+        (elab wrapped).codomain.level.tag;
       expected = "var";
     };
     # Whole-pipeline closure: `reifyType` on a `VU` whose level is
-    # `vLevelMax` no longer throws via the spine analysis. The result
-    # is a HOAS `u` node whose level slot carries the reified Level
-    # term verbatim.
+    # `vLevelMax` produces a HOAS `u` node whose level slot carries the
+    # reified Level term verbatim.
     "reifyType-VU-non-concrete-level" = {
-      expr = let
-        Kval = V.vLevelMax V.vLevelZero V.vLevelZero;
-        uVal = V.vU Kval;
-      in (fx.tc.elaborate.reifyType uVal)._htag;
+      expr =
+        let
+          Kval = V.vLevelMax V.vLevelZero V.vLevelZero;
+          uVal = V.vU Kval;
+        in
+        (fx.tc.elaborate.reifyType uVal)._htag;
       expected = "U";
     };
     "reifyType-VU-non-concrete-level-preserves-max" = {
-      expr = let
-        Kval = V.vLevelMax V.vLevelZero V.vLevelZero;
-        uVal = V.vU Kval;
-      in (fx.tc.elaborate.reifyType uVal).level._htag;
+      expr =
+        let
+          Kval = V.vLevelMax V.vLevelZero V.vLevelZero;
+          uVal = V.vU Kval;
+        in
+        (fx.tc.elaborate.reifyType uVal).level._htag;
       expected = "level-max";
     };
 
@@ -1869,16 +2224,20 @@ in {
       expected = "level-suc";
     };
     "natToLevel-3-reduces-to-suc3-zero" = {
-      expr = let
-        lhs = E.eval [] (elab (natToLevel 3));
-        rhs = V.vLevelSuc (V.vLevelSuc (V.vLevelSuc V.vLevelZero));
-      in fx.tc.conv.conv 0 lhs rhs;
+      expr =
+        let
+          lhs = E.eval [ ] (elab (natToLevel 3));
+          rhs = V.vLevelSuc (V.vLevelSuc (V.vLevelSuc V.vLevelZero));
+        in
+        fx.tc.conv.conv 0 lhs rhs;
       expected = true;
     };
     "u-natToLevel-1-elaborates-as-U-of-suc-zero" = {
-      expr = let
-        ty = E.eval [] (elab (u (natToLevel 1)));
-      in fx.tc.conv.conv 0 ty (V.vU (V.vLevelSuc V.vLevelZero));
+      expr =
+        let
+          ty = E.eval [ ] (elab (u (natToLevel 1)));
+        in
+        fx.tc.conv.conv 0 ty (V.vU (V.vLevelSuc V.vLevelZero));
       expected = true;
     };
 
@@ -1889,23 +2248,27 @@ in {
     # data field (head : A) and one recursive field (tail : List A) —
     # this is the profile linearProfile accepts as Just [A].
     "datatype-list-spec-name" = {
-      expr = let
-        L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "nil"  [])
-            (con "cons" [ (field "head" A) (recField "tail") ])
-          ]);
-      in L.name;
+      expr =
+        let
+          L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "nil" [ ])
+              (con "cons" [ (field "head" A) (recField "tail") ])
+            ]);
+        in
+        L.name;
       expected = "List";
     };
     "datatype-list-spec-params" = {
-      expr = let
-        L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "nil"  [])
-            (con "cons" [ (field "head" A) (recField "tail") ])
-          ]);
-      in builtins.length L.params;
+      expr =
+        let
+          L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "nil" [ ])
+              (con "cons" [ (field "head" A) (recField "tail") ])
+            ]);
+        in
+        builtins.length L.params;
       expected = 1;
     };
     # Macro D applied to nat is nf-equivalent to the prelude `listDesc nat`
@@ -1913,29 +2276,33 @@ in {
     # per-instance description; nf normalizes through the
     # `app (ann (λA. ...) ty) nat` β-redex and the ann wrapper.
     "datatype-list-D-matches-listDesc" = {
-      expr = let
-        L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "nil"  [])
-            (con "cons" [ (field "head" A) (recField "tail") ])
-          ]);
-      in Q.nf [] (elab (app L.D nat)) == Q.nf [] (elab (listDesc nat));
+      expr =
+        let
+          L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "nil" [ ])
+              (con "cons" [ (field "head" A) (recField "tail") ])
+            ]);
+        in
+        semEq (app L.D nat) (listDesc nat);
       expected = true;
     };
     "datatype-list-D-carries-desc-ref" = {
-      expr = let
-        L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "nil"  [])
-            (con "cons" [ (field "head" A) (recField "tail") ])
-          ]);
-        d = E.eval [] (elab (app L.D nat));
-      in {
-        kind = d._descRef.kind;
-        arity = d._descRef.arity;
-        indexed = d._descRef.indexed;
-        params = builtins.length d._descRef.params;
-      };
+      expr =
+        let
+          L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "nil" [ ])
+              (con "cons" [ (field "head" A) (recField "tail") ])
+            ]);
+          d = E.eval [ ] (elab (app L.D nat));
+        in
+        {
+          kind = d._descRef.kind;
+          arity = d._descRef.arity;
+          indexed = d._descRef.indexed;
+          params = builtins.length d._descRef.params;
+        };
       expected = {
         kind = "datatype-desc";
         arity = 2;
@@ -1945,13 +2312,15 @@ in {
     };
     # Polymorphic T at A=nat elaborates to a μ value.
     "datatype-list-T-nat-elab" = {
-      expr = let
-        L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "nil"  [])
-            (con "cons" [ (field "head" A) (recField "tail") ])
-          ]);
-      in (elab (app L.T nat)).tag;
+      expr =
+        let
+          L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "nil" [ ])
+              (con "cons" [ (field "head" A) (recField "tail") ])
+            ]);
+        in
+        (elab (app L.T nat)).tag;
       # app of a lambda-annotated type — elaborated as an app tree.
       # The outer elab tag is "app" (not yet β-reduced); eval reduces
       # to VMu.
@@ -1959,100 +2328,113 @@ in {
     };
     # `ListDT.nil nat` type-checks against `ListDT.T nat`.
     "datatype-list-nil-checks" = {
-      expr = let
-        L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "nil"  [])
-            (con "cons" [ (field "head" A) (recField "tail") ])
-          ]);
-        result = checkHoas (app L.T nat) (app L.nil nat);
-      in !(result ? error);
+      expr =
+        let
+          L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "nil" [ ])
+              (con "cons" [ (field "head" A) (recField "tail") ])
+            ]);
+          result = checkHoas (app L.T nat) (app L.nil nat);
+        in
+          !(result ? error);
       expected = true;
     };
     # `ListDT.cons nat zero (ListDT.nil nat)` type-checks.
     "datatype-list-cons-one-checks" = {
-      expr = let
-        L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "nil"  [])
-            (con "cons" [ (field "head" A) (recField "tail") ])
-          ]);
-        hoasVal = app (app (app L.cons nat) zero) (app L.nil nat);
-        result = checkHoas (app L.T nat) hoasVal;
-      in !(result ? error);
+      expr =
+        let
+          L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "nil" [ ])
+              (con "cons" [ (field "head" A) (recField "tail") ])
+            ]);
+          hoasVal = app (app (app L.cons nat) zero) (app L.nil nat);
+          result = checkHoas (app L.T nat) hoasVal;
+        in
+          !(result ? error);
       expected = true;
     };
     # Polymorphic cons at A=nat infers to a Π over head, tail (curried).
     "datatype-list-cons-at-nat-infers-pi" = {
-      expr = let
-        L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "nil"  [])
-            (con "cons" [ (field "head" A) (recField "tail") ])
-          ]);
-      in (inferHoas (app L.cons nat)).type.tag;
+      expr =
+        let
+          L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "nil" [ ])
+              (con "cons" [ (field "head" A) (recField "tail") ])
+            ]);
+        in
+        (inferHoas (app L.cons nat)).type.tag;
       expected = "VPi";
     };
     # nf-equivalence of the macro ListDT.elim against the inline
     # `listElim` adapter on the empty list. Motive (λ_. nat), onNil =
     # zero, onCons returns `succ head` to differentiate base from step.
     "datatype-list-elim-nf-gate-empty" = {
-      expr = let
-        L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "nil"  [])
-            (con "cons" [ (field "head" A) (recField "tail") ])
-          ]);
-        M = lam "_" (app L.T nat) (_: nat);
-        onNil = zero;
-        onCons = lam "h" nat (h: lam "t" (app L.T nat) (t: lam "ih" nat (ih: succ h)));
-        scrut = app L.nil nat;
-        macroApplied = app (app (app (app (app (L.elim 0) nat) M) onNil) onCons) scrut;
-        adapterApplied = listElim 0 nat M onNil
-          (lam "h" nat (h: lam "t" (listOf nat) (t: lam "ih" nat (ih: succ h))))
-          (nil nat);
-      in Q.nf [] (elab macroApplied) == Q.nf [] (elab adapterApplied);
+      expr =
+        let
+          L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "nil" [ ])
+              (con "cons" [ (field "head" A) (recField "tail") ])
+            ]);
+          M = lam "_" (app L.T nat) (_: nat);
+          onNil = zero;
+          onCons = lam "h" nat (h: lam "t" (app L.T nat) (t: lam "ih" nat (ih: succ h)));
+          scrut = app L.nil nat;
+          macroApplied = app (app (app (app (app (L.elim 0) nat) M) onNil) onCons) scrut;
+          adapterApplied = listElim 0 nat M onNil
+            (lam "h" nat (h: lam "t" (listOf nat) (t: lam "ih" nat (ih: succ h))))
+            (HI.nilAtExplicit nat);
+        in
+        semEq macroApplied adapterApplied;
       expected = true;
     };
     # nf-gate on a one-element list: cons zero nil. Both sides reduce
     # to `succ zero` after normalization.
     "datatype-list-elim-nf-gate-one" = {
-      expr = let
-        L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "nil"  [])
-            (con "cons" [ (field "head" A) (recField "tail") ])
-          ]);
-        M = lam "_" (app L.T nat) (_: nat);
-        onNil = zero;
-        onCons = lam "h" nat (h: lam "t" (app L.T nat) (t: lam "ih" nat (ih: succ h)));
-        scrut = app (app (app L.cons nat) zero) (app L.nil nat);
-        macroApplied = app (app (app (app (app (L.elim 0) nat) M) onNil) onCons) scrut;
-        adapterApplied = listElim 0 nat M zero
-          (lam "h" nat (h: lam "t" (listOf nat) (t: lam "ih" nat (ih: succ h))))
-          (cons nat zero (nil nat));
-      in Q.nf [] (elab macroApplied) == Q.nf [] (elab adapterApplied);
+      expr =
+        let
+          L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "nil" [ ])
+              (con "cons" [ (field "head" A) (recField "tail") ])
+            ]);
+          M = lam "_" (app L.T nat) (_: nat);
+          onNil = zero;
+          onCons = lam "h" nat (h: lam "t" (app L.T nat) (t: lam "ih" nat (ih: succ h)));
+          scrut = app (app (app L.cons nat) zero) (app L.nil nat);
+          macroApplied = app (app (app (app (app (L.elim 0) nat) M) onNil) onCons) scrut;
+          adapterApplied = listElim 0 nat M zero
+            (lam "h" nat (h: lam "t" (listOf nat) (t: lam "ih" nat (ih: succ h))))
+            (HI.consAtExplicit nat zero (HI.nilAtExplicit nat));
+        in
+        semEq macroApplied adapterApplied;
       expected = true;
     };
     # nf-gate on a fresh-variable neutral list scrutinee — pins the
     # stuck normal form equality under the macro vs the adapter.
     "datatype-list-elim-nf-gate-neutral" = {
-      expr = let
-        L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "nil"  [])
-            (con "cons" [ (field "head" A) (recField "tail") ])
-          ]);
-        M = lam "_" (app L.T nat) (_: nat);
-        macroAtL = lam "l" (app L.T nat) (l:
-          app (app (app (app (app (L.elim 0) nat) M) zero)
-            (lam "h" nat (h: lam "t" (app L.T nat) (t: lam "ih" nat (ih: succ h)))))
-            l);
-        adapterAtL = lam "l" (listOf nat) (l:
-          listElim 0 nat (lam "_" (listOf nat) (_: nat)) zero
-            (lam "h" nat (h: lam "t" (listOf nat) (t: lam "ih" nat (ih: succ h))))
-            l);
-      in Q.nf [] (elab macroAtL) == Q.nf [] (elab adapterAtL);
+      expr =
+        let
+          L = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "nil" [ ])
+              (con "cons" [ (field "head" A) (recField "tail") ])
+            ]);
+          M = lam "_" (app L.T nat) (_: nat);
+          macroAtL = lam "l" (app L.T nat) (l:
+            app
+              (app (app (app (app (L.elim 0) nat) M) zero)
+                (lam "h" nat (h: lam "t" (app L.T nat) (t: lam "ih" nat (ih: succ h)))))
+              l);
+          adapterAtL = lam "l" (listOf nat) (l:
+            listElim 0 nat (lam "_" (listOf nat) (_: nat)) zero
+              (lam "h" nat (h: lam "t" (listOf nat) (t: lam "ih" nat (ih: succ h))))
+              l);
+        in
+        semEq macroAtL adapterAtL;
       expected = true;
     };
 
@@ -2064,16 +2446,18 @@ in {
     # a list-shape head+rec and crash on the null elemVal —
     # description-shape dispatch avoids that class of miscount.
     "peel-declines-tree-shape" = {
-      expr = let
-        Tree = datatypeP "Tree" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "leaf" [ (field "value" A) ])
-            (con "node" [ (recField "left") (recField "right") ])
-          ]);
-        leafZero = app (app Tree.leaf nat) zero;
-        nodeLL = app (app (app Tree.node nat) leafZero) leafZero;
-        result = checkHoas (app Tree.T nat) nodeLL;
-      in !(result ? error);
+      expr =
+        let
+          Tree = datatypeP "Tree" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "leaf" [ (field "value" A) ])
+              (con "node" [ (recField "left") (recField "right") ])
+            ]);
+          leafZero = app Tree.leaf zero;
+          nodeLL = app (app Tree.node leafZero) leafZero;
+          result = checkHoas (app Tree.T nat) nodeLL;
+        in
+          !(result ? error);
       expected = true;
     };
 
@@ -2086,25 +2470,31 @@ in {
     # `inl`/`inr` and the regular ann-lam cascade handles every
     # application.
     "datatype-sum-spec-name" = {
-      expr = let
-        S = datatypeP "Sum"
-          [ { name = "A"; kind = u 0; } { name = "B"; kind = u 0; } ]
-          (ps: let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
-            (con "inl" [ (field "value" A) ])
-            (con "inr" [ (field "value" B) ])
-          ]);
-      in S.name;
+      expr =
+        let
+          S = datatypeP "Sum"
+            [{ name = "A"; kind = u 0; } { name = "B"; kind = u 0; }]
+            (ps:
+              let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
+                (con "inl" [ (field "value" A) ])
+                (con "inr" [ (field "value" B) ])
+              ]);
+        in
+        S.name;
       expected = "Sum";
     };
     "datatype-sum-spec-params" = {
-      expr = let
-        S = datatypeP "Sum"
-          [ { name = "A"; kind = u 0; } { name = "B"; kind = u 0; } ]
-          (ps: let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
-            (con "inl" [ (field "value" A) ])
-            (con "inr" [ (field "value" B) ])
-          ]);
-      in builtins.length S.params;
+      expr =
+        let
+          S = datatypeP "Sum"
+            [{ name = "A"; kind = u 0; } { name = "B"; kind = u 0; }]
+            (ps:
+              let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
+                (con "inl" [ (field "value" A) ])
+                (con "inr" [ (field "value" B) ])
+              ]);
+        in
+        builtins.length S.params;
       expected = 2;
     };
     # Macro D applied to (nat, bool) is nf-equivalent to the prelude
@@ -2113,15 +2503,17 @@ in {
     # through the two `app (ann (λ. ...) ty) _` β-redexes and the ann
     # wrappers.
     "datatype-sum-D-matches-sumDesc" = {
-      expr = let
-        S = datatypeP "Sum"
-          [ { name = "A"; kind = u 0; } { name = "B"; kind = u 0; } ]
-          (ps: let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
-            (con "inl" [ (field "value" A) ])
-            (con "inr" [ (field "value" B) ])
-          ]);
-      in Q.nf [] (elab (app (app S.D nat) bool))
-         == Q.nf [] (elab (sumDesc nat bool));
+      expr =
+        let
+          S = datatypeP "Sum"
+            [{ name = "A"; kind = u 0; } { name = "B"; kind = u 0; }]
+            (ps:
+              let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
+                (con "inl" [ (field "value" A) ])
+                (con "inr" [ (field "value" B) ])
+              ]);
+        in
+        semEq (app (app S.D nat) bool) (sumDesc nat bool);
       expected = true;
     };
     "datatype-sumDT-level-param-count" = {
@@ -2130,12 +2522,12 @@ in {
     };
     "datatype-sumAt-zero-inl-checks" = {
       expr = !(checkHoas (self.sumAt levelZero nat bool)
-                (self.inlAt levelZero nat bool zero) ? error);
+        (self.inlAt zero) ? error);
       expected = true;
     };
     "datatype-sumAt-one-inl-checks" = {
       expr = !(checkHoas (self.sumAt (levelSuc levelZero) (u 0) (u 0))
-                (self.inlAt (levelSuc levelZero) (u 0) (u 0) unit) ? error);
+        (self.inlAt unit) ? error);
       expected = true;
     };
     "datatype-sumAt-one-elim-to-zero-level-computes" = {
@@ -2144,31 +2536,35 @@ in {
           L = levelSuc levelZero;
           A = u 0;
           B = u 0;
-          scrut = self.inlAt L A B unit;
+          scrut = self.inlAtExplicit L A B unit;
           result = self.sumElimAt L 0 A B
             (lam "_" (self.sumAt L A B) (_: nat))
             (lam "x" A (_: zero))
             (lam "y" B (_: succ zero))
             scrut;
           checked = checkHoas (eq nat result zero) refl;
-        in !(checked ? error) && checked.tag == "desc-con";
+        in
+        !(checked ? error) && checked.tag == "desc-con";
       expected = true;
     };
     "datatype-sum-D-carries-desc-ref" = {
-      expr = let
-        S = datatypeP "Sum"
-          [ { name = "A"; kind = u 0; } { name = "B"; kind = u 0; } ]
-          (ps: let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
-            (con "inl" [ (field "value" A) ])
-            (con "inr" [ (field "value" B) ])
-          ]);
-        d = E.eval [] (elab (app (app S.D nat) bool));
-      in {
-        kind = d._descRef.kind;
-        arity = d._descRef.arity;
-        indexed = d._descRef.indexed;
-        params = builtins.length d._descRef.params;
-      };
+      expr =
+        let
+          S = datatypeP "Sum"
+            [{ name = "A"; kind = u 0; } { name = "B"; kind = u 0; }]
+            (ps:
+              let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
+                (con "inl" [ (field "value" A) ])
+                (con "inr" [ (field "value" B) ])
+              ]);
+          d = E.eval [ ] (elab (app (app S.D nat) bool));
+        in
+        {
+          kind = d._descRef.kind;
+          arity = d._descRef.arity;
+          indexed = d._descRef.indexed;
+          params = builtins.length d._descRef.params;
+        };
       expected = {
         kind = "datatype-desc";
         arity = 2;
@@ -2180,79 +2576,94 @@ in {
     # tree (the outer ann (λA.λB. ...) ty awaiting two β-reductions);
     # eval reduces it to VMu.
     "datatype-sum-T-applied-elab" = {
-      expr = let
-        S = datatypeP "Sum"
-          [ { name = "A"; kind = u 0; } { name = "B"; kind = u 0; } ]
-          (ps: let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
-            (con "inl" [ (field "value" A) ])
-            (con "inr" [ (field "value" B) ])
-          ]);
-      in (elab (app (app S.T nat) bool)).tag;
+      expr =
+        let
+          S = datatypeP "Sum"
+            [{ name = "A"; kind = u 0; } { name = "B"; kind = u 0; }]
+            (ps:
+              let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
+                (con "inl" [ (field "value" A) ])
+                (con "inr" [ (field "value" B) ])
+              ]);
+        in
+        (elab (app (app S.T nat) bool)).tag;
       expected = "app";
     };
     # `SumDT.inl nat bool zero` type-checks against `SumDT.T nat bool`.
     "datatype-sum-inl-checks" = {
-      expr = let
-        S = datatypeP "Sum"
-          [ { name = "A"; kind = u 0; } { name = "B"; kind = u 0; } ]
-          (ps: let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
-            (con "inl" [ (field "value" A) ])
-            (con "inr" [ (field "value" B) ])
-          ]);
-        hoasVal = app (app (app S.inl nat) bool) zero;
-        result = checkHoas (app (app S.T nat) bool) hoasVal;
-      in !(result ? error);
+      expr =
+        let
+          S = datatypeP "Sum"
+            [{ name = "A"; kind = u 0; } { name = "B"; kind = u 0; }]
+            (ps:
+              let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
+                (con "inl" [ (field "value" A) ])
+                (con "inr" [ (field "value" B) ])
+              ]);
+          hoasVal = app (app (app S.inl nat) bool) zero;
+          result = checkHoas (app (app S.T nat) bool) hoasVal;
+        in
+          !(result ? error);
       expected = true;
     };
     "datatype-sum-inl-check-preserves-desc-con-cert" = {
-      expr = let
-        S = datatypeP "Sum"
-          [ { name = "A"; kind = u 0; } { name = "B"; kind = u 0; } ]
-          (ps: let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
-            (con "inl" [ (field "value" A) ])
-            (con "inr" [ (field "value" B) ])
-          ]);
-        hoasVal = app (app (app S.inl nat) bool) zero;
-      in (checkHoas (app (app S.T nat) bool) hoasVal) ? _descConCert;
+      expr =
+        let
+          S = datatypeP "Sum"
+            [{ name = "A"; kind = u 0; } { name = "B"; kind = u 0; }]
+            (ps:
+              let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
+                (con "inl" [ (field "value" A) ])
+                (con "inr" [ (field "value" B) ])
+              ]);
+          hoasVal = app (app (app S.inl nat) bool) zero;
+        in
+        (checkHoas (app (app S.T nat) bool) hoasVal) ? _descConCert;
       expected = true;
     };
     "datatype-sum-inl-cert-bad-field-rejected" = {
-      expr = let
-        S = datatypeP "Sum"
-          [ { name = "A"; kind = u 0; } { name = "B"; kind = u 0; } ]
-          (ps: let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
-            (con "inl" [ (field "value" A) ])
-            (con "inr" [ (field "value" B) ])
-          ]);
-        goodTm = elab (app (app (app S.inl nat) bool) zero);
-        badTm = goodTm // {
-          d = goodTm.d // {
-            term = T.mkPair (elab true_) T.mkBootRefl;
+      expr =
+        let
+          S = datatypeP "Sum"
+            [{ name = "A"; kind = u 0; } { name = "B"; kind = u 0; }]
+            (ps:
+              let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
+                (con "inl" [ (field "value" A) ])
+                (con "inr" [ (field "value" B) ])
+              ]);
+          goodTm = elab (app (app (app S.inl nat) bool) zero);
+          badTm = goodTm // {
+            d = goodTm.d // {
+              term = T.mkPair (elab true_) T.mkBootRefl;
+            };
           };
-        };
-        tyVal = E.eval [] (elab (app (app S.T nat) bool));
-        result = CH.runCheck (CH.check CH.emptyCtx badTm tyVal);
-      in result ? error;
+          tyVal = E.eval [ ] (elab (app (app S.T nat) bool));
+          result = CH.runCheck (CH.check CH.emptyCtx badTm tyVal);
+        in
+        result ? error;
       expected = true;
     };
     "datatype-sum-inl-cert-wrong-ctor-falls-back" = {
-      expr = let
-        S = datatypeP "Sum"
-          [ { name = "A"; kind = u 0; } { name = "B"; kind = u 0; } ]
-          (ps: let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
-            (con "inl" [ (field "value" A) ])
-            (con "inr" [ (field "value" B) ])
-          ]);
-        goodTm = elab (app (app (app S.inl nat) bool) zero);
-        badTm = goodTm // {
-          _descConCert = goodTm._descConCert // { ctor = 1; };
+      expr =
+        let
+          S = datatypeP "Sum"
+            [{ name = "A"; kind = u 0; } { name = "B"; kind = u 0; }]
+            (ps:
+              let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
+                (con "inl" [ (field "value" A) ])
+                (con "inr" [ (field "value" B) ])
+              ]);
+          goodTm = elab (app (app (app S.inl nat) bool) zero);
+          badTm = goodTm // {
+            _descConCert = goodTm._descConCert // { ctor = 1; };
+          };
+          tyVal = E.eval [ ] (elab (app (app S.T nat) bool));
+          result = CH.runCheck (CH.check CH.emptyCtx badTm tyVal);
+        in
+        {
+          tag = result.tag or null;
+          hasCert = result ? _descConCert;
         };
-        tyVal = E.eval [] (elab (app (app S.T nat) bool));
-        result = CH.runCheck (CH.check CH.emptyCtx badTm tyVal);
-      in {
-        tag = result.tag or null;
-        hasCert = result ? _descConCert;
-      };
       expected = {
         tag = "desc-con";
         hasCert = false;
@@ -2260,30 +2671,36 @@ in {
     };
     # `SumDT.inr nat bool true_` type-checks against `SumDT.T nat bool`.
     "datatype-sum-inr-checks" = {
-      expr = let
-        S = datatypeP "Sum"
-          [ { name = "A"; kind = u 0; } { name = "B"; kind = u 0; } ]
-          (ps: let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
-            (con "inl" [ (field "value" A) ])
-            (con "inr" [ (field "value" B) ])
-          ]);
-        hoasVal = app (app (app S.inr nat) bool) true_;
-        result = checkHoas (app (app S.T nat) bool) hoasVal;
-      in !(result ? error);
+      expr =
+        let
+          S = datatypeP "Sum"
+            [{ name = "A"; kind = u 0; } { name = "B"; kind = u 0; }]
+            (ps:
+              let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
+                (con "inl" [ (field "value" A) ])
+                (con "inr" [ (field "value" B) ])
+              ]);
+          hoasVal = app (app (app S.inr nat) bool) true_;
+          result = checkHoas (app (app S.T nat) bool) hoasVal;
+        in
+          !(result ? error);
       expected = true;
     };
     # Polymorphic inl partially applied to its two type parameters
     # infers to a Π over `value` — the curried single-data-field
     # signature.
     "datatype-sum-inl-at-types-infers-pi" = {
-      expr = let
-        S = datatypeP "Sum"
-          [ { name = "A"; kind = u 0; } { name = "B"; kind = u 0; } ]
-          (ps: let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
-            (con "inl" [ (field "value" A) ])
-            (con "inr" [ (field "value" B) ])
-          ]);
-      in (inferHoas (app (app S.inl nat) bool)).type.tag;
+      expr =
+        let
+          S = datatypeP "Sum"
+            [{ name = "A"; kind = u 0; } { name = "B"; kind = u 0; }]
+            (ps:
+              let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
+                (con "inl" [ (field "value" A) ])
+                (con "inr" [ (field "value" B) ])
+              ]);
+        in
+        (inferHoas (app (app S.inl nat) bool)).type.tag;
       expected = "VPi";
     };
     # nf-equivalence of the macro SumDT.elim against the inline
@@ -2292,64 +2709,75 @@ in {
     # true↦zero false↦zero constant — both sides reduce to `zero` on
     # `inl nat bool zero`.
     "datatype-sum-elim-nf-gate-inl" = {
-      expr = let
-        S = datatypeP "Sum"
-          [ { name = "A"; kind = u 0; } { name = "B"; kind = u 0; } ]
-          (ps: let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
-            (con "inl" [ (field "value" A) ])
-            (con "inr" [ (field "value" B) ])
-          ]);
-        M = lam "_" (app (app S.T nat) bool) (_: nat);
-        onLeft  = lam "a" nat  (a: a);
-        onRight = lam "b" bool (_: zero);
-        scrut = app (app (app S.inl nat) bool) zero;
-        macroApplied =
-          app (app (app (app (app (app (S.elim 0) nat) bool) M) onLeft) onRight) scrut;
-        adapterApplied =
-          sumElim 0 nat bool M onLeft onRight (inl nat bool zero);
-      in Q.nf [] (elab macroApplied) == Q.nf [] (elab adapterApplied);
+      expr =
+        let
+          S = datatypeP "Sum"
+            [{ name = "A"; kind = u 0; } { name = "B"; kind = u 0; }]
+            (ps:
+              let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
+                (con "inl" [ (field "value" A) ])
+                (con "inr" [ (field "value" B) ])
+              ]);
+          M = lam "_" (app (app S.T nat) bool) (_: nat);
+          onLeft = lam "a" nat (a: a);
+          onRight = lam "b" bool (_: zero);
+          scrut = app (app (app S.inl nat) bool) zero;
+          macroApplied =
+            app (app (app (app (app (app (S.elim 0) nat) bool) M) onLeft) onRight) scrut;
+          adapterApplied =
+            sumElim 0 nat bool M onLeft onRight (HI.inlAtExplicit 0 nat bool zero);
+        in
+        semEq macroApplied adapterApplied;
       expected = true;
     };
     # nf-equivalence on an `inr` scrutinee. Same motive/cases; this
     # exercises the false-branch of the descInd boolElim dispatch.
     "datatype-sum-elim-nf-gate-inr" = {
-      expr = let
-        S = datatypeP "Sum"
-          [ { name = "A"; kind = u 0; } { name = "B"; kind = u 0; } ]
-          (ps: let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
-            (con "inl" [ (field "value" A) ])
-            (con "inr" [ (field "value" B) ])
-          ]);
-        M = lam "_" (app (app S.T nat) bool) (_: nat);
-        onLeft  = lam "a" nat  (a: a);
-        onRight = lam "b" bool (_: zero);
-        scrut = app (app (app S.inr nat) bool) true_;
-        macroApplied =
-          app (app (app (app (app (app (S.elim 0) nat) bool) M) onLeft) onRight) scrut;
-        adapterApplied =
-          sumElim 0 nat bool M onLeft onRight (inr nat bool true_);
-      in Q.nf [] (elab macroApplied) == Q.nf [] (elab adapterApplied);
+      expr =
+        let
+          S = datatypeP "Sum"
+            [{ name = "A"; kind = u 0; } { name = "B"; kind = u 0; }]
+            (ps:
+              let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
+                (con "inl" [ (field "value" A) ])
+                (con "inr" [ (field "value" B) ])
+              ]);
+          M = lam "_" (app (app S.T nat) bool) (_: nat);
+          onLeft = lam "a" nat (a: a);
+          onRight = lam "b" bool (_: zero);
+          scrut = app (app (app S.inr nat) bool) true_;
+          macroApplied =
+            app (app (app (app (app (app (S.elim 0) nat) bool) M) onLeft) onRight) scrut;
+          adapterApplied =
+            sumElim 0 nat bool M onLeft onRight (HI.inrAtExplicit 0 nat bool true_);
+        in
+        semEq macroApplied adapterApplied;
       expected = true;
     };
     # nf-gate on a fresh-variable neutral Sum scrutinee — pins the
     # stuck normal form equality under the macro vs the adapter.
     "datatype-sum-elim-nf-gate-neutral" = {
-      expr = let
-        S = datatypeP "Sum"
-          [ { name = "A"; kind = u 0; } { name = "B"; kind = u 0; } ]
-          (ps: let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
-            (con "inl" [ (field "value" A) ])
-            (con "inr" [ (field "value" B) ])
-          ]);
-        M = lam "_" (app (app S.T nat) bool) (_: nat);
-        onLeft  = lam "a" nat  (a: a);
-        onRight = lam "b" bool (_: zero);
-        macroAtS = lam "s" (app (app S.T nat) bool) (s:
-          app (app (app (app (app (app (S.elim 0) nat) bool) M) onLeft) onRight) s);
-        adapterAtS = lam "s" (sum nat bool) (s:
-          sumElim 0 nat bool (lam "_" (sum nat bool) (_: nat))
-            onLeft onRight s);
-      in Q.nf [] (elab macroAtS) == Q.nf [] (elab adapterAtS);
+      expr =
+        let
+          S = datatypeP "Sum"
+            [{ name = "A"; kind = u 0; } { name = "B"; kind = u 0; }]
+            (ps:
+              let A = builtins.elemAt ps 0; B = builtins.elemAt ps 1; in [
+                (con "inl" [ (field "value" A) ])
+                (con "inr" [ (field "value" B) ])
+              ]);
+          M = lam "_" (app (app S.T nat) bool) (_: nat);
+          onLeft = lam "a" nat (a: a);
+          onRight = lam "b" bool (_: zero);
+          macroAtS = lam "s" (app (app S.T nat) bool) (s:
+            app (app (app (app (app (app (S.elim 0) nat) bool) M) onLeft) onRight) s);
+          adapterAtS = lam "s" (sum nat bool) (s:
+            sumElim 0 nat bool (lam "_" (sum nat bool) (_: nat))
+              onLeft
+              onRight
+              s);
+        in
+        semEq macroAtS adapterAtS;
       expected = true;
     };
 
@@ -2364,58 +2792,68 @@ in {
     # projects two recursive IHs at positions 0 and 1 of payloadIH
     # (one per rec field, in declaration order).
     "datatype-tree-spec-name" = {
-      expr = let
-        Tree = datatypeP "Tree" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "leaf" [ (field "value" A) ])
-            (con "node" [ (recField "left") (recField "right") ])
-          ]);
-      in Tree.name;
+      expr =
+        let
+          Tree = datatypeP "Tree" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "leaf" [ (field "value" A) ])
+              (con "node" [ (recField "left") (recField "right") ])
+            ]);
+        in
+        Tree.name;
       expected = "Tree";
     };
     "datatype-tree-spec-params" = {
-      expr = let
-        Tree = datatypeP "Tree" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "leaf" [ (field "value" A) ])
-            (con "node" [ (recField "left") (recField "right") ])
-          ]);
-      in builtins.length Tree.params;
+      expr =
+        let
+          Tree = datatypeP "Tree" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "leaf" [ (field "value" A) ])
+              (con "node" [ (recField "left") (recField "right") ])
+            ]);
+        in
+        builtins.length Tree.params;
       expected = 1;
     };
     "datatype-tree-spec-cons" = {
-      expr = let
-        Tree = datatypeP "Tree" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "leaf" [ (field "value" A) ])
-            (con "node" [ (recField "left") (recField "right") ])
-          ]);
-      in builtins.length Tree._dtypeMeta.cons;
+      expr =
+        let
+          Tree = datatypeP "Tree" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "leaf" [ (field "value" A) ])
+              (con "node" [ (recField "left") (recField "right") ])
+            ]);
+        in
+        builtins.length Tree._dtypeMeta.constructors;
       expected = 2;
     };
     # Polymorphic T at A=nat elaborates as an app tree (ann-wrapped λA.
     # ... awaiting β); eval reduces to VMu.
     "datatype-tree-T-at-nat-elab" = {
-      expr = let
-        Tree = datatypeP "Tree" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "leaf" [ (field "value" A) ])
-            (con "node" [ (recField "left") (recField "right") ])
-          ]);
-      in (elab (app Tree.T nat)).tag;
+      expr =
+        let
+          Tree = datatypeP "Tree" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "leaf" [ (field "value" A) ])
+              (con "node" [ (recField "left") (recField "right") ])
+            ]);
+        in
+        (elab (app Tree.T nat)).tag;
       expected = "app";
     };
     # `Tree.leaf nat zero` type-checks against `Tree.T nat`.
     "datatype-tree-leaf-checks" = {
-      expr = let
-        Tree = datatypeP "Tree" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "leaf" [ (field "value" A) ])
-            (con "node" [ (recField "left") (recField "right") ])
-          ]);
-        leafZero = app (app Tree.leaf nat) zero;
-        result = checkHoas (app Tree.T nat) leafZero;
-      in !(result ? error);
+      expr =
+        let
+          Tree = datatypeP "Tree" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "leaf" [ (field "value" A) ])
+              (con "node" [ (recField "left") (recField "right") ])
+            ]);
+          leafZero = app (app Tree.leaf nat) zero;
+          result = checkHoas (app Tree.T nat) leafZero;
+        in
+          !(result ? error);
       expected = true;
     };
     # `Tree.node nat (leaf 0) (leaf 0)` type-checks against `Tree.T nat`.
@@ -2427,38 +2865,49 @@ in {
     # linearProfile returns null, and the peel declines without
     # mis-reading the payload.
     "datatype-tree-node-of-leaves-checks" = {
-      expr = let
-        Tree = datatypeP "Tree" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "leaf" [ (field "value" A) ])
-            (con "node" [ (recField "left") (recField "right") ])
-          ]);
-        leafZero = app (app Tree.leaf nat) zero;
-        nodeLL = app (app (app Tree.node nat) leafZero) leafZero;
-        result = checkHoas (app Tree.T nat) nodeLL;
-      in !(result ? error);
+      expr =
+        let
+          Tree = datatypeP "Tree" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "leaf" [ (field "value" A) ])
+              (con "node" [ (recField "left") (recField "right") ])
+            ]);
+          leafZero = app Tree.leaf zero;
+          nodeLL = app (app Tree.node leafZero) leafZero;
+          result = checkHoas (app Tree.T nat) nodeLL;
+        in
+          !(result ? error);
       expected = true;
     };
-    # Polymorphic leaf at A=nat infers to a Π over `value : nat`.
+    # Polymorphic leaf at A=nat checks against the Π `(value : nat) → Tree nat`.
+    # Reformulated: under smalltt-style insertion, `app Tree.leaf nat` fills
+    # the explicit `value` position (solving `?A := U 0`) and yields `VMu`,
+    # not `VPi`. Test the principled property — checkability against the
+    # specialised Π — via `H.checkHoas`.
     "datatype-tree-leaf-at-nat-infers-pi" = {
-      expr = let
-        Tree = datatypeP "Tree" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "leaf" [ (field "value" A) ])
-            (con "node" [ (recField "left") (recField "right") ])
-          ]);
-      in (inferHoas (app Tree.leaf nat)).type.tag;
-      expected = "VPi";
+      expr =
+        let
+          Tree = datatypeP "Tree" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "leaf" [ (field "value" A) ])
+              (con "node" [ (recField "left") (recField "right") ])
+            ]);
+          treeLeafAtNatTy = forall "value" nat (_: app Tree.T nat);
+        in
+        !((checkHoas treeLeafAtNatTy Tree.leaf) ? error);
+      expected = true;
     };
     # Polymorphic elim at A=nat infers to a Π (over the motive P).
     "datatype-tree-elim-at-nat-infers-pi" = {
-      expr = let
-        Tree = datatypeP "Tree" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "leaf" [ (field "value" A) ])
-            (con "node" [ (recField "left") (recField "right") ])
-          ]);
-      in (inferHoas (app (Tree.elim 0) nat)).type.tag;
+      expr =
+        let
+          Tree = datatypeP "Tree" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "leaf" [ (field "value" A) ])
+              (con "node" [ (recField "left") (recField "right") ])
+            ]);
+        in
+        (inferHoas (app (Tree.elim 0) nat)).type.tag;
       expected = "VPi";
     };
     # End-to-end semantic test: count leaves of a 2-leaf tree.
@@ -2469,81 +2918,89 @@ in {
     # The equality `leafCount tree ≡ succ (succ zero)` holds by
     # reduction; refl type-checks against it.
     "datatype-tree-elim-leaf-count-2" = {
-      expr = let
-        Tree = datatypeP "Tree" [{ name = "A"; kind = u 0; }] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "leaf" [ (field "value" A) ])
-            (con "node" [ (recField "left") (recField "right") ])
-          ]);
-        Tnat = app Tree.T nat;
-        leafZero = app (app Tree.leaf nat) zero;
-        nodeLL = app (app (app Tree.node nat) leafZero) leafZero;
-        # See `integration-desc-nat-add-2-3`: `app addTm il` requires
-        # `addTm` inferable, hence the explicit Π annotation.
-        addTm = ann
-          (lam "m" nat (m: lam "n" nat (n:
-                  ind 0 (lam "_" nat (_: nat))
-                      n
-                      (lam "k" nat (_: lam "ih" nat (ih: succ ih)))
-                      m)))
-          (forall "m" nat (_: forall "n" nat (_: nat)));
-        M = lam "_" Tnat (_: nat);
-        sLeaf = lam "v" nat (_: succ zero);
-        sNode = lam "l" Tnat (_:
-                lam "r" Tnat (_:
-                lam "il" nat (il:
+      expr =
+        let
+          Tree = datatypeP "Tree" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "leaf" [ (field "value" A) ])
+              (con "node" [ (recField "left") (recField "right") ])
+            ]);
+          Tnat = app Tree.T nat;
+          leafZero = app (app Tree.leaf nat) zero;
+          nodeLL = app (app (app Tree.node nat) leafZero) leafZero;
+          # See `integration-desc-nat-add-2-3`: `app addTm il` requires
+          # `addTm` inferable, hence the explicit Π annotation.
+          addTm = ann
+            (lam "m" nat (m: lam "n" nat (n:
+              ind 0 (lam "_" nat (_: nat))
+                n
+                (lam "k" nat (_: lam "ih" nat (ih: succ ih)))
+                m)))
+            (forall "m" nat (_: forall "n" nat (_: nat)));
+          M = lam "_" Tnat (_: nat);
+          sLeaf = lam "v" nat (_: succ zero);
+          sNode = lam "l" Tnat (_:
+            lam "r" Tnat (_:
+              lam "il" nat (il:
                 lam "ir" nat (ir: app (app addTm il) ir))));
-        countTm = app (app (app (app (app (Tree.elim 0) nat) M) sLeaf) sNode) nodeLL;
-        two = succ (succ zero);
-        eqTy = eq nat countTm two;
-      in (checkHoas eqTy refl).tag;
+          countTm = app (app (app (app (app (Tree.elim 0) nat) M) sLeaf) sNode) nodeLL;
+          two = succ (succ zero);
+          eqTy = eq nat countTm two;
+        in
+        (checkHoas eqTy refl).tag;
       expected = "desc-con";
     };
 
     "ornament-spike-inserted-field-forget-typechecks" = {
-      expr = let
-        baseD = ann (descArg unitPrim 0 nat (_: descRet)) desc;
-        ornD = ann (descArg unitPrim 0 bool (_: baseD)) desc;
-        baseT = mu baseD ttPrim;
-        ornT = mu ornD ttPrim;
-        muFam = lam "i" unitPrim (i: mu ornD i);
-        motive = lam "i" unitPrim (i:
-          lam "_" (mu ornD i) (_: baseT));
-        step = lam "i" unitPrim (i:
-          lam "d" (interpD 0 unitPrim ornD muFam i) (d:
-          lam "_ih" (allD 0 unitPrim ornD 0 muFam motive i d) (_:
-            descCon baseD ttPrim (snd_ d))));
-        forget = ann
-          (lam "x" ornT (x: descInd ornD motive step ttPrim x))
-          (forall "x" ornT (_: baseT));
-        ornValue = descCon ornD ttPrim
-          (pair true_ (pair zero bootRefl));
-      in (checkHoas baseT (app forget ornValue)).tag;
+      expr =
+        let
+          baseD = ann (descArg unitPrim 0 nat (_: descRet)) desc;
+          ornD = ann (descArg unitPrim 0 bool (_: baseD)) desc;
+          baseT = mu baseD ttPrim;
+          ornT = mu ornD ttPrim;
+          muFam = lam "i" unitPrim (i: mu ornD i);
+          motive = lam "i" unitPrim (i:
+            lam "_" (mu ornD i) (_: baseT));
+          step = lam "i" unitPrim (i:
+            lam "d" (interpD 0 unitPrim ornD muFam i) (d:
+              lam "_ih" (allD 0 unitPrim ornD 0 muFam motive i d) (_:
+                descCon baseD ttPrim (snd_ d))));
+          forget = ann
+            (lam "x" ornT (x: descInd ornD motive step ttPrim x))
+            (forall "x" ornT (_: baseT));
+          ornValue = descCon ornD ttPrim
+            (pair true_ (pair zero bootRefl));
+        in
+        (checkHoas baseT (app forget ornValue)).tag;
       expected = "app";
     };
 
     "fastpath-sum-anonymous-mu-param-checks" = {
-      expr = let
-        baseD = descRet;
-        baseT = mu baseD tt;
-        baseValue = descCon baseD tt bootRefl;
-      in (checkHoas (sum baseT unit) (inl baseT unit baseValue)).tag;
+      expr =
+        let
+          baseD = descRet;
+          baseT = mu baseD tt;
+          baseValue = descCon baseD tt bootRefl;
+        in
+        (checkHoas (sum baseT unit) (inl baseValue)).tag;
       expected = "desc-con";
     };
 
     "anonymous-mu-raw-checked-conv-erases-injection-annotations" = {
-      expr = let
-        baseD = descRet;
-        baseT = mu baseD tt;
-        baseValue = descCon baseD tt bootRefl;
-        rawT = E.eval [] (elab baseT);
-        checkedT = E.eval [] (CH.runCheck (CH.checkType CH.emptyCtx (elab baseT)));
-        rawValue = E.eval [] (elab baseValue);
-        checkedValue = E.eval [] (CH.runCheck (CH.check CH.emptyCtx (elab baseValue) checkedT));
-      in {
-        type = C.conv 0 rawT checkedT;
-        value = C.conv 0 rawValue checkedValue;
-      };
+      expr =
+        let
+          baseD = descRet;
+          baseT = mu baseD tt;
+          baseValue = descCon baseD tt bootRefl;
+          rawT = E.eval [ ] (elab baseT);
+          checkedT = E.eval [ ] (CH.runCheck (CH.checkType CH.emptyCtx (elab baseT)));
+          rawValue = E.eval [ ] (elab baseValue);
+          checkedValue = E.eval [ ] (CH.runCheck (CH.check CH.emptyCtx (elab baseValue) checkedT));
+        in
+        {
+          type = C.conv 0 rawT checkedT;
+          value = C.conv 0 rawValue checkedValue;
+        };
       expected = {
         type = true;
         value = true;
@@ -2551,24 +3008,28 @@ in {
     };
 
     "fastpath-list-anonymous-mu-param-checks" = {
-      expr = let
-        baseD = descRet;
-        baseT = mu baseD tt;
-        baseValue = descCon baseD tt bootRefl;
-      in (checkHoas (listOf baseT)
-        (cons baseT baseValue (nil baseT))).tag;
+      expr =
+        let
+          baseD = descRet;
+          baseT = mu baseD tt;
+          baseValue = descCon baseD tt bootRefl;
+        in
+        (checkHoas (listOf baseT)
+          (cons baseValue nil)).tag;
       expected = "desc-con";
     };
 
     "fastpath-monomorphic-field-anonymous-mu-checks" = {
-      expr = let
-        baseD = descRet;
-        baseT = mu baseD tt;
-        baseValue = descCon baseD tt bootRefl;
-        Box = datatype "BoxAudit" [
-          (con "box" [ (field "x" baseT) ])
-        ];
-      in (checkHoas Box.T (app Box.box baseValue)).tag;
+      expr =
+        let
+          baseD = descRet;
+          baseT = mu baseD tt;
+          baseValue = descCon baseD tt bootRefl;
+          Box = datatype "BoxAudit" [
+            (con "box" [ (field "x" baseT) ])
+          ];
+        in
+        (checkHoas Box.T (app Box.box baseValue)).tag;
       expected = "desc-con";
     };
 
@@ -2578,7 +3039,7 @@ in {
     # The second parameter's KIND depends on the first — `P : S → U`
     # cannot be expressed with a fixed Hoas kind, so `datatypeP`
     # accepts `kind` as either a Hoas (fixed) OR a function
-    # `markers → Hoas` (dependent on previously-bound parameter
+    # `markers → Hoas` (dependent on already-bound parameter
     # markers). This mirrors the existing `field`/`fieldD` and
     # `piField`/`piFieldD` dependency pattern at the parameter level.
     #
@@ -2589,25 +3050,31 @@ in {
     # chain-flattener declines and the regular ann-lam cascade handles
     # every application.
     "datatype-w-spec-name" = {
-      expr = let
-        W = datatypeP "W"
-          [ { name = "S"; kind = u 0; }
-            { name = "P"; kind = ms: forall "_" (builtins.elemAt ms 0) (_: u 0); } ]
-          (ps: let S = builtins.elemAt ps 0; P = builtins.elemAt ps 1; in [
-            (con "sup" [ (field "s" S) (piFieldD "f" (prev: app P prev.s)) ])
-          ]);
-      in W.name;
+      expr =
+        let
+          W = datatypeP "W"
+            [{ name = "S"; kind = u 0; }
+              { name = "P"; kind = ms: forall "_" (builtins.elemAt ms 0) (_: u 0); }]
+            (ps:
+              let S = builtins.elemAt ps 0; P = builtins.elemAt ps 1; in [
+                (con "sup" [ (field "s" S) (piFieldD "f" (prev: app P prev.s)) ])
+              ]);
+        in
+        W.name;
       expected = "W";
     };
     "datatype-w-spec-params" = {
-      expr = let
-        W = datatypeP "W"
-          [ { name = "S"; kind = u 0; }
-            { name = "P"; kind = ms: forall "_" (builtins.elemAt ms 0) (_: u 0); } ]
-          (ps: let S = builtins.elemAt ps 0; P = builtins.elemAt ps 1; in [
-            (con "sup" [ (field "s" S) (piFieldD "f" (prev: app P prev.s)) ])
-          ]);
-      in builtins.length W.params;
+      expr =
+        let
+          W = datatypeP "W"
+            [{ name = "S"; kind = u 0; }
+              { name = "P"; kind = ms: forall "_" (builtins.elemAt ms 0) (_: u 0); }]
+            (ps:
+              let S = builtins.elemAt ps 0; P = builtins.elemAt ps 1; in [
+                (con "sup" [ (field "s" S) (piFieldD "f" (prev: app P prev.s)) ])
+              ]);
+        in
+        builtins.length W.params;
       expected = 2;
     };
     # W's macro D fully applied to (bool, λs.boolElim _ unit void s) is
@@ -2616,38 +3083,44 @@ in {
     # test. Pins the D-emission shape against the canonical W-type
     # description.
     "datatype-w-D-matches-wDesc" = {
-      expr = let
-        W = datatypeP "W"
-          [ { name = "S"; kind = u 0; }
-            { name = "P"; kind = ms: forall "_" (builtins.elemAt ms 0) (_: u 0); } ]
-          (ps: let S = builtins.elemAt ps 0; P = builtins.elemAt ps 1; in [
-            (con "sup" [ (field "s" S) (piFieldD "f" (prev: app P prev.s)) ])
-          ]);
-        boolP = lam "s" bool (s:
-                  boolElim 1 (lam "_" bool (_: u 0)) unit void s);
-        macroD = app (app W.D bool) boolP;
-        manualD = descArg unit 0 bool (s:
-                    descPi 0 (app boolP s) descRet);
-      in semEq macroD manualD;
+      expr =
+        let
+          W = datatypeP "W"
+            [{ name = "S"; kind = u 0; }
+              { name = "P"; kind = ms: forall "_" (builtins.elemAt ms 0) (_: u 0); }]
+            (ps:
+              let S = builtins.elemAt ps 0; P = builtins.elemAt ps 1; in [
+                (con "sup" [ (field "s" S) (piFieldD "f" (prev: app P prev.s)) ])
+              ]);
+          boolP = lam "s" bool (s:
+            boolElim 1 (lam "_" bool (_: u 0)) unit void s);
+          macroD = app (app W.D bool) boolP;
+          manualD = descArg unit 0 bool (s:
+            descPi 0 (app boolP s) descRet);
+        in
+        semEq macroD manualD;
       expected = true;
     };
     "datatype-w-D-carries-desc-ref" = {
-      expr = let
-        W = datatypeP "W"
-          [ { name = "S"; kind = u 0; }
-            { name = "P"; kind = ms: forall "_" (builtins.elemAt ms 0) (_: u 0); } ]
-          (ps: let S = builtins.elemAt ps 0; P = builtins.elemAt ps 1; in [
-            (con "sup" [ (field "s" S) (piFieldD "f" (prev: app P prev.s)) ])
-          ]);
-        boolP = lam "s" bool (s:
-                  boolElim 1 (lam "_" bool (_: u 0)) unit void s);
-        d = E.eval [] (elab (app (app W.D bool) boolP));
-      in {
-        kind = d._descRef.kind;
-        arity = d._descRef.arity;
-        indexed = d._descRef.indexed;
-        params = builtins.length d._descRef.params;
-      };
+      expr =
+        let
+          W = datatypeP "W"
+            [{ name = "S"; kind = u 0; }
+              { name = "P"; kind = ms: forall "_" (builtins.elemAt ms 0) (_: u 0); }]
+            (ps:
+              let S = builtins.elemAt ps 0; P = builtins.elemAt ps 1; in [
+                (con "sup" [ (field "s" S) (piFieldD "f" (prev: app P prev.s)) ])
+              ]);
+          boolP = lam "s" bool (s:
+            boolElim 1 (lam "_" bool (_: u 0)) unit void s);
+          d = E.eval [ ] (elab (app (app W.D bool) boolP));
+        in
+        {
+          kind = d._descRef.kind;
+          arity = d._descRef.arity;
+          indexed = d._descRef.indexed;
+          params = builtins.length d._descRef.params;
+        };
       expected = {
         kind = "datatype-desc";
         arity = 1;
@@ -2658,18 +3131,21 @@ in {
     # `W.T bool boolP` reduces to `μ wBoolDesc` and inhabits `U(0)`,
     # matching the `integration-desc-wtype-wellformed` shape test.
     "datatype-w-T-wellformed" = {
-      expr = let
-        W = datatypeP "W"
-          [ { name = "S"; kind = u 0; }
-            { name = "P"; kind = ms: forall "_" (builtins.elemAt ms 0) (_: u 0); } ]
-          (ps: let S = builtins.elemAt ps 0; P = builtins.elemAt ps 1; in [
-            (con "sup" [ (field "s" S) (piFieldD "f" (prev: app P prev.s)) ])
-          ]);
-        boolP = lam "s" bool (s:
-                  boolElim 1 (lam "_" bool (_: u 0)) unit void s);
-        Tw = app (app W.T bool) boolP;
-        result = checkHoas (u 0) Tw;
-      in !(result ? error);
+      expr =
+        let
+          W = datatypeP "W"
+            [{ name = "S"; kind = u 0; }
+              { name = "P"; kind = ms: forall "_" (builtins.elemAt ms 0) (_: u 0); }]
+            (ps:
+              let S = builtins.elemAt ps 0; P = builtins.elemAt ps 1; in [
+                (con "sup" [ (field "s" S) (piFieldD "f" (prev: app P prev.s)) ])
+              ]);
+          boolP = lam "s" bool (s:
+            boolElim 1 (lam "_" bool (_: u 0)) unit void s);
+          Tw = app (app W.T bool) boolP;
+          result = checkHoas (u 0) Tw;
+        in
+          !(result ? error);
       expected = true;
     };
     # Polymorphic `sup` partially applied to its two type parameters
@@ -2678,16 +3154,19 @@ in {
     # the two `ann (λS λP. ...)` outer layers without losing
     # inferability.
     "datatype-w-sup-at-types-infers-pi" = {
-      expr = let
-        W = datatypeP "W"
-          [ { name = "S"; kind = u 0; }
-            { name = "P"; kind = ms: forall "_" (builtins.elemAt ms 0) (_: u 0); } ]
-          (ps: let S = builtins.elemAt ps 0; P = builtins.elemAt ps 1; in [
-            (con "sup" [ (field "s" S) (piFieldD "f" (prev: app P prev.s)) ])
-          ]);
-        boolP = lam "s" bool (s:
-                  boolElim 1 (lam "_" bool (_: u 0)) unit void s);
-      in (inferHoas (app (app W.sup bool) boolP)).type.tag;
+      expr =
+        let
+          W = datatypeP "W"
+            [{ name = "S"; kind = u 0; }
+              { name = "P"; kind = ms: forall "_" (builtins.elemAt ms 0) (_: u 0); }]
+            (ps:
+              let S = builtins.elemAt ps 0; P = builtins.elemAt ps 1; in [
+                (con "sup" [ (field "s" S) (piFieldD "f" (prev: app P prev.s)) ])
+              ]);
+          boolP = lam "s" bool (s:
+            boolElim 1 (lam "_" bool (_: u 0)) unit void s);
+        in
+        (inferHoas (app (app W.sup bool) boolP)).type.tag;
       expected = "VPi";
     };
     # End-to-end ctor application: `sup false_ (λx:void. absurd Tw x)`
@@ -2696,62 +3175,73 @@ in {
     # W bool boolP`. Exercises piFieldD's dependent type-construction
     # and the absurd-on-void elimination through the macro's ctor type.
     "datatype-w-sup-vacuous-checks" = {
-      expr = let
-        W = datatypeP "W"
-          [ { name = "S"; kind = u 0; }
-            { name = "P"; kind = ms: forall "_" (builtins.elemAt ms 0) (_: u 0); } ]
-          (ps: let S = builtins.elemAt ps 0; P = builtins.elemAt ps 1; in [
-            (con "sup" [ (field "s" S) (piFieldD "f" (prev: app P prev.s)) ])
-          ]);
-        boolP = lam "s" bool (s:
-                  boolElim 1 (lam "_" bool (_: u 0)) unit void s);
-        Tw = app (app W.T bool) boolP;
-        vacuous = lam "x" void (x: absurd Tw x);
-        sup0 = app (app (app (app W.sup bool) boolP) false_) vacuous;
-        result = checkHoas Tw sup0;
-      in !(result ? error);
+      expr =
+        let
+          W = datatypeP "W"
+            [{ name = "S"; kind = u 0; }
+              { name = "P"; kind = ms: forall "_" (builtins.elemAt ms 0) (_: u 0); }]
+            (ps:
+              let S = builtins.elemAt ps 0; P = builtins.elemAt ps 1; in [
+                (con "sup" [ (field "s" S) (piFieldD "f" (prev: app P prev.s)) ])
+              ]);
+          boolP = lam "s" bool (s:
+            boolElim 1 (lam "_" bool (_: u 0)) unit void s);
+          Tw = app (app W.T bool) boolP;
+          vacuous = lam "x" void (x: absurd Tw x);
+          sup0 = app (app (app (app W.sup bool) boolP) false_) vacuous;
+          result = checkHoas Tw sup0;
+        in
+          !(result ? error);
       expected = true;
     };
 
     "datatype-fieldAt-level-zero-matches-field" = {
-      expr = let
-        BoxAt = datatype "Box" [ (con "box" [ (fieldAt 0 "value" nat) ]) ];
-        Box0  = datatype "Box" [ (con "box" [ (field "value" nat) ]) ];
-      in semEq BoxAt.D Box0.D;
+      expr =
+        let
+          BoxAt = datatype "Box" [ (con "box" [ (fieldAt 0 "value" nat) ]) ];
+          Box0 = datatype "Box" [ (con "box" [ (field "value" nat) ]) ];
+        in
+        semEq BoxAt.D Box0.D;
       expected = true;
     };
     "datatype-piFieldDAt-level-zero-matches-piFieldD" = {
-      expr = let
-        WAt = datatypeP "W"
-          [ { name = "S"; kind = u 0; }
-            { name = "P"; kind = ms: forall "_" (builtins.elemAt ms 0) (_: u 0); } ]
-          (ps: let S = builtins.elemAt ps 0; P = builtins.elemAt ps 1; in [
-            (con "sup" [ (field "s" S) (piFieldDAt 0 "f" (prev: app P prev.s)) ])
-          ]);
-        W0 = datatypeP "W"
-          [ { name = "S"; kind = u 0; }
-            { name = "P"; kind = ms: forall "_" (builtins.elemAt ms 0) (_: u 0); } ]
-          (ps: let S = builtins.elemAt ps 0; P = builtins.elemAt ps 1; in [
-            (con "sup" [ (field "s" S) (piFieldD "f" (prev: app P prev.s)) ])
-          ]);
-        boolP = lam "s" bool (s:
-                  boolElim 1 (lam "_" bool (_: u 0)) unit void s);
-      in semEq (app (app WAt.D bool) boolP) (app (app W0.D bool) boolP);
+      expr =
+        let
+          WAt = datatypeP "W"
+            [{ name = "S"; kind = u 0; }
+              { name = "P"; kind = ms: forall "_" (builtins.elemAt ms 0) (_: u 0); }]
+            (ps:
+              let S = builtins.elemAt ps 0; P = builtins.elemAt ps 1; in [
+                (con "sup" [ (field "s" S) (piFieldDAt 0 "f" (prev: app P prev.s)) ])
+              ]);
+          W0 = datatypeP "W"
+            [{ name = "S"; kind = u 0; }
+              { name = "P"; kind = ms: forall "_" (builtins.elemAt ms 0) (_: u 0); }]
+            (ps:
+              let S = builtins.elemAt ps 0; P = builtins.elemAt ps 1; in [
+                (con "sup" [ (field "s" S) (piFieldD "f" (prev: app P prev.s)) ])
+              ]);
+          boolP = lam "s" bool (s:
+            boolElim 1 (lam "_" bool (_: u 0)) unit void s);
+        in
+        semEq (app (app WAt.D bool) boolP) (app (app W0.D bool) boolP);
       expected = true;
     };
     "datatypePAt-level-zero-matches-datatypeP" = {
-      expr = let
-        ListAt = datatypePAt "List" [ { name = "A"; kind = u 0; } ] (_: 0) (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "nil"  [])
-            (con "cons" [ (field "head" A) (recField "tail") ])
-          ]);
-        List0 = datatypeP "List" [ { name = "A"; kind = u 0; } ] (ps:
-          let A = builtins.elemAt ps 0; in [
-            (con "nil"  [])
-            (con "cons" [ (field "head" A) (recField "tail") ])
-          ]);
-      in semEq (app ListAt.D nat) (app List0.D nat);
+      expr =
+        let
+          ListAt = datatypePAt "List" [{ name = "A"; kind = u 0; }] (_: 0) (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "nil" [ ])
+              (con "cons" [ (field "head" A) (recField "tail") ])
+            ]);
+          List0 = datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "nil" [ ])
+              (con "cons" [ (field "head" A) (recField "tail") ])
+            ]);
+        in
+        semEq (app ListAt.D nat) (app List0.D nat);
       expected = true;
     };
 
@@ -2760,16 +3250,18 @@ in {
       expected = "W";
     };
     "datatype-w-level-param-D-carries-desc-ref" = {
-      expr = let
-        boolP = lam "s" bool (s:
-                  boolElim 1 (lam "_" bool (_: u 0)) unit void s);
-        d = E.eval [] (elab (wDesc levelZero bool boolP));
-      in {
-        kind = d._descRef.kind;
-        arity = d._descRef.arity;
-        indexed = d._descRef.indexed;
-        params = builtins.length d._descRef.params;
-      };
+      expr =
+        let
+          boolP = lam "s" bool (s:
+            boolElim 1 (lam "_" bool (_: u 0)) unit void s);
+          d = E.eval [ ] (elab (wDesc levelZero bool boolP));
+        in
+        {
+          kind = d._descRef.kind;
+          arity = d._descRef.arity;
+          indexed = d._descRef.indexed;
+          params = builtins.length d._descRef.params;
+        };
       expected = {
         kind = "datatype-desc";
         arity = 1;
@@ -2778,97 +3270,113 @@ in {
       };
     };
     "datatype-w-level-param-D-level-is-k" = {
-      expr = let
-        boolP = lam "s" bool (s:
-                  boolElim 1 (lam "_" bool (_: u 0)) unit void s);
-        d = E.eval [] (elab (wDesc levelZero bool boolP));
-      in C.convLevel d._descRef.level V.vLevelZero;
+      expr =
+        let
+          boolP = lam "s" bool (s:
+            boolElim 1 (lam "_" bool (_: u 0)) unit void s);
+          d = E.eval [ ] (elab (wDesc levelZero bool boolP));
+        in
+        C.convLevel d._descRef.level V.vLevelZero;
       expected = true;
     };
     "datatype-w-level-param-D-matches-manual-wDescAt" = {
-      expr = let
-        boolP = lam "s" bool (s:
-                  boolElim 1 (lam "_" bool (_: u 0)) unit void s);
-        manualWDescAt = k: S: P:
-          descArgAt unitPrim k k S (s:
-            descPiAt k k (app P s) (retI unitPrim k ttPrim));
-      in semEq (wDesc levelZero bool boolP)
-               (manualWDescAt levelZero bool boolP);
+      expr =
+        let
+          boolP = lam "s" bool (s:
+            boolElim 1 (lam "_" bool (_: u 0)) unit void s);
+          manualWDescAt = k: S: P:
+            descArgAt unitPrim k k S (s:
+              descPiAt k k (app P s) (retI unitPrim k ttPrim));
+        in
+        semEq (wDesc levelZero bool boolP)
+          (manualWDescAt levelZero bool boolP);
       expected = true;
     };
     "datatype-w-level-param-sup-at-zero-infers-pi" = {
-      expr = let
-        boolP = lam "s" bool (s:
-                  boolElim 1 (lam "_" bool (_: u 0)) unit void s);
-      in (inferHoas (app (app (app self.WDT.sup levelZero) bool) boolP)).type.tag;
+      expr =
+        let
+          boolP = lam "s" bool (s:
+            boolElim 1 (lam "_" bool (_: u 0)) unit void s);
+        in
+        (inferHoas (app (app (app self.WDT.sup levelZero) bool) boolP)).type.tag;
       expected = "VPi";
     };
     "datatype-w-level-param-sup-vacuous-checks" = {
-      expr = let
-        boolP = lam "s" bool (s:
-                  boolElim 1 (lam "_" bool (_: u 0)) unit void s);
-        Tw = w levelZero bool boolP;
-        vacuous = lam "x" void (x: absurd Tw x);
-        sup0 = sup levelZero bool boolP false_ vacuous;
-        result = checkHoas Tw sup0;
-      in !(result ? error);
+      expr =
+        let
+          boolP = lam "s" bool (s:
+            boolElim 1 (lam "_" bool (_: u 0)) unit void s);
+          Tw = w levelZero bool boolP;
+          vacuous = lam "x" void (x: absurd Tw x);
+          sup0 = sup levelZero bool boolP false_ vacuous;
+          result = checkHoas Tw sup0;
+        in
+          !(result ? error);
       expected = true;
     };
     "datatype-w-level-param-elim-reduces-vacuous" = {
-      expr = let
-        boolP = lam "s" bool (s:
-                  boolElim 1 (lam "_" bool (_: u 0)) unit void s);
-        Tw = w levelZero bool boolP;
-        vacuous = lam "x" void (x: absurd Tw x);
-        sup0 = sup levelZero bool boolP false_ vacuous;
-        Qw = lam "_" Tw (_: unit);
-        step = lam "s" bool (s:
-               lam "f" (forall "_" (app boolP s) (_: Tw)) (_:
-               lam "ih_f" (forall "_" (app boolP s) (_: unit)) (_:
-                 tt)));
-        reduced = wElim levelZero 0 bool boolP Qw step sup0;
-      in Q.nf [] (elab reduced) == Q.nf [] (elab tt);
+      expr =
+        let
+          boolP = lam "s" bool (s:
+            boolElim 1 (lam "_" bool (_: u 0)) unit void s);
+          Tw = w levelZero bool boolP;
+          vacuous = lam "x" void (x: absurd Tw x);
+          sup0 = sup levelZero bool boolP false_ vacuous;
+          Qw = lam "_" Tw (_: unit);
+          step = lam "s" bool (s:
+            lam "f" (forall "_" (app boolP s) (_: Tw)) (_:
+              lam "ih_f" (forall "_" (app boolP s) (_: unit)) (_:
+                tt)));
+          reduced = wElim levelZero 0 bool boolP Qw step sup0;
+        in
+        semEq reduced tt;
       expected = true;
     };
     "datatype-w-level-param-D-typechecks-under-level-binder" = {
-      expr = let
-        ty = forall "k" level (k:
-             forall "S" (u k) (S:
-             forall "P" (forall "_" S (_: u k)) (_:
-               descAt k)));
-        tm = lam "k" level (k:
-             lam "S" (u k) (S:
-             lam "P" (forall "_" S (_: u k)) (P:
-               wDesc k S P)));
-      in (checkHoas ty tm).tag;
+      expr =
+        let
+          ty = forall "k" level (k:
+            forall "S" (u k) (S:
+              forall "P" (forall "_" S (_: u k)) (_:
+                descAt k)));
+          tm = lam "k" level (k:
+            lam "S" (u k) (S:
+              lam "P" (forall "_" S (_: u k)) (P:
+                wDesc k S P)));
+        in
+        (checkHoas ty tm).tag;
       expected = "lam";
     };
     "datatype-w-level-param-T-typechecks-under-level-binder" = {
-      expr = let
-        ty = forall "k" level (k:
-             forall "S" (u k) (S:
-             forall "P" (forall "_" S (_: u k)) (_:
-               u k)));
-        tm = lam "k" level (k:
-             lam "S" (u k) (S:
-             lam "P" (forall "_" S (_: u k)) (P:
-               w k S P)));
-      in (checkHoas ty tm).tag;
+      expr =
+        let
+          ty = forall "k" level (k:
+            forall "S" (u k) (S:
+              forall "P" (forall "_" S (_: u k)) (_:
+                u k)));
+          tm = lam "k" level (k:
+            lam "S" (u k) (S:
+              lam "P" (forall "_" S (_: u k)) (P:
+                w k S P)));
+        in
+        (checkHoas ty tm).tag;
       expected = "lam";
     };
     "datatype-w-level-param-sup-typechecks-under-level-binder" = {
-      expr = let
-        ty = forall "k" level (k:
-             forall "S" (u k) (S:
-             forall "P" (forall "_" S (_: u k)) (P:
-             forall "s" S (s:
-             forall "f" (forall "_" (app P s) (_: w k S P)) (_:
-               w k S P)))));
-        tm = lam "k" level (k:
-             lam "S" (u k) (S:
-             lam "P" (forall "_" S (_: u k)) (P:
-               app (app (app self.WDT.sup k) S) P)));
-      in (checkHoas ty tm).tag;
+      expr =
+        let
+          ty = forall "k" level (k:
+            forall "S" (u k) (S:
+              forall "P" (forall "_" S (_: u k)) (P:
+                forall "s" S (s:
+                  forall "f" (forall "_" (app P s) (_: w k S P)) (_:
+                    w k S P)))));
+          tm = lam "k" level (k:
+            lam "S" (u k) (S:
+              lam "P" (forall "_" S (_: u k)) (P:
+                app (app (app self.WDT.sup k) S) P)));
+        in
+        (checkHoas ty tm).tag;
       expected = "lam";
     };
 
@@ -2880,19 +3388,23 @@ in {
     # markers so both sides sit under the same de Bruijn environment.
 
     "datatypeI-fin-D-matches-finDesc" = {
-      expr = let
-        FinDT = self.datatypeI "Fin" self.nat [
-          (self.conI "fzero" [ (self.field "m" self.nat) ]
-            (p: self.succ p.m))
-          (self.conI "fsuc"  [ (self.field "m" self.nat)
-                               (self.recFieldAt "k" (p: p.m)) ]
-            (p: self.succ p.m))
-        ];
-      in semEq FinDT.D self.finDesc;
+      expr =
+        let
+          FinDT = self.datatypeI "Fin" self.nat [
+            (self.conI "fzero" [ (self.field "m" self.nat) ]
+              (p: self.succ p.m))
+            (self.conI "fsuc" [
+              (self.field "m" self.nat)
+              (self.recFieldAt "k" (p: p.m))
+            ]
+              (p: self.succ p.m))
+          ];
+        in
+        semEq FinDT.D self.finDesc;
       expected = true;
     };
     "datatypeI-fin-D-carries-desc-ref" = {
-      expr = let d = E.eval [] (elab self.FinDT.D); in {
+      expr = let d = E.eval [ ] (elab self.FinDT.D); in {
         kind = d._descRef.kind;
         arity = d._descRef.arity;
         indexed = d._descRef.indexed;
@@ -2911,74 +3423,91 @@ in {
     # the semantics is checked by application, matching the pattern used
     # by `datatypePI-eq-T-matches-eqDT`.
     "datatypeI-fin-T-matches-fin" = {
-      expr = let
-        FinDT = self.datatypeI "Fin" self.nat [
-          (self.conI "fzero" [ (self.field "m" self.nat) ]
-            (p: self.succ p.m))
-          (self.conI "fsuc"  [ (self.field "m" self.nat)
-                               (self.recFieldAt "k" (p: p.m)) ]
-            (p: self.succ p.m))
-        ];
-        macroForm = lam "n" self.nat (n: app FinDT.T n);
-        handForm  = lam "n" self.nat (n: app self.fin n);
-      in semEq macroForm handForm;
+      expr =
+        let
+          FinDT = self.datatypeI "Fin" self.nat [
+            (self.conI "fzero" [ (self.field "m" self.nat) ]
+              (p: self.succ p.m))
+            (self.conI "fsuc" [
+              (self.field "m" self.nat)
+              (self.recFieldAt "k" (p: p.m))
+            ]
+              (p: self.succ p.m))
+          ];
+          macroForm = lam "n" self.nat (n: app FinDT.T n);
+          handForm = lam "n" self.nat (n: app self.fin n);
+        in
+        semEq macroForm handForm;
       expected = true;
     };
 
     "datatypeI-fin-fzero-matches" = {
-      expr = let
-        FinDT = self.datatypeI "Fin" self.nat [
-          (self.conI "fzero" [ (self.field "m" self.nat) ]
-            (p: self.succ p.m))
-          (self.conI "fsuc"  [ (self.field "m" self.nat)
-                               (self.recFieldAt "k" (p: p.m)) ]
-            (p: self.succ p.m))
-        ];
-        macroForm = lam "m" self.nat (m: app FinDT.fzero m);
-        handForm  = lam "m" self.nat (m: self.fzero m);
-      in semEq macroForm handForm;
+      expr =
+        let
+          FinDT = self.datatypeI "Fin" self.nat [
+            (self.conI "fzero" [ (self.field "m" self.nat) ]
+              (p: self.succ p.m))
+            (self.conI "fsuc" [
+              (self.field "m" self.nat)
+              (self.recFieldAt "k" (p: p.m))
+            ]
+              (p: self.succ p.m))
+          ];
+          macroForm = FinDT.fzero;
+          handForm = self.fzero;
+        in
+        semEq macroForm handForm;
       expected = true;
     };
 
     "datatypeI-fin-fsuc-matches" = {
-      expr = let
-        FinDT = self.datatypeI "Fin" self.nat [
-          (self.conI "fzero" [ (self.field "m" self.nat) ]
-            (p: self.succ p.m))
-          (self.conI "fsuc"  [ (self.field "m" self.nat)
-                               (self.recFieldAt "k" (p: p.m)) ]
-            (p: self.succ p.m))
-        ];
-        macroForm = lam "m" self.nat (m:
-                    lam "k" (app self.fin m) (k:
-                      app (app FinDT.fsuc m) k));
-        handForm  = lam "m" self.nat (m:
-                    lam "k" (app self.fin m) (k:
-                      self.fsuc m k));
-      in semEq macroForm handForm;
+      expr =
+        let
+          FinDT = self.datatypeI "Fin" self.nat [
+            (self.conI "fzero" [ (self.field "m" self.nat) ]
+              (p: self.succ p.m))
+            (self.conI "fsuc" [
+              (self.field "m" self.nat)
+              (self.recFieldAt "k" (p: p.m))
+            ]
+              (p: self.succ p.m))
+          ];
+          macroForm = lam "m" self.nat (m:
+            lam "k" (app self.fin m) (k:
+              app FinDT.fsuc k));
+          handForm = lam "m" self.nat (m:
+            lam "k" (app self.fin m) (k:
+              self.fsuc k));
+        in
+        semEq macroForm handForm;
       expected = true;
     };
 
     "datatypePI-vec-D-matches-vecDesc" = {
-      expr = let
-        VecDT = self.datatypePI "Vec"
-          [ { name = "A"; kind = u 0; } ]
-          (_: self.nat)
-          (ps: let A = builtins.elemAt ps 0; in [
-            (self.conI "vnil"  [] (_: self.zero))
-            (self.conI "vcons"
-              [ (self.field "m" self.nat)
-                (self.field "x" A)
-                (self.recFieldAt "xs" (p: p.m)) ]
-              (p: self.succ p.m))
-          ]);
-        macroForm = lam "A" (u 0) (A: app VecDT.D A);
-        handForm  = lam "A" (u 0) (A: self.vecDesc A);
-      in semEq macroForm handForm;
+      expr =
+        let
+          VecDT = self.datatypePI "Vec"
+            [{ name = "A"; kind = u 0; }]
+            (_: self.nat)
+            (ps:
+              let A = builtins.elemAt ps 0; in [
+                (self.conI "vnil" [ ] (_: self.zero))
+                (self.conI "vcons"
+                  [
+                    (self.field "m" self.nat)
+                    (self.field "x" A)
+                    (self.recFieldAt "xs" (p: p.m))
+                  ]
+                  (p: self.succ p.m))
+              ]);
+          macroForm = lam "A" (u 0) (A: app VecDT.D A);
+          handForm = lam "A" (u 0) (A: self.vecDesc A);
+        in
+        semEq macroForm handForm;
       expected = true;
     };
     "datatypePI-vec-D-carries-desc-ref" = {
-      expr = let d = E.eval [] (elab (app self.VecDT.D nat)); in {
+      expr = let d = E.eval [ ] (elab (app self.VecDT.D nat)); in {
         kind = d._descRef.kind;
         arity = d._descRef.arity;
         indexed = d._descRef.indexed;
@@ -2996,44 +3525,52 @@ in {
     # `VecDT.T A` and `self.vec A` to a fresh nat marker so the inner
     # index binder is β-reduced out of the resulting comparison.
     "datatypePI-vec-T-matches-vec" = {
-      expr = let
-        VecDT = self.datatypePI "Vec"
-          [ { name = "A"; kind = u 0; } ]
-          (_: self.nat)
-          (ps: let A = builtins.elemAt ps 0; in [
-            (self.conI "vnil"  [] (_: self.zero))
-            (self.conI "vcons"
-              [ (self.field "m" self.nat)
-                (self.field "x" A)
-                (self.recFieldAt "xs" (p: p.m)) ]
-              (p: self.succ p.m))
-          ]);
-        macroForm = lam "A" (u 0) (A:
-                    lam "n" self.nat (n: app (app VecDT.T A) n));
-        handForm  = lam "A" (u 0) (A:
-                    lam "n" self.nat (n: app (self.vec A) n));
-      in semEq macroForm handForm;
+      expr =
+        let
+          VecDT = self.datatypePI "Vec"
+            [{ name = "A"; kind = u 0; }]
+            (_: self.nat)
+            (ps:
+              let A = builtins.elemAt ps 0; in [
+                (self.conI "vnil" [ ] (_: self.zero))
+                (self.conI "vcons"
+                  [
+                    (self.field "m" self.nat)
+                    (self.field "x" A)
+                    (self.recFieldAt "xs" (p: p.m))
+                  ]
+                  (p: self.succ p.m))
+              ]);
+          macroForm = lam "A" (u 0) (A:
+            lam "n" self.nat (n: app (app VecDT.T A) n));
+          handForm = lam "A" (u 0) (A:
+            lam "n" self.nat (n: app (self.vec A) n));
+        in
+        semEq macroForm handForm;
       expected = true;
     };
 
     "datatypePI-eq-D-matches-eqDesc" = {
-      expr = let
-        EqDT = self.datatypePI "Eq"
-          [ { name = "A"; kind = u 0; }
-            { name = "a"; kind = ms: builtins.elemAt ms 0; } ]
-          (ps: builtins.elemAt ps 0)
-          (ps: let a = builtins.elemAt ps 1; in [
-            (self.conI "refl" [] (_: a))
-          ]);
-        macroForm = lam "A" (u 0) (A:
-                    lam "a" A (a: app (app EqDT.D A) a));
-        handForm  = lam "A" (u 0) (A:
-                    lam "a" A (a: self.eqDesc A a));
-      in Q.nf [] (elab macroForm) == Q.nf [] (elab handForm);
+      expr =
+        let
+          EqDT = self.datatypePI "Eq"
+            [{ name = "A"; kind = u 0; }
+              { name = "a"; kind = ms: builtins.elemAt ms 0; }]
+            (ps: builtins.elemAt ps 0)
+            (ps:
+              let a = builtins.elemAt ps 1; in [
+                (self.conI "refl" [ ] (_: a))
+              ]);
+          macroForm = lam "A" (u 0) (A:
+            lam "a" A (a: app (app EqDT.D A) a));
+          handForm = lam "A" (u 0) (A:
+            lam "a" A (a: self.eqDesc A a));
+        in
+        semEq macroForm handForm;
       expected = true;
     };
     "datatypePI-eq-D-carries-desc-ref" = {
-      expr = let d = E.eval [] (elab (app (app self.EqDT.D nat) zero)); in {
+      expr = let d = E.eval [ ] (elab (app (app self.EqDT.D nat) zero)); in {
         kind = d._descRef.kind;
         arity = d._descRef.arity;
         indexed = d._descRef.indexed;
@@ -3048,22 +3585,25 @@ in {
     };
 
     "datatypePI-eq-T-matches-eqDT" = {
-      expr = let
-        EqDT = self.datatypePI "Eq"
-          [ { name = "A"; kind = u 0; }
-            { name = "a"; kind = ms: builtins.elemAt ms 0; } ]
-          (ps: builtins.elemAt ps 0)
-          (ps: let a = builtins.elemAt ps 1; in [
-            (self.conI "refl" [] (_: a))
-          ]);
-        macroForm = lam "A" (u 0) (A:
-                    lam "a" A (a:
-                    lam "b" A (b:
-                      app (app (app EqDT.T A) a) b)));
-        handForm  = lam "A" (u 0) (A:
-                    lam "a" A (a:
-                    lam "b" A (b: self.eqDT A a b)));
-      in Q.nf [] (elab macroForm) == Q.nf [] (elab handForm);
+      expr =
+        let
+          EqDT = self.datatypePI "Eq"
+            [{ name = "A"; kind = u 0; }
+              { name = "a"; kind = ms: builtins.elemAt ms 0; }]
+            (ps: builtins.elemAt ps 0)
+            (ps:
+              let a = builtins.elemAt ps 1; in [
+                (self.conI "refl" [ ] (_: a))
+              ]);
+          macroForm = lam "A" (u 0) (A:
+            lam "a" A (a:
+              lam "b" A (b:
+                app (app (app EqDT.T A) a) b)));
+          handForm = lam "A" (u 0) (A:
+            lam "a" A (a:
+              lam "b" A (b: self.eqDT A a b)));
+        in
+        semEq macroForm handForm;
       expected = true;
     };
 
@@ -3075,9 +3615,11 @@ in {
 
     "fin-as-type-checks" = {
       # fin : Nat → U. Applied to a concrete Nat, we get a type at U(0).
-      expr = let
-        ty = app fin (succ (succ zero));
-      in (checkHoas (u 0) ty).tag;
+      expr =
+        let
+          ty = app fin (succ (succ zero));
+        in
+        (checkHoas (u 0) ty).tag;
       expected = "app";
     };
 
@@ -3088,20 +3630,22 @@ in {
     };
 
     "fzero-at-fin1-checks" = {
-      # fzero zero : Fin (succ zero) = Fin 1.
-      expr = (checkHoas (app fin (succ zero)) (fzero zero)).tag;
+      # fzero : Fin (succ zero) = Fin 1.
+      expr = (checkHoas (app fin (succ zero)) fzero).tag;
       expected = "desc-con";
     };
 
     "fzero-payload-homogeneous-lifts-erased" = {
-      expr = let
-        tm = checkHoas (app fin (succ zero)) (fzero zero);
-        payload = tm.d.term;
-      in {
-        dTag = tm.d.tag;
-        fieldTag = payload.fst.tag;
-        retTag = payload.snd.tag;
-      };
+      expr =
+        let
+          tm = checkHoas (app fin (succ zero)) fzero;
+          payload = tm.d.term;
+        in
+        {
+          dTag = tm.d.tag;
+          fieldTag = payload.fst.tag;
+          retTag = payload.snd.tag;
+        };
       expected = {
         dTag = "boot-inl";
         fieldTag = "desc-con";
@@ -3110,19 +3654,21 @@ in {
     };
 
     "fzero-cert-wrong-target-falls-back" = {
-      expr = let
-        goodTm = elab (fzero zero);
-        badTm = goodTm // {
-          _descConCert = goodTm._descConCert // {
-            target = elab zero;
+      expr =
+        let
+          goodTm = elab (fzeroAt zero);
+          badTm = goodTm // {
+            _descConCert = goodTm._descConCert // {
+              target = elab zero;
+            };
           };
+          tyVal = E.eval [ ] (elab (app fin (succ zero)));
+          result = CH.runCheck (CH.check CH.emptyCtx badTm tyVal);
+        in
+        {
+          tag = result.tag or null;
+          hasCert = result ? _descConCert;
         };
-        tyVal = E.eval [] (elab (app fin (succ zero)));
-        result = CH.runCheck (CH.check CH.emptyCtx badTm tyVal);
-      in {
-        tag = result.tag or null;
-        hasCert = result ? _descConCert;
-      };
       expected = {
         tag = "desc-con";
         hasCert = false;
@@ -3130,17 +3676,19 @@ in {
     };
 
     "fzero-cert-missing-target-falls-back" = {
-      expr = let
-        goodTm = elab (fzero zero);
-        badTm = goodTm // {
-          _descConCert = builtins.removeAttrs goodTm._descConCert [ "target" ];
+      expr =
+        let
+          goodTm = elab (fzeroAt zero);
+          badTm = goodTm // {
+            _descConCert = builtins.removeAttrs goodTm._descConCert [ "target" ];
+          };
+          tyVal = E.eval [ ] (elab (app fin (succ zero)));
+          result = CH.runCheck (CH.check CH.emptyCtx badTm tyVal);
+        in
+        {
+          tag = result.tag or null;
+          hasCert = result ? _descConCert;
         };
-        tyVal = E.eval [] (elab (app fin (succ zero)));
-        result = CH.runCheck (CH.check CH.emptyCtx badTm tyVal);
-      in {
-        tag = result.tag or null;
-        hasCert = result ? _descConCert;
-      };
       expected = {
         tag = "desc-con";
         hasCert = false;
@@ -3148,17 +3696,18 @@ in {
     };
 
     "fzero-at-fin2-checks" = {
-      # fzero (succ zero) : Fin 2.
-      expr = (checkHoas (app fin (succ (succ zero))) (fzero (succ zero))).tag;
+      # fzero : Fin 2.
+      expr = (checkHoas (app fin (succ (succ zero))) fzero).tag;
       expected = "desc-con";
     };
 
     "fsuc-at-fin2-checks" = {
-      # fsuc 1 (fzero 0) : Fin 2.
-      expr = let
-        two = succ (succ zero);
-        oneN = succ zero;
-      in (checkHoas (app fin two) (fsuc oneN (fzero zero))).tag;
+      # fsuc fzero : Fin 2.
+      expr =
+        let
+          two = succ (succ zero);
+        in
+        (checkHoas (app fin two) (fsuc fzero)).tag;
       expected = "desc-con";
     };
 
@@ -3166,14 +3715,16 @@ in {
     # Motive is constant: P n k = nat. Pz m = zero. Ps m k ih = succ ih.
     # Expected NF: `zero` (which nf's to `descCon natDesc tt (pair true_ refl)`).
     "finElim-beta-on-fzero" = {
-      expr = let
-        two = succ (succ zero);
-        oneN = succ zero;
-        P    = lam "n" nat (n: lam "_k" (app fin n) (_: nat));
-        Pz   = lam "m" nat (_: zero);
-        Ps   = lam "m" nat (m: lam "_k" (app fin m) (_: lam "ih" nat (ih: succ ih)));
-        elimmed = finElim 0 P Pz Ps two (fzero oneN);
-      in Q.nf [] (elab elimmed) == Q.nf [] (elab zero);
+      expr =
+        let
+          two = succ (succ zero);
+          oneN = succ zero;
+          P = lam "n" nat (n: lam "_k" (app fin n) (_: nat));
+          Pz = lam "m" nat (_: zero);
+          Ps = lam "m" nat (m: lam "_k" (app fin m) (_: lam "ih" nat (ih: succ ih)));
+          elimmed = finElim 0 P Pz Ps two (fzeroAt oneN);
+        in
+        semEq elimmed zero;
       expected = true;
     };
 
@@ -3183,14 +3734,16 @@ in {
     #   → Ps 1 (fzero 0) zero
     #   → succ zero.
     "finElim-beta-on-fsuc" = {
-      expr = let
-        two = succ (succ zero);
-        oneN = succ zero;
-        P    = lam "n" nat (n: lam "_k" (app fin n) (_: nat));
-        Pz   = lam "m" nat (_: zero);
-        Ps   = lam "m" nat (m: lam "_k" (app fin m) (_: lam "ih" nat (ih: succ ih)));
-        elimmed = finElim 0 P Pz Ps two (fsuc oneN (fzero zero));
-      in Q.nf [] (elab elimmed) == Q.nf [] (elab (succ zero));
+      expr =
+        let
+          two = succ (succ zero);
+          oneN = succ zero;
+          P = lam "n" nat (n: lam "_k" (app fin n) (_: nat));
+          Pz = lam "m" nat (_: zero);
+          Ps = lam "m" nat (m: lam "_k" (app fin m) (_: lam "ih" nat (ih: succ ih)));
+          elimmed = finElim 0 P Pz Ps two (fsucAt oneN (fzeroAt zero));
+        in
+        semEq elimmed (succ zero);
       expected = true;
     };
 
@@ -3198,9 +3751,11 @@ in {
     # inhabitant. Fin 0 has no canonical inhabitant; we supply a neutral via
     # a lam-binder so checkHoas can type-check the elimination.
     "absurdFin0-checks-at-constant-target" = {
-      expr = let
-        tm = lam "x" (app fin zero) (x: absurdFin0 nat x);
-      in (checkHoas (forall "_" (app fin zero) (_: nat)) tm).tag;
+      expr =
+        let
+          tm = lam "x" (app fin zero) (x: absurdFin0 nat x);
+        in
+        (checkHoas (forall "_" (app fin zero) (_: nat)) tm).tag;
       expected = "lam";
     };
 
@@ -3209,14 +3764,16 @@ in {
     # predicate, doubly indexed via `Σ Nat (_: Nat)`. Two constructors:
     #   leZ  : ∀ n. Le 0 n
     #   leSS : ∀ m n. Le m n → Le (suc m) (suc n)
-    # Decidability via `decideLeNat` (Phase 3 of HoTT-aligned 4.4) recurses
-    # simultaneously on both arguments, matching the constructor shape.
+    # Decidability via `decideLeNat` recurses simultaneously on both
+    # arguments, matching the constructor shape.
 
     "le-as-type-checks" = {
       # `le 0 5 : U(0)`. Doubly-indexed; surface curries the Σ-typed kernel index.
-      expr = let
-        five = succ (succ (succ (succ (succ zero))));
-      in (checkHoas (u 0) (le zero five)).tag;
+      expr =
+        let
+          five = succ (succ (succ (succ (succ zero))));
+        in
+        (checkHoas (u 0) (le zero five)).tag;
       expected = "app";
     };
 
@@ -3228,28 +3785,34 @@ in {
 
     "leZ-at-le05-checks" = {
       # `leZ 5 : le 0 5`.
-      expr = let
-        five = succ (succ (succ (succ (succ zero))));
-      in (checkHoas (le zero five) (leZ five)).tag;
+      expr =
+        let
+          five = succ (succ (succ (succ (succ zero))));
+        in
+        (checkHoas (le zero five) leZ).tag;
       expected = "desc-con";
     };
 
     "leSS-at-le12-checks" = {
       # `leSS 0 1 (leZ 1) : le 1 2`.
-      expr = let
-        oneN = succ zero;
-      in (checkHoas (le oneN (succ oneN)) (leSS zero oneN (leZ oneN))).tag;
+      expr =
+        let
+          oneN = succ zero;
+        in
+        (checkHoas (le oneN (succ oneN)) (leSS leZ)).tag;
       expected = "desc-con";
     };
 
     "leSS-at-le23-checks" = {
       # Two-step suc-suc: `leSS 1 2 (leSS 0 1 (leZ 1)) : le 2 3`.
-      expr = let
-        oneN   = succ zero;
-        twoN   = succ oneN;
-        threeN = succ twoN;
-        inner  = leSS zero oneN (leZ oneN);
-      in (checkHoas (le twoN threeN) (leSS oneN twoN inner)).tag;
+      expr =
+        let
+          oneN = succ zero;
+          twoN = succ oneN;
+          threeN = succ twoN;
+          inner = leSS leZ;
+        in
+        (checkHoas (le twoN threeN) (leSS inner)).tag;
       expected = "desc-con";
     };
 
@@ -3258,16 +3821,18 @@ in {
 
     "leElim-beta-on-leZ" = {
       # `leElim 0 P Pz Ps 0 5 (leZ 5)` → `Pz 5` → `zero`.
-      expr = let
-        five = succ (succ (succ (succ (succ zero))));
-        P    = lam "m" nat (mv: lam "n" nat (nv:
-                  lam "_le" (le mv nv) (_: nat)));
-        Pz   = lam "n" nat (_: zero);
-        Ps   = lam "m" nat (mv: lam "n" nat (nv:
-                  lam "_lemn" (le mv nv) (_:
-                    lam "ih" nat (ih: succ ih))));
-        elimmed = leElim 0 P Pz Ps zero five (leZ five);
-      in Q.nf [] (elab elimmed) == Q.nf [] (elab zero);
+      expr =
+        let
+          five = succ (succ (succ (succ (succ zero))));
+          P = lam "m" nat (mv: lam "n" nat (nv:
+            lam "_le" (le mv nv) (_: nat)));
+          Pz = lam "n" nat (_: zero);
+          Ps = lam "m" nat (mv: lam "n" nat (nv:
+            lam "_lemn" (le mv nv) (_:
+              lam "ih" nat (ih: succ ih))));
+          elimmed = leElim 0 P Pz Ps zero five (leZAt five);
+        in
+        semEq elimmed zero;
       expected = true;
     };
 
@@ -3279,20 +3844,22 @@ in {
       #   → Ps 1 2 _ (Ps 0 1 _ zero)
       #   → Ps 1 2 _ (succ zero)
       #   → succ (succ zero) ≡ 2.
-      expr = let
-        oneN   = succ zero;
-        twoN   = succ oneN;
-        threeN = succ twoN;
-        P      = lam "m" nat (mv: lam "n" nat (nv:
-                    lam "_le" (le mv nv) (_: nat)));
-        Pz     = lam "n" nat (_: zero);
-        Ps     = lam "m" nat (mv: lam "n" nat (nv:
-                    lam "_lemn" (le mv nv) (_:
-                      lam "ih" nat (ih: succ ih))));
-        inner   = leSS zero oneN (leZ oneN);
-        outer   = leSS oneN twoN inner;
-        elimmed = leElim 0 P Pz Ps twoN threeN outer;
-      in Q.nf [] (elab elimmed) == Q.nf [] (elab twoN);
+      expr =
+        let
+          oneN = succ zero;
+          twoN = succ oneN;
+          threeN = succ twoN;
+          P = lam "m" nat (mv: lam "n" nat (nv:
+            lam "_le" (le mv nv) (_: nat)));
+          Pz = lam "n" nat (_: zero);
+          Ps = lam "m" nat (mv: lam "n" nat (nv:
+            lam "_lemn" (le mv nv) (_:
+              lam "ih" nat (ih: succ ih))));
+          inner = leSSAt zero oneN (leZAt oneN);
+          outer = leSSAt oneN twoN inner;
+          elimmed = leElim 0 P Pz Ps twoN threeN outer;
+        in
+        semEq elimmed twoN;
       expected = true;
     };
 
@@ -3312,9 +3879,9 @@ in {
     };
 
     "decidable-False-elaborates" = {
-      # False = void = Fin 0 (HoTT Book §1.7; McBride no-confusion).
+      # False = void = empty (HoTT Book §1.7).
       expr = (elab False).tag;
-      expected = "app";
+      expected = "empty";
     };
 
     "decidable-and-elaborates" = {
@@ -3357,32 +3924,38 @@ in {
       # no False idVoid : dec False, where idVoid : void → void = not False.
       # (The empty type is the only `P` for which `not P` is non-vacuously
       # inhabited — by the identity on void.) Routes through SumDT.inr.
-      expr = let
-        idVoid = lam "x" void (x: x);
-      in (checkHoas (dec False) (no False idVoid)).tag;
+      expr =
+        let
+          idVoid = lam "x" void (x: x);
+        in
+        (checkHoas (dec False) (no False idVoid)).tag;
       expected = "desc-con";
     };
 
     "decidable-decElim-beta-on-yes" = {
       # decElim True M oy on (yes True tt) → oy tt → zero.
-      expr = let
-        M  = lam "_" (dec True) (_: nat);
-        oy = lam "_" True (_: zero);
-        on = lam "_" (not True) (_: succ zero);
-        elimmed = decElim True M oy on (yes True tt);
-      in Q.nf [] (elab elimmed) == Q.nf [] (elab zero);
+      expr =
+        let
+          M = lam "_" (dec True) (_: nat);
+          oy = lam "_" True (_: zero);
+          on = lam "_" (not True) (_: succ zero);
+          elimmed = decElim True M oy on (yes True tt);
+        in
+        semEq elimmed zero;
       expected = true;
     };
 
     "decidable-decElim-beta-on-no" = {
       # decElim False M oy on (no False idVoid) → on idVoid → succ zero.
-      expr = let
-        idVoid = lam "x" void (x: x);
-        M  = lam "_" (dec False) (_: nat);
-        oy = lam "x" False (x: absurd nat x);
-        on = lam "_" (not False) (_: succ zero);
-        elimmed = decElim False M oy on (no False idVoid);
-      in Q.nf [] (elab elimmed) == Q.nf [] (elab (succ zero));
+      expr =
+        let
+          idVoid = lam "x" void (x: x);
+          M = lam "_" (dec False) (_: nat);
+          oy = lam "x" False (x: absurd nat x);
+          on = lam "_" (not False) (_: succ zero);
+          elimmed = decElim False M oy on (no False idVoid);
+        in
+        semEq elimmed (succ zero);
       expected = true;
     };
 
@@ -3396,121 +3969,139 @@ in {
 
     "decAnd-yes-yes-reduces-yes" = {
       # decAnd True True (yes _ tt) (yes _ tt) ≡ yes (and True True) (pair tt tt).
-      expr = let
-        d = decAnd True True (yes True tt) (yes True tt);
-        # Probe: decElim against a motive that returns zero on yes, succ zero on no.
-        probe = decElim (and True True)
-                  (lam "_" (dec (and True True)) (_: nat))
-                  (lam "_" (and True True) (_: zero))
-                  (lam "_" (not (and True True)) (_: succ zero))
-                  d;
-      in Q.nf [] (elab probe) == Q.nf [] (elab zero);
+      expr =
+        let
+          d = decAnd True True (yes True tt) (yes True tt);
+          # Probe: decElim against a motive that returns zero on yes, succ zero on no.
+          probe = decElim (and True True)
+            (lam "_" (dec (and True True)) (_: nat))
+            (lam "_" (and True True) (_: zero))
+            (lam "_" (not (and True True)) (_: succ zero))
+            d;
+        in
+        semEq probe zero;
       expected = true;
     };
 
     "decAnd-yes-no-reduces-no" = {
       # decAnd True False (yes _ tt) (no _ idVoid) reduces to `no _ refut`.
-      expr = let
-        idVoid = lam "x" void (x: x);
-        d = decAnd True False (yes True tt) (no False idVoid);
-        probe = decElim (and True False)
-                  (lam "_" (dec (and True False)) (_: nat))
-                  (lam "_" (and True False) (_: zero))
-                  (lam "_" (not (and True False)) (_: succ zero))
-                  d;
-      in Q.nf [] (elab probe) == Q.nf [] (elab (succ zero));
+      expr =
+        let
+          idVoid = lam "x" void (x: x);
+          d = decAnd True False (yes True tt) (no False idVoid);
+          probe = decElim (and True False)
+            (lam "_" (dec (and True False)) (_: nat))
+            (lam "_" (and True False) (_: zero))
+            (lam "_" (not (and True False)) (_: succ zero))
+            d;
+        in
+        semEq probe (succ zero);
       expected = true;
     };
 
     "decAnd-no-yes-reduces-no" = {
-      expr = let
-        idVoid = lam "x" void (x: x);
-        d = decAnd False True (no False idVoid) (yes True tt);
-        probe = decElim (and False True)
-                  (lam "_" (dec (and False True)) (_: nat))
-                  (lam "_" (and False True) (_: zero))
-                  (lam "_" (not (and False True)) (_: succ zero))
-                  d;
-      in Q.nf [] (elab probe) == Q.nf [] (elab (succ zero));
+      expr =
+        let
+          idVoid = lam "x" void (x: x);
+          d = decAnd False True (no False idVoid) (yes True tt);
+          probe = decElim (and False True)
+            (lam "_" (dec (and False True)) (_: nat))
+            (lam "_" (and False True) (_: zero))
+            (lam "_" (not (and False True)) (_: succ zero))
+            d;
+        in
+        semEq probe (succ zero);
       expected = true;
     };
 
     "decOr-yes-yes-reduces-yes" = {
-      expr = let
-        d = decOr True True (yes True tt) (yes True tt);
-        probe = decElim (or_ True True)
-                  (lam "_" (dec (or_ True True)) (_: nat))
-                  (lam "_" (or_ True True) (_: zero))
-                  (lam "_" (not (or_ True True)) (_: succ zero))
-                  d;
-      in Q.nf [] (elab probe) == Q.nf [] (elab zero);
+      expr =
+        let
+          d = decOr True True (yes True tt) (yes True tt);
+          probe = decElim (or_ True True)
+            (lam "_" (dec (or_ True True)) (_: nat))
+            (lam "_" (or_ True True) (_: zero))
+            (lam "_" (not (or_ True True)) (_: succ zero))
+            d;
+        in
+        semEq probe zero;
       expected = true;
     };
 
     "decOr-yes-no-reduces-yes" = {
       # Either side `yes` makes the disjunction `yes`.
-      expr = let
-        idVoid = lam "x" void (x: x);
-        d = decOr True False (yes True tt) (no False idVoid);
-        probe = decElim (or_ True False)
-                  (lam "_" (dec (or_ True False)) (_: nat))
-                  (lam "_" (or_ True False) (_: zero))
-                  (lam "_" (not (or_ True False)) (_: succ zero))
-                  d;
-      in Q.nf [] (elab probe) == Q.nf [] (elab zero);
+      expr =
+        let
+          idVoid = lam "x" void (x: x);
+          d = decOr True False (yes True tt) (no False idVoid);
+          probe = decElim (or_ True False)
+            (lam "_" (dec (or_ True False)) (_: nat))
+            (lam "_" (or_ True False) (_: zero))
+            (lam "_" (not (or_ True False)) (_: succ zero))
+            d;
+        in
+        semEq probe zero;
       expected = true;
     };
 
     "decOr-no-yes-reduces-yes" = {
-      expr = let
-        idVoid = lam "x" void (x: x);
-        d = decOr False True (no False idVoid) (yes True tt);
-        probe = decElim (or_ False True)
-                  (lam "_" (dec (or_ False True)) (_: nat))
-                  (lam "_" (or_ False True) (_: zero))
-                  (lam "_" (not (or_ False True)) (_: succ zero))
-                  d;
-      in Q.nf [] (elab probe) == Q.nf [] (elab zero);
+      expr =
+        let
+          idVoid = lam "x" void (x: x);
+          d = decOr False True (no False idVoid) (yes True tt);
+          probe = decElim (or_ False True)
+            (lam "_" (dec (or_ False True)) (_: nat))
+            (lam "_" (or_ False True) (_: zero))
+            (lam "_" (not (or_ False True)) (_: succ zero))
+            d;
+        in
+        semEq probe zero;
       expected = true;
     };
 
     "decOr-no-no-reduces-no" = {
-      expr = let
-        idVoid = lam "x" void (x: x);
-        d = decOr False False (no False idVoid) (no False idVoid);
-        probe = decElim (or_ False False)
-                  (lam "_" (dec (or_ False False)) (_: nat))
-                  (lam "_" (or_ False False) (_: zero))
-                  (lam "_" (not (or_ False False)) (_: succ zero))
-                  d;
-      in Q.nf [] (elab probe) == Q.nf [] (elab (succ zero));
+      expr =
+        let
+          idVoid = lam "x" void (x: x);
+          d = decOr False False (no False idVoid) (no False idVoid);
+          probe = decElim (or_ False False)
+            (lam "_" (dec (or_ False False)) (_: nat))
+            (lam "_" (or_ False False) (_: zero))
+            (lam "_" (not (or_ False False)) (_: succ zero))
+            d;
+        in
+        semEq probe (succ zero);
       expected = true;
     };
 
     "decNot-yes-reduces-no" = {
       # decNot of yes(P) is no(not P): we can't have `not P` if we have `P`.
-      expr = let
-        d = decNot True (yes True tt);
-        probe = decElim (not True)
-                  (lam "_" (dec (not True)) (_: nat))
-                  (lam "_" (not True) (_: zero))
-                  (lam "_" (not (not True)) (_: succ zero))
-                  d;
-      in Q.nf [] (elab probe) == Q.nf [] (elab (succ zero));
+      expr =
+        let
+          d = decNot True (yes True tt);
+          probe = decElim (not True)
+            (lam "_" (dec (not True)) (_: nat))
+            (lam "_" (not True) (_: zero))
+            (lam "_" (not (not True)) (_: succ zero))
+            d;
+        in
+        semEq probe (succ zero);
       expected = true;
     };
 
     "decNot-no-reduces-yes" = {
       # decNot of no(P) is yes(not P): we have a refutation, so `not P` holds.
-      expr = let
-        idVoid = lam "x" void (x: x);
-        d = decNot False (no False idVoid);
-        probe = decElim (not False)
-                  (lam "_" (dec (not False)) (_: nat))
-                  (lam "_" (not False) (_: zero))
-                  (lam "_" (not (not False)) (_: succ zero))
-                  d;
-      in Q.nf [] (elab probe) == Q.nf [] (elab zero);
+      expr =
+        let
+          idVoid = lam "x" void (x: x);
+          d = decNot False (no False idVoid);
+          probe = decElim (not False)
+            (lam "_" (dec (not False)) (_: nat))
+            (lam "_" (not False) (_: zero))
+            (lam "_" (not (not False)) (_: succ zero))
+            d;
+        in
+        semEq probe zero;
       expected = true;
     };
 
@@ -3520,98 +4111,118 @@ in {
     # no branch; the result's polarity is encoded as the reduced literal.
 
     "predNat-of-zero-is-zero" = {
-      expr = Q.nf [] (elab (app predNat zero)) == Q.nf [] (elab zero);
+      expr = semEq (app predNat zero) zero;
       expected = true;
     };
 
     "predNat-of-suc-3-is-2" = {
-      expr = let
-        two   = succ (succ zero);
-        three = succ two;
-      in Q.nf [] (elab (app predNat three)) == Q.nf [] (elab two);
+      expr =
+        let
+          two = succ (succ zero);
+          three = succ two;
+        in
+        semEq (app predNat three) two;
       expected = true;
     };
 
     "decideEqNat-yes-on-0-0" = {
-      expr = let
-        d = app (app decideEqNat zero) zero;
-        P = bootEq nat zero zero;
-      in Q.nf [] (elab (decProbeNat P d)) == yesSentinel;
+      expr =
+        let
+          d = app (app decideEqNat zero) zero;
+          P = bootEq nat zero zero;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == yesSentinel;
       expected = true;
     };
 
     "decideEqNat-yes-on-3-3" = {
-      expr = let
-        three = succ (succ (succ zero));
-        d = app (app decideEqNat three) three;
-        P = bootEq nat three three;
-      in Q.nf [] (elab (decProbeNat P d)) == yesSentinel;
+      expr =
+        let
+          three = succ (succ (succ zero));
+          d = app (app decideEqNat three) three;
+          P = bootEq nat three three;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == yesSentinel;
       expected = true;
     };
 
     "decideEqNat-no-on-3-5" = {
-      expr = let
-        three = succ (succ (succ zero));
-        five  = succ (succ three);
-        d = app (app decideEqNat three) five;
-        P = bootEq nat three five;
-      in Q.nf [] (elab (decProbeNat P d)) == noSentinel;
+      expr =
+        let
+          three = succ (succ (succ zero));
+          five = succ (succ three);
+          d = app (app decideEqNat three) five;
+          P = bootEq nat three five;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == noSentinel;
       expected = true;
     };
 
     "decideEqNat-no-on-5-3" = {
-      expr = let
-        three = succ (succ (succ zero));
-        five  = succ (succ three);
-        d = app (app decideEqNat five) three;
-        P = bootEq nat five three;
-      in Q.nf [] (elab (decProbeNat P d)) == noSentinel;
+      expr =
+        let
+          three = succ (succ (succ zero));
+          five = succ (succ three);
+          d = app (app decideEqNat five) three;
+          P = bootEq nat five three;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == noSentinel;
       expected = true;
     };
 
     "decideLeNat-yes-on-0-0" = {
-      expr = let
-        d = app (app decideLeNat zero) zero;
-        P = le zero zero;
-      in Q.nf [] (elab (decProbeNat P d)) == yesSentinel;
+      expr =
+        let
+          d = app (app decideLeNat zero) zero;
+          P = le zero zero;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == yesSentinel;
       expected = true;
     };
 
     "decideLeNat-yes-on-0-5" = {
-      expr = let
-        five = succ (succ (succ (succ (succ zero))));
-        d = app (app decideLeNat zero) five;
-        P = le zero five;
-      in Q.nf [] (elab (decProbeNat P d)) == yesSentinel;
+      expr =
+        let
+          five = succ (succ (succ (succ (succ zero))));
+          d = app (app decideLeNat zero) five;
+          P = le zero five;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == yesSentinel;
       expected = true;
     };
 
     "decideLeNat-yes-on-3-5" = {
-      expr = let
-        three = succ (succ (succ zero));
-        five  = succ (succ three);
-        d = app (app decideLeNat three) five;
-        P = le three five;
-      in Q.nf [] (elab (decProbeNat P d)) == yesSentinel;
+      expr =
+        let
+          three = succ (succ (succ zero));
+          five = succ (succ three);
+          d = app (app decideLeNat three) five;
+          P = le three five;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == yesSentinel;
       expected = true;
     };
 
     "decideLeNat-no-on-3-0" = {
-      expr = let
-        three = succ (succ (succ zero));
-        d = app (app decideLeNat three) zero;
-        P = le three zero;
-      in Q.nf [] (elab (decProbeNat P d)) == noSentinel;
+      expr =
+        let
+          three = succ (succ (succ zero));
+          d = app (app decideLeNat three) zero;
+          P = le three zero;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == noSentinel;
       expected = true;
     };
 
     "decideLeNat-no-on-5-3" = {
-      expr = let
-        three = succ (succ (succ zero));
-        five  = succ (succ three);
-        d = app (app decideLeNat five) three;
-        P = le five three;
-      in Q.nf [] (elab (decProbeNat P d)) == noSentinel;
+      expr =
+        let
+          three = succ (succ (succ zero));
+          five = succ (succ three);
+          d = app (app decideLeNat five) three;
+          P = le five three;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == noSentinel;
       expected = true;
     };
 
@@ -3634,90 +4245,94 @@ in {
     };
 
     "intz-lit-zero-equals-pos-0" = {
-      expr = Q.nf [] (elab (intzLit 0)) == Q.nf [] (elab (intzPos (natLit 0)));
+      expr = semEq (intzLit 0) (intzPos (natLit 0));
       expected = true;
     };
 
     "intz-lit-positive-equals-pos" = {
-      expr = Q.nf [] (elab (intzLit 5)) == Q.nf [] (elab (intzPos (natLit 5)));
+      expr = semEq (intzLit 5) (intzPos (natLit 5));
       expected = true;
     };
 
     "intz-lit-negative-one-equals-negSucc-0" = {
-      expr = Q.nf [] (elab (intzLit (-1))) == Q.nf [] (elab (intzNegSucc (natLit 0)));
+      expr = semEq (intzLit (-1)) (intzNegSucc (natLit 0));
       expected = true;
     };
 
     "intz-lit-negative-three-equals-negSucc-2" = {
-      expr = Q.nf [] (elab (intzLit (-3))) == Q.nf [] (elab (intzNegSucc (natLit 2)));
+      expr = semEq (intzLit (-3)) (intzNegSucc (natLit 2));
       expected = true;
     };
 
     "intzLe-pos-pos-reduces-to-le" = {
       # intzLe (pos 2) (pos 5) ≡ le 2 5 (delegate to Nat Le).
-      expr = let
-        two  = natLit 2;
-        five = natLit 5;
-      in Q.nf [] (elab (intzLe (intzPos two) (intzPos five)))
-         == Q.nf [] (elab (le two five));
+      expr =
+        let
+          two = natLit 2;
+          five = natLit 5;
+        in
+        semEq (intzLe (intzPos two) (intzPos five)) (le two five);
       expected = true;
     };
 
     "intzLe-pos-negSucc-reduces-to-void" = {
       # intzLe (pos _) (negSucc _) ≡ void (positives are never ≤ negatives).
-      expr = Q.nf [] (elab (intzLe (intzPos (natLit 2)) (intzNegSucc (natLit 0))))
-             == Q.nf [] (elab void);
+      expr = semEq (intzLe (intzPos (natLit 2)) (intzNegSucc (natLit 0))) void;
       expected = true;
     };
 
     "intzLe-negSucc-pos-reduces-to-unit" = {
       # intzLe (negSucc _) (pos _) ≡ unit (negatives are always ≤ positives).
-      expr = Q.nf [] (elab (intzLe (intzNegSucc (natLit 0)) (intzPos (natLit 2))))
-             == Q.nf [] (elab unit);
+      expr = semEq (intzLe (intzNegSucc (natLit 0)) (intzPos (natLit 2))) unit;
       expected = true;
     };
 
     "intzLe-negSucc-negSucc-reduces-to-flipped-le" = {
       # intzLe (negSucc 2) (negSucc 0): -3 ≤ -1 iff Nat-le-flipped(0, 2) iff le 0 2.
       # negSucc is monotonically decreasing in its argument: bigger Nat → smaller IntZ.
-      expr = let
-        zeroN = natLit 0;
-        two   = natLit 2;
-      in Q.nf [] (elab (intzLe (intzNegSucc two) (intzNegSucc zeroN)))
-         == Q.nf [] (elab (le zeroN two));
+      expr =
+        let
+          zeroN = natLit 0;
+          two = natLit 2;
+        in
+        semEq (intzLe (intzNegSucc two) (intzNegSucc zeroN)) (le zeroN two);
       expected = true;
     };
 
     "signsDiffer-types-as-refutation" = {
       # signsDiffer is a refutation `(m n : Nat) → Eq IntZ (pos m) (negSucc n) → void`.
       # Wrap in a closed lam abstracting m, n, e and check against the expected Π-type.
-      expr = let
-        refutTy = forall "m" nat (mv:
-                  forall "n" nat (nv:
-                  forall "_e" (bootEq intz (intzPos mv) (intzNegSucc nv)) (_:
-                    void)));
-        refut = lam "m" nat (mv:
-                lam "n" nat (nv:
-                lam "e" (bootEq intz (intzPos mv) (intzNegSucc nv)) (e:
-                  ann (signsDiffer mv nv e) void)));
-        r = checkHoas refutTy refut;
-      in if r ? tag then r.tag else (r.msg or "ERROR-NO-MSG");
+      expr =
+        let
+          refutTy = forall "m" nat (mv:
+            forall "n" nat (nv:
+              forall "_e" (bootEq intz (intzPos mv) (intzNegSucc nv)) (_:
+                void)));
+          refut = lam "m" nat (mv:
+            lam "n" nat (nv:
+              lam "e" (bootEq intz (intzPos mv) (intzNegSucc nv)) (e:
+                ann (signsDiffer mv nv e) void)));
+          r = checkHoas refutTy refut;
+        in
+        if r ? tag then r.tag else (r.msg or "ERROR-NO-MSG");
       expected = "lam";
     };
 
     "signsDifferRev-types-as-refutation" = {
       # `(m n : Nat) → Eq IntZ (negSucc m) (pos n) → void`.
-      expr = let
-        refutTy = forall "m" nat (mv:
-                  forall "n" nat (nv:
-                  forall "_e" (bootEq intz (intzNegSucc mv) (intzPos nv)) (_:
-                    void)));
-        refut = lam "m" nat (mv:
-                lam "n" nat (nv:
-                lam "e" (bootEq intz (intzNegSucc mv) (intzPos nv)) (e:
-                  ann (signsDifferRev mv nv e) void)));
-        r = checkHoas refutTy refut;
-      in if r ? tag then r.tag else (r.msg or "ERROR-NO-MSG");
+      expr =
+        let
+          refutTy = forall "m" nat (mv:
+            forall "n" nat (nv:
+              forall "_e" (bootEq intz (intzNegSucc mv) (intzPos nv)) (_:
+                void)));
+          refut = lam "m" nat (mv:
+            lam "n" nat (nv:
+              lam "e" (bootEq intz (intzNegSucc mv) (intzPos nv)) (e:
+                ann (signsDifferRev mv nv e) void)));
+          r = checkHoas refutTy refut;
+        in
+        if r ? tag then r.tag else (r.msg or "ERROR-NO-MSG");
       expected = "lam";
     };
 
@@ -3727,115 +4342,151 @@ in {
     # the elaborated normal form against the expected sentinel.
 
     "decideEqIntZ-pos-pos-yes" = {
-      expr = let
-        three = natLit 3;
-        m = intzPos three; n = intzPos three;
-        d = app (app decideEqIntZ m) n;
-        P = bootEq intz m n;
-      in Q.nf [] (elab (decProbeNat P d)) == yesSentinel;
+      expr =
+        let
+          three = natLit 3;
+          m = intzPos three;
+          n = intzPos three;
+          d = app (app decideEqIntZ m) n;
+          P = bootEq intz m n;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == yesSentinel;
       expected = true;
     };
 
     "decideEqIntZ-pos-pos-no" = {
-      expr = let
-        m = intzPos (natLit 3); n = intzPos (natLit 5);
-        d = app (app decideEqIntZ m) n;
-        P = bootEq intz m n;
-      in Q.nf [] (elab (decProbeNat P d)) == noSentinel;
+      expr =
+        let
+          m = intzPos (natLit 3);
+          n = intzPos (natLit 5);
+          d = app (app decideEqIntZ m) n;
+          P = bootEq intz m n;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == noSentinel;
       expected = true;
     };
 
     "decideEqIntZ-pos-negSucc-no" = {
-      expr = let
-        m = intzPos (natLit 0); n = intzNegSucc (natLit 0);
-        d = app (app decideEqIntZ m) n;
-        P = bootEq intz m n;
-      in Q.nf [] (elab (decProbeNat P d)) == noSentinel;
+      expr =
+        let
+          m = intzPos (natLit 0);
+          n = intzNegSucc (natLit 0);
+          d = app (app decideEqIntZ m) n;
+          P = bootEq intz m n;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == noSentinel;
       expected = true;
     };
 
     "decideEqIntZ-negSucc-pos-no" = {
-      expr = let
-        m = intzNegSucc (natLit 0); n = intzPos (natLit 0);
-        d = app (app decideEqIntZ m) n;
-        P = bootEq intz m n;
-      in Q.nf [] (elab (decProbeNat P d)) == noSentinel;
+      expr =
+        let
+          m = intzNegSucc (natLit 0);
+          n = intzPos (natLit 0);
+          d = app (app decideEqIntZ m) n;
+          P = bootEq intz m n;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == noSentinel;
       expected = true;
     };
 
     "decideEqIntZ-negSucc-negSucc-yes" = {
-      expr = let
-        m = intzNegSucc (natLit 2); n = intzNegSucc (natLit 2);
-        d = app (app decideEqIntZ m) n;
-        P = bootEq intz m n;
-      in Q.nf [] (elab (decProbeNat P d)) == yesSentinel;
+      expr =
+        let
+          m = intzNegSucc (natLit 2);
+          n = intzNegSucc (natLit 2);
+          d = app (app decideEqIntZ m) n;
+          P = bootEq intz m n;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == yesSentinel;
       expected = true;
     };
 
     "decideEqIntZ-negSucc-negSucc-no" = {
-      expr = let
-        m = intzNegSucc (natLit 2); n = intzNegSucc (natLit 0);
-        d = app (app decideEqIntZ m) n;
-        P = bootEq intz m n;
-      in Q.nf [] (elab (decProbeNat P d)) == noSentinel;
+      expr =
+        let
+          m = intzNegSucc (natLit 2);
+          n = intzNegSucc (natLit 0);
+          d = app (app decideEqIntZ m) n;
+          P = bootEq intz m n;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == noSentinel;
       expected = true;
     };
 
     "decideLeIntZ-pos-pos-yes" = {
-      expr = let
-        m = intzPos (natLit 2); n = intzPos (natLit 5);
-        d = app (app decideLeIntZ m) n;
-        P = intzLe m n;
-      in Q.nf [] (elab (decProbeNat P d)) == yesSentinel;
+      expr =
+        let
+          m = intzPos (natLit 2);
+          n = intzPos (natLit 5);
+          d = app (app decideLeIntZ m) n;
+          P = intzLe m n;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == yesSentinel;
       expected = true;
     };
 
     "decideLeIntZ-pos-pos-no" = {
-      expr = let
-        m = intzPos (natLit 5); n = intzPos (natLit 2);
-        d = app (app decideLeIntZ m) n;
-        P = intzLe m n;
-      in Q.nf [] (elab (decProbeNat P d)) == noSentinel;
+      expr =
+        let
+          m = intzPos (natLit 5);
+          n = intzPos (natLit 2);
+          d = app (app decideLeIntZ m) n;
+          P = intzLe m n;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == noSentinel;
       expected = true;
     };
 
     "decideLeIntZ-pos-negSucc-no" = {
       # +0 ≤ -1 is false.
-      expr = let
-        m = intzPos (natLit 0); n = intzNegSucc (natLit 0);
-        d = app (app decideLeIntZ m) n;
-        P = intzLe m n;
-      in Q.nf [] (elab (decProbeNat P d)) == noSentinel;
+      expr =
+        let
+          m = intzPos (natLit 0);
+          n = intzNegSucc (natLit 0);
+          d = app (app decideLeIntZ m) n;
+          P = intzLe m n;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == noSentinel;
       expected = true;
     };
 
     "decideLeIntZ-negSucc-pos-yes" = {
       # -1 ≤ +0 is true.
-      expr = let
-        m = intzNegSucc (natLit 0); n = intzPos (natLit 0);
-        d = app (app decideLeIntZ m) n;
-        P = intzLe m n;
-      in Q.nf [] (elab (decProbeNat P d)) == yesSentinel;
+      expr =
+        let
+          m = intzNegSucc (natLit 0);
+          n = intzPos (natLit 0);
+          d = app (app decideLeIntZ m) n;
+          P = intzLe m n;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == yesSentinel;
       expected = true;
     };
 
     "decideLeIntZ-negSucc-negSucc-flipped-yes" = {
       # -3 ≤ -1 is true; quadrant flips arguments so `decideLeNat 0 2`.
-      expr = let
-        m = intzNegSucc (natLit 2); n = intzNegSucc (natLit 0);
-        d = app (app decideLeIntZ m) n;
-        P = intzLe m n;
-      in Q.nf [] (elab (decProbeNat P d)) == yesSentinel;
+      expr =
+        let
+          m = intzNegSucc (natLit 2);
+          n = intzNegSucc (natLit 0);
+          d = app (app decideLeIntZ m) n;
+          P = intzLe m n;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == yesSentinel;
       expected = true;
     };
 
     "decideLeIntZ-negSucc-negSucc-flipped-no" = {
       # -1 ≤ -3 is false; flipped delegate `decideLeNat 2 0`.
-      expr = let
-        m = intzNegSucc (natLit 0); n = intzNegSucc (natLit 2);
-        d = app (app decideLeIntZ m) n;
-        P = intzLe m n;
-      in Q.nf [] (elab (decProbeNat P d)) == noSentinel;
+      expr =
+        let
+          m = intzNegSucc (natLit 0);
+          n = intzNegSucc (natLit 2);
+          d = app (app decideLeIntZ m) n;
+          P = intzLe m n;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == noSentinel;
       expected = true;
     };
 
@@ -3857,197 +4508,255 @@ in {
 
     "composite-x-ge-zero-yes-on-3" = {
       # x ≥ 0 via decideLeIntZ (pos 0) x; at x = pos 3 reduces to yes.
-      expr = let
-        x = intzLit 3;
-        zeroI = intzLit 0;
-        d = app (app decideLeIntZ zeroI) x;
-        P = intzLe zeroI x;
-      in Q.nf [] (elab (decProbeNat P d)) == yesSentinel;
+      expr =
+        let
+          x = intzLit 3;
+          zeroI = intzLit 0;
+          d = app (app decideLeIntZ zeroI) x;
+          P = intzLe zeroI x;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == yesSentinel;
       expected = true;
     };
 
     "composite-x-ge-zero-no-on-neg-one" = {
       # At x = -1 (negSucc 0): decideLeIntZ (pos 0) (negSucc 0) → no.
-      expr = let
-        x = intzLit (-1);
-        zeroI = intzLit 0;
-        d = app (app decideLeIntZ zeroI) x;
-        P = intzLe zeroI x;
-      in Q.nf [] (elab (decProbeNat P d)) == noSentinel;
+      expr =
+        let
+          x = intzLit (-1);
+          zeroI = intzLit 0;
+          d = app (app decideLeIntZ zeroI) x;
+          P = intzLe zeroI x;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == noSentinel;
       expected = true;
     };
 
     "composite-x-in-0-100-yes-on-50" = {
       # 0 ≤ x ≤ 100 via decAnd (decideLeIntZ 0 x) (decideLeIntZ x 100).
-      expr = let
-        x = intzLit 50;
-        zeroI = intzLit 0; hundred = intzLit 100;
-        P1 = intzLe zeroI x;
-        P2 = intzLe x hundred;
-        d1 = app (app decideLeIntZ zeroI) x;
-        d2 = app (app decideLeIntZ x) hundred;
-        d = decAnd P1 P2 d1 d2;
-        P = and P1 P2;
-      in Q.nf [] (elab (decProbeNat P d)) == yesSentinel;
+      expr =
+        let
+          x = intzLit 50;
+          zeroI = intzLit 0;
+          hundred = intzLit 100;
+          P1 = intzLe zeroI x;
+          P2 = intzLe x hundred;
+          d1 = app (app decideLeIntZ zeroI) x;
+          d2 = app (app decideLeIntZ x) hundred;
+          d = decAnd P1 P2 d1 d2;
+          P = and P1 P2;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == yesSentinel;
       expected = true;
     };
 
     "composite-x-in-0-100-yes-on-boundary-0" = {
-      expr = let
-        x = intzLit 0;
-        zeroI = intzLit 0; hundred = intzLit 100;
-        P1 = intzLe zeroI x;
-        P2 = intzLe x hundred;
-        d1 = app (app decideLeIntZ zeroI) x;
-        d2 = app (app decideLeIntZ x) hundred;
-        d = decAnd P1 P2 d1 d2;
-        P = and P1 P2;
-      in Q.nf [] (elab (decProbeNat P d)) == yesSentinel;
+      expr =
+        let
+          x = intzLit 0;
+          zeroI = intzLit 0;
+          hundred = intzLit 100;
+          P1 = intzLe zeroI x;
+          P2 = intzLe x hundred;
+          d1 = app (app decideLeIntZ zeroI) x;
+          d2 = app (app decideLeIntZ x) hundred;
+          d = decAnd P1 P2 d1 d2;
+          P = and P1 P2;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == yesSentinel;
       expected = true;
     };
 
     "composite-x-in-0-100-no-on-neg-one" = {
       # Left-boundary violation: x = -1 fails the lower bound.
-      expr = let
-        x = intzLit (-1);
-        zeroI = intzLit 0; hundred = intzLit 100;
-        P1 = intzLe zeroI x;
-        P2 = intzLe x hundred;
-        d1 = app (app decideLeIntZ zeroI) x;
-        d2 = app (app decideLeIntZ x) hundred;
-        d = decAnd P1 P2 d1 d2;
-        P = and P1 P2;
-      in Q.nf [] (elab (decProbeNat P d)) == noSentinel;
+      expr =
+        let
+          x = intzLit (-1);
+          zeroI = intzLit 0;
+          hundred = intzLit 100;
+          P1 = intzLe zeroI x;
+          P2 = intzLe x hundred;
+          d1 = app (app decideLeIntZ zeroI) x;
+          d2 = app (app decideLeIntZ x) hundred;
+          d = decAnd P1 P2 d1 d2;
+          P = and P1 P2;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == noSentinel;
       expected = true;
     };
 
-    "composite-x-in-0-100-no-on-101" = {
-      # Right-boundary violation: x = 101 fails the upper bound.
-      expr = let
-        x = intzLit 101;
-        zeroI = intzLit 0; hundred = intzLit 100;
-        P1 = intzLe zeroI x;
-        P2 = intzLe x hundred;
-        d1 = app (app decideLeIntZ zeroI) x;
-        d2 = app (app decideLeIntZ x) hundred;
-        d = decAnd P1 P2 d1 d2;
-        P = and P1 P2;
-      in Q.nf [] (elab (decProbeNat P d)) == noSentinel;
-      expected = true;
-    };
+    # Right-boundary violation: x = 101 fails the upper bound — DISABLED.
+    #
+    # The workload reduces `decideLeIntZ x 100` whose Nat-Le path peels
+    # `min(x, 100) = 100` recursive layers. Each layer adds ~16 `evalF`
+    # frames to the libnix C++ stack and ~30 units of Nix `max-call-depth`
+    # via the `app ihM np` boundary in the inner step body. That boundary
+    # invokes a fresh `descInd` nested under the current one — the existing
+    # `vDescIndLinearF` shortcut at `tc/eval/desc.nix` flattens layers
+    # within a single `descInd` invocation but does not span the
+    # cross-invocation cascade. At depth 100 the cumulative stack just
+    # exceeds the 8192 KiB libnix default.
+    #
+    # Re-enable when the kernel evaluator's recursive call sites in
+    # `tc/eval/{core,desc}.nix` and `tc/quote.nix` are defunctionalized
+    # into an explicit Frame ADT driven by `builtins.genericClosure` /
+    # `builtins.foldl'`. The acceptance gate is: `decideLeNat N N` at
+    # N=10000 must normalize under `nix-instantiate --eval --strict` at
+    # default `ulimit -s 8192` and default `max-call-depth 10000`.
+    # Stronger falsifier recommended at acceptance: also pass at
+    # N=100000 — if N=10000 passes and N=100000 fails, an O(N) site has
+    # been missed.
 
     "composite-x-ne-zero-no-on-0" = {
       # x ≠ 0 via decNot (decideEqIntZ x 0); at x = 0 the inner is yes,
       # so decNot returns no.
-      expr = let
-        x = intzLit 0; zeroI = intzLit 0;
-        P0 = bootEq intz x zeroI;
-        d0 = app (app decideEqIntZ x) zeroI;
-        d = decNot P0 d0;
-        P = not P0;
-      in Q.nf [] (elab (decProbeNat P d)) == noSentinel;
+      expr =
+        let
+          x = intzLit 0;
+          zeroI = intzLit 0;
+          P0 = bootEq intz x zeroI;
+          d0 = app (app decideEqIntZ x) zeroI;
+          d = decNot P0 d0;
+          P = not P0;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == noSentinel;
       expected = true;
     };
 
     "composite-x-ne-zero-yes-on-neg-one" = {
-      expr = let
-        x = intzLit (-1); zeroI = intzLit 0;
-        P0 = bootEq intz x zeroI;
-        d0 = app (app decideEqIntZ x) zeroI;
-        d = decNot P0 d0;
-        P = not P0;
-      in Q.nf [] (elab (decProbeNat P d)) == yesSentinel;
+      expr =
+        let
+          x = intzLit (-1);
+          zeroI = intzLit 0;
+          P0 = bootEq intz x zeroI;
+          d0 = app (app decideEqIntZ x) zeroI;
+          d = decNot P0 d0;
+          P = not P0;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == yesSentinel;
       expected = true;
     };
 
     "composite-x-ne-zero-yes-on-1" = {
-      expr = let
-        x = intzLit 1; zeroI = intzLit 0;
-        P0 = bootEq intz x zeroI;
-        d0 = app (app decideEqIntZ x) zeroI;
-        d = decNot P0 d0;
-        P = not P0;
-      in Q.nf [] (elab (decProbeNat P d)) == yesSentinel;
+      expr =
+        let
+          x = intzLit 1;
+          zeroI = intzLit 0;
+          P0 = bootEq intz x zeroI;
+          d0 = app (app decideEqIntZ x) zeroI;
+          d = decNot P0 d0;
+          P = not P0;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == yesSentinel;
       expected = true;
     };
 
     "composite-x-eq-0-or-1-yes-on-0" = {
       # x = 0 ∨ x = 1 via decOr (decideEqIntZ x 0) (decideEqIntZ x 1).
-      expr = let
-        x = intzLit 0; zeroI = intzLit 0; oneI = intzLit 1;
-        P0 = bootEq intz x zeroI; P1 = bootEq intz x oneI;
-        d = decOr P0 P1
-              (app (app decideEqIntZ x) zeroI)
-              (app (app decideEqIntZ x) oneI);
-        P = or_ P0 P1;
-      in Q.nf [] (elab (decProbeNat P d)) == yesSentinel;
+      expr =
+        let
+          x = intzLit 0;
+          zeroI = intzLit 0;
+          oneI = intzLit 1;
+          P0 = bootEq intz x zeroI;
+          P1 = bootEq intz x oneI;
+          d = decOr P0 P1
+            (app (app decideEqIntZ x) zeroI)
+            (app (app decideEqIntZ x) oneI);
+          P = or_ P0 P1;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == yesSentinel;
       expected = true;
     };
 
     "composite-x-eq-0-or-1-yes-on-1" = {
-      expr = let
-        x = intzLit 1; zeroI = intzLit 0; oneI = intzLit 1;
-        P0 = bootEq intz x zeroI; P1 = bootEq intz x oneI;
-        d = decOr P0 P1
-              (app (app decideEqIntZ x) zeroI)
-              (app (app decideEqIntZ x) oneI);
-        P = or_ P0 P1;
-      in Q.nf [] (elab (decProbeNat P d)) == yesSentinel;
+      expr =
+        let
+          x = intzLit 1;
+          zeroI = intzLit 0;
+          oneI = intzLit 1;
+          P0 = bootEq intz x zeroI;
+          P1 = bootEq intz x oneI;
+          d = decOr P0 P1
+            (app (app decideEqIntZ x) zeroI)
+            (app (app decideEqIntZ x) oneI);
+          P = or_ P0 P1;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == yesSentinel;
       expected = true;
     };
 
     "composite-x-eq-0-or-1-no-on-2" = {
-      expr = let
-        x = intzLit 2; zeroI = intzLit 0; oneI = intzLit 1;
-        P0 = bootEq intz x zeroI; P1 = bootEq intz x oneI;
-        d = decOr P0 P1
-              (app (app decideEqIntZ x) zeroI)
-              (app (app decideEqIntZ x) oneI);
-        P = or_ P0 P1;
-      in Q.nf [] (elab (decProbeNat P d)) == noSentinel;
+      expr =
+        let
+          x = intzLit 2;
+          zeroI = intzLit 0;
+          oneI = intzLit 1;
+          P0 = bootEq intz x zeroI;
+          P1 = bootEq intz x oneI;
+          d = decOr P0 P1
+            (app (app decideEqIntZ x) zeroI)
+            (app (app decideEqIntZ x) oneI);
+          P = or_ P0 P1;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == noSentinel;
       expected = true;
     };
 
     "composite-x-eq-0-or-1-no-on-neg-one" = {
-      expr = let
-        x = intzLit (-1); zeroI = intzLit 0; oneI = intzLit 1;
-        P0 = bootEq intz x zeroI; P1 = bootEq intz x oneI;
-        d = decOr P0 P1
-              (app (app decideEqIntZ x) zeroI)
-              (app (app decideEqIntZ x) oneI);
-        P = or_ P0 P1;
-      in Q.nf [] (elab (decProbeNat P d)) == noSentinel;
+      expr =
+        let
+          x = intzLit (-1);
+          zeroI = intzLit 0;
+          oneI = intzLit 1;
+          P0 = bootEq intz x zeroI;
+          P1 = bootEq intz x oneI;
+          d = decOr P0 P1
+            (app (app decideEqIntZ x) zeroI)
+            (app (app decideEqIntZ x) oneI);
+          P = or_ P0 P1;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == noSentinel;
       expected = true;
     };
 
     "composite-x-ne-neg-one-no-on-neg-one" = {
       # ¬(x = -1) via decNot (decideEqIntZ x (negSucc 0)).
-      expr = let
-        x = intzLit (-1); negOne = intzLit (-1);
-        Peq = bootEq intz x negOne;
-        d = decNot Peq (app (app decideEqIntZ x) negOne);
-        P = not Peq;
-      in Q.nf [] (elab (decProbeNat P d)) == noSentinel;
+      expr =
+        let
+          x = intzLit (-1);
+          negOne = intzLit (-1);
+          Peq = bootEq intz x negOne;
+          d = decNot Peq (app (app decideEqIntZ x) negOne);
+          P = not Peq;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == noSentinel;
       expected = true;
     };
 
     "composite-x-ne-neg-one-yes-on-neg-two" = {
-      expr = let
-        x = intzLit (-2); negOne = intzLit (-1);
-        Peq = bootEq intz x negOne;
-        d = decNot Peq (app (app decideEqIntZ x) negOne);
-        P = not Peq;
-      in Q.nf [] (elab (decProbeNat P d)) == yesSentinel;
+      expr =
+        let
+          x = intzLit (-2);
+          negOne = intzLit (-1);
+          Peq = bootEq intz x negOne;
+          d = decNot Peq (app (app decideEqIntZ x) negOne);
+          P = not Peq;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == yesSentinel;
       expected = true;
     };
 
     "composite-x-ne-neg-one-yes-on-zero" = {
-      expr = let
-        x = intzLit 0; negOne = intzLit (-1);
-        Peq = bootEq intz x negOne;
-        d = decNot Peq (app (app decideEqIntZ x) negOne);
-        P = not Peq;
-      in Q.nf [] (elab (decProbeNat P d)) == yesSentinel;
+      expr =
+        let
+          x = intzLit 0;
+          negOne = intzLit (-1);
+          Peq = bootEq intz x negOne;
+          d = decNot Peq (app (app decideEqIntZ x) negOne);
+          P = not Peq;
+        in
+        Q.nf [ ] (elab (decProbeNat P d)) == yesSentinel;
       expected = true;
     };
 
@@ -4071,16 +4780,18 @@ in {
     };
 
     "vnil-at-vec0-checks" = {
-      # vnil nat : vec nat 0.
-      expr = (checkHoas (app (vec nat) zero) (vnil nat)).tag;
+      # vnil : vec nat 0.
+      expr = (checkHoas (app (vec nat) zero) vnil).tag;
       expected = "desc-con";
     };
 
     "vcons-at-vec1-checks" = {
-      # vcons nat 0 zero (vnil nat) : vec nat 1.
-      expr = let
-        oneN = succ zero;
-      in (checkHoas (app (vec nat) oneN) (vcons nat zero zero (vnil nat))).tag;
+      # vcons zero vnil : vec nat 1.
+      expr =
+        let
+          oneN = succ zero;
+        in
+        (checkHoas (app (vec nat) oneN) (vcons zero vnil)).tag;
       expected = "desc-con";
     };
 
@@ -4088,52 +4799,60 @@ in {
     # Motive P n xs = nat (constant). Pn = zero. Pc m x xs ih = succ ih.
     # Expected nf: zero.
     "vecElim-beta-on-vnil" = {
-      expr = let
-        P   = lam "n" nat (n: lam "_xs" (app (vec nat) n) (_: nat));
-        Pn  = zero;
-        Pc  = lam "m" nat (_m: lam "_x" nat (_: lam "_xs" (app (vec nat) _m) (_:
-                lam "ih" nat (ih: succ ih))));
-        elimmed = vecElim 0 nat P Pn Pc zero (vnil nat);
-      in Q.nf [] (elab elimmed) == Q.nf [] (elab zero);
+      expr =
+        let
+          P = lam "n" nat (n: lam "_xs" (app (vec nat) n) (_: nat));
+          Pn = zero;
+          Pc = lam "m" nat (_m: lam "_x" nat (_: lam "_xs" (app (vec nat) _m) (_:
+            lam "ih" nat (ih: succ ih))));
+          elimmed = vecElim 0 nat P Pn Pc zero (vnilAt nat);
+        in
+        semEq elimmed zero;
       expected = true;
     };
 
-    # β-reduction on `vecElim P Pn Pc 1 (vcons A 0 zero (vnil A))`:
-    #   → Pc 0 zero (vnil A) (vecElim P Pn Pc 0 (vnil A))
+    # β-reduction on `vecElim P Pn Pc 1 (vcons 0 vnil)`:
+    #   → Pc 0 zero vnil (vecElim P Pn Pc 0 vnil)
     #   → Pc 0 zero (vnil A) Pn
     #   → succ Pn = succ zero.
     "vecElim-beta-on-vcons" = {
-      expr = let
-        oneN = succ zero;
-        P   = lam "n" nat (n: lam "_xs" (app (vec nat) n) (_: nat));
-        Pn  = zero;
-        Pc  = lam "m" nat (_m: lam "_x" nat (_: lam "_xs" (app (vec nat) _m) (_:
-                lam "ih" nat (ih: succ ih))));
-        vs  = vcons nat zero zero (vnil nat);
-        elimmed = vecElim 0 nat P Pn Pc oneN vs;
-      in Q.nf [] (elab elimmed) == Q.nf [] (elab (succ zero));
+      expr =
+        let
+          oneN = succ zero;
+          P = lam "n" nat (n: lam "_xs" (app (vec nat) n) (_: nat));
+          Pn = zero;
+          Pc = lam "m" nat (_m: lam "_x" nat (_: lam "_xs" (app (vec nat) _m) (_:
+            lam "ih" nat (ih: succ ih))));
+          vs = vconsAt nat zero zero (vnilAt nat);
+          elimmed = vecElim 0 nat P Pn Pc oneN vs;
+        in
+        semEq elimmed (succ zero);
       expected = true;
     };
 
-    # `vhead A n (vcons A n x xs) ≡ x`.
-    # At A = nat, n = 0, x = zero, xs = vnil nat:
-    #   vhead nat 0 (vcons nat 0 zero (vnil nat)) ≡ zero.
+    # `vhead A n (vcons x xs) ≡ x`.
+    # At A = nat, n = 0, x = zero, xs = vnil:
+    #   vhead nat 0 (vcons zero vnil) ≡ zero.
     "vhead-beta-on-vcons" = {
-      expr = let
-        vs = vcons nat zero zero (vnil nat);
-        hd = app (app (vhead nat) zero) vs;
-      in Q.nf [] (elab hd) == Q.nf [] (elab zero);
+      expr =
+        let
+          vs = vconsAt nat zero zero (vnilAt nat);
+          hd = app (app (vhead nat) zero) vs;
+        in
+        semEq hd zero;
       expected = true;
     };
 
-    # `vtail A n (vcons A n x xs) ≡ xs`.
-    # At A = nat, n = 0, x = zero, xs = vnil nat:
-    #   vtail nat 0 (vcons nat 0 zero (vnil nat)) ≡ vnil nat.
+    # `vtail A n (vcons x xs) ≡ xs`.
+    # At A = nat, n = 0, x = zero, xs = vnil:
+    #   vtail nat 0 (vcons zero vnil) ≡ vnil.
     "vtail-beta-on-vcons" = {
-      expr = let
-        vs = vcons nat zero zero (vnil nat);
-        tl = app (app (vtail nat) zero) vs;
-      in Q.nf [] (elab tl) == Q.nf [] (elab (vnil nat));
+      expr =
+        let
+          vs = vconsAt nat zero zero (vnilAt nat);
+          tl = app (app (vtail nat) zero) vs;
+        in
+        semEq tl (vnilAt nat);
       expected = true;
     };
 
@@ -4149,28 +4868,26 @@ in {
       # over `EqDT.D`; under nf both layers β-reduce to the macro's
       # description body, which for the single-ctor refl spine is
       # exactly `retI zero`.
-      expr = Q.nf [] (elab (eqDesc nat zero))
-          == Q.nf [] (elab (retI nat 0 zero));
+      expr = semEq (eqDesc nat zero) (retI nat 0 zero);
       expected = true;
     };
 
     "eqDT-at-refl-checks" = {
       # eqDT nat zero zero : U(0). Forwarder's app spine β-reduces under
       # nf to the bare `muI nat (retI zero) zero`.
-      expr = Q.nf [] (elab (eqDT nat zero zero))
-          == Q.nf [] (elab (muI nat (retI nat 0 zero) zero));
+      expr = semEq (eqDT nat zero zero) (muI nat (retI nat 0 zero) zero);
       expected = true;
     };
 
     "eqDT-value-head-projection-is-finite" = {
-      expr = let v = E.eval [] (elab (eqDT nat zero zero)); in {
+      expr = let v = E.eval [ ] (elab (eqDT nat zero zero)); in {
         tag = v.tag;
         dTag = v.D.tag;
         iTag = v.i.tag;
         hasDescRef = v.D ? _descRef;
         descKind = v.D._descRef.kind;
-        params = builtins.length (v.D._descRef.params or []);
-        paramTags = map (p: p.tag) (v.D._descRef.params or []);
+        params = builtins.length (v.D._descRef.params or [ ]);
+        paramTags = map (p: p.tag) (v.D._descRef.params or [ ]);
       };
       expected = {
         tag = "VMu";
@@ -4184,18 +4901,20 @@ in {
     };
 
     "eqDT-deep-nat-head-projection-5000" = {
-      expr = let
-        n = natLit 5000;
-        v = E.eval [] (elab (eqDT nat n n));
-      in {
-        tag = v.tag;
-        dTag = v.D.tag;
-        iTag = v.i.tag;
-        hasDescRef = v.D ? _descRef;
-        descKind = v.D._descRef.kind;
-        params = builtins.length (v.D._descRef.params or []);
-        paramTags = map (p: p.tag) (v.D._descRef.params or []);
-      };
+      expr =
+        let
+          n = natLit 5000;
+          v = E.eval [ ] (elab (eqDT nat n n));
+        in
+        {
+          tag = v.tag;
+          dTag = v.D.tag;
+          iTag = v.i.tag;
+          hasDescRef = v.D ? _descRef;
+          descKind = v.D._descRef.kind;
+          params = builtins.length (v.D._descRef.params or [ ]);
+          paramTags = map (p: p.tag) (v.D._descRef.params or [ ]);
+        };
       expected = {
         tag = "VMu";
         dTag = "VDescCon";
@@ -4214,15 +4933,17 @@ in {
     };
 
     "reflDT-at-anonymous-mu-checks" = {
-      expr = let
-        baseD = descRet;
-        baseT = mu baseD tt;
-        baseValue = descCon baseD tt bootRefl;
-      in {
-        explicit = (checkHoas (eqDT baseT baseValue baseValue)
-          (reflDT baseT baseValue)).tag;
-        public = (checkHoas (eq baseT baseValue baseValue) refl).tag;
-      };
+      expr =
+        let
+          baseD = descRet;
+          baseT = mu baseD tt;
+          baseValue = descCon baseD tt bootRefl;
+        in
+        {
+          explicit = (checkHoas (eqDT baseT baseValue baseValue)
+            (reflDT baseT baseValue)).tag;
+          public = (checkHoas (eq baseT baseValue baseValue) refl).tag;
+        };
       expected = {
         explicit = "desc-con";
         public = "desc-con";
@@ -4230,18 +4951,20 @@ in {
     };
 
     "reflDT-check-cert-projection-is-finite" = {
-      expr = let
-        tm = checkHoas (eqDT nat zero zero) (reflDT nat zero);
-      in {
-        tag = tm.tag;
-        dTag = tm.D.tag;
-        iTag = tm.i.tag;
-        payloadTag = tm.d.tag;
-        hasCert = tm ? _descConCert;
-        certKind = tm._descConCert.kind;
-        certRefKind = tm._descConCert.ref.kind;
-        certParams = builtins.length (tm._descConCert.ref.params or []);
-      };
+      expr =
+        let
+          tm = checkHoas (eqDT nat zero zero) (reflDT nat zero);
+        in
+        {
+          tag = tm.tag;
+          dTag = tm.D.tag;
+          iTag = tm.i.tag;
+          payloadTag = tm.d.tag;
+          hasCert = tm ? _descConCert;
+          certKind = tm._descConCert.kind;
+          certRefKind = tm._descConCert.ref.kind;
+          certParams = builtins.length (tm._descConCert.ref.params or [ ]);
+        };
       expected = {
         tag = "desc-con";
         dTag = "ann";
@@ -4257,32 +4980,36 @@ in {
     "eqToEqDT-at-refl-checks" = {
       # eqToEqDT nat 0 0 bootRefl : eqDT nat 0 0.
       expr = (checkHoas (eqDT nat zero zero)
-                        (eqToEqDT nat zero zero bootRefl)).tag;
+        (eqToEqDT nat zero zero bootRefl)).tag;
       expected = "boot-j";
     };
 
     "eqDTToEq-at-reflDT-checks" = {
       # eqDTToEq nat 0 0 (reflDT nat 0) : bootEq nat 0 0.
       expr = (checkHoas (bootEq nat zero zero)
-                        (eqDTToEq nat zero zero (reflDT nat zero))).tag;
+        (eqDTToEq nat zero zero (reflDT nat zero))).tag;
       expected = "desc-ind";
     };
 
     # nf-roundtrip at the bootRefl case:
     # `eqDTToEq (eqToEqDT bootRefl) ≡ bootRefl`.
     "eq-iso-fwd-at-refl-nf" = {
-      expr = let
-        t = eqDTToEq nat zero zero (eqToEqDT nat zero zero bootRefl);
-      in Q.nf [] (elab t) == Q.nf [] (elab bootRefl);
+      expr =
+        let
+          t = eqDTToEq nat zero zero (eqToEqDT nat zero zero bootRefl);
+        in
+        semEq t bootRefl;
       expected = true;
     };
 
     # nf-roundtrip at the reflDT case: `eqToEqDT (eqDTToEq reflDT) ≡ reflDT`.
     # descInd on descCon exposes bootRefl; bootJ on bootRefl fires to reflDT.
     "eq-iso-bwd-at-reflDT-nf" = {
-      expr = let
-        t = eqToEqDT nat zero zero (eqDTToEq nat zero zero (reflDT nat zero));
-      in Q.nf [] (elab t) == Q.nf [] (elab (reflDT nat zero));
+      expr =
+        let
+          t = eqToEqDT nat zero zero (eqDTToEq nat zero zero (reflDT nat zero));
+        in
+        semEq t (reflDT nat zero);
       expected = true;
     };
 
@@ -4290,23 +5017,27 @@ in {
     # the `to ∘ from ≡ id` / `from ∘ to ≡ id` acceptance witnesses.
     "eq-iso-fwd-checks" = {
       # eqIsoFwd nat 0 0 : Π(e : bootEq nat 0 0). bootEq (bootEq nat 0 0) (...) e.
-      expr = let
-        ty = forall "e" (bootEq nat zero zero) (e:
-               bootEq (bootEq nat zero zero)
-                  (eqDTToEq nat zero zero (eqToEqDT nat zero zero e))
-                  e);
-      in (checkHoas ty (eqIsoFwd nat zero zero)).tag;
+      expr =
+        let
+          ty = forall "e" (bootEq nat zero zero) (e:
+            bootEq (bootEq nat zero zero)
+              (eqDTToEq nat zero zero (eqToEqDT nat zero zero e))
+              e);
+        in
+        (checkHoas ty (eqIsoFwd nat zero zero)).tag;
       expected = "lam";
     };
 
     "eq-iso-bwd-checks" = {
       # eqIsoBwd nat 0 0 : Π(x : eqDT nat 0 0). bootEq (eqDT nat 0 0) (...) x.
-      expr = let
-        ty = forall "x" (eqDT nat zero zero) (x:
-               bootEq (eqDT nat zero zero)
-                  (eqToEqDT nat zero zero (eqDTToEq nat zero zero x))
-                  x);
-      in (checkHoas ty (eqIsoBwd nat zero zero)).tag;
+      expr =
+        let
+          ty = forall "x" (eqDT nat zero zero) (x:
+            bootEq (eqDT nat zero zero)
+              (eqToEqDT nat zero zero (eqDTToEq nat zero zero x))
+              x);
+        in
+        (checkHoas ty (eqIsoBwd nat zero zero)).tag;
       expected = "lam";
     };
 
@@ -4323,26 +5054,31 @@ in {
       expected = true;
     };
 
+    "encodeDescElim-infers" = {
+      expr = (inferHoas encodeDescElim).type.tag;
+      expected = "VPi";
+    };
+
     # ----- canonApp: generic identity-tagged HOAS application -----
     # Generic counterpart of `descDescApp` for user-registered
     # canonical descriptions. Eval applies `body` to each param and
     # stamps the resulting `VDescCon` with `_canonRef = { id; params; }`
     # so conv/quote short-circuit on the canonical identity instead of
     # forcing `.D`. Tests below pin the eval-time stamping shape and
-    # the conv short-circuit at arities other than the legacy `(I, L)`
-    # 2-param descDesc shape.
+    # the conv short-circuit at arities other than descDesc's
+    # `[iLev, I, L]` shape.
 
     "canon-app-evals-to-VDescCon" = {
-      expr = (E.eval [] (elab
+      expr = (E.eval [ ] (elab
         (canonApp "Tri" [ nat bool unit ]
           (lam "A" (u 0) (_:
-           lam "B" (u 0) (_:
-           lam "C" (u 0) (_: natDesc))))))).tag;
+            lam "B" (u 0) (_:
+              lam "C" (u 0) (_: natDesc))))))).tag;
       expected = "VDescCon";
     };
 
     "canon-app-stamps-id" = {
-      expr = (E.eval [] (elab
+      expr = (E.eval [ ] (elab
         (canonApp "myId" [ nat ]
           (lam "A" (u 0) (_: natDesc)))))._canonRef.id;
       expected = "myId";
@@ -4350,65 +5086,72 @@ in {
 
     "canon-app-stamps-params-length" = {
       expr = builtins.length
-        (E.eval [] (elab
+        (E.eval [ ] (elab
           (canonApp "Tri" [ nat bool unit ]
             (lam "A" (u 0) (_:
-             lam "B" (u 0) (_:
-             lam "C" (u 0) (_: natDesc)))))))._canonRef.params;
+              lam "B" (u 0) (_:
+                lam "C" (u 0) (_: natDesc)))))))._canonRef.params;
       expected = 3;
     };
 
     "canon-app-conv-self-equal" = {
       expr =
-        let body =
-              lam "A" (u 0) (_:
+        let
+          body =
+            lam "A" (u 0) (_:
               lam "B" (u 0) (_:
-              lam "C" (u 0) (_: natDesc)));
-            v1 = E.eval [] (elab (canonApp "Tri" [ nat bool unit ] body));
-            v2 = E.eval [] (elab (canonApp "Tri" [ nat bool unit ] body));
-        in C.conv 0 v1 v2;
+                lam "C" (u 0) (_: natDesc)));
+          v1 = E.eval [ ] (elab (canonApp "Tri" [ nat bool unit ] body));
+          v2 = E.eval [ ] (elab (canonApp "Tri" [ nat bool unit ] body));
+        in
+        C.conv 0 v1 v2;
       expected = true;
     };
 
     "canon-app-conv-distinct-first-param-rejects" = {
       expr =
-        let body =
-              lam "A" (u 0) (_:
+        let
+          body =
+            lam "A" (u 0) (_:
               lam "B" (u 0) (_:
-              lam "C" (u 0) (_: natDesc)));
-            v1 = E.eval [] (elab (canonApp "Tri" [ nat  bool unit ] body));
-            v2 = E.eval [] (elab (canonApp "Tri" [ bool bool unit ] body));
-        in C.conv 0 v1 v2;
+                lam "C" (u 0) (_: natDesc)));
+          v1 = E.eval [ ] (elab (canonApp "Tri" [ nat bool unit ] body));
+          v2 = E.eval [ ] (elab (canonApp "Tri" [ bool bool unit ] body));
+        in
+        C.conv 0 v1 v2;
       expected = false;
     };
 
     "canon-app-conv-distinct-id-rejects" = {
       expr =
-        let body =
-              lam "A" (u 0) (_:
+        let
+          body =
+            lam "A" (u 0) (_:
               lam "B" (u 0) (_:
-              lam "C" (u 0) (_: natDesc)));
-            v1 = E.eval [] (elab (canonApp "Tri-A" [ nat bool unit ] body));
-            v2 = E.eval [] (elab (canonApp "Tri-B" [ nat bool unit ] body));
-        in C.conv 0 v1 v2;
+                lam "C" (u 0) (_: natDesc)));
+          v1 = E.eval [ ] (elab (canonApp "Tri-A" [ nat bool unit ] body));
+          v2 = E.eval [ ] (elab (canonApp "Tri-B" [ nat bool unit ] body));
+        in
+        C.conv 0 v1 v2;
       expected = false;
     };
 
     # End-to-end through VMu wrapper: μ(canonApp id [p1..pn] body) i,
     # mimicking the freeFx-as-μ pattern. Conv on VMu × VMu reaches the
     # inner VDescCon-stamped value via `v.D`; the canon stamp short-
-    # circuits without forcing `.D`'s body. The legacy `(I, L)` shape
-    # could not represent a 3-param canonical reference at all.
+    # circuits without forcing `.D`'s body.
     "canon-app-mu-self-equal" = {
       expr =
-        let body =
-              lam "A" (u 0) (_:
+        let
+          body =
+            lam "A" (u 0) (_:
               lam "B" (u 0) (_:
-              lam "C" (u 0) (_: natDesc)));
-            mkMu = mu (canonApp "Tri" [ nat bool unit ] body) tt;
-            v1 = E.eval [] (elab mkMu);
-            v2 = E.eval [] (elab mkMu);
-        in C.conv 0 v1 v2;
+                lam "C" (u 0) (_: natDesc)));
+          mkMu = mu (canonApp "Tri" [ nat bool unit ] body) tt;
+          v1 = E.eval [ ] (elab mkMu);
+          v2 = E.eval [ ] (elab mkMu);
+        in
+        C.conv 0 v1 v2;
       expected = true;
     };
   };

@@ -27,19 +27,20 @@ let
 
   # Both run and handle must throw on effects with no matching handler
   unhandledEffectRunThrows =
-    throws (run (send "nonexistent" null) {} null);
+    throws (run (send "nonexistent" null) { } null);
 
   unhandledEffectHandleThrows =
-    throws (handle { handlers = {}; } (send "nonexistent" null));
+    throws (handle { handlers = { }; } (send "nonexistent" null));
 
   # Handler exists for first effect but not the second
   partialHandlerThrows =
     throws (run (bind (send "get" null) (_: send "missing" null)) stateHandlers 0);
 
   # Parametric: multiple different missing effect names all throw
-  unhandledEffectNames = builtins.all (name:
-    throws (run (send name null) {} null)
-  ) [ "foo" "bar" "get" "put" "error" "condition" ];
+  unhandledEffectNames = builtins.all
+    (name:
+      throws (run (send name null) { } null)
+    ) [ "foo" "bar" "get" "put" "error" "condition" ];
 
   # =========================================================================
   # BAD HANDLER PROTOCOL
@@ -47,28 +48,35 @@ let
 
   # Handler returns {value, state} (pre-resume/abort protocol) — must throw
   badProtocolValueThrows =
-    throws (run (send "x" null) {
-      x = { param, state }: { value = 42; inherit state; };
-    } null);
+    throws (run (send "x" null)
+      {
+        x = { param, state }: { value = 42; inherit state; };
+      }
+      null);
 
   # Handler returns empty attrset — must throw
   badProtocolEmptyThrows =
-    throws (run (send "x" null) {
-      x = { param, state }: {};
-    } null);
+    throws (run (send "x" null)
+      {
+        x = { param, state }: { };
+      }
+      null);
 
   # Handler returns state but no resume or abort — must throw
   badProtocolStateOnlyThrows =
-    throws (run (send "x" null) {
-      x = { param, state }: { state = 0; };
-    } null);
+    throws (run (send "x" null)
+      {
+        x = { param, state }: { state = 0; };
+      }
+      null);
 
   # Parametric: all malformed handler return shapes throw
-  allBadProtocolsThrow = builtins.all (handler:
-    throws (run (send "x" null) { x = handler; } null)
-  ) [
+  allBadProtocolsThrow = builtins.all
+    (handler:
+      throws (run (send "x" null) { x = handler; } null)
+    ) [
     ({ param, state }: { value = 1; inherit state; })
-    ({ param, state }: {})
+    ({ param, state }: { })
     ({ param, state }: { state = 0; })
   ];
 
@@ -76,10 +84,13 @@ let
   bothResumeAndAbortTakesAbort = {
     expr =
       let
-        result = run (send "x" null) {
-          x = { param, state }: { resume = 1; abort = 2; state = 0; };
-        } null;
-      in result.value;
+        result = run (send "x" null)
+          {
+            x = { param, state }: { resume = 1; abort = 2; state = 0; };
+          }
+          null;
+      in
+      result.value;
     expected = 2;
   };
 
@@ -88,15 +99,17 @@ let
   # =========================================================================
 
   # error.strict throws on raise with various messages
-  errorStrictThrowsParametric = builtins.all (msg:
-    throws (handle { handlers = error.strict; state = null; } (error.raise msg))
-  ) [ "boom" "" "unexpected token" "field required" ];
+  errorStrictThrowsParametric = builtins.all
+    (msg:
+      throws (handle { handlers = error.strict; state = null; } (error.raise msg))
+    ) [ "boom" "" "unexpected token" "field required" ];
 
   # error.strict throws on raiseWith (context variant)
-  errorStrictWithContextThrows = builtins.all (ctx:
-    throws (handle { handlers = error.strict; state = null; }
-      (error.raiseWith ctx "message"))
-  ) [ "parser" "validator" "runtime" "" ];
+  errorStrictWithContextThrows = builtins.all
+    (ctx:
+      throws (handle { handlers = error.strict; state = null; }
+        (error.raiseWith ctx "message"))
+    ) [ "parser" "validator" "runtime" "" ];
 
   # error.strict mid-chain: first error stops evaluation
   errorStrictMidChainThrows =
@@ -110,10 +123,11 @@ let
   # =========================================================================
 
   # conditions.fail throws on signal with various condition names
-  conditionsFailThrowsParametric = builtins.all (name:
-    throws (handle { handlers = conditions.fail; state = null; }
-      (conditions.signal name {} []))
-  ) [ "division-by-zero" "file-not-found" "type-error" "unknown" ];
+  conditionsFailThrowsParametric = builtins.all
+    (name:
+      throws (handle { handlers = conditions.fail; state = null; }
+        (conditions.signal name { } [ ]))
+    ) [ "division-by-zero" "file-not-found" "type-error" "unknown" ];
 
   # =========================================================================
   # ERROR.RESULT: ABORT-BASED HANDLER
@@ -125,7 +139,8 @@ let
       let
         comp = bind (error.raise "boom") (_: pure "unreachable");
         result = handle { handlers = error.result; state = null; } comp;
-      in result.value;
+      in
+      result.value;
     expected = { _tag = "Error"; message = "boom"; context = ""; };
   };
 
@@ -135,15 +150,17 @@ let
       let
         result = handle { handlers = error.result; state = null; }
           (error.raiseWith "validator" "field required");
-      in { tag = result.value._tag; ctx = result.value.context; msg = result.value.message; };
+      in
+      { tag = result.value._tag; ctx = result.value.context; msg = result.value.message; };
     expected = { tag = "Error"; ctx = "validator"; msg = "field required"; };
   };
 
   # Parametric: error.result aborts for all messages
-  errorResultParametric = builtins.all (msg:
-    let result = handle { handlers = error.result; state = null; } (error.raise msg);
-    in result.value._tag == "Error" && result.value.message == msg
-  ) [ "a" "boom" "" "null pointer" ];
+  errorResultParametric = builtins.all
+    (msg:
+      let result = handle { handlers = error.result; state = null; } (error.raise msg);
+      in result.value._tag == "Error" && result.value.message == msg
+    ) [ "a" "boom" "" "null pointer" ];
 
   # Pure computation passes through error.result unaffected
   errorResultPurePassesTest = {
@@ -152,9 +169,10 @@ let
   };
 
   # Parametric: various pure values pass through
-  errorResultPureParametric = builtins.all (v:
-    (handle { handlers = error.result; state = null; } (pure v)).value == v
-  ) [ 0 42 "hello" null true [ 1 2 3 ] ];
+  errorResultPureParametric = builtins.all
+    (v:
+      (handle { handlers = error.result; state = null; } (pure v)).value == v
+    ) [ 0 42 "hello" null true [ 1 2 3 ] ];
 
   # error.result abort discards continuation, state unchanged
   errorResultDiscardsContTest = {
@@ -162,7 +180,8 @@ let
       let
         comp = bind (error.raiseWith "step1" "fail") (_: send "put" 999);
         result = handle { handlers = error.result // stateHandlers; state = 0; } comp;
-      in result.state;
+      in
+      result.state;
     expected = 0;
   };
 
@@ -179,7 +198,8 @@ let
         comp = bind (send "stop" "done") (_:
           bind (send "inc" 1) (_: send "inc" 1));
         result = run comp { stop = stopHandler; inc = incHandler; } 0;
-      in { value = result.value; state = result.state; };
+      in
+      { value = result.value; state = result.state; };
     expected = { value = "done"; state = 0; };
   };
 
@@ -192,29 +212,35 @@ let
             bind (send "stop" "halted") (_:
               send "inc" 100)));
         result = run comp { inc = incHandler; stop = stopHandler; } 0;
-      in { value = result.value; state = result.state; };
+      in
+      { value = result.value; state = result.state; };
     expected = { value = "halted"; state = 8; };
   };
 
   # Parametric: abort at various chain positions
-  abortAtPositionN = builtins.all (n:
-    let
-      # Build chain: n increments, then abort, then more increments
-      before = builtins.genList (_: send "inc" 1) n;
-      after = builtins.genList (_: send "inc" 1) 5;
-      allOps = before ++ [ (send "stop" "halt") ] ++ after;
-      comp = builtins.foldl' (acc: op: bind acc (_: op)) (pure null) allOps;
-      result = run comp { inc = incHandler; stop = stopHandler; } 0;
-    in result.state == n && result.value == "halt"
-  ) [ 0 1 3 5 10 ];
+  abortAtPositionN = builtins.all
+    (n:
+      let
+        # Build chain: n increments, then abort, then more increments
+        before = builtins.genList (_: send "inc" 1) n;
+        after = builtins.genList (_: send "inc" 1) 5;
+        allOps = before ++ [ (send "stop" "halt") ] ++ after;
+        comp = builtins.foldl' (acc: op: bind acc (_: op)) (pure null) allOps;
+        result = run comp { inc = incHandler; stop = stopHandler; } 0;
+      in
+      result.state == n && result.value == "halt"
+    ) [ 0 1 3 5 10 ];
 
   # Abort value can be any type
-  abortValueTypes = builtins.all (val:
-    let
-      result = run (send "stop" val)
-        { stop = { param, state }: { abort = param; inherit state; }; } null;
-    in result.value == val
-  ) [ null 42 "string" true { x = 1; } [ 1 2 ] ];
+  abortValueTypes = builtins.all
+    (val:
+      let
+        result = run (send "stop" val)
+          { stop = { param, state }: { abort = param; inherit state; }; }
+          null;
+      in
+      result.value == val
+    ) [ null 42 "string" true { x = 1; } [ 1 2 ] ];
 
   # =========================================================================
   # KERNEL.SEQ
@@ -225,12 +251,13 @@ let
       let
         comp = seq [ (send "inc" 1) (send "inc" 2) (send "inc" 3) ];
         result = run comp { inc = incHandler; } 0;
-      in result.state;
+      in
+      result.state;
     expected = 6;
   };
 
   seqEmptyTest = {
-    expr = (run (seq []) {} null).value;
+    expr = (run (seq [ ]) { } null).value;
     expected = null;
   };
 
@@ -239,17 +266,20 @@ let
       let
         valHandler = { param, state }: { resume = param; inherit state; };
         comp = seq [ (send "val" 10) (send "val" 20) (send "val" 30) ];
-      in (run comp { val = valHandler; } null).value;
+      in
+      (run comp { val = valHandler; } null).value;
     expected = 30;
   };
 
   # Parametric: seq accumulates state correctly for various lengths
-  seqParametricLengths = builtins.all (n:
-    let
-      comp = seq (builtins.genList (_: send "inc" 1) n);
-      result = run comp { inc = incHandler; } 0;
-    in result.state == n
-  ) [ 0 1 5 10 50 ];
+  seqParametricLengths = builtins.all
+    (n:
+      let
+        comp = seq (builtins.genList (_: send "inc" 1) n);
+        result = run comp { inc = incHandler; } 0;
+      in
+      result.state == n
+    ) [ 0 1 5 10 50 ];
 
   # =========================================================================
   # HANDLER COMPOSITION
@@ -260,7 +290,8 @@ let
       let
         h1 = { eff = { param, state }: { resume = "left"; inherit state; }; };
         h2 = { eff = { param, state }: { resume = "right"; inherit state; }; };
-      in (run (send "eff" null) (h1 // h2) null).value;
+      in
+      (run (send "eff" null) (h1 // h2) null).value;
     expected = "right";
   };
 
@@ -269,14 +300,14 @@ let
   # =========================================================================
 
   # run with non-computation inputs throws with clear message
-  runNullThrows = throws (run null {} null);
-  runIntThrows = throws (run 42 {} null);
-  runStringThrows = throws (run "bad" {} null);
-  runAttrsetNoTagThrows = throws (run { x = 1; } {} null);
+  runNullThrows = throws (run null { } null);
+  runIntThrows = throws (run 42 { } null);
+  runStringThrows = throws (run "bad" { } null);
+  runAttrsetNoTagThrows = throws (run { x = 1; } { } null);
 
   # handle with non-computation inputs throws
-  handleNullThrows = throws (handle { handlers = {}; } null);
-  handleIntThrows = throws (handle { handlers = {}; } 42);
+  handleNullThrows = throws (handle { handlers = { }; } null);
+  handleIntThrows = throws (handle { handlers = { }; } 42);
 
   # =========================================================================
   # EFFECT NAME COLLISION
@@ -289,7 +320,8 @@ let
         h1 = { eff = { param, state }: { resume = "first"; inherit state; }; };
         h2 = { eff = { param, state }: { resume = "second"; inherit state; }; };
         result = run (send "eff" null) (h1 // h2) null;
-      in result.value;
+      in
+      result.value;
     expected = "second";
   };
 
@@ -297,8 +329,9 @@ let
   effectCollisionSilent =
     let
       stateGet = { get = { param, state }: { resume = state; inherit state; }; };
-      userGet  = { get = { param, state }: { resume = "user"; inherit state; }; };
-    in (run (send "get" null) (stateGet // userGet) 42).value == "user";
+      userGet = { get = { param, state }: { resume = "user"; inherit state; }; };
+    in
+    (run (send "get" null) (stateGet // userGet) 42).value == "user";
 
   # =========================================================================
   # COLLECT RESULTS
@@ -306,40 +339,29 @@ let
 
   boolTests = {
     inherit unhandledEffectRunThrows unhandledEffectHandleThrows
-            partialHandlerThrows unhandledEffectNames
-            badProtocolValueThrows badProtocolEmptyThrows
-            badProtocolStateOnlyThrows allBadProtocolsThrow
-            errorStrictThrowsParametric errorStrictWithContextThrows
-            errorStrictMidChainThrows
-            conditionsFailThrowsParametric
-            errorResultParametric errorResultPureParametric
-            abortAtPositionN abortValueTypes
-            seqParametricLengths
-            runNullThrows runIntThrows runStringThrows runAttrsetNoTagThrows
-            handleNullThrows handleIntThrows
-            effectCollisionSilent;
+      partialHandlerThrows unhandledEffectNames
+      badProtocolValueThrows badProtocolEmptyThrows
+      badProtocolStateOnlyThrows allBadProtocolsThrow
+      errorStrictThrowsParametric errorStrictWithContextThrows
+      errorStrictMidChainThrows
+      conditionsFailThrowsParametric
+      errorResultParametric errorResultPureParametric
+      abortAtPositionN abortValueTypes
+      seqParametricLengths
+      runNullThrows runIntThrows runStringThrows runAttrsetNoTagThrows
+      handleNullThrows handleIntThrows
+      effectCollisionSilent;
   };
 
   exprTests = {
     inherit errorResultAbortsTest errorResultWithContextTest
-            errorResultPurePassesTest errorResultDiscardsContTest
-            abortAtStartTest abortMidChainTest
-            bothResumeAndAbortTakesAbort
-            seqEffectsTest seqEmptyTest seqReturnsLastTest
-            handlerMergeRightBiasTest
-            effectNameCollision;
+      errorResultPurePassesTest errorResultDiscardsContTest
+      abortAtStartTest abortMidChainTest
+      bothResumeAndAbortTakesAbort
+      seqEffectsTest seqEmptyTest seqReturnsLastTest
+      handlerMergeRightBiasTest
+      effectNameCollision;
   };
 
-  exprResults = builtins.mapAttrs (_: test:
-    let actual = test.expr; in
-    { inherit actual; expected = test.expected; pass = actual == test.expected; }
-  ) exprTests;
-
-  exprFailed = lib.filterAttrs (_: r: !r.pass) exprResults;
-
-  boolAllPass = builtins.all (n: boolTests.${n}) (builtins.attrNames boolTests);
-  exprAllPass = (builtins.length (builtins.attrNames exprFailed)) == 0;
-
-in boolTests // exprTests // {
-  allPass = boolAllPass && exprAllPass;
-}
+in
+boolTests // exprTests

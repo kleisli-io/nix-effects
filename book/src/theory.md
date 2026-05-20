@@ -1,6 +1,6 @@
 # Theory
 
-Nine papers shaped nix-effects. Here's how each one maps to code.
+Several papers shaped nix-effects. Here's how each one maps to code.
 
 ## Algebraic effects and the freer monad
 

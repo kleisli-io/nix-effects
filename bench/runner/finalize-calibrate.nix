@@ -39,9 +39,10 @@ let
   bench = import benchPath { };
   knownWorkloads = builtins.attrNames bench.meta.tiers;
 
-  existing = if existingBudgetsPath == null
-             then { }
-             else builtins.fromTOML (builtins.readFile existingBudgetsPath);
+  existing =
+    if existingBudgetsPath == null
+    then { }
+    else builtins.fromTOML (builtins.readFile existingBudgetsPath);
 
   noiseLimited = existing.noiseLimited or [ ];
   allocNoiseLimited = existing.allocNoiseLimited or [ ];
@@ -63,7 +64,8 @@ let
       let
         q = (num * 100) / den;
         r = (num * 100) - q * den;
-      in if r > 0 then q + 1 else q;
+      in
+      if r > 0 then q + 1 else q;
 
   budgetFor = w: r:
     let
@@ -71,7 +73,8 @@ let
       p95ms = builtins.floor (r.cpu.p95 * 1000);
       raw = ceilPct (p95ms - p50ms) (if p50ms == 0 then 1 else p50ms);
       scaled = let s = raw * 15; in if s / 10 * 10 == s then s / 10 else s / 10 + 1;
-    in if scaled < minBudget then minBudget else scaled;
+    in
+    if scaled < minBudget then minBudget else scaled;
 
   allWorkloads = builtins.attrNames run.results;
   cpuEntries = builtins.filter (w: ! (isNoiseLimited w)) allWorkloads;
@@ -82,14 +85,16 @@ let
       lines = map
         (w: ''"${w}" = ${toString (budgetFor w run.results.${w})}'')
         cpuEntries;
-    in builtins.concatStringsSep "\n" lines;
+    in
+    builtins.concatStringsSep "\n" lines;
 
   noiseLimitedBlock =
     if noiseLimited == [ ] then ""
     else
       let
         items = map (w: ''  "${w}",'') noiseLimited;
-      in ''
+      in
+      ''
 
         # Workloads whose cpu.p95 spread is structurally noise-limited
         # (small-workload relative-variance artifacts or GC jitter on
@@ -105,7 +110,8 @@ let
     else
       let
         items = map (w: ''  "${w}",'') allocNoiseLimited;
-      in ''
+      in
+      ''
 
         # Workloads whose alloc-count regresses monotonically with
         # unrelated work (e.g. test suites that grow with every feature
@@ -141,7 +147,8 @@ let
             p50 = builtins.floor (r.cpu.p50 * 1000);
             p95 = builtins.floor (r.cpu.p95 * 1000);
             b = budgetFor w r;
-          in "  ${w}: p50=${toString p50}ms p95=${toString p95}ms budget=${toString b}%")
+          in
+          "  ${w}: p50=${toString p50}ms p95=${toString p95}ms budget=${toString b}%")
         cpuEntries;
       noiseRows = map
         (w:
@@ -149,18 +156,20 @@ let
             r = run.results.${w};
             p50 = builtins.floor (r.cpu.p50 * 1000);
             p95 = builtins.floor (r.cpu.p95 * 1000);
-          in "  ${w}: p50=${toString p50}ms p95=${toString p95}ms budget=N/A (noise-limited)")
+          in
+          "  ${w}: p50=${toString p50}ms p95=${toString p95}ms budget=N/A (noise-limited)")
         noiseEntries;
-    in builtins.concatStringsSep "\n" (cpuRows ++ noiseRows);
+    in
+    builtins.concatStringsSep "\n" (cpuRows ++ noiseRows);
 
 in
-  if unknownNoiseLimited != [ ]
-  then throw "finalize-calibrate: noiseLimited contains unknown workloads (typo?): ${builtins.concatStringsSep ", " unknownNoiseLimited}"
-  else if unknownAllocNoiseLimited != [ ]
-  then throw "finalize-calibrate: allocNoiseLimited contains unknown workloads (typo?): ${builtins.concatStringsSep ", " unknownAllocNoiseLimited}"
-  else {
-    inherit toml summary;
-    cpuWorkloads = cpuEntries;
-    noiseLimitedWorkloads = noiseEntries;
-    inherit allocNoiseLimited;
-  }
+if unknownNoiseLimited != [ ]
+then throw "finalize-calibrate: noiseLimited contains unknown workloads (typo?): ${builtins.concatStringsSep ", " unknownNoiseLimited}"
+else if unknownAllocNoiseLimited != [ ]
+then throw "finalize-calibrate: allocNoiseLimited contains unknown workloads (typo?): ${builtins.concatStringsSep ", " unknownAllocNoiseLimited}"
+else {
+  inherit toml summary;
+  cpuWorkloads = cpuEntries;
+  noiseLimitedWorkloads = noiseEntries;
+  inherit allocNoiseLimited;
+}

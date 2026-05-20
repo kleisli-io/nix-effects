@@ -4,11 +4,10 @@
 # `ctx.nix` (contexts + helpers), `check.nix` (check + checkMotive),
 # `infer.nix` (infer), `type.nix` (checkType/checkTypeLevel); `partTests`
 # is the aggregated test map.
-{ self, partTests, partDocs, api, ... }:
+{ self, partTests, api, ... }:
 
-api.mkModule {
-  inherit partDocs;
-  description = "fx.tc.check: bidirectional type checker (kernel-spec §7–§9) — check/infer/checkType/checkTypeLevel with cumulativity, large elimination, and trampolined succ/cons chains.";
+api.mk {
+  description = "fx.tc.check: bidirectional type checker with check/infer/checkType/checkTypeLevel, cumulativity, and trampolined succ/cons chains.";
   doc = ''
     # fx.tc.check — Bidirectional Type Checker
 
@@ -16,19 +15,17 @@ api.mkModule {
     type errors via `send "typeError"`. Bugs here may produce wrong
     error messages but cannot cause unsoundness.
 
-    Spec reference: kernel-spec.md §7–§9.
-
     ## Core Functions
 
-    - `check : Ctx → Tm → Val → Computation Tm` — checking mode (§7.4).
+    - `check : Ctx → Tm → Val → Computation Tm` — checking mode.
       Verifies that `tm` has type `ty` and returns an elaborated term.
-    - `infer : Ctx → Tm → Computation { term; type; }` — synthesis mode (§7.3).
+    - `infer : Ctx → Tm → Computation { term; type; }` — synthesis mode.
       Infers the type of `tm` and returns the elaborated term with its type.
-    - `checkType : Ctx → Tm → Computation Tm` — verify a term is a type (§7.5).
+    - `checkType : Ctx → Tm → Computation Tm` — verify a term is a type.
     - `checkTypeLevel : Ctx → Tm → Computation { term; level; }` — like
-      `checkType` but also returns the universe level (§8.2).
+      `checkType` but also returns the universe level.
 
-    ## Context Operations (§7.1)
+    ## Context Operations
 
     - `emptyCtx` — empty typing context `{ env = []; types = []; depth = 0; }`
     - `extend : Ctx → String → Val → Ctx` — add a binding (index 0 = most recent)
@@ -45,22 +42,24 @@ api.mkModule {
 
     - **Sub rule**: when checking mode doesn't match (e.g., checking a
       variable), falls through to `infer` and uses `conv` to compare.
-    - **Cumulativity**: `U(i) ≤ U(j)` when `i ≤ j` (§8.3).
+    - **Cumulativity**: `U(i) ≤ U(j)` when `i ≤ j`.
     - **Large elimination**: motives may return any universe, enabling
       type-computing eliminators (`checkMotive`).
-    - **Trampolining**: Succ and Cons chains checked iteratively (§11.3).
+    - **Trampolining**: Succ and Cons chains checked iteratively.
   '';
   value = {
     inherit (self)
       check infer checkType checkTypeLevel
       emptyCtx extend lookupType
       runCheck checkTm inferTm
-      bindP bindPChain
+      bindP bindPR bindPChain
       diag;
 
-    _internal = api.mk {
+    _internal = api.namespace {
       description = "fx.tc.check._internal: cross-part checker helpers reachable from sibling parts via the self-fixpoint; not part of the stable consumer surface.";
-      value = { inherit (self) checkMotive checkDescAtAnyLevel singleton; };
+      value = {
+        inherit (self) checkMotive checkDescAtAnyLevel singleton;
+      };
     };
   };
   tests = partTests;

@@ -15,11 +15,13 @@ let
 
   # let x0 = 0 in let x1 = x0+1 in ... in xN
   mkNestedLets = n:
-    let go = i:
-      if i >= n then var "x${toString (n - 1)}"
-      else if i == 0 then let_ "x0" (num 0) (go 1)
-      else let_ "x${toString i}" (add (var "x${toString (i - 1)}") (num 1)) (go (i + 1));
-    in go 0;
+    let
+      go = i:
+        if i >= n then var "x${toString (n - 1)}"
+        else if i == 0 then let_ "x0" (num 0) (go 1)
+        else let_ "x${toString i}" (add (var "x${toString (i - 1)}") (num 1)) (go (i + 1));
+    in
+    go 0;
 
   # let sum = λn. if n == 0 then 0 else n + sum(n-1) in sum(N)
   mkSum = n:
@@ -39,7 +41,7 @@ let
           (if_ (eq (var "n") (num 0))
             (app (app (var "ack") (sub (var "m") (num 1))) (num 1))
             (app (app (var "ack") (sub (var "m") (num 1)))
-                 (app (app (var "ack") (var "m")) (sub (var "n") (num 1))))))))
+              (app (app (var "ack") (var "m")) (sub (var "n") (num 1))))))))
       (app (app (var "ack") (num m)) (num n));
 
   mkFact = n:
@@ -58,7 +60,8 @@ let
           (app (var "countdown") (sub (var "n") (num 1)))))
       (app (var "countdown") (num n));
 
-in {
+in
+{
   inherit mkFib mkNestedLets mkSum mkAck mkFact mkCountdown;
 
   benchmarks = {

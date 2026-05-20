@@ -10,7 +10,7 @@ let
   s = fx.stream;
 
   # Helper: run a pure stream computation through empty handler
-  eval = comp: (run comp {} null).value;
+  eval = comp: (run comp { } null).value;
 
   # =========================================================================
   # CORE: fromList, range, replicate
@@ -22,8 +22,8 @@ let
   };
 
   fromListEmptyTest = {
-    expr = eval (s.toList (s.fromList []));
-    expected = [];
+    expr = eval (s.toList (s.fromList [ ]));
+    expected = [ ];
   };
 
   rangeTest = {
@@ -33,7 +33,7 @@ let
 
   rangeEmptyTest = {
     expr = eval (s.toList (s.range 5 5));
-    expected = [];
+    expected = [ ];
   };
 
   replicateTest = {
@@ -43,18 +43,20 @@ let
 
   replicateZeroTest = {
     expr = eval (s.toList (s.replicate 0 "x"));
-    expected = [];
+    expected = [ ];
   };
 
   # Parametric: fromList roundtrip for various lists
-  fromListParametric = builtins.all (xs:
-    eval (s.toList (s.fromList xs)) == xs
-  ) [ [] [ 1 ] [ 1 2 3 ] [ "a" "b" ] [ true false true ] ];
+  fromListParametric = builtins.all
+    (xs:
+      eval (s.toList (s.fromList xs)) == xs
+    ) [ [ ] [ 1 ] [ 1 2 3 ] [ "a" "b" ] [ true false true ] ];
 
   # Parametric: range produces correct length
-  rangeParametric = builtins.all (n:
-    eval (s.length (s.range 0 n)) == n
-  ) [ 0 1 5 10 20 ];
+  rangeParametric = builtins.all
+    (n:
+      eval (s.length (s.range 0 n)) == n
+    ) [ 0 1 5 10 20 ];
 
   # =========================================================================
   # TRANSFORM: map, filter
@@ -72,7 +74,7 @@ let
 
   filterAllTest = {
     expr = eval (s.toList (s.filter (_: false) (s.fromList [ 1 2 3 ])));
-    expected = [];
+    expected = [ ];
   };
 
   filterNoneTest = {
@@ -81,14 +83,16 @@ let
   };
 
   # Parametric: map preserves length
-  mapPreservesLength = builtins.all (n:
-    eval (s.length (s.map (x: x * 2) (s.range 0 n))) == n
-  ) [ 0 1 5 10 ];
+  mapPreservesLength = builtins.all
+    (n:
+      eval (s.length (s.map (x: x * 2) (s.range 0 n))) == n
+    ) [ 0 1 5 10 ];
 
   # Parametric: map identity is identity
-  mapIdentity = builtins.all (xs:
-    eval (s.toList (s.map (x: x) (s.fromList xs))) == xs
-  ) [ [] [ 1 ] [ 1 2 3 ] ];
+  mapIdentity = builtins.all
+    (xs:
+      eval (s.toList (s.map (x: x) (s.fromList xs))) == xs
+    ) [ [ ] [ 1 ] [ 1 2 3 ] ];
 
   # Parametric: map composition
   mapComposition =
@@ -96,7 +100,8 @@ let
       f = x: x + 10;
       g = x: x * 2;
       xs = [ 1 2 3 4 5 ];
-    in eval (s.toList (s.map (x: f (g x)) (s.fromList xs)))
+    in
+    eval (s.toList (s.map (x: f (g x)) (s.fromList xs)))
     == eval (s.toList (s.map f (s.map g (s.fromList xs))));
 
   # =========================================================================
@@ -108,7 +113,8 @@ let
       s.toList (
         s.take 3 (
           s.filter (x: lib.mod x 2 == 1) (
-            s.fromList [ 1 2 3 4 5 6 7 8 9 10 ]))));
+            s.fromList [ 1 2 3 4 5 6 7 8 9 10 ]))
+      ));
     expected = [ 1 3 5 ];
   };
 
@@ -128,7 +134,7 @@ let
 
   takeZeroTest = {
     expr = eval (s.toList (s.take 0 (s.fromList [ 1 2 3 ])));
-    expected = [];
+    expected = [ ];
   };
 
   takeWhileTest = {
@@ -148,15 +154,19 @@ let
 
   dropAllTest = {
     expr = eval (s.toList (s.drop 100 (s.fromList [ 1 2 ])));
-    expected = [];
+    expected = [ ];
   };
 
   # Parametric: take n from range 0..m gives min(n,m) elements
-  takeParametric = builtins.all (pair:
-    let n = builtins.elemAt pair 0; m = builtins.elemAt pair 1;
+  takeParametric = builtins.all
+    (pair:
+      let
+        n = builtins.elemAt pair 0;
+        m = builtins.elemAt pair 1;
         expected = if n < m then n else m;
-    in eval (s.length (s.take n (s.range 0 m))) == expected
-  ) [ [ 0 5 ] [ 3 5 ] [ 5 5 ] [ 10 5 ] ];
+      in
+      eval (s.length (s.take n (s.range 0 m))) == expected
+    ) [ [ 0 5 ] [ 3 5 ] [ 5 5 ] [ 10 5 ] ];
 
   # =========================================================================
   # REDUCE: fold, sum, length, any, all
@@ -198,9 +208,10 @@ let
   };
 
   # Parametric: sum of range 0..n = n*(n-1)/2
-  sumRangeParametric = builtins.all (n:
-    eval (s.sum (s.range 0 n)) == (n * (n - 1)) / 2
-  ) [ 0 1 5 10 100 ];
+  sumRangeParametric = builtins.all
+    (n:
+      eval (s.sum (s.range 0 n)) == (n * (n - 1)) / 2
+    ) [ 0 1 5 10 100 ];
 
   # =========================================================================
   # COMBINE: concat, interleave, zip, zipWith
@@ -212,7 +223,7 @@ let
   };
 
   concatEmptyLeftTest = {
-    expr = eval (s.toList (s.concat (s.fromList []) (s.fromList [ 1 2 ])));
+    expr = eval (s.toList (s.concat (s.fromList [ ]) (s.fromList [ 1 2 ])));
     expected = [ 1 2 ];
   };
 
@@ -228,7 +239,7 @@ let
 
   zipTest = {
     expr = eval (s.toList (s.zip (s.fromList [ 1 2 3 ]) (s.fromList [ "a" "b" "c" ])));
-    expected = [ { fst = 1; snd = "a"; } { fst = 2; snd = "b"; } { fst = 3; snd = "c"; } ];
+    expected = [{ fst = 1; snd = "a"; } { fst = 2; snd = "b"; } { fst = 3; snd = "c"; }];
   };
 
   zipUnevenTest = {
@@ -247,36 +258,25 @@ let
 
   boolTests = {
     inherit fromListParametric rangeParametric
-            mapPreservesLength mapIdentity mapComposition
-            takeParametric sumRangeParametric;
+      mapPreservesLength mapIdentity mapComposition
+      takeParametric sumRangeParametric;
   };
 
   exprTests = {
     inherit fromListToListTest fromListEmptyTest
-            rangeTest rangeEmptyTest
-            replicateTest replicateZeroTest
-            mapTest filterTest filterAllTest filterNoneTest
-            pipelineTest
-            takeTest takeMoreThanAvailable takeZeroTest
-            takeWhileTest takeFromInfinite
-            dropTest dropAllTest
-            foldTest sumTest lengthTest
-            anyTrueTest anyFalseTest allTrueTest allFalseTest
-            concatTest concatEmptyLeftTest
-            interleaveTest interleaveUnevenTest
-            zipTest zipUnevenTest zipWithTest;
+      rangeTest rangeEmptyTest
+      replicateTest replicateZeroTest
+      mapTest filterTest filterAllTest filterNoneTest
+      pipelineTest
+      takeTest takeMoreThanAvailable takeZeroTest
+      takeWhileTest takeFromInfinite
+      dropTest dropAllTest
+      foldTest sumTest lengthTest
+      anyTrueTest anyFalseTest allTrueTest allFalseTest
+      concatTest concatEmptyLeftTest
+      interleaveTest interleaveUnevenTest
+      zipTest zipUnevenTest zipWithTest;
   };
 
-  exprResults = builtins.mapAttrs (_: test:
-    let actual = test.expr; in
-    { inherit actual; expected = test.expected; pass = actual == test.expected; }
-  ) exprTests;
-
-  exprFailed = lib.filterAttrs (_: r: !r.pass) exprResults;
-
-  boolAllPass = builtins.all (n: boolTests.${n}) (builtins.attrNames boolTests);
-  exprAllPass = (builtins.length (builtins.attrNames exprFailed)) == 0;
-
-in boolTests // exprTests // {
-  allPass = boolAllPass && exprAllPass;
-}
+in
+boolTests // exprTests

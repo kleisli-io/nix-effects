@@ -142,10 +142,11 @@ let
           { keep = "actionCount"; }
         ];
       };
-      synth = {};
+      synth = { };
     };
 
-in {
+in
+{
   metadata-normalize =
     let info = G.datatype.datatypeInfo TreeNat;
     in builtins.length info.constructors;

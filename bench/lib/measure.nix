@@ -13,26 +13,26 @@ let
   # Project the stats fields we gate on into a flat record. Defaults to 0 for
   # missing fields so different Nix versions don't crash the comparator.
   pickAllocs = stats: {
-    values                = stats.values.number                   or 0;
-    valuesBytes           = stats.values.bytes                    or 0;
-    envs                  = stats.envs.number                     or 0;
-    envsElements          = stats.envs.elements                   or 0;
-    envsBytes             = stats.envs.bytes                      or 0;
-    listElements          = stats.list.elements                   or 0;
-    listConcats           = stats.list.concats                    or 0;
-    listBytes             = stats.list.bytes                      or 0;
-    sets                  = stats.sets.number                     or 0;
-    setsElements          = stats.sets.elements                   or 0;
-    setsBytes             = stats.sets.bytes                      or 0;
-    symbols               = stats.symbols.number                  or 0;
-    symbolsBytes          = stats.symbols.bytes                   or 0;
-    thunks                = stats.nrThunks                        or 0;
-    functionCalls         = stats.nrFunctionCalls                 or 0;
-    primOpCalls           = stats.nrPrimOpCalls                   or 0;
-    lookups               = stats.nrLookups                       or 0;
-    avoided               = stats.nrAvoided                       or 0;
-    opUpdates             = stats.nrOpUpdates                     or 0;
-    opUpdateValuesCopied  = stats.nrOpUpdateValuesCopied          or 0;
+    values = stats.values.number                   or 0;
+    valuesBytes = stats.values.bytes                    or 0;
+    envs = stats.envs.number                     or 0;
+    envsElements = stats.envs.elements                   or 0;
+    envsBytes = stats.envs.bytes                      or 0;
+    listElements = stats.list.elements                   or 0;
+    listConcats = stats.list.concats                    or 0;
+    listBytes = stats.list.bytes                      or 0;
+    sets = stats.sets.number                     or 0;
+    setsElements = stats.sets.elements                   or 0;
+    setsBytes = stats.sets.bytes                      or 0;
+    symbols = stats.symbols.number                  or 0;
+    symbolsBytes = stats.symbols.bytes                   or 0;
+    thunks = stats.nrThunks                        or 0;
+    functionCalls = stats.nrFunctionCalls                 or 0;
+    primOpCalls = stats.nrPrimOpCalls                   or 0;
+    lookups = stats.nrLookups                       or 0;
+    avoided = stats.nrAvoided                       or 0;
+    opUpdates = stats.nrOpUpdates                     or 0;
+    opUpdateValuesCopied = stats.nrOpUpdateValuesCopied          or 0;
   };
 
   # cpuTime: in-process seconds reported by the evaluator (excludes nix-instantiate
@@ -41,9 +41,9 @@ let
 
   # Informational only; not gated. Surfaced in reports.
   pickGc = stats: {
-    cycles    = stats.gc.cycles     or 0;
-    bytes     = stats.gc.totalBytes or 0;
-    heapSize  = stats.gc.heapSize   or 0;
+    cycles = stats.gc.cycles     or 0;
+    bytes = stats.gc.totalBytes or 0;
+    heapSize = stats.gc.heapSize   or 0;
   };
 
   # Median of a numeric list. Integer inputs yield truncated-int output for the
@@ -55,12 +55,14 @@ let
       mid = n / 2;
       isOdd = (mid * 2) != n;
     in
-      if n == 0 then 0
-      else if isOdd then builtins.elemAt sorted mid
-      else
-        let a = builtins.elemAt sorted (mid - 1);
-            b = builtins.elemAt sorted mid;
-        in (a + b) / 2;
+    if n == 0 then 0
+    else if isOdd then builtins.elemAt sorted mid
+    else
+      let
+        a = builtins.elemAt sorted (mid - 1);
+        b = builtins.elemAt sorted mid;
+      in
+      (a + b) / 2;
 
   # 95th percentile (nearest-rank method). For N samples, returns the
   # ⌈0.95·N⌉-th smallest value (1-indexed), which for N=5 gives sample[4]
@@ -72,7 +74,7 @@ let
       ceilRank = (95 * n + 99) / 100;
       idx = if ceilRank < 1 then 0 else ceilRank - 1;
     in
-      if n == 0 then 0 else builtins.elemAt sorted idx;
+    if n == 0 then 0 else builtins.elemAt sorted idx;
 
   # Signed percentage delta: 100 * (current - baseline) / baseline, int
   # arithmetic. Returns a sentinel 10^6 when baseline == 0 and current != 0.
@@ -105,11 +107,13 @@ let
       cpus = map (s: s.cpu) samples;
       walls = map (s: s.wall or 0) samples;
       deterministic = allocsIdentical allAllocs;
-    in {
+    in
+    {
       alloc_deterministic = deterministic;
-      allocs = if deterministic
-               then builtins.head allAllocs
-               else { };  # when non-deterministic, gate inspects allocs per-sample
+      allocs =
+        if deterministic
+        then builtins.head allAllocs
+        else { }; # when non-deterministic, gate inspects allocs per-sample
       cpu = {
         p50 = median cpus;
         p95 = p95 cpus;
@@ -121,7 +125,8 @@ let
       runs = builtins.length samples;
     };
 
-in {
+in
+{
   inherit pickAllocs pickCpu pickGc;
   inherit median p95 pctDelta permilleDelta;
   inherit allocsIdentical summarize;

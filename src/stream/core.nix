@@ -8,7 +8,7 @@
 # This is the standard encoding from iteratee/conduit/streaming libraries,
 # adapted for the freer monad framework. Streams are lazy — each step is
 # a Computation that must be interpreted to advance.
-{ fx, ... }:
+{ fx, api, ... }:
 let
   inherit (fx.kernel) pure bind send;
   done = v: pure { _tag = "Done"; value = v; };
@@ -16,7 +16,7 @@ let
   more = head: tail: pure { _tag = "More"; inherit head tail; };
 
   fromList = xs:
-    if xs == [] then done null
+    if xs == [ ] then done null
     else more (builtins.head xs) (fromList (builtins.tail xs));
 
   iterate = f: x: more x (iterate f (f x));
@@ -29,18 +29,13 @@ let
     if n <= 0 then done null
     else more x (replicate (n - 1) x);
 
-in {
-  inherit done more fromList iterate range replicate;
-
-
-
-  __docs = {
-    _self = {
-      description = "Stream primitives: `done`/`more`/`fromList`/`iterate`/`range`/`replicate` — constructors for lazy `Step`-tagged streams composed via bind.";
-      doc = "Stream primitives: done/more/fromList/iterate/range/replicate.";
-    };
-
-    done = {
+in
+api.namespace {
+  description = "Stream primitives: `done`/`more`/`fromList`/`iterate`/`range`/`replicate` — constructors for lazy `Step`-tagged streams composed via bind.";
+  doc = "Stream primitives: done/more/fromList/iterate/range/replicate.";
+  value = {
+    done = api.leaf {
+      value = done;
       description = "done: terminate a stream with a final value; produces a pure `Step` tagged `Done` carrying that value as the stream's result.";
       signature = "done : a -> Computation (Step a b)";
       doc = ''
@@ -59,7 +54,8 @@ in {
       };
     };
 
-    more = {
+    more = api.leaf {
+      value = more;
       description = "more: yield one head element followed by a continuation stream; produces a pure `Step` tagged `More` with `head` and `tail` fields.";
       signature = "more : a -> Computation (Step r a) -> Computation (Step r a)";
       doc = ''
@@ -78,7 +74,8 @@ in {
       };
     };
 
-    fromList = {
+    fromList = api.leaf {
+      value = fromList;
       description = "fromList: convert a Nix list into a stream; emits each element as `More` and terminates with `Done null`.";
       signature = "fromList : [a] -> Computation (Step null a)";
       doc = ''
@@ -86,7 +83,7 @@ in {
       '';
       tests = {
         "empty-list-is-done" = {
-          expr = (fromList []).value._tag;
+          expr = (fromList [ ]).value._tag;
           expected = "Done";
         };
         "singleton-head" = {
@@ -96,7 +93,8 @@ in {
       };
     };
 
-    iterate = {
+    iterate = api.leaf {
+      value = iterate;
       description = "iterate: build an infinite stream by repeated application: `[x, f x, f (f x), ...]`; must be paired with a limiting combinator to terminate.";
       signature = "iterate : (a -> a) -> a -> Computation (Step r a)";
       doc = ''
@@ -116,7 +114,8 @@ in {
       };
     };
 
-    range = {
+    range = api.leaf {
+      value = range;
       description = "range: build a stream of integers from `start` inclusive to `end` exclusive; empty when `start >= end`.";
       signature = "range : Int -> Int -> Computation (Step null Int)";
       doc = ''
@@ -135,7 +134,8 @@ in {
       };
     };
 
-    replicate = {
+    replicate = api.leaf {
+      value = replicate;
       description = "replicate: build a stream of `n` copies of value `x`; empty when `n <= 0`, otherwise emits `n` `More` steps then `Done null`.";
       signature = "replicate : Int -> a -> Computation (Step null a)";
       doc = ''

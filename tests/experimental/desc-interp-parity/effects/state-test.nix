@@ -1,22 +1,35 @@
-# Each test runs the same program through `fx.handle` and through
-# `fx.experimental.descInterp.trampoline.handle`, then asserts `==`.
+# Run the same observable computation through `fx.handle` and the
+# descInterp bridge `T.handle`, then compare extracted Nix scalars.
+#
+# The two sides do not share value representations — prod state is
+# raw Nix data, desc state is a kernel `Val`. Parity is on the
+# extracted Nix view: `Elab.extract H.nat finalStateVal` turns the
+# Val back into a Nix int for `==` against prod.
+#
+# `Elab.embedVal` is the Val→HOAS lift: a leaf body composing the
+# handler's response Val (e.g. the current counter) with fresh HOAS
+# (`H.succ …`) must wrap the Val first, otherwise the next
+# `H.elab op` trips the non-HOAS-attrset guard at `tc/hoas/
+# elaborate.nix:486-492`. NB: write `H.succ x`, not `H.app H.succ x`;
+# `H.succ` is a Nix-level wrapper for `H.app NatDT.succ`, so the
+# latter would put a bare Nix lambda in an `app.fn` slot.
 { lib, fx }:
 
 let
   inherit (fx) pure bind handle;
   inherit (fx.effects) state;
 
-  H  = fx.tc.hoas;
-  K  = fx.experimental.descInterp.kernel;
-  T  = fx.experimental.descInterp.trampoline;
-  DS = fx.experimental.descInterp.effects.state;
+  H = fx.tc.hoas;
+  K = fx.experimental.descInterp.kernel;
+  T = fx.experimental.descInterp.trampoline;
+  Elab = fx.tc.elaborate;
 
-  testEff  = H.bool;
-  testResp = H.lam "_" H.bool (_: H.nat);
-  pureD    = K.pure testEff testResp H.nat;
-  bindD    = K.bind testEff testResp H.nat H.nat;
-  handleD  = T.handle testEff testResp H.nat;
+  stateMod = fx.experimental.descInterp.effects.state;
+  stateAtNat = stateMod.atType H.nat H.nat;
+  pureD = K.pure stateAtNat.eff stateAtNat.resp H.nat;
+  bindD = K.bind stateAtNat.eff stateAtNat.resp H.nat H.nat;
 
+  # get; put(state+1); get. Initial 0 → final 1.
   stateCounter = {
     prod =
       let
@@ -24,75 +37,30 @@ let
           bind (state.put (n + 1)) (_:
             bind state.get (n2:
               pure n2)));
-      in handle { handlers = state.handler; state = 0; } comp;
+        result = handle { handlers = state.handler; state = 0; } comp;
+      in
+      result.value;
     desc =
       let
-        comp = bindD DS.get (n:
-          bindD (DS.put (n + 1)) (_:
-            bindD DS.get (n2:
+        comp = bindD stateAtNat.get (n:
+          bindD (stateAtNat.put (H.succ (Elab.embedVal n))) (_:
+            bindD stateAtNat.get (n2:
               pureD n2)));
-      in handleD { handlers = DS.handler; state = 0; } comp;
-  };
-
-  stateModify = {
-    prod =
-      let
-        comp = bind (state.modify (n: n * 3)) (_:
-          bind (state.modify (n: n + 2)) (_:
-            state.get));
-      in handle { handlers = state.handler; state = 10; } comp;
-    desc =
-      let
-        comp = bindD (DS.modify (n: n * 3)) (_:
-          bindD (DS.modify (n: n + 2)) (_:
-            DS.get));
-      in handleD { handlers = DS.handler; state = 10; } comp;
-  };
-
-  stateGets = {
-    prod =
-      let
-        comp = bind (state.put { x = 42; y = 99; }) (_:
-          state.gets (s: s.x));
-      in handle { handlers = state.handler; state = null; } comp;
-    desc =
-      let
-        comp = bindD (DS.put { x = 42; y = 99; }) (_:
-          DS.gets (s: s.x));
-      in handleD { handlers = DS.handler; state = null; } comp;
-  };
-
-  stateFinalState = {
-    prod =
-      let
-        comp = bind (state.modify (n: n + 5)) (_:
-          bind (state.modify (n: n * 2)) (_:
-            pure "done"));
-      in handle { handlers = state.handler; state = 10; } comp;
-    desc =
-      let
-        comp = bindD (DS.modify (n: n + 5)) (_:
-          bindD (DS.modify (n: n * 2)) (_:
-            pureD "done"));
-      in handleD { handlers = DS.handler; state = 10; } comp;
+        result = T.handle stateAtNat.eff stateAtNat.resp H.nat
+          {
+            inherit (stateAtNat) handler dispatch;
+            state = H.zero;
+          }
+          comp;
+      in
+      Elab.extract H.nat result.value;
   };
 
   parityOf = name: t: { inherit name; expr = t.desc; expected = t.prod; };
 
   testCases = {
-    stateCounterParity    = parityOf "stateCounter"    stateCounter;
-    stateModifyParity     = parityOf "stateModify"     stateModify;
-    stateGetsParity       = parityOf "stateGets"       stateGets;
-    stateFinalStateParity = parityOf "stateFinalState" stateFinalState;
+    stateCounterParity = parityOf "stateCounter" stateCounter;
   };
 
-  results = builtins.mapAttrs (_: t:
-    let actual = t.expr; in
-    { inherit actual; expected = t.expected; pass = actual == t.expected; }
-  ) testCases;
-
-  failed = lib.filterAttrs (_: r: !r.pass) results;
-
-in testCases // {
-  allPass = (builtins.length (builtins.attrNames failed)) == 0;
-}
+in
+testCases

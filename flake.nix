@@ -15,7 +15,8 @@
     let
       nix-effects = import ./. { lib = nixpkgs.lib; };
       forAllSystems = nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed;
-    in {
+    in
+    {
       lib = nix-effects;
 
       # Test attrset for nix-unit: inline tests ({ expr; expected; }) and
@@ -32,24 +33,25 @@
           # derivations. Re-import the root with pkgs here so `bench.runner`
           # resolves to the non-null attrset.
           nix-effects-with-pkgs = import ./. { inherit pkgs lib; };
-        in {
+        in
+        {
           # Raw generated API markdown (one .md per module).
           api-docs-src = apiDocsSrc;
 
-          # Content for kleisli-docs (docs.kleisli.io):
-          # nix build .#kleisli-docs-content && ls result/nix-effects/
-          kleisli-docs-content = import ./book/gen/kleisli-docs.nix {
+          # Markdown content for an external documentation hub.
+          # nix build .#docs-content && ls result/nix-effects/
+          docs-content = import ./book/gen/docs-content.nix {
             inherit pkgs lib nix-effects;
           };
 
           # Bench harness. Binary stem is `nix-effects-bench-*`; the
           # `apps` outputs below alias these for `nix run .#bench-* -- …`.
-          bench-run              = nix-effects-with-pkgs.bench.runner.run;
-          bench-compare          = nix-effects-with-pkgs.bench.runner.compare;
-          bench-gate             = nix-effects-with-pkgs.bench.runner.gate;
-          bench-calibrate        = nix-effects-with-pkgs.bench.runner.calibrate;
+          bench-run = nix-effects-with-pkgs.bench.runner.run;
+          bench-compare = nix-effects-with-pkgs.bench.runner.compare;
+          bench-gate = nix-effects-with-pkgs.bench.runner.gate;
+          bench-calibrate = nix-effects-with-pkgs.bench.runner.calibrate;
           bench-open-regressions = nix-effects-with-pkgs.bench.runner.open-regressions;
-          bench-lint-workloads   = nix-effects-with-pkgs.bench.runner.lint-workloads;
+          bench-lint-workloads = nix-effects-with-pkgs.bench.runner.lint-workloads;
         });
 
       # `nix run .#bench-* -- <args>`. The wrapped binary embeds the
@@ -61,23 +63,26 @@
             type = "app";
             program = "${pkg}/bin/nix-effects-bench-${stem}";
           };
-        in {
-          bench-run              = mkApp benchPkgs.bench-run              "run";
-          bench-compare          = mkApp benchPkgs.bench-compare          "compare";
-          bench-gate             = mkApp benchPkgs.bench-gate             "gate";
-          bench-calibrate        = mkApp benchPkgs.bench-calibrate        "calibrate";
+        in
+        {
+          bench-run = mkApp benchPkgs.bench-run "run";
+          bench-compare = mkApp benchPkgs.bench-compare "compare";
+          bench-gate = mkApp benchPkgs.bench-gate "gate";
+          bench-calibrate = mkApp benchPkgs.bench-calibrate "calibrate";
           bench-open-regressions = mkApp benchPkgs.bench-open-regressions "open-regressions";
-          bench-lint-workloads   = mkApp benchPkgs.bench-lint-workloads   "lint-workloads";
+          bench-lint-workloads = mkApp benchPkgs.bench-lint-workloads "lint-workloads";
         });
 
       checks = forAllSystems (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
           nix-unit-pkg = nix-unit.packages.${system}.default;
-        in {
-          default = pkgs.runCommand "nix-effects-tests" {
-            nativeBuildInputs = [ nix-unit-pkg ];
-          } ''
+        in
+        {
+          default = pkgs.runCommand "nix-effects-tests"
+            {
+              nativeBuildInputs = [ nix-unit-pkg ];
+            } ''
             export HOME="$(realpath .)"
             nix-unit --eval-store "$HOME" \
               --extra-experimental-features flakes \

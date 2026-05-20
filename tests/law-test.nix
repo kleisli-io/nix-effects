@@ -40,13 +40,15 @@ let
     let
       a = 42;
       f = x: pure (x * 2);
-    in equiv (bind (pure a) f) (f a);
+    in
+    equiv (bind (pure a) f) (f a);
 
   monadLeftIdEffectful =
     let
       a = 5;
       f = x: bind (send "put" x) (_: send "get" null);
-    in equiv (bind (pure a) f) (f a);
+    in
+    equiv (bind (pure a) f) (f a);
 
   # -- Right identity: bind m pure ≡ m --
 
@@ -65,14 +67,16 @@ let
       m = pure 1;
       f = x: pure (x + 10);
       g = x: pure (x * 2);
-    in equiv (bind (bind m f) g) (bind m (x: bind (f x) g));
+    in
+    equiv (bind (bind m f) g) (bind m (x: bind (f x) g));
 
   monadAssocEffectful =
     let
       m = send "get" null;
       f = x: bind (send "put" (x + 1)) (_: pure x);
       g = x: bind (send "put" (x * 10)) (_: send "get" null);
-    in equiv (bind (bind m f) g) (bind m (x: bind (f x) g));
+    in
+    equiv (bind (bind m f) g) (bind m (x: bind (f x) g));
 
   # =========================================================================
   # FUNCTOR LAWS
@@ -89,7 +93,8 @@ let
       m = pure 3;
       f = x: x + 10;
       g = x: x * 2;
-    in equiv (map (x: f (g x)) m) (map f (map g m));
+    in
+    equiv (map (x: f (g x)) m) (map f (map g m));
 
   # =========================================================================
   # STATE EFFECT LAWS (Plotkin & Power 2002)
@@ -166,20 +171,23 @@ let
     let
       f = a: b: a + b;
       roundtripped = sigT.curry (sigT.uncurry f);
-    in roundtripped 3 4 == f 3 4;
+    in
+    roundtripped 3 4 == f 3 4;
 
   # Uncurry/curry adjunction: uncurry (curry g) ≡ g  (on pairs)
   sigmaUncurryCurry =
     let
       g = p: p.fst + p.snd;
       roundtripped = sigT.uncurry (sigT.curry g);
-    in roundtripped { fst = 3; snd = 4; } == g { fst = 3; snd = 4; };
+    in
+    roundtripped { fst = 3; snd = 4; } == g { fst = 3; snd = 4; };
 
   # Pullback identity: pullback id id ≡ original check  (for well-formed pairs)
   sigmaPullbackIdentity =
     let
       mapped = sigT.pullback (x: x) (x: x);
-    in mapped.check { fst = 42; snd = 7; } == sigT.check { fst = 42; snd = 7; };
+    in
+    mapped.check { fst = 42; snd = 7; } == sigT.check { fst = 42; snd = 7; };
 
   # Pullback composition (CONTRAVARIANT):
   #   pullback (f∘g) (h∘k) = pullback g k >>> pullback f h
@@ -219,7 +227,8 @@ let
       val1 = { fst = 2; snd = 4; };
       val2 = { fst = 1; snd = 3; };
       val3 = { fst = 5; snd = 5; };
-    in composed.check val1 == step2.check val1
+    in
+    composed.check val1 == step2.check val1
     && composed.check val2 == step2.check val2
     && composed.check val3 == step2.check val3;
 
@@ -237,20 +246,23 @@ let
     let
       packed = { fst = 42; snd = "hello"; };
       roundtripped = recT.pack (recT.unpack packed);
-    in roundtripped == packed;
+    in
+    roundtripped == packed;
 
   # unpack (pack flat) ≡ flat
   depRecordUnpackPack =
     let
       flat = { n = 42; s = "hello"; };
       roundtripped = recT.unpack (recT.pack flat);
-    in roundtripped == flat;
+    in
+    roundtripped == flat;
 
-in {
+in
+{
   # Monad laws
   inherit monadLeftIdPure monadLeftIdEffectful
-          monadRightIdPure monadRightIdEffectful
-          monadAssocPure monadAssocEffectful;
+    monadRightIdPure monadRightIdEffectful
+    monadAssocPure monadAssocEffectful;
 
   # Functor laws
   inherit functorIdentity functorComposition;
@@ -263,18 +275,8 @@ in {
 
   # Sigma type laws
   inherit sigmaCurryUncurry sigmaUncurryCurry
-          sigmaPullbackIdentity sigmaPullbackComposition;
+    sigmaPullbackIdentity sigmaPullbackComposition;
 
   # DepRecord bijection
   inherit depRecordPackUnpack depRecordUnpackPack;
-
-  allPass = monadLeftIdPure && monadLeftIdEffectful
-         && monadRightIdPure && monadRightIdEffectful
-         && monadAssocPure && monadAssocEffectful
-         && functorIdentity && functorComposition
-         && stateGetGet && stateGetPut && statePutGet && statePutPut
-         && lensGetPut && lensPutGet && lensPutPut
-         && sigmaCurryUncurry && sigmaUncurryCurry
-         && sigmaPullbackIdentity && sigmaPullbackComposition
-         && depRecordPackUnpack && depRecordUnpackPack;
 }

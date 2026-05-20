@@ -14,9 +14,9 @@ The guide walks through nix-effects from first principles:
 - **[Typed Validation](/nix-effects/guide/typed-validation)** — primitive, refined, structured, and dependent validation boundaries
 - **[Generated Datatypes](/nix-effects/guide/generated-datatypes)** — descriptions, constructors, metadata, and generated families
 - **[Generic Programming](/nix-effects/guide/generic-programming)** — derive schemas, dependency graphs, diagnostics, and structural views
-- **[Sugar](/nix-effects/guide/sugar)** — opt-in syntax for effect pipelines and refined types
 - **[Ornaments and Description-Backed Data](/nix-effects/guide/ornaments)** — enrich generated datatypes while preserving forgetful maps
 - **[Proof Guide](/nix-effects/guide/proof-guide)** — a first introduction to writing proofs for the nix-effects type checker
+- **[Sugar](/nix-effects/guide/sugar)** — opt-in syntax for effect pipelines and refined types
 
 ## Concepts
 
@@ -32,6 +32,15 @@ Implementation chapters are grouped for contributors:
 - **[Systems Architecture](/nix-effects/internals/systems-architecture)** — how the components fit together
 - **[Kernel Architecture](/nix-effects/internals/kernel-architecture)** — the MLTT type-checking kernel internals
 - **[Kernel Specification](/nix-effects/internals/kernel-spec)** — formal specification with typing rules
+
+## Examples
+
+Examples show complete uses of nix-effects in small programs. The source lives under `examples/` if you want to run or adapt it locally:
+
+- **[Overview](/nix-effects/examples)** — where to start and where the source lives
+- **[Proofs](/nix-effects/proof-examples)** — computational proofs, equality combinators, and verified functions
+- **[Effects and Validation](/nix-effects/effect-examples)** — one validation computation under collecting, logging, and strict handlers
+- **[Surface Languages](/nix-effects/surface-examples)** — STLC surface syntax, products, sums, recursive lists, refinements, and diagnostics
 
 ## API Reference
 

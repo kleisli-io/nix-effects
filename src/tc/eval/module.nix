@@ -3,19 +3,16 @@
 # Public export assembly for the evaluator. `self` is the disjoint-union
 # fixpoint of `core.nix` and `desc.nix`; `partTests` is the aggregated
 # test map from both parts.
-{ self, partTests, partDocs, api, ... }:
+{ self, partTests, api, ... }:
 
-api.mkModule {
-  inherit partDocs;
-  description = "fx.tc.eval: pure kernel evaluator (kernel-spec §4, §9) — `eval`/`evalF`/`instantiate` plus elimination helpers; zero effect-system imports, part of the TCB.";
+api.mk {
+  description = "fx.tc.eval: pure kernel evaluator for `eval`/`evalF`/`instantiate` plus elimination helpers; zero effect-system imports, part of the TCB.";
   doc = ''
     # fx.tc.eval — Evaluator
 
     Pure evaluator: interprets kernel terms in an environment of
     values. Zero effect system imports — part of the trusted computing
     base (TCB).
-
-    Spec reference: kernel-spec.md §4, §9.
 
     ## Core Functions
 
@@ -30,13 +27,13 @@ api.mkModule {
     - `vBootSumElim` — sum elimination
     - `vBootJ` — identity elimination (computes to base on VBootRefl)
 
-    ## Trampolining (§11.3)
+    ## Trampolining
 
     Generated `desc-con` chains use `builtins.genericClosure` to flatten
     recursive structures iteratively, guaranteeing O(1) stack depth on
     deep generated recursive data.
 
-    ## Fuel Mechanism (§9)
+    ## Fuel Mechanism
 
     Each `evalF` call decrements a fuel counter. When fuel reaches 0,
     evaluation throws `"normalization budget exceeded"`. This bounds
@@ -45,17 +42,24 @@ api.mkModule {
   '';
   value = {
     inherit (self)
-      eval evalF instantiate
+      eval evalF instantiate mkValueF
       vApp vFst vSnd vBootSumElim vBootJ
       vLiftF vLiftIntroF vLiftElimF
       vDescInd descView linearProfile
       sumPayloadTmView sumPayloadValView
       vInterpD vAllD vEverywhereD
-      mkDescDescAppV mkDescDescAppVF;
+      mkDescDescAppV;
 
-    _internal = api.mk {
+    dispatch = api.namespace {
+      description = "fx.tc.eval.dispatch: full kernel evaluator self-fixpoint. Consumed by overlay constructions (notably `tc/elaborate/eval-overlay.nix`) that need to build a meta-aware self-table replacing selected dispatch attrs while inheriting the rest.";
+      value = self;
+    };
+
+    _internal = api.namespace {
       description = "fx.tc.eval._internal: cross-part evaluator helpers reachable from sibling parts via the self-fixpoint; not part of the stable consumer surface.";
-      value = { inherit (self) mkCanonAppVF; };
+      value = {
+        inherit (self) mkCanonAppVF mkDescDescAppVF;
+      };
     };
   };
   tests = partTests;

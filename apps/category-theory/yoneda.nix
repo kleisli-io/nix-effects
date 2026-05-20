@@ -34,7 +34,8 @@ let
   liftMotive = A: a: B:
     lam "y" A (y: lam "_" (Eq A a y) (_: app B y));
 
-in rec {
+in
+rec {
 
   # -- eval: apply the section at the universal element (a, refl) --
 
@@ -98,7 +99,9 @@ in rec {
             Eq (app B y)
               (J A a (liftMotive A a B) (app (app alpha a) Refl) y q)
               (app (app alpha y) q))))
-          Refl x p))))));
+          Refl
+          x
+          p))))));
 
   liftEval = verify liftEvalTy liftEvalImpl;
 }

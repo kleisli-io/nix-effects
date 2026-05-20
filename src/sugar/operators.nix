@@ -1,14 +1,8 @@
-{ fx, ... }:
+{ fx, api, ... }:
 
 {
   scope = {
-    operators = { __div = fx.kernel.bind; };
-  };
-
-  tests = {};
-
-  __docs = {
-    operators = {
+    operators = api.leaf {
       description = "operators: sugar operator overloads — currently `__div` aliasing `fx.kernel.bind` so `c / k` reads as `bind c k` in expression context.";
       doc = ''
         Opt-in operator-style monadic composition. The attrset's
@@ -18,6 +12,9 @@
         readers unfamiliar with the convention. The combinator forms
         (`bind`, `do`, `kleisli`) remain the canonical entry points.
       '';
+      value = { __div = fx.kernel.bind; };
     };
   };
+
+  tests = { };
 }

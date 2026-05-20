@@ -18,10 +18,11 @@ let
         sugKeys = builtins.attrNames sug';
         preserved = builtins.all (k: builtins.elem k sugKeys) origKeys;
         new = lib.subtractLists origKeys sugKeys;
-      in preserved
-         && builtins.length new == 2
-         && builtins.elem "__functor" new
-         && builtins.elem "__toString" new);
+      in
+      preserved
+      && builtins.length new == 2
+      && builtins.elem "__functor" new
+      && builtins.elem "__toString" new);
     expected = true;
   };
 
@@ -35,10 +36,11 @@ let
         wrappedKeys = builtins.attrNames wrapped;
         preserved = builtins.all (k: builtins.elem k wrappedKeys) baseKeys;
         new = lib.subtractLists baseKeys wrappedKeys;
-      in preserved
-         && builtins.length new == 2
-         && builtins.elem "__functor" new
-         && builtins.elem "__toString" new;
+      in
+      preserved
+      && builtins.length new == 2
+      && builtins.elem "__functor" new
+      && builtins.elem "__toString" new;
     expected = true;
   };
 
@@ -50,7 +52,8 @@ let
         p = x: true;
         direct = refined "${orig.name}?" orig p;
         viaSugar = sug' p;
-      in viaSugar._kernel == direct._kernel);
+      in
+      viaSugar._kernel == direct._kernel);
     expected = true;
   };
 
@@ -60,8 +63,9 @@ let
         p = x: x > 0;
         direct = refined "Int?" Int p;
         viaSugar = sug.Int p;
-        probes = [ 5 0 (-3) "x" [] {} ];
-      in builtins.all (v: direct.check v == viaSugar.check v) probes;
+        probes = [ 5 0 (-3) "x" [ ] { } ];
+      in
+      builtins.all (v: direct.check v == viaSugar.check v) probes;
     expected = true;
   };
 
@@ -76,9 +80,10 @@ let
         ];
         lineMatches = pat: s:
           builtins.any (l: builtins.match ".*${pat}.*" l != null)
-                       (lib.splitString "\n" s);
+            (lib.splitString "\n" s);
         anyFile = pat: builtins.any (lineMatches pat) files;
-      in !(anyFile "fx\\.diag\\.");
+      in
+        !(anyFile "fx\\.diag\\.");
     expected = true;
   };
 
@@ -87,7 +92,8 @@ let
       let
         orig = builtins.elemAt primitives i;
         sug' = builtins.elemAt sugPrimitives i;
-      in sug'.universe == orig.universe && orig.universe == 0);
+      in
+      sug'.universe == orig.universe && orig.universe == 0);
     expected = true;
   };
 
@@ -96,9 +102,10 @@ let
       let
         p = x: true;
         q = x: true;
-      in (sug.Int p).universe == Int.universe
-         && (sug.Int p q).universe == Int.universe
-         && (sug.String p).universe == String.universe;
+      in
+      (sug.Int p).universe == Int.universe
+      && (sug.Int p q).universe == Int.universe
+      && (sug.String p).universe == String.universe;
     expected = true;
   };
 
@@ -114,7 +121,8 @@ let
       let
         r1 = Record { age = Int; };
         r2 = Record { age = sug.Int; };
-      in defEq r1 r2;
+      in
+      defEq r1 r2;
     expected = true;
   };
 
@@ -124,7 +132,8 @@ let
         p = x: x > 0;
         r1 = Record { age = refined "Int?" Int p; };
         r2 = Record { age = sug.Int p; };
-      in defEq r1 r2;
+      in
+      defEq r1 r2;
     expected = true;
   };
 
@@ -142,7 +151,8 @@ let
           name = sug.String;
           active = sug.Bool;
         };
-      in defEq r1 r2;
+      in
+      defEq r1 r2;
     expected = true;
   };
 
@@ -157,9 +167,10 @@ let
         ];
         lineMatches = pat: s:
           builtins.any (l: builtins.match ".*${pat}.*" l != null)
-                       (lib.splitString "\n" s);
+            (lib.splitString "\n" s);
         anyFile = pat: builtins.any (lineMatches pat) files;
-      in {
+      in
+      {
         noDiag = !(anyFile "fx\\.diag\\.");
         noTc = !(anyFile "fx\\.tc\\.");
         noRecordVerify = !(anyFile "Record\\.verify");
@@ -185,11 +196,14 @@ let
     expr =
       let
         t = sug.Int (x: x > 10);
-        result = fx.handle {
-          handlers = fx.effects.typecheck.collecting;
-          state = [];
-        } (t.validate 5);
-      in {
+        result = fx.handle
+          {
+            handlers = fx.effects.typecheck.collecting;
+            state = [ ];
+          }
+          (t.validate 5);
+      in
+      {
         failed = result.value == false;
         collected = builtins.length result.state == 1;
       };
@@ -198,21 +212,13 @@ let
 
   allTests = {
     inherit additiveOnlyPrimitives additiveOnlyRefined
-            kernelDelegation checkDelegation
-            noKernelDiagEmission
-            universePrimitives universeRefined
-            recordKernelIdentity recordKernelIdentityRefined recordKernelIdentityMultiField
-            validationFailureEmits
-            stabilityAudit;
+      kernelDelegation checkDelegation
+      noKernelDiagEmission
+      universePrimitives universeRefined
+      recordKernelIdentity recordKernelIdentityRefined recordKernelIdentityMultiField
+      validationFailureEmits
+      stabilityAudit;
   };
 
-  results = builtins.mapAttrs (_: test:
-    let actual = test.expr; in
-    { inherit actual; expected = test.expected; pass = actual == test.expected; }
-  ) allTests;
-
-  failed = lib.filterAttrs (_: r: !r.pass) results;
-
-in allTests // {
-  allPass = (builtins.length (builtins.attrNames failed)) == 0;
-}
+in
+allTests

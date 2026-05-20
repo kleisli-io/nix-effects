@@ -14,7 +14,7 @@
 #
 # Grounded in Martin-Löf (1984) "Intuitionistic Type Theory" for the
 # stratified universe hierarchy, and Russell's original paradox resolution.
-{ fx, ... }:
+{ fx, api, ... }:
 let
   inherit (fx.types.foundation) mkType check;
 
@@ -28,17 +28,18 @@ let
     # kernel has no representation for runtime type attrsets. So we keep
     # _kernel and prove (the kernel type IS U(n)) but remove kernelCheck.
     # Instead, check uses a guard that verifies the attrset structure.
-    builtins.removeAttrs (mkType {
-      name = "Type_${toString n}";
-      kernelType = H.u n;
-      # Guard: types-as-values can't be elaborated by decide(), so the
-      # guard replaces kernel decide. The `v ? universe` check is a crash
-      # boundary: without it, accessing v.universe on a fake type attrset
-      # (has _tag="Type" but no universe field) would crash Nix.
-      guard = v: isType v && v ? universe && v.universe <= n;
-      universe = n + 1;
-      description = "Universe level ${toString n}";
-    }) ["kernelCheck"];
+    builtins.removeAttrs
+      (mkType {
+        name = "Type_${toString n}";
+        kernelType = H.u n;
+        # Guard: types-as-values can't be elaborated by decide(), so the
+        # guard replaces kernel decide. The `v ? universe` check is a crash
+        # boundary: without it, accessing v.universe on a fake type attrset
+        # (has _tag="Type" but no universe field) would crash Nix.
+        guard = v: isType v && v ? universe && v.universe <= n;
+        universe = n + 1;
+        description = "Universe level ${toString n}";
+      }) [ "kernelCheck" ];
 
   Type_0 = typeAt 0;
   Type_1 = typeAt 1;
@@ -48,18 +49,13 @@ let
 
   level = type: type.universe;
 
-in {
-  inherit typeAt level;
-  inherit Type_0 Type_1 Type_2 Type_3 Type_4;
-
-
-  __docs = {
-    _self = {
-      description = "Universe hierarchy: `typeAt n` produces `Type_n` in a cumulative MLTT tower; `Type_0`–`Type_4` are predefined; `level` reads a type's universe.";
-      doc = "Universe hierarchy: Type_0 : Type_1 : Type_2 : ... Lazy infinite tower.";
-    };
-
-    typeAt = {
+in
+api.namespace {
+  description = "Universe hierarchy: `typeAt n` produces `Type_n` in a cumulative MLTT tower; `Type_0`–`Type_4` are predefined; `level` reads a type's universe.";
+  doc = "Universe hierarchy: Type_0 : Type_1 : Type_2 : ... Lazy infinite tower.";
+  value = {
+    typeAt = api.leaf {
+      value = typeAt;
       description = "typeAt: factory producing the cumulative universe type `Type_n`; values of `Type_n` are types of universe ≤ n; `Type_n` itself has universe `n+1`.";
       signature = "typeAt : Int -> Type";
       doc = ''
@@ -109,7 +105,8 @@ in {
         };
       };
     };
-    level = {
+    level = api.leaf {
+      value = level;
       description = "level: read a type's universe level as an `Int`; level 0 covers atomic types, level 1 contains `Type_0`, and so on up the stratified tower.";
       signature = "level : Type -> Int";
       doc = "Get the universe level of a type. Equivalent to `.universe` field access; provided for explicit calls.";
@@ -128,6 +125,12 @@ in {
         };
       };
     };
+
+    Type_0 = api.leaf { value = Type_0; description = "Type_0: first universe in the cumulative tower."; doc = "Predefined `Type_0` universe."; };
+    Type_1 = api.leaf { value = Type_1; description = "Type_1: second universe in the cumulative tower."; doc = "Predefined `Type_1` universe."; };
+    Type_2 = api.leaf { value = Type_2; description = "Type_2: third universe in the cumulative tower."; doc = "Predefined `Type_2` universe."; };
+    Type_3 = api.leaf { value = Type_3; description = "Type_3: fourth universe in the cumulative tower."; doc = "Predefined `Type_3` universe."; };
+    Type_4 = api.leaf { value = Type_4; description = "Type_4: fifth universe in the cumulative tower."; doc = "Predefined `Type_4` universe."; };
 
   };
 }

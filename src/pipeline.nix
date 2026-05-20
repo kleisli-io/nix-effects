@@ -8,35 +8,39 @@
 # Each stage's transform: Data -> Computation Data
 # where Data flows as the value through bind, and effects
 # are handled by run.
-{ fx, ... }:
+{ fx, api, ... }:
 
 let
   inherit (fx.kernel) pure bind;
 
   reader = fx.effects.reader;
-  error  = fx.effects.error;
-  acc    = fx.effects.acc;
+  error = fx.effects.error;
+  acc = fx.effects.acc;
 
-  mkStage = {
-    name,
-    description ? "",
-    transform,
-    inputType ? null,
-    outputType ? null,
-  }: let
-    validate = schema: data: fx.kernel.map (_: data) (schema.validate data);
-  in {
-    inherit name description;
-    transform = data:
-      let
-        data1 = if inputType != null then validate inputType data else pure data;
-        transformed = bind data1 transform;
-        validated = if outputType != null then bind transformed (validate outputType) else transformed;
-      in validated;
-    inputType = inputType;
-    outputType = outputType;
-    __isStage = true;
-  };
+  mkStage =
+    { name
+    , description ? ""
+    , transform
+    , inputType ? null
+    , outputType ? null
+    ,
+    }:
+    let
+      validate = schema: data: fx.kernel.map (_: data) (schema.validate data);
+    in
+    {
+      inherit name description;
+      transform = data:
+        let
+          data1 = if inputType != null then validate inputType data else pure data;
+          transformed = bind data1 transform;
+          validated = if outputType != null then bind transformed (validate outputType) else transformed;
+        in
+        validated;
+      inputType = inputType;
+      outputType = outputType;
+      __isStage = true;
+    };
 
   compose = stages: data:
     builtins.foldl'
@@ -46,36 +50,47 @@ let
 
   run = args: stages:
     let
-      pipeline = compose stages {};
+      pipeline = compose stages { };
 
       # Reader env is wrapped in a function closure so that the trampoline's
       # builtins.deepSeq on handler state doesn't force the entire depot tree.
       # deepSeq on a function is a no-op (functions are already values in Nix).
-      adaptedReader = fx.adapt.adaptHandlers {
-        get = s: s.envFn null;
-        set = s: env: s // { envFn = _: env; };
-      } reader.handler;
+      adaptedReader = fx.adapt.adaptHandlers
+        {
+          get = s: s.envFn null;
+          set = s: env: s // { envFn = _: env; };
+        }
+        reader.handler;
 
-      adaptedError = fx.adapt.adaptHandlers {
-        get = s: s.errors;
-        set = s: errors: s // { inherit errors; };
-      } error.collecting;
+      adaptedError = fx.adapt.adaptHandlers
+        {
+          get = s: s.errors;
+          set = s: errors: s // { inherit errors; };
+        }
+        error.collecting;
 
-      adaptedAcc = fx.adapt.adaptHandlers {
-        get = s: s.warnings;
-        set = s: warnings: s // { inherit warnings; };
-      } acc.handler;
+      adaptedAcc = fx.adapt.adaptHandlers
+        {
+          get = s: s.warnings;
+          set = s: warnings: s // { inherit warnings; };
+        }
+        acc.handler;
 
-      adaptedTypecheck = fx.adapt.adaptHandlers {
-        get = s: s.typeErrors;
-        set = s: typeErrors: s // { inherit typeErrors; };
-      } fx.effects.typecheck.collecting;
+      adaptedTypecheck = fx.adapt.adaptHandlers
+        {
+          get = s: s.typeErrors;
+          set = s: typeErrors: s // { inherit typeErrors; };
+        }
+        fx.effects.typecheck.collecting;
 
-      result = fx.trampoline.handle {
-        handlers = adaptedReader // adaptedError // adaptedAcc // adaptedTypecheck;
-        state = { envFn = _: args; errors = []; warnings = []; typeErrors = []; };
-      } pipeline;
-    in {
+      result = fx.trampoline.handle
+        {
+          handlers = adaptedReader // adaptedError // adaptedAcc // adaptedTypecheck;
+          state = { envFn = _: args; errors = [ ]; warnings = [ ]; typeErrors = [ ]; };
+        }
+        pipeline;
+    in
+    {
       inherit (result) value;
       errors = result.state.errors;
       warnings = result.state.warnings;
@@ -84,44 +99,38 @@ let
 
   # Convenience re-exports for stage implementations.
   # Stages import these rather than reaching into fx.effects directly.
-  ask       = reader.ask;       # Computation returning full env
-  asks      = reader.asks;      # (env -> a) -> Computation a
-  raise     = error.raise;      # message -> Computation _
-  raiseWith = error.raiseWith;  # context -> message -> Computation _
-  warn      = acc.emit;         # item -> Computation null
+  ask = reader.ask; # Computation returning full env
+  asks = reader.asks; # (env -> a) -> Computation a
+  raise = error.raise; # message -> Computation _
+  raiseWith = error.raiseWith; # context -> message -> Computation _
+  warn = acc.emit; # item -> Computation null
 
-in {
-  inherit mkStage compose run;
-  inherit pure bind;
-  map = fx.kernel.map;
-  inherit ask asks raise raiseWith warn;
+in
+api.namespace {
+  description = "Typed pipeline: `mkStage`/`compose`/`run` build composable stages over reader/error/acc handlers, collecting errors, warnings, and type errors.";
+  doc = ''
+    Typed pipeline framework with composable stages.
 
-  __docs = {
-    _self = {
-      description = "Typed pipeline framework: `mkStage`/`compose`/`run` build composable stages over reader/error/acc/typecheck handlers with collected errors, warnings, and type errors.";
-      doc = ''
-        Typed pipeline framework with composable stages.
+    Stages are composable transformations executed with reader (immutable
+    environment), error (collecting validation errors), and acc (non-fatal
+    warnings) effects. The run function wires up all handlers and returns
+    { value, errors, warnings, typeErrors }.
 
-        Stages are composable transformations executed with reader (immutable
-        environment), error (collecting validation errors), and acc (non-fatal
-        warnings) effects. The run function wires up all handlers and returns
-        { value, errors, warnings, typeErrors }.
-
-        ```nix
-        let
-          stage1 = pipeline.mkStage {
-            name = "discover";
-            transform = data:
-              bind (pipeline.asks (env: env.config)) (cfg:
-                pure (data // { config = cfg; }));
-          };
-          result = pipeline.run { config = "prod"; } [ stage1 ];
-        in result  # => { config = "prod"; }
-        ```
-      '';
-    };
-
-    mkStage = {
+    ```nix
+    let
+      stage1 = pipeline.mkStage {
+        name = "discover";
+        transform = data:
+          bind (pipeline.asks (env: env.config)) (cfg:
+            pure (data // { config = cfg; }));
+      };
+      result = pipeline.run { config = "prod"; } [ stage1 ];
+    in result  # => { config = "prod"; }
+    ```
+  '';
+  value = {
+    mkStage = api.leaf {
+      value = mkStage;
       description = "mkStage: build a named pipeline stage carrying a `transform`, optional `inputType`/`outputType` schemas, and a `description`; stages chain through `compose`.";
       signature = "mkStage : { name, description ? \"\", transform, inputType ? null, outputType ? null } -> Stage";
       doc = ''
@@ -154,13 +163,14 @@ in {
           expr = fx.comp.isPure ((mkStage {
             name = "add-x";
             transform = data: pure (data // { x = 1; });
-          }).transform {});
+          }).transform { });
           expected = true;
         };
       };
     };
 
-    compose = {
+    compose = api.leaf {
+      value = compose;
       description = "compose: chain a list of stages into a single computation; each stage's transform receives the previous output and returns the next stage's input wrapped in a computation.";
       signature = "compose : [Stage] -> Data -> Computation Data";
       doc = ''
@@ -173,11 +183,15 @@ in {
       tests = {
         "compose-empty-returns-input" = {
           expr =
-            let result = fx.trampoline.handle {
-              handlers = {};
-              state = null;
-            } (compose [] { x = 42; });
-            in result.value;
+            let
+              result = fx.trampoline.handle
+                {
+                  handlers = { };
+                  state = null;
+                }
+                (compose [ ] { x = 42; });
+            in
+            result.value;
           expected = { x = 42; };
         };
         "compose-two-stages" = {
@@ -191,11 +205,14 @@ in {
                 name = "add-y";
                 transform = data: pure (data // { y = 2; });
               };
-              result = fx.trampoline.handle {
-                handlers = {};
-                state = null;
-              } (compose [ s1 s2 ] {});
-            in result.value;
+              result = fx.trampoline.handle
+                {
+                  handlers = { };
+                  state = null;
+                }
+                (compose [ s1 s2 ] { });
+            in
+            result.value;
           expected = { x = 1; y = 2; };
         };
         "compose-stages-sequential" = {
@@ -209,17 +226,21 @@ in {
                 name = "double-n";
                 transform = data: pure { n = data.n * 2; };
               };
-              result = fx.trampoline.handle {
-                handlers = {};
-                state = null;
-              } (compose [ s1 s2 ] {});
-            in result.value.n;
+              result = fx.trampoline.handle
+                {
+                  handlers = { };
+                  state = null;
+                }
+                (compose [ s1 s2 ] { });
+            in
+            result.value.n;
           expected = 20;
         };
       };
     };
 
-    run = {
+    run = api.leaf {
+      value = run;
       description = "run: execute a pipeline with reader/error/acc/typecheck handlers wired up; returns `{ value, errors, warnings, typeErrors }` from the final state.";
       signature = "run : Args -> [Stage] -> { value : Data, errors : [Err], warnings : [Warn], typeErrors : [Err] }";
       doc = ''
@@ -240,9 +261,9 @@ in {
       tests = {
         "run-empty-pipeline" = {
           expr =
-            let result = run {} [];
+            let result = run { } [ ];
             in result.value;
-          expected = {};
+          expected = { };
         };
         "run-single-stage" = {
           expr =
@@ -251,8 +272,9 @@ in {
                 name = "init";
                 transform = _: pure { initialized = true; };
               };
-              result = run {} [ s ];
-            in result.value;
+              result = run { } [ s ];
+            in
+            result.value;
           expected = { initialized = true; };
         };
         "run-two-stages-compose" = {
@@ -266,8 +288,9 @@ in {
                 name = "set-b";
                 transform = data: pure (data // { b = data.a + 1; });
               };
-              result = run {} [ s1 s2 ];
-            in result.value;
+              result = run { } [ s1 s2 ];
+            in
+            result.value;
           expected = { a = 1; b = 2; };
         };
         "run-collects-errors" = {
@@ -279,8 +302,9 @@ in {
                   bind (error.raiseWith "stage" "something broke") (_:
                     pure data);
               };
-              result = run {} [ s ];
-            in builtins.length result.errors;
+              result = run { } [ s ];
+            in
+            builtins.length result.errors;
           expected = 1;
         };
         "run-collects-warnings" = {
@@ -292,8 +316,9 @@ in {
                   bind (acc.emit "heads up") (_:
                     pure data);
               };
-              result = run {} [ s ];
-            in result.warnings;
+              result = run { } [ s ];
+            in
+            result.warnings;
           expected = [ "heads up" ];
         };
         "run-reader-asks" = {
@@ -306,7 +331,8 @@ in {
                     pure { message = msg; });
               };
               result = run { greeting = "hello"; } [ s ];
-            in result.value.message;
+            in
+            result.value.message;
           expected = "hello";
         };
         "run-multiple-errors-collected" = {
@@ -322,8 +348,9 @@ in {
                 transform = data:
                   bind (error.raiseWith "s2" "second") (_: pure data);
               };
-              result = run {} [ s1 s2 ];
-            in builtins.length result.errors;
+              result = run { } [ s1 s2 ];
+            in
+            builtins.length result.errors;
           expected = 2;
         };
         "run-warnings-accumulate-across-stages" = {
@@ -339,11 +366,68 @@ in {
                 transform = data:
                   bind (acc.emit "warn-2") (_: pure data);
               };
-              result = run {} [ s1 s2 ];
-            in result.warnings;
+              result = run { } [ s1 s2 ];
+            in
+            result.warnings;
           expected = [ "warn-1" "warn-2" ];
         };
       };
+    };
+
+    pure = api.leaf {
+      value = pure;
+      description = "pure: re-export of `fx.kernel.pure` for pipeline stage implementations.";
+      signature = "pure : a -> Computation a";
+      doc = "Re-export of `fx.kernel.pure`.";
+    };
+
+    bind = api.leaf {
+      value = bind;
+      description = "bind: re-export of `fx.kernel.bind` for pipeline stage implementations.";
+      signature = "bind : Computation a -> (a -> Computation b) -> Computation b";
+      doc = "Re-export of `fx.kernel.bind`.";
+    };
+
+    map = api.leaf {
+      value = fx.kernel.map;
+      description = "map: re-export of `fx.kernel.map` for pipeline stage implementations.";
+      signature = "map : (a -> b) -> Computation a -> Computation b";
+      doc = "Re-export of `fx.kernel.map`.";
+    };
+
+    ask = api.leaf {
+      value = ask;
+      description = "ask: reader-effect helper returning the full pipeline environment.";
+      signature = "ask : Computation Env";
+      doc = "Convenience re-export of `fx.effects.reader.ask`.";
+    };
+
+    asks = api.leaf {
+      value = asks;
+      description = "asks: reader-effect helper applying a projection to the pipeline environment.";
+      signature = "asks : (Env -> a) -> Computation a";
+      doc = "Convenience re-export of `fx.effects.reader.asks`.";
+    };
+
+    raise = api.leaf {
+      value = raise;
+      description = "raise: collecting-error helper for pipeline stages.";
+      signature = "raise : String -> Computation a";
+      doc = "Convenience re-export of `fx.effects.error.raise`.";
+    };
+
+    raiseWith = api.leaf {
+      value = raiseWith;
+      description = "raiseWith: collecting-error helper with context for pipeline stages.";
+      signature = "raiseWith : Context -> String -> Computation a";
+      doc = "Convenience re-export of `fx.effects.error.raiseWith`.";
+    };
+
+    warn = api.leaf {
+      value = warn;
+      description = "warn: accumulator helper for non-fatal pipeline warnings.";
+      signature = "warn : a -> Computation null";
+      doc = "Convenience re-export of `fx.effects.acc.emit`.";
     };
   };
 }

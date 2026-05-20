@@ -14,10 +14,10 @@
 # attaching a resolved hint (via `fx.diag.hints.resolve`) and a surface
 # back-map (via `sourceMap.hoasAtError`) on the failure branch. The set
 # of accepted terms is unchanged; diagnostic data is additive.
-{ self, partTests, partDocs, api, ... }:
+{ self, partTests, api, ... }:
 
-api.mkModule {
-  inherit partDocs;
+api.mk {
+  description = "fx.tc.check.diag: outside-the-trust-boundary diagnostic shell that routes kernel `check`/`infer` results, attaches hints, and formats failures for editors.";
   doc = ''
     # fx.tc.check.diag — Kernel Diagnostic Shell
 

@@ -14,7 +14,7 @@
 #   data FTCQueue a b = Leaf (a -> Comp b)
 #                     | Node (FTCQueue a x) (FTCQueue x b)
 #                     | Identity            -- pure/id continuation (skipped by trampoline)
-{ fx, ... }:
+{ fx, api, ... }:
 
 let
   leaf = fn: { _tag = "FTCQueue"; _variant = "Leaf"; inherit fn; };
@@ -71,14 +71,21 @@ let
         steps = builtins.genericClosure {
           startSet = [{ key = 0; _left = left; _right = right; }];
           operator = state:
-            if state._left._variant == "Leaf" then []
-            else [{ key = state.key + 1;
-                    _left = state._left.left;
-                    _right = { _tag = "FTCQueue"; _variant = "Node";
-                               left = state._left.right; right = state._right; }; }];
+            if state._left._variant == "Leaf" then [ ]
+            else [{
+              key = state.key + 1;
+              _left = state._left.left;
+              _right = {
+                _tag = "FTCQueue";
+                _variant = "Node";
+                left = state._left.right;
+                right = state._right;
+              };
+            }];
         };
         last = builtins.elemAt steps (builtins.length steps - 1);
-      in { head = last._left.fn; tail = last._right; };
+      in
+      { head = last._left.fn; tail = last._right; };
 
   qApp = q: x:
     let
@@ -92,7 +99,7 @@ let
           in
           if vl.tail != null && fx.comp.isPure result
           then [{ key = builtins.seq result.value (state.key + 1); _queue = vl.tail; _val = result.value; }]
-          else [];
+          else [ ];
       };
       last = builtins.elemAt steps (builtins.length steps - 1);
       vl = viewl last._queue;
@@ -102,16 +109,15 @@ let
     then result
     else fx.comp.impure result.effect (append result.queue vl.tail);
 
-in {
-  inherit leaf node identity singleton snoc append viewl qApp;
+in
+api.namespace {
+  description = "FTCQueue (catenable queue, Kiselyov & Ishii 2015): `leaf`/`node`/`singleton`/`snoc`/`append`/`viewl`/`qApp` — O(1) bind on linearly nested computation chains.";
+  doc = "FTCQueue (catenable queue, after Kiselyov & Ishii 2015). O(1) `snoc`/`append`, amortized O(1) `viewl`.";
+  value = {
+    inherit identity;
 
-  __docs = {
-    _self = {
-      description = "FTCQueue (catenable queue, Kiselyov & Ishii 2015): `leaf`/`node`/`singleton`/`snoc`/`append`/`viewl`/`qApp` — O(1) bind on linearly nested computation chains.";
-      doc = "FTCQueue (catenable queue, after Kiselyov & Ishii 2015). O(1) `snoc`/`append`, amortized O(1) `viewl`.";
-    };
-
-    leaf = {
+    leaf = api.leaf {
+      value = leaf;
       description = "leaf: build a singleton FTCQueue containing one continuation; the leaf of the catenable-tree representation.";
       signature = "leaf : (a -> Computation b) -> FTCQueue a b";
       doc = "Create a singleton queue containing one continuation function.";
@@ -123,7 +129,8 @@ in {
       };
     };
 
-    node = {
+    node = api.leaf {
+      value = node;
       description = "node: join two FTCQueues into a balanced tree node; O(1) concatenation that defers traversal cost to `viewl`.";
       signature = "node : FTCQueue a x -> FTCQueue x b -> FTCQueue a b";
       doc = "Join two queues. O(1) — just creates a tree node; the cost is amortised by `viewl` during deconstruction.";
@@ -135,13 +142,15 @@ in {
       };
     };
 
-    singleton = {
+    singleton = api.leaf {
+      value = singleton;
       description = "singleton: alias for `leaf`; build an FTCQueue from a single continuation function with no nesting.";
       signature = "singleton : (a -> Computation b) -> FTCQueue a b";
       doc = "Create a queue with a single continuation. O(1). Synonym for `leaf`.";
     };
 
-    snoc = {
+    snoc = api.leaf {
+      value = snoc;
       description = "snoc: append one continuation to the right end of a queue in O(1); preserves the `__rawResume` rotation flag for deep-handler semantics.";
       signature = "snoc : FTCQueue a b -> (b -> Computation c) -> FTCQueue a c";
       doc = ''
@@ -153,7 +162,8 @@ in {
       '';
     };
 
-    append = {
+    append = api.leaf {
+      value = append;
       description = "append: concatenate two queues in O(1); identity queues short-circuit and the `__rawResume` rotation flag is propagated when present.";
       signature = "append : FTCQueue a b -> FTCQueue b c -> FTCQueue a c";
       doc = ''
@@ -165,7 +175,8 @@ in {
       '';
     };
 
-    viewl = {
+    viewl = api.leaf {
+      value = viewl;
       description = "viewl: extract the leftmost continuation from a queue with amortised O(1) cost via `viewlGo` rotation; returns `{ head, tail }`, `tail = null` for singletons.";
       signature = "viewl : FTCQueue a b -> { head : (a -> Computation b), tail : FTCQueue a b | null }";
       doc = ''
@@ -184,7 +195,8 @@ in {
             let
               q = node (leaf (x: x + 10)) (leaf (x: x + 20));
               vl = viewl q;
-            in vl.head 0;
+            in
+            vl.head 0;
           expected = 10;
         };
         "viewl-node-has-tail" = {
@@ -192,13 +204,15 @@ in {
             let
               q = node (leaf (x: x + 10)) (leaf (x: x + 20));
               vl = viewl q;
-            in vl.tail != null;
+            in
+            vl.tail != null;
           expected = true;
         };
       };
     };
 
-    qApp = {
+    qApp = api.leaf {
+      value = qApp;
       description = "qApp: apply a queue of continuations to a starting value; trampolines pure continuations via `genericClosure` and halts at the first `Impure` result.";
       signature = "qApp : FTCQueue a b -> a -> Computation b";
       doc = ''
@@ -218,28 +232,37 @@ in {
               q = node
                 (leaf (x: fx.comp.pure (x + 10)))
                 (leaf (x: fx.comp.pure (x * 2)));
-            in (qApp q 1).value;
-          expected = 22;  # (1 + 10) * 2
+            in
+            (qApp q 1).value;
+          expected = 22; # (1 + 10) * 2
         };
         "qApp-deep-pure-10000" = {
           expr =
             let
               n = 10000;
-              q = builtins.foldl' (acc: _:
-                snoc acc (x: fx.comp.pure (x + 1))
-              ) (leaf (x: fx.comp.pure (x + 1))) (builtins.genList (_: null) (n - 1));
-            in (qApp q 0).value;
+              q = builtins.foldl'
+                (acc: _:
+                  snoc acc (x: fx.comp.pure (x + 1))
+                )
+                (leaf (x: fx.comp.pure (x + 1)))
+                (builtins.genList (_: null) (n - 1));
+            in
+            (qApp q 0).value;
           expected = 10000;
         };
         "qApp-impure-after-pure-chain" = {
           expr =
             let
-              pureQ = builtins.foldl' (acc: _:
-                snoc acc (x: fx.comp.pure (x + 1))
-              ) (leaf (x: fx.comp.pure (x + 1))) (builtins.genList (_: null) 99);
+              pureQ = builtins.foldl'
+                (acc: _:
+                  snoc acc (x: fx.comp.pure (x + 1))
+                )
+                (leaf (x: fx.comp.pure (x + 1)))
+                (builtins.genList (_: null) 99);
               impureK = x: fx.comp.impure { tag = "test"; payload = x; } (leaf (y: fx.comp.pure y));
               q = snoc pureQ impureK;
-            in (qApp q 0).effect.payload;
+            in
+            (qApp q 0).effect.payload;
           expected = 100;
         };
       };

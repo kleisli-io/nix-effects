@@ -23,11 +23,12 @@ let
   # Runners depend on pkgs (they're `writeShellApplication` derivations).
   # When the caller passes `pkgs = null` — the default for pure-evaluation
   # tests of workloads + measure + gate — `runner` is a null sentinel.
-  runner = if pkgs == null then null
-           else import ./runner { inherit lib pkgs; };
+  runner =
+    if pkgs == null then null
+    else import ./runner { inherit lib pkgs; };
 in
 {
   inherit workloads meta runner;
   inherit (benchLib) measure gate format;
-  tests = fx.tests.allPass;
+  tests = builtins.deepSeq fx.tests.nix-unit true;
 }

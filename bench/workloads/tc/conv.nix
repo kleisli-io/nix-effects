@@ -35,11 +35,14 @@ let
   # can infer; checking the application against `Nat` forces a β-step
   # inside the evaluator before conv can match the result.
   betaApp =
-    let idAnn = H.ann (H.lam "x" H.nat (x: x))
-                      (H.forall "_" H.nat (_: H.nat));
-    in H.app idAnn H.zero;
+    let
+      idAnn = H.ann (H.lam "x" H.nat (x: x))
+        (H.forall "_" H.nat (_: H.nat));
+    in
+    H.app idAnn H.zero;
 
-in {
+in
+{
   # Minimal checkHoas: fixed-cost floor (elaborator + empty-ctx check)
   # against which deeper workloads can be read as delta.
   identical-shallow = (H.checkHoas H.nat H.zero).tag;
@@ -67,7 +70,8 @@ in {
         (acc: _: H.ann acc H.bool)
         H.true_
         (builtins.genList (x: x) 10);
-    in (H.checkHoas H.bool chain).tag;
+    in
+    (H.checkHoas H.bool chain).tag;
 
   # β-distinct but NF-equal. checkHoas reduces the application before
   # conv matches the result against the declared `Nat`.
@@ -84,5 +88,6 @@ in {
       eqTy = H.eq piTy
         (H.lam "x" H.nat (x: x))
         (H.lam "y" H.nat (y: y));
-    in (H.checkHoas eqTy H.refl).tag;
+    in
+    (H.checkHoas eqTy H.refl).tag;
 }

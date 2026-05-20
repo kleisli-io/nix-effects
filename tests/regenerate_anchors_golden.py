@@ -11,6 +11,14 @@ Slug rule (same one downstream HTML renderers use to emit heading IDs):
   3. replace any character not in `[a-z0-9-]` with `-`
   4. collapse runs of `-` to a single `-`
 
+Per-document disambiguation (mirrors `kleisli-content:unique-slugify`):
+  Within a single `.md`, headings are walked in document order with a
+  used-set; the first occurrence of a slug wins the bare form, the
+  second gets `-2`, the third `-3`, … so headings whose text differs
+  only in capitalisation each receive a distinct id. The runtime HTML
+  renderer and the TOC walk both apply the same rule with a fresh
+  per-document state; this script must stay in lock-step.
+
 Usage:
   regenerate_anchors_golden <book-src-dir> <out-file>
 
@@ -33,13 +41,26 @@ def slugify(text: str) -> str:
     return s
 
 
+def unique_slugify(text: str, used: set[str]) -> str:
+    base = slugify(text)
+    slug = base
+    n = 1
+    while slug in used:
+        n += 1
+        slug = f"{base}-{n}"
+    used.add(slug)
+    return slug
+
+
 def extract_anchors(md_path: Path, src_dir: Path) -> list[str]:
     rel = md_path.relative_to(src_dir).as_posix()
+    used: set[str] = set()
     out = []
     for line in md_path.read_text().splitlines():
         m = HEADING_RE.match(line)
         if m:
-            out.append(f"{rel}#{slugify(m.group(2))}")
+            slug = unique_slugify(m.group(2), used)
+            out.append(f"{rel}#{slug}")
     return out
 
 

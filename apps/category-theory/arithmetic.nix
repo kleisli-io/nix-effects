@@ -26,9 +26,10 @@
 
 let
   inherit (prelude) H verify Nat Eq Refl Pi lam app ind
-                    addHoas congSucc symProof transProof;
+    addHoas congSucc symProof transProof;
 
-in rec {
+in
+rec {
 
   # -- Addition --
 

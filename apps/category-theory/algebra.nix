@@ -66,46 +66,53 @@ let
 
   # Category over (Obj, Hom): five fields (id, comp, lid, rid, assoc).
   CategoryDT = H.datatypeP "Category"
-    [ { name = "Obj"; kind = U0; }
-      { name = "Hom"; kind = ms:
+    [{ name = "Obj"; kind = U0; }
+      {
+        name = "Hom";
+        kind = ms:
           let Obj = builtins.elemAt ms 0;
-          in Pi "_" Obj (_: Pi "_" Obj (_: U0)); }
-    ]
-    (ps: let Obj = builtins.elemAt ps 0; Hom = builtins.elemAt ps 1; in [
-      (H.con "mk" [
-        (H.field "id" (Pi "a" Obj (a: app (app Hom a) a)))
-        (H.fieldD "comp" (_prev:
-          Pi "a" Obj (a: Pi "b" Obj (b: Pi "c" Obj (c:
-            Pi "_" (app (app Hom b) c) (_:
-            Pi "_" (app (app Hom a) b) (_:
-              app (app Hom a) c)))))))
-        (H.fieldD "lid" (prev:
-          Pi "a" Obj (a: Pi "b" Obj (b:
-            Pi "f" (app (app Hom a) b) (f:
-              Eq (app (app Hom a) b)
-                (app (app (app (app (app prev.comp a) a) b) f) (app prev.id a))
-                f)))))
-        (H.fieldD "rid" (prev:
-          Pi "a" Obj (a: Pi "b" Obj (b:
-            Pi "f" (app (app Hom a) b) (f:
-              Eq (app (app Hom a) b)
-                (app (app (app (app (app prev.comp a) b) b) (app prev.id b)) f)
-                f)))))
-        (H.fieldD "assoc" (prev:
-          Pi "a" Obj (a: Pi "b" Obj (b: Pi "c" Obj (c: Pi "d" Obj (d:
-            Pi "f" (app (app Hom a) b) (f:
-              Pi "g" (app (app Hom b) c) (g:
-                Pi "h" (app (app Hom c) d) (h:
-                  Eq (app (app Hom a) d)
-                    (app (app (app (app (app prev.comp a) b) d)
-                      (app (app (app (app (app prev.comp b) c) d) h) g)) f)
-                    (app (app (app (app (app prev.comp a) c) d)
-                      h)
-                      (app (app (app (app (app prev.comp a) b) c) g) f)))))))))))
-      ])
-    ]);
+          in Pi "_" Obj (_: Pi "_" Obj (_: U0));
+      }]
+    (ps:
+      let Obj = builtins.elemAt ps 0; Hom = builtins.elemAt ps 1; in [
+        (H.con "mk" [
+          (H.field "id" (Pi "a" Obj (a: app (app Hom a) a)))
+          (H.fieldD "comp" (_prev:
+            Pi "a" Obj (a: Pi "b" Obj (b: Pi "c" Obj (c:
+              Pi "_" (app (app Hom b) c) (_:
+                Pi "_" (app (app Hom a) b) (_:
+                  app (app Hom a) c)))))))
+          (H.fieldD "lid" (prev:
+            Pi "a" Obj (a: Pi "b" Obj (b:
+              Pi "f" (app (app Hom a) b) (f:
+                Eq (app (app Hom a) b)
+                  (app (app (app (app (app prev.comp a) a) b) f) (app prev.id a))
+                  f)))))
+          (H.fieldD "rid" (prev:
+            Pi "a" Obj (a: Pi "b" Obj (b:
+              Pi "f" (app (app Hom a) b) (f:
+                Eq (app (app Hom a) b)
+                  (app (app (app (app (app prev.comp a) b) b) (app prev.id b)) f)
+                  f)))))
+          (H.fieldD "assoc" (prev:
+            Pi "a" Obj (a: Pi "b" Obj (b: Pi "c" Obj (c: Pi "d" Obj (d:
+              Pi "f" (app (app Hom a) b) (f:
+                Pi "g" (app (app Hom b) c) (g:
+                  Pi "h" (app (app Hom c) d) (h:
+                    Eq (app (app Hom a) d)
+                      (app
+                        (app (app (app (app prev.comp a) b) d)
+                          (app (app (app (app (app prev.comp b) c) d) h) g))
+                        f)
+                      (app
+                        (app (app (app (app prev.comp a) c) d)
+                          h)
+                        (app (app (app (app (app prev.comp a) b) c) g) f)))))))))))
+        ])
+      ]);
 
-in rec {
+in
+rec {
 
   inherit MonoidDT CategoryDT;
 
@@ -121,14 +128,14 @@ in rec {
   # Components exposed by name so functor.nix can reference them
   # uniformly (e.g. `natAddMonoid.op` instead of `addImpl`).
   natAddMonoid = rec {
-    A     = Nat;
-    op    = addImpl;
-    e     = H.zero;
+    A = Nat;
+    op = addImpl;
+    e = H.zero;
     assoc = addAssocImpl;
-    lid   = addLeftZeroImpl;
-    rid   = addRightZeroImpl;
+    lid = addLeftZeroImpl;
+    rid = addRightZeroImpl;
 
-    ty   = MonoidOf A;
+    ty = MonoidOf A;
     impl = builtins.foldl' app MonoidDT.mk [ A op e assoc lid rid ];
   };
 
@@ -144,22 +151,22 @@ in rec {
   #   rid   : id · f = f   ≡  0 + f = f       (refl — left zero is computational)
   #   assoc : h · (g · f) = (h · g) · f       (addAssoc, re-associated)
   natCategory = rec {
-    Obj   = Unit;
-    Hom   = lam "_" Unit (_: lam "_" Unit (_: Nat));
-    id_   = lam "_" Unit (_: H.zero);
-    comp  = lam "_" Unit (_: lam "_" Unit (_: lam "_" Unit (_:
-              lam "g" Nat (g: lam "f" Nat (f: addHoas g f)))));
-    lid   = lam "_" Unit (_: lam "_" Unit (_:
-              lam "f" Nat (f: app annAddRightZero f)));
-    rid   = lam "_" Unit (_: lam "_" Unit (_:
-              lam "f" Nat (_: Refl)));
+    Obj = Unit;
+    Hom = lam "_" Unit (_: lam "_" Unit (_: Nat));
+    id_ = lam "_" Unit (_: H.zero);
+    comp = lam "_" Unit (_: lam "_" Unit (_: lam "_" Unit (_:
+      lam "g" Nat (g: lam "f" Nat (f: addHoas g f)))));
+    lid = lam "_" Unit (_: lam "_" Unit (_:
+      lam "f" Nat (f: app annAddRightZero f)));
+    rid = lam "_" Unit (_: lam "_" Unit (_:
+      lam "f" Nat (_: Refl)));
     assoc = lam "_" Unit (_: lam "_" Unit (_: lam "_" Unit (_: lam "_" Unit (_:
-              lam "f" Nat (f: lam "g" Nat (g: lam "h" Nat (h:
-                app (app (app annAddAssoc h) g) f)))))));
+      lam "f" Nat (f: lam "g" Nat (g: lam "h" Nat (h:
+        app (app (app annAddAssoc h) g) f)))))));
 
-    ty   = CategoryOf Obj Hom;
+    ty = CategoryOf Obj Hom;
     impl = builtins.foldl' app CategoryDT.mk
-             [ Obj Hom id_ comp lid rid assoc ];
+      [ Obj Hom id_ comp lid rid assoc ];
   };
 
   # -- Composition in natCategory is commutative ------------------------

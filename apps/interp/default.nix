@@ -34,60 +34,70 @@ let
     if expr._variant == "Num" then pure (VNum expr.n)
     else if expr._variant == "Bool" then pure (VBool expr.b)
     else if expr._variant == "Var" then
-      bind (lookup expr.name) (v:
-        if v == null then fail "undefined: ${expr.name}"
-        else pure v)
+      bind (lookup expr.name)
+        (v:
+          if v == null then fail "undefined: ${expr.name}"
+          else pure v)
     else if expr._variant == "Add" then
-      bind (eval expr.l) (l: bind (eval expr.r) (r:
-        if l._variant == "VNum" && r._variant == "VNum"
-        then pure (VNum (l.n + r.n))
-        else fail "type error: Add expects numbers"))
+      bind (eval expr.l)
+        (l: bind (eval expr.r) (r:
+          if l._variant == "VNum" && r._variant == "VNum"
+          then pure (VNum (l.n + r.n))
+          else fail "type error: Add expects numbers"))
     else if expr._variant == "Sub" then
-      bind (eval expr.l) (l: bind (eval expr.r) (r:
-        if l._variant == "VNum" && r._variant == "VNum"
-        then pure (VNum (l.n - r.n))
-        else fail "type error: Sub expects numbers"))
+      bind (eval expr.l)
+        (l: bind (eval expr.r) (r:
+          if l._variant == "VNum" && r._variant == "VNum"
+          then pure (VNum (l.n - r.n))
+          else fail "type error: Sub expects numbers"))
     else if expr._variant == "Mul" then
-      bind (eval expr.l) (l: bind (eval expr.r) (r:
-        if l._variant == "VNum" && r._variant == "VNum"
-        then pure (VNum (l.n * r.n))
-        else fail "type error: Mul expects numbers"))
+      bind (eval expr.l)
+        (l: bind (eval expr.r) (r:
+          if l._variant == "VNum" && r._variant == "VNum"
+          then pure (VNum (l.n * r.n))
+          else fail "type error: Mul expects numbers"))
     else if expr._variant == "Lt" then
-      bind (eval expr.l) (l: bind (eval expr.r) (r:
-        if l._variant == "VNum" && r._variant == "VNum"
-        then pure (VBool (l.n < r.n))
-        else fail "type error: Lt expects numbers"))
+      bind (eval expr.l)
+        (l: bind (eval expr.r) (r:
+          if l._variant == "VNum" && r._variant == "VNum"
+          then pure (VBool (l.n < r.n))
+          else fail "type error: Lt expects numbers"))
     else if expr._variant == "Eq" then
-      bind (eval expr.l) (l: bind (eval expr.r) (r:
-        if l._variant == "VNum" && r._variant == "VNum"
-        then pure (VBool (l.n == r.n))
-        else if l._variant == "VBool" && r._variant == "VBool"
-        then pure (VBool (l.b == r.b))
-        else fail "type error: Eq expects matching types"))
+      bind (eval expr.l)
+        (l: bind (eval expr.r) (r:
+          if l._variant == "VNum" && r._variant == "VNum"
+          then pure (VBool (l.n == r.n))
+          else if l._variant == "VBool" && r._variant == "VBool"
+          then pure (VBool (l.b == r.b))
+          else fail "type error: Eq expects matching types"))
     else if expr._variant == "If" then
-      bind (eval expr.cond) (c:
-        if c._variant == "VBool"
-        then if c.b then eval expr.then_ else eval expr.else_
-        else fail "type error: If expects boolean")
+      bind (eval expr.cond)
+        (c:
+          if c._variant == "VBool"
+          then if c.b then eval expr.then_ else eval expr.else_
+          else fail "type error: If expects boolean")
     else if expr._variant == "Lam" then
       bind (getEnv) (env: pure (VClosure expr.param expr.body env))
     else if expr._variant == "Let" then
-      bind (getEnv) (env:
-        # For lambdas, construct closure directly to avoid deepSeq forcing recursive ref
-        if expr.val._variant == "Lam" then
-          let
-            extendedEnv = env // { ${expr.name} = closure; };
-            closure = VClosure expr.val.param expr.val.body extendedEnv;
-          in send "local" { env = extendedEnv; comp = eval expr.body; }
-        else
+      bind (getEnv)
+        (env:
+          # For lambdas, construct closure directly to avoid deepSeq forcing recursive ref
+          if expr.val._variant == "Lam" then
+            let
+              extendedEnv = env // { ${expr.name} = closure; };
+              closure = VClosure expr.val.param expr.val.body extendedEnv;
+            in
+            send "local" { env = extendedEnv; comp = eval expr.body; }
+          else
           # Non-lambda: evaluate value first, then bind
-          bind (eval expr.val) (val:
-            send "local" { env = env // { ${expr.name} = val; }; comp = eval expr.body; }))
+            bind (eval expr.val) (val:
+              send "local" { env = env // { ${expr.name} = val; }; comp = eval expr.body; }))
     else if expr._variant == "App" then
-      bind (eval expr.fn) (fn: bind (eval expr.arg) (arg:
-        if fn._variant == "VClosure"
-        then send "local" { env = fn.env // { ${fn.param} = arg; }; comp = eval fn.body; }
-        else fail "type error: App expects function"))
+      bind (eval expr.fn)
+        (fn: bind (eval expr.arg) (arg:
+          if fn._variant == "VClosure"
+          then send "local" { env = fn.env // { ${fn.param} = arg; }; comp = eval fn.body; }
+          else fail "type error: App expects function"))
     else fail "unknown variant: ${expr._variant}";
 
   mkHandler = env: {
@@ -96,17 +106,18 @@ let
     local = { param, state }:
       let result = handle { handlers = mkHandler param.env; state = { env = param.env; }; } param.comp;
       in if result ? error then { abort = result; inherit state; }
-         else { resume = result.value; inherit state; };
+      else { resume = result.value; inherit state; };
     fail = { param, state }: { abort = { error = param; }; inherit state; };
   };
 
   run = expr:
-    let result = handle { handlers = mkHandler {}; state = { env = {}; }; } (eval expr);
+    let result = handle { handlers = mkHandler { }; state = { env = { }; }; } (eval expr);
     in if result ? error then throw "eval error: ${result.error}" else result.value;
 
   lang = { inherit num bool var add mul sub lt eq if_ let_ lam app; };
 
-in {
+in
+{
   inherit eval run lang;
   inherit num bool var add mul sub lt eq if_ let_ lam app;
   inherit VNum VBool VClosure;

@@ -1,7 +1,7 @@
 # nix-effects test suite
 #
 # Integration tests validating effects + types + streams working together.
-{ lib, fx }:
+{ lib, fx, api }:
 
 let
   trampolineTests = import ./trampoline-test.nix { inherit lib fx; };
@@ -12,10 +12,12 @@ let
   newEffectsTests = import ./new-effects-test.nix { inherit lib fx; };
   streamTests = import ./stream-test.nix { inherit lib fx; };
   linearTests = import ./linear-test.nix { inherit lib fx; };
-  proofBasicsTests = import ../examples/proof-basics.nix { inherit lib fx; };
-  equalityProofTests = import ../examples/equality-proofs.nix { inherit lib fx; };
-  verifiedFunctionTests = import ../examples/verified-functions.nix { inherit lib fx; };
-  docsTests = import ./docs-test.nix { inherit lib fx; };
+  exampleDocsForDocsTests = api.extractDocs
+    (import ../examples { inherit lib fx api; }).module;
+  docsTests = import ./docs-test.nix {
+    inherit lib fx;
+    examplesDocs = exampleDocsForDocsTests;
+  };
   pipelineTests = import ./pipeline-test.nix { inherit lib fx; };
   scopeTests = import ./scope-test.nix { inherit lib fx; };
   sugarEffectsTests = import ./sugar-effects-test.nix { inherit lib fx; };
@@ -23,220 +25,141 @@ let
   sugarCompatTests = import ./sugar-compat-test.nix { inherit lib fx; };
   thunkTests = import ./thunk-test.nix { inherit lib fx; };
   descInterpParityTests = import ./experimental/desc-interp-parity { inherit lib fx; };
+  descInterpLawsTests = import ./experimental/desc-interp-laws { inherit lib fx; };
 
-in {
-  inherit (trampolineTests) pureComputation singleEffect simpleCounter
-          tenThousandOps hundredThousandOps
-          multipleEffects returnValueFlow
-          statefulAccumulation earlyPure pureBindChain
-          handleWithReturn adaptState adaptHandlersTest
-          leftNestedBind
-          qAppPureChain viewlGoLeftNested
-          effectRotationResumesInner
-          effectRotationSuspendsUnknown
-          effectRotationStackSafety
-          effectRotationNestedHandlers
-          effectRotationSlowPathEffectfulResume;
+  testNamespace = args: api.namespace (args // { docHidden = true; });
 
-  inherit (typesTests) validPortTest vectorTest universeTest
-          recordRefinementTest maybeTest depRecordTest
-          makeThrowsTest variantTest predicateTest universeSafetyTest
-          piCheckAtIsEffectful
-          strictHandlerPassesTest collectingHandlerTest loggingHandlerTest
-          sameCompDifferentHandlerTest
-          sigmaValidateIsEffectful sigmaStrictHandlerTest
-          certifiedCertifyETest certifiedCertifyECollectingTest certifiedCertifyEFailTest
-          vectorIsEffectful vectorCheckAtStrictTest
-          depRecordIsEffectful depRecordValidateStrictTest
-          foundationValidateIsEffectful
-          piValidateIsGuard piAdequacy sigmaAdequacy piCheckAtDiffersFromValidate
-          certifiedAdequacy depRecordAdequacy primitiveAdequacy vectorAdequacy
-          sigmaValidateEmpty sigmaValidateMissingSnd sigmaValidateMissingFst
-          sigmaValidateWrongSnd
-          piCheckAtDomainFailure
-          certifyECrashingPredicate certifyEWrongBase
-          depRecordValidateNonAttrset depRecordValidateMissingField depRecordValidateWrongTypes
-          pairEThroughHandlers composeCheckAt
-          sigmaHandlerDiversity
-          sigmaShortCircuitGuardsCrash sigmaAdequacyWrongFst piCheckAtShortCircuit
-          universeTrustBoundary
-          listOfValidateIsEffectful listOfCollectingPerElement
-          listOfEmptyValidatePure listOfNonListTotality listOfAdequacy
-          sigmaDeepCollecting depRecordDeepBlame sigmaDeepAdequacy
-          sigmaDeepShortCircuit pairEDeepBlame certifyEDeepBlame
-          crossTypeAdequacy;
+  suiteTests = suite: suite;
 
-  inherit (effectsTests) stateCounterTest stateModifyTest stateGetsTest stateFinalStateTest
-          errorCollectingTest errorContextTest
-          typecheckStrictPassesTest typecheckCollectingErrorsTest
-          typecheckLoggingAllChecksTest typecheckLoggingAllPassTest
-          conditionsSignalRestartTest conditionsCollectTest conditionsIgnoreTest
-          composedWithAdaptTest;
+  mkMixedSuite = boolNames: suite:
+    let
+      boolSet = lib.genAttrs boolNames (_: true);
+    in
+    testNamespace {
+      value = { };
+      tests = builtins.mapAttrs
+        (name: value:
+          if builtins.hasAttr name boolSet then
+            { expr = value; expected = true; }
+          else
+            value)
+        (suiteTests suite);
+    };
 
-  inherit (lawTests) monadLeftIdPure monadLeftIdEffectful
-          monadRightIdPure monadRightIdEffectful
-          monadAssocPure monadAssocEffectful
-          functorIdentity functorComposition
-          stateGetGet stateGetPut statePutGet statePutPut
-          lensGetPut lensPutGet lensPutPut
-          sigmaCurryUncurry sigmaUncurryCurry
-          sigmaPullbackIdentity sigmaPullbackComposition
-          depRecordPackUnpack depRecordUnpackPack;
+  mkBoolSuite = suite: mkMixedSuite (builtins.attrNames (suiteTests suite)) suite;
 
-  inherit (errorPathTests) unhandledEffectRunThrows unhandledEffectHandleThrows
-          partialHandlerThrows unhandledEffectNames
-          badProtocolValueThrows badProtocolEmptyThrows
-          badProtocolStateOnlyThrows allBadProtocolsThrow
-          errorStrictThrowsParametric errorStrictWithContextThrows
-          errorStrictMidChainThrows
-          conditionsFailThrowsParametric
-          errorResultAbortsTest errorResultWithContextTest
-          errorResultParametric errorResultPurePassesTest errorResultPureParametric
-          errorResultDiscardsContTest
-          abortAtStartTest abortMidChainTest
-          bothResumeAndAbortTakesAbort
-          abortAtPositionN abortValueTypes
-          seqEffectsTest seqEmptyTest seqReturnsLastTest seqParametricLengths
-          handlerMergeRightBiasTest
-          runNullThrows runIntThrows runStringThrows runAttrsetNoTagThrows
-          handleNullThrows handleIntThrows
-          effectNameCollision effectCollisionSilent;
+  mkDescriptorSuite = mkMixedSuite [ ];
 
-  inherit (newEffectsTests) readerAskTest readerAsksTest readerLocalTest readerChainTest
-          readerAsksParametric
-          writerTellTest writerTellAllTest writerEmptyTest writerParametric
-          accEmitTest accEmitAllTest accEmptyCollectTest accParametric
-          chooseFirstTest choiceFailTest
-          choiceGuardTrueTest choiceGuardFalseTest choicePendingTest
-          readerWriterComposedTest;
+  mkAllDescriptorSuite = suite:
+    testNamespace {
+      value = { };
+      tests = suiteTests suite;
+    };
 
-  inherit (scopeTests) twoUsersTest scopeStateIsolation scopeEscapeEffects nestedScopes
-          scopeWithStatefulHandler scopeDoesNotCorruptUserState
-          dynamicHandlerFromEffect abortInsideScope threeUsersFanOut
-          scopeOverrideInNested
-          deepHandlerEffectfulResume deepHandlerChainedResume
-          deepHandlerStatefulInner;
+  errorPathBoolTests = [
+    "unhandledEffectRunThrows"
+    "unhandledEffectHandleThrows"
+    "partialHandlerThrows"
+    "unhandledEffectNames"
+    "badProtocolValueThrows"
+    "badProtocolEmptyThrows"
+    "badProtocolStateOnlyThrows"
+    "allBadProtocolsThrow"
+    "errorStrictThrowsParametric"
+    "errorStrictWithContextThrows"
+    "errorStrictMidChainThrows"
+    "conditionsFailThrowsParametric"
+    "errorResultParametric"
+    "errorResultPureParametric"
+    "abortAtPositionN"
+    "abortValueTypes"
+    "seqParametricLengths"
+    "runNullThrows"
+    "runIntThrows"
+    "runStringThrows"
+    "runAttrsetNoTagThrows"
+    "handleNullThrows"
+    "handleIntThrows"
+    "effectCollisionSilent"
+  ];
 
-  inherit (streamTests) fromListToListTest fromListEmptyTest
-          rangeTest rangeEmptyTest replicateTest replicateZeroTest
-          fromListParametric rangeParametric
-          mapTest filterTest filterAllTest filterNoneTest
-          mapPreservesLength mapIdentity mapComposition
-          pipelineTest
-          takeTest takeMoreThanAvailable takeZeroTest
-          takeWhileTest takeFromInfinite
-          dropTest dropAllTest
-          foldTest sumTest lengthTest
-          anyTrueTest anyFalseTest allTrueTest allFalseTest
-          sumRangeParametric
-          concatTest concatEmptyLeftTest
-          interleaveTest interleaveUnevenTest
-          zipTest zipUnevenTest zipWithTest;
+  newEffectsBoolTests = [
+    "readerAsksParametric"
+    "writerParametric"
+    "accParametric"
+  ];
 
-  inherit (linearTests) linearHappyPath linearMultiResource linearAffineRelease
-          linearGradedExact linearUnlimited
-          linearLeakDetected linearDoubleConsumeAborts
-          linearConsumeAfterReleaseAborts linearDoubleReleaseAborts
-          linearMultiLeakReportsAll
-          linearGradedUnderuseDetected linearGradedOveruseAborts
-          compositionThreeEffects compositionTypeErrorPlusLeak
-          compositionStatePreservation compositionAbortPreservesState
-          stressDeepSeq100Pairs stressComposed50Cycles
-          typeLinearCheckValid typeLinearCheckInvalid typeLinearCheckNonToken
-          typeGradedName typeLinearRoundTrip
-          mixedGradedResources;
+  streamBoolTests = [
+    "fromListParametric"
+    "rangeParametric"
+    "mapPreservesLength"
+    "mapIdentity"
+    "mapComposition"
+    "takeParametric"
+    "sumRangeParametric"
+  ];
 
-  inherit (proofBasicsTests) addZeroZero addThreeFive addTenSeven
-          doubleNegTrue doubleNegFalse lengthThree appendTwoOne
-          witnessZero witnessAddResult witnessDoubleNeg
-          natElimDouble natElimMul
-          boolElimTrue boolElimFalse
-          listSum listMapSucc
-          sumElimLeft sumElimRight
-          polyId exFalso;
+  rootModule = testNamespace {
+    description = "Integration tests";
+    value = {
+      trampoline = mkBoolSuite trampolineTests;
+      types = mkBoolSuite typesTests;
+      effects = mkDescriptorSuite effectsTests;
+      laws = mkBoolSuite lawTests;
+      errorPath = mkMixedSuite errorPathBoolTests errorPathTests;
+      newEffects = mkMixedSuite newEffectsBoolTests newEffectsTests;
+      stream = mkMixedSuite streamBoolTests streamTests;
+      linear = mkDescriptorSuite linearTests;
+      docs = mkBoolSuite docsTests;
+      pipeline = mkDescriptorSuite pipelineTests;
+      scope = mkDescriptorSuite scopeTests;
+      thunk = mkBoolSuite thunkTests;
 
-  inherit (equalityProofTests) congType congConcrete
-          symType symConcrete
-          transType transConcrete
-          transportType transportConcrete
-          combinedProof;
+      sugar = testNamespace {
+        value = {
+          effects = mkDescriptorSuite sugarEffectsTests;
+          types = mkDescriptorSuite sugarTypesTests;
+          compat = mkDescriptorSuite sugarCompatTests;
+        };
+        tests = { };
+      };
 
-  inherit (verifiedFunctionTests) succApply5 succApply0
-          notTrue notFalse
-          add2and3 add0and7 add4and0
-          isZeroOf0 isZeroOf5
-          predOf0 predOf1 predOf5
-          mapSuccCorrect mapEmptyCorrect
-          filterZerosCorrect
-          foldSumCorrect
-          composedCorrect
-          sumLeftCorrect sumRightCorrect
-          letCorrect
-          pairFstCorrect pairSndCorrect
-          recordGetXCorrect recordGetYCorrect recordSuccXCorrect
-          strEqSame strEqDiff strEqEmpty
-          strElemFound strElemMissing strElemEmptyList
-          recordStrEqMatch recordStrEqNoMatch;
+      experimental = testNamespace {
+        value = {
+          descInterp = testNamespace {
+            value = {
+              parity = testNamespace {
+                value = {
+                  state = mkAllDescriptorSuite descInterpParityTests.effects.state;
+                  error = mkAllDescriptorSuite descInterpParityTests.effects.error;
+                  composed = mkAllDescriptorSuite descInterpParityTests.effects.composed;
+                };
+                tests = { };
+              };
+              laws = testNamespace {
+                value = {
+                  state = mkAllDescriptorSuite descInterpLawsTests.state;
+                  error = mkAllDescriptorSuite descInterpLawsTests.error;
+                  bindAssoc = mkAllDescriptorSuite descInterpLawsTests.bindAssoc;
+                  composed = mkAllDescriptorSuite descInterpLawsTests.composed;
+                };
+                tests = { };
+              };
+            };
+            tests = { };
+          };
+        };
+        tests = { };
+      };
+    };
+    tests = { };
+  };
 
-  inherit (docsTests) stateEffectExample apiSurfaceSanity apiDocsSkipsPlainWrapperData;
+  tree = api.extractTests rootModule;
+  results = api.runTests tree;
 
-  inherit (pipelineTests) fullPipelineTest pureOnlyTest;
-
-  inherit (sugarEffectsTests) statePatternDesugared statePatternDo statePatternDiv
-          statePatternEquivState
-          errorPatternDesugared errorPatternDo
-          readerPatternDesugared readerPatternLetM
-          doEmpty doSingleton doAutoLift doMixed doComposable doPointFree
-          stepsSequences
-          divAssociativityTest
-          divNotTopLevel divUnderOperators
-          reexportsPresent
-          withSugarTest
-          fullSugarWith operatorOnly combinatorsOnly
-          typesOnly
-          withOperatorsDoesNotActivateDiv
-          namespaceShape;
-
-  inherit (sugarTypesTests) additiveKeysInt additiveKeysAllPrimitives
-          keyValuesPreserved
-          delegationKernelEq delegationGuardEq
-          compositionCheck
-          universePreservation
-          toStringNoPred toStringOnePred toStringTwoPred toStringAllPrimitives
-          wrapUserType
-          recordStructuralIdentity recordWithRefinedField
-          noDiagImports;
-
-  inherit (sugarCompatTests)
-          additiveOnlyPrimitives additiveOnlyRefined
-          kernelDelegation checkDelegation
-          noKernelDiagEmission
-          universePrimitives universeRefined
-          recordKernelIdentity recordKernelIdentityRefined recordKernelIdentityMultiField
-          validationFailureEmits
-          stabilityAudit;
-
-  inherit (thunkTests) trampolineSurvivesCyclicDrv
-          threePackagesInState allEntriesAreCarriers
-          recoveryReturnsOriginalDrv roundTripIdentity
-          rawDrvRejectedByThunkType carrierAcceptedByThunkType
-          carrierRejectedByDerivationType;
-
-  experimental.descInterp.parity = descInterpParityTests;
-
-  allPass = trampolineTests.allPass && typesTests.allPass && effectsTests.allPass
-            && lawTests.allPass && errorPathTests.allPass
-            && newEffectsTests.allPass && streamTests.allPass
-            && linearTests.allPass
-            && proofBasicsTests.allPass
-            && equalityProofTests.allPass
-            && verifiedFunctionTests.allPass
-            && docsTests.allPass
-            && pipelineTests.allPass
-            && scopeTests.allPass
-            && sugarEffectsTests.allPass
-            && sugarTypesTests.allPass
-            && sugarCompatTests.allPass
-            && thunkTests.allPass
-            && descInterpParityTests.allPass;
+in
+{
+  module = rootModule;
+  inherit tree results;
 }

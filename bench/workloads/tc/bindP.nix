@@ -108,10 +108,13 @@ let
         else
           let
             elem = if i == (total - depth) then H.unit else H.zero;
-          in mk (i - 1) (H.cons H.nat elem acc);
-    in mk total (H.nil H.nat);
+          in
+          mk (i - 1) (H.cons elem acc);
+    in
+    mk total H.nil;
 
-in {
+in
+{
   # Chain of 5000 slow-path bindPs over a single position. The final
   # `runCheck` discharges the outermost typeError, projecting the
   # flat error record.

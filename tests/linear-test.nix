@@ -21,7 +21,8 @@ let
         comp = bind (linear.acquireLinear "secret") (token:
           bind (linear.consume token) (val:
             pure "got:${val}"));
-      in (linear.run comp).value;
+      in
+      (linear.run comp).value;
     expected = "got:secret";
   };
 
@@ -33,7 +34,8 @@ let
             bind (linear.consume t1) (v1:
               bind (linear.consume t2) (v2:
                 pure "${v1}+${v2}"))));
-      in (linear.run comp).value;
+      in
+      (linear.run comp).value;
     expected = "db+key";
   };
 
@@ -43,7 +45,8 @@ let
         comp = bind (linear.acquireLinear "optional") (token:
           bind (linear.release token) (_:
             pure "dropped"));
-      in (linear.run comp).value;
+      in
+      (linear.run comp).value;
     expected = "dropped";
   };
 
@@ -55,7 +58,8 @@ let
             bind (linear.consume token) (v2:
               bind (linear.consume token) (v3:
                 pure "${v1}+${v2}+${v3}"))));
-      in (linear.run comp).value;
+      in
+      (linear.run comp).value;
     expected = "multi+multi+multi";
   };
 
@@ -67,7 +71,8 @@ let
             (acc: _: bind acc (_: linear.consume token))
             (pure null)
             (lib.range 1 20));
-      in !((linear.run comp).value ? _tag);
+      in
+        !((linear.run comp).value ? _tag);
     expected = true;
   };
 
@@ -81,8 +86,9 @@ let
         comp = bind (linear.acquireLinear "leaked") (_token:
           pure "forgot");
         result = linear.run comp;
-      in result.value._tag == "LinearityError"
-         && result.value.error == "usage-mismatch";
+      in
+      result.value._tag == "LinearityError"
+      && result.value.error == "usage-mismatch";
     expected = true;
   };
 
@@ -94,8 +100,9 @@ let
             bind (linear.consume token) (_:
               pure "unreachable")));
         result = linear.run comp;
-      in result.value._tag == "LinearityError"
-         && result.value.error == "exceeded-bound";
+      in
+      result.value._tag == "LinearityError"
+      && result.value.error == "exceeded-bound";
     expected = true;
   };
 
@@ -106,7 +113,8 @@ let
           bind (linear.release token) (_:
             bind (linear.consume token) (_:
               pure "unreachable")));
-      in (linear.run comp).value.error;
+      in
+      (linear.run comp).value.error;
     expected = "consume-after-release";
   };
 
@@ -117,7 +125,8 @@ let
           bind (linear.release token) (_:
             bind (linear.release token) (_:
               pure "unreachable")));
-      in (linear.run comp).value.error;
+      in
+      (linear.run comp).value.error;
     expected = "double-release";
   };
 
@@ -130,8 +139,9 @@ let
               bind (linear.consume t) (_:
                 pure "partial"))));
         result = linear.run comp;
-      in result.value._tag == "LinearityError"
-         && builtins.length result.value.details == 2;
+      in
+      result.value._tag == "LinearityError"
+      && builtins.length result.value.details == 2;
     expected = true;
   };
 
@@ -142,9 +152,10 @@ let
           bind (linear.consume token) (_:
             pure "only-used-once"));
         result = linear.run comp;
-      in result.value.error == "usage-mismatch"
-         && (builtins.head result.value.details).expected == 3
-         && (builtins.head result.value.details).actual == 1;
+      in
+      result.value.error == "usage-mismatch"
+      && (builtins.head result.value.details).expected == 3
+      && (builtins.head result.value.details).actual == 1;
     expected = true;
   };
 
@@ -157,9 +168,10 @@ let
               bind (linear.consume token) (_:
                 pure "unreachable"))));
         result = linear.run comp;
-      in result.value.error == "exceeded-bound"
-         && result.value.maxUses == 2
-         && result.value.attempted == 3;
+      in
+      result.value.error == "exceeded-bound"
+      && result.value.maxUses == 2
+      && result.value.attempted == 3;
     expected = true;
   };
 
@@ -187,7 +199,7 @@ let
 
   composedInitialState = {
     linear = linear.initialState;
-    typeErrors = [];
+    typeErrors = [ ];
     appState = 0;
   };
 
@@ -195,7 +207,8 @@ let
   composedReturn = value: st:
     let
       leakResult = linear.return value st.linear;
-    in {
+    in
+    {
       value = leakResult.value;
       state = st // { linear = leakResult.state; };
     };
@@ -206,19 +219,22 @@ let
         IntT = mkType { name = "Int"; kernelType = H.int_; };
         comp =
           bind (IntT.validate 42) (_:
-          bind (linear.acquireLinear "api-key") (token:
-          bind (linear.consume token) (keyVal:
-          bind (state.put 100) (_:
-          bind state.get (s:
-            pure { key = keyVal; stateVal = s; })))));
-        result = handle {
-          return = composedReturn;
-          handlers = composedHandlers;
-          state = composedInitialState;
-        } comp;
-      in result.value.key == "api-key"
-         && result.value.stateVal == 100
-         && result.state.typeErrors == [];
+            bind (linear.acquireLinear "api-key") (token:
+              bind (linear.consume token) (keyVal:
+                bind (state.put 100) (_:
+                  bind state.get (s:
+                    pure { key = keyVal; stateVal = s; })))));
+        result = handle
+          {
+            return = composedReturn;
+            handlers = composedHandlers;
+            state = composedInitialState;
+          }
+          comp;
+      in
+      result.value.key == "api-key"
+      && result.value.stateVal == 100
+      && result.state.typeErrors == [ ];
     expected = true;
   };
 
@@ -228,15 +244,18 @@ let
         IntT = mkType { name = "Int"; kernelType = H.int_; };
         comp =
           bind (IntT.validate "not-int") (_:
-          bind (linear.acquireLinear "leaked") (_:
-            pure "done"));
-        result = handle {
-          return = composedReturn;
-          handlers = composedHandlers;
-          state = composedInitialState;
-        } comp;
-      in result.value._tag == "LinearityError"
-         && builtins.length result.state.typeErrors == 1;
+            bind (linear.acquireLinear "leaked") (_:
+              pure "done"));
+        result = handle
+          {
+            return = composedReturn;
+            handlers = composedHandlers;
+            state = composedInitialState;
+          }
+          comp;
+      in
+      result.value._tag == "LinearityError"
+      && builtins.length result.state.typeErrors == 1;
     expected = true;
   };
 
@@ -245,18 +264,21 @@ let
       let
         comp =
           bind (state.put 10) (_:
-          bind (linear.acquireLinear "r1") (t1:
-          bind (state.modify (n: n + 5)) (_:
-          bind (linear.consume t1) (_:
-          bind (state.modify (n: n * 2)) (_:
-            state.get)))));
-        result = handle {
-          return = composedReturn;
-          handlers = composedHandlers;
-          state = composedInitialState;
-        } comp;
-      in result.value;
-    expected = 30;  # (10 + 5) * 2
+            bind (linear.acquireLinear "r1") (t1:
+              bind (state.modify (n: n + 5)) (_:
+                bind (linear.consume t1) (_:
+                  bind (state.modify (n: n * 2)) (_:
+                    state.get)))));
+        result = handle
+          {
+            return = composedReturn;
+            handlers = composedHandlers;
+            state = composedInitialState;
+          }
+          comp;
+      in
+      result.value;
+    expected = 30; # (10 + 5) * 2
   };
 
   compositionAbortPreservesState = {
@@ -264,17 +286,20 @@ let
       let
         comp =
           bind (state.put 42) (_:
-          bind (linear.acquireLinear "thing") (token:
-          bind (linear.consume token) (_:
-          bind (linear.consume token) (_:  # abort: exceeded-bound
-            pure "unreachable"))));
-        result = handle {
-          return = composedReturn;
-          handlers = composedHandlers;
-          state = composedInitialState;
-        } comp;
-      in result.value._tag == "LinearityError"
-         && result.state.appState == 42;
+            bind (linear.acquireLinear "thing") (token:
+              bind (linear.consume token) (_:
+                bind (linear.consume token) (_: # abort: exceeded-bound
+                  pure "unreachable"))));
+        result = handle
+          {
+            return = composedReturn;
+            handlers = composedHandlers;
+            state = composedInitialState;
+          }
+          comp;
+      in
+      result.value._tag == "LinearityError"
+      && result.state.appState == 42;
     expected = true;
   };
 
@@ -293,8 +318,9 @@ let
           (pure null)
           (lib.range 0 99);
         result = linear.run comp;
-      in !((result.value ? _tag))
-         && builtins.length (builtins.attrNames result.state.resources) == 100;
+      in
+      !((result.value ? _tag))
+      && builtins.length (builtins.attrNames result.state.resources) == 100;
     expected = true;
   };
 
@@ -304,21 +330,24 @@ let
         IntT = mkType { name = "Int"; kernelType = H.int_; };
         mkCycle = i:
           bind (IntT.validate i) (_:
-          bind (linear.acquireLinear "r-${toString i}") (token:
-          bind (state.modify (n: n + 1)) (_:
-          bind (linear.consume token) (_:
-            pure null))));
+            bind (linear.acquireLinear "r-${toString i}") (token:
+              bind (state.modify (n: n + 1)) (_:
+                bind (linear.consume token) (_:
+                  pure null))));
         comp = builtins.foldl'
           (acc: i: bind acc (_: mkCycle i))
           (pure null)
           (lib.range 0 49);
-        result = handle {
-          return = composedReturn;
-          handlers = composedHandlers;
-          state = composedInitialState;
-        } comp;
-      in result.state.appState == 50
-         && result.state.typeErrors == [];
+        result = handle
+          {
+            return = composedReturn;
+            handlers = composedHandlers;
+            state = composedInitialState;
+          }
+          comp;
+      in
+      result.state.appState == 50
+      && result.state.typeErrors == [ ];
     expected = true;
   };
 
@@ -331,7 +360,8 @@ let
       let
         IntT = mkType { name = "Int"; kernelType = H.int_; };
         LIntT = Linear IntT;
-      in check LIntT { _linear = true; id = 0; resource = 42; };
+      in
+      check LIntT { _linear = true; id = 0; resource = 42; };
     expected = true;
   };
 
@@ -340,7 +370,8 @@ let
       let
         IntT = mkType { name = "Int"; kernelType = H.int_; };
         LIntT = Linear IntT;
-      in check LIntT { _linear = true; id = 0; resource = "not-int"; };
+      in
+      check LIntT { _linear = true; id = 0; resource = "not-int"; };
     expected = false;
   };
 
@@ -348,7 +379,8 @@ let
     expr =
       let
         IntT = mkType { name = "Int"; kernelType = H.int_; };
-      in check (Linear IntT) 42;
+      in
+      check (Linear IntT) 42;
     expected = false;
   };
 
@@ -367,7 +399,8 @@ let
           bind (linear.consume token) (_:
             pure (check LIntT token)));
         result = linear.run comp;
-      in result.value;
+      in
+      result.value;
     expected = true;
   };
 
@@ -380,57 +413,32 @@ let
       let
         comp =
           bind (linear.acquireLinear "once") (t1:
-          bind (linear.acquireExact "twice" 2) (t2:
-          bind (linear.acquireUnlimited "many") (t3:
-          bind (linear.consume t1) (_:
-          bind (linear.consume t2) (_:
-          bind (linear.consume t2) (_:
-          bind (linear.consume t3) (_:
-          bind (linear.consume t3) (_:
-          bind (linear.consume t3) (_:
-            pure "all-correct")))))))));
-      in (linear.run comp).value;
+            bind (linear.acquireExact "twice" 2) (t2:
+              bind (linear.acquireUnlimited "many") (t3:
+                bind (linear.consume t1) (_:
+                  bind (linear.consume t2) (_:
+                    bind (linear.consume t2) (_:
+                      bind (linear.consume t3) (_:
+                        bind (linear.consume t3) (_:
+                          bind (linear.consume t3) (_:
+                            pure "all-correct")))))))));
+      in
+      (linear.run comp).value;
     expected = "all-correct";
   };
 
-  allPass =
-    linearHappyPath.expr == linearHappyPath.expected
-    && linearMultiResource.expr == linearMultiResource.expected
-    && linearAffineRelease.expr == linearAffineRelease.expected
-    && linearGradedExact.expr == linearGradedExact.expected
-    && linearUnlimited.expr == linearUnlimited.expected
-    && linearLeakDetected.expr == linearLeakDetected.expected
-    && linearDoubleConsumeAborts.expr == linearDoubleConsumeAborts.expected
-    && linearConsumeAfterReleaseAborts.expr == linearConsumeAfterReleaseAborts.expected
-    && linearDoubleReleaseAborts.expr == linearDoubleReleaseAborts.expected
-    && linearMultiLeakReportsAll.expr == linearMultiLeakReportsAll.expected
-    && linearGradedUnderuseDetected.expr == linearGradedUnderuseDetected.expected
-    && linearGradedOveruseAborts.expr == linearGradedOveruseAborts.expected
-    && compositionThreeEffects.expr == compositionThreeEffects.expected
-    && compositionTypeErrorPlusLeak.expr == compositionTypeErrorPlusLeak.expected
-    && compositionStatePreservation.expr == compositionStatePreservation.expected
-    && compositionAbortPreservesState.expr == compositionAbortPreservesState.expected
-    && stressDeepSeq100Pairs.expr == stressDeepSeq100Pairs.expected
-    && stressComposed50Cycles.expr == stressComposed50Cycles.expected
-    && typeLinearCheckValid.expr == typeLinearCheckValid.expected
-    && typeLinearCheckInvalid.expr == typeLinearCheckInvalid.expected
-    && typeLinearCheckNonToken.expr == typeLinearCheckNonToken.expected
-    && typeGradedName.expr == typeGradedName.expected
-    && typeLinearRoundTrip.expr == typeLinearRoundTrip.expected
-    && mixedGradedResources.expr == mixedGradedResources.expected;
-
-in {
+in
+{
   inherit linearHappyPath linearMultiResource linearAffineRelease
-          linearGradedExact linearUnlimited
-          linearLeakDetected linearDoubleConsumeAborts
-          linearConsumeAfterReleaseAborts linearDoubleReleaseAborts
-          linearMultiLeakReportsAll
-          linearGradedUnderuseDetected linearGradedOveruseAborts
-          compositionThreeEffects compositionTypeErrorPlusLeak
-          compositionStatePreservation compositionAbortPreservesState
-          stressDeepSeq100Pairs stressComposed50Cycles
-          typeLinearCheckValid typeLinearCheckInvalid typeLinearCheckNonToken
-          typeGradedName typeLinearRoundTrip
-          mixedGradedResources
-          allPass;
+    linearGradedExact linearUnlimited
+    linearLeakDetected linearDoubleConsumeAborts
+    linearConsumeAfterReleaseAborts linearDoubleReleaseAborts
+    linearMultiLeakReportsAll
+    linearGradedUnderuseDetected linearGradedOveruseAborts
+    compositionThreeEffects compositionTypeErrorPlusLeak
+    compositionStatePreservation compositionAbortPreservesState
+    stressDeepSeq100Pairs stressComposed50Cycles
+    typeLinearCheckValid typeLinearCheckInvalid typeLinearCheckNonToken
+    typeGradedName typeLinearRoundTrip
+    mixedGradedResources;
 }

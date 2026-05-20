@@ -39,24 +39,31 @@
 #
 # Output:
 #   { gateResult; markdown; pass; }
-{ benchPath, baselinePath, currentPath,
-  budgetsPath ? null, trailersPath ? null,
-  cpuGating ? true,
-  baselineName ? "baseline", currentName ? "current" }:
+{ benchPath
+, baselinePath
+, currentPath
+, budgetsPath ? null
+, trailersPath ? null
+, cpuGating ? true
+, baselineName ? "baseline"
+, currentName ? "current"
+}:
 
 let
   bench = import benchPath { };
 
   baseline = builtins.fromJSON (builtins.readFile baselinePath);
-  current  = builtins.fromJSON (builtins.readFile currentPath);
+  current = builtins.fromJSON (builtins.readFile currentPath);
 
   defaultBudgets = { cpu = { }; allocTolerancePermille = 5; };
-  rawBudgets = if budgetsPath == null then defaultBudgets
-               else builtins.fromTOML (builtins.readFile budgetsPath);
+  rawBudgets =
+    if budgetsPath == null then defaultBudgets
+    else builtins.fromTOML (builtins.readFile budgetsPath);
 
-  budgets = if cpuGating
-            then rawBudgets
-            else rawBudgets // { cpu = { }; };
+  budgets =
+    if cpuGating
+    then rawBudgets
+    else rawBudgets // { cpu = { }; };
 
   # A workload can be either cpu-gated with a budget or declared
   # noise-limited — not both. Silent overlap would let a manual edit of
@@ -91,8 +98,8 @@ let
   validateExclusionList = listName: list:
     let unknown = builtins.filter (w: ! (knownWorkloadSet ? ${w})) list;
     in if unknown == [ ]
-       then null
-       else throw "finalize-gate: ${listName} lists unknown workloads (typo?): ${builtins.concatStringsSep ", " unknown}";
+    then null
+    else throw "finalize-gate: ${listName} lists unknown workloads (typo?): ${builtins.concatStringsSep ", " unknown}";
   validateNoiseLimited = validateExclusionList "noiseLimited" noiseLimited;
   validateAllocNoiseLimited = validateExclusionList "allocNoiseLimited" allocNoiseLimited;
 
@@ -108,37 +115,40 @@ let
   warnUnregistered =
     if unregisteredWorkloads == [ ]
     then null
-    else builtins.trace
-      "finalize-gate: warning — workloads missing from bench/workloads/meta.nix (tier defaults to standard): ${builtins.concatStringsSep ", " unregisteredWorkloads}"
-      null;
+    else
+      builtins.trace
+        "finalize-gate: warning — workloads missing from bench/workloads/meta.nix (tier defaults to standard): ${builtins.concatStringsSep ", " unregisteredWorkloads}"
+        null;
 
   # Alloc determinism holds only within a Nix version. Allowing a
   # mismatch here turns every evaluator upgrade into a false alloc
   # regression against the old baseline.
   baselineNix = baseline.nix or "unknown";
-  currentNix  = current.nix or "unknown";
+  currentNix = current.nix or "unknown";
   validateNixVersion =
     if baselineNix == currentNix
     then null
-    else throw ''
-      finalize-gate: Nix version mismatch between baseline and current run.
-        baseline (${baselineName}): ${baselineNix}
-        current  (${currentName}):  ${currentNix}
+    else
+      throw ''
+        finalize-gate: Nix version mismatch between baseline and current run.
+          baseline (${baselineName}): ${baselineNix}
+          current  (${currentName}):  ${currentNix}
 
-      Allocation counters are evaluator-version-specific; comparing across
-      versions produces false regressions. Either re-capture the baseline
-      with Nix ${currentNix}, or pin the gate invocation's Nix to
-      ${baselineNix}.
-    '';
+        Allocation counters are evaluator-version-specific; comparing across
+        versions produces false regressions. Either re-capture the baseline
+        with Nix ${currentNix}, or pin the gate invocation's Nix to
+        ${baselineNix}.
+      '';
 
-  trailers = if trailersPath == null then [ ]
-             else builtins.fromJSON (builtins.readFile trailersPath);
+  trailers =
+    if trailersPath == null then [ ]
+    else builtins.fromJSON (builtins.readFile trailersPath);
 
   guards = builtins.seq validateBudgets
-             (builtins.seq validateNoiseLimited
-               (builtins.seq validateAllocNoiseLimited
-                 (builtins.seq validateNixVersion
-                   (builtins.seq warnUnregistered null))));
+    (builtins.seq validateNoiseLimited
+      (builtins.seq validateAllocNoiseLimited
+        (builtins.seq validateNixVersion
+          (builtins.seq warnUnregistered null))));
 
   gateResult = builtins.seq guards (bench.gate.gate {
     inherit baseline current budgets trailers allocNoiseLimited;
@@ -147,7 +157,8 @@ let
   markdown = bench.format.emitGateMarkdown {
     inherit gateResult baselineName currentName;
   };
-in {
+in
+{
   inherit gateResult markdown;
   pass = gateResult.pass;
 }

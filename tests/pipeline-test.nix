@@ -34,7 +34,8 @@ let
               p.pure (data // { enriched = true; }));
         };
         result = p.run { machines = [ "host-1" "host-2" ]; } [ discover validate enrich ];
-      in {
+      in
+      {
         machines = result.value.machines;
         validated = result.value.validated;
         enriched = result.value.enriched;
@@ -56,17 +57,18 @@ let
       let
         s1 = p.mkStage {
           name = "init";
-          transform = _: p.pure { items = []; };
+          transform = _: p.pure { items = [ ]; };
         };
         s2 = p.mkStage {
           name = "populate";
           transform = data: p.pure (data // { items = [ 1 2 3 ]; });
         };
-        result = p.run {} [ s1 s2 ];
-      in {
+        result = p.run { } [ s1 s2 ];
+      in
+      {
         value = result.value;
-        noErrors = result.errors == [];
-        noWarnings = result.warnings == [];
+        noErrors = result.errors == [ ];
+        noWarnings = result.warnings == [ ];
       };
     expected = {
       value = { items = [ 1 2 3 ]; };
@@ -75,9 +77,7 @@ let
     };
   };
 
-  allPass = fullPipelineTest.expr == fullPipelineTest.expected
-            && pureOnlyTest.expr == pureOnlyTest.expected;
-
-in {
-  inherit fullPipelineTest pureOnlyTest allPass;
+in
+{
+  inherit fullPipelineTest pureOnlyTest;
 }

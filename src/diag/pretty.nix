@@ -23,7 +23,7 @@
 # chain at force time. `deepSeq` is wrong here: the payload is a
 # recursive Error whose `children` holds the entire remaining chain,
 # and forcing it deeply cascades through every descendant.
-{ lib, fx, ... }:
+{ lib, fx, api, ... }:
 let
   inherit (fx.diag.positions) renderSegment;
 
@@ -31,7 +31,7 @@ let
 
   # Walk a single-child Error chain and collect `children[].position`
   # from root to leaf (or to the first branching node).
-  chainPositions = err: chainFast [] err 0;
+  chainPositions = err: chainFast [ ] err 0;
 
   chainFast = acc: err: depth:
     if builtins.length err.children != 1
@@ -40,7 +40,7 @@ let
     then chainSlow acc err
     else
       let edge = builtins.elemAt err.children 0;
-      in chainFast (acc ++ [edge.position]) edge.error (depth + 1);
+      in chainFast (acc ++ [ edge.position ]) edge.error (depth + 1);
 
   # Slow path: genericClosure worklist. `key` WHNF-forces `nextErr` so
   # the next step reads a resolved attrset instead of re-entering the
@@ -51,20 +51,22 @@ let
       steps = builtins.genericClosure {
         startSet = [{ key = 0; _acc = acc0; _err = err0; }];
         operator = st:
-          if builtins.length st._err.children != 1 then []
+          if builtins.length st._err.children != 1 then [ ]
           else
             let
               edge = builtins.elemAt st._err.children 0;
               nextErr = edge.error;
-              newAcc = st._acc ++ [edge.position];
-            in [{
+              newAcc = st._acc ++ [ edge.position ];
+            in
+            [{
               key = builtins.seq nextErr
-                      (builtins.seq newAcc (st.key + 1));
+                (builtins.seq newAcc (st.key + 1));
               _acc = newAcc;
               _err = nextErr;
             }];
       };
-    in (lib.last steps)._acc;
+    in
+    (lib.last steps)._acc;
 
   # Walk to the endpoint of the chain (the first node with
   # !=1 children).
@@ -80,7 +82,7 @@ let
       steps = builtins.genericClosure {
         startSet = [{ key = 0; _err = err0; }];
         operator = st:
-          if builtins.length st._err.children != 1 then []
+          if builtins.length st._err.children != 1 then [ ]
           else
             let nextErr = (builtins.elemAt st._err.children 0).error;
             in [{
@@ -88,7 +90,8 @@ let
               _err = nextErr;
             }];
       };
-    in (lib.last steps)._err;
+    in
+    (lib.last steps)._err;
 
   # Render an arbitrary Nix value compactly. Bounded by the shape of
   # the value itself (typically a tagged record with one or two
@@ -102,10 +105,12 @@ let
       let
         extras = removeAttrs v [ "tag" "_tag" ];
         fields = lib.mapAttrsToList
-          (k: val: "${k}=${renderValue val}") extras;
-      in if fields == []
-         then v.tag
-         else "${v.tag}(${lib.concatStringsSep ", " fields})"
+          (k: val: "${k}=${renderValue val}")
+          extras;
+      in
+      if fields == [ ]
+      then v.tag
+      else "${v.tag}(${lib.concatStringsSep ", " fields})"
     else if builtins.isAttrs v then
       "{${lib.concatStringsSep "; "
           (lib.mapAttrsToList
@@ -120,8 +125,8 @@ let
   pathSegments = err: map renderSegment (chainPositions err);
   pathString = err:
     let segs = pathSegments err;
-    in if segs == [] then ""
-       else lib.concatStringsSep " -> " segs;
+    in if segs == [ ] then ""
+    else lib.concatStringsSep " -> " segs;
 
   # Layer tag for display. Safe on either Layer constant.
   layerTag = err: err.layer.tag;
@@ -131,19 +136,80 @@ let
     let
       path = pathString err;
       suffix = if path == "" then "" else " @ ${path}";
-    in "[${layerTag err}] ${err.msg}${suffix}";
+    in
+    "[${layerTag err}] ${err.msg}${suffix}";
 
   # Layer-dispatched detail block. Null fields are skipped so the
-  # Kernel / Generic renderers share a uniform null-guard idiom.
+  # Kernel / Generic / Contract renderers share a uniform null-guard idiom.
   line = key: val:
     if val == null then null else "  ${key}: ${renderValue val}";
 
-  kernelDetailLines = d: lib.filter (l: l != null) [
+  kernelCoreLines = d: lib.filter (l: l != null) [
     (line "rule" d.rule)
     (line "expected" d.expected)
     (line "got" d.got)
     (line "ctx_depth" d.ctx_depth)
   ];
+
+  # Cap on the binder list rendered under `frame.names`. Above this,
+  # the rendered list is truncated and a `+N more` suffix is appended;
+  # `frame.depth` always renders the true depth.
+  frameBinderCap = 12;
+
+  termLines = d:
+    if d.term == null then [ ]
+    else
+      let
+        tagPart = [ "  term: ${d.term.tag or "?"}" ];
+        quotedPart =
+          if (d.term.quoted or null) == null
+          then [ ]
+          else [ "  term.quoted: ${renderValue d.term.quoted}" ];
+      in
+      tagPart ++ quotedPart;
+
+  frameLines = d:
+    if d.frame == null then [ ]
+    else
+      let
+        depth = d.frame.depth or 0;
+        names = d.frame.names or [ ];
+        nNames = builtins.length names;
+        capped =
+          if nNames > frameBinderCap
+          then lib.take frameBinderCap names
+          else names;
+        listBody = lib.concatStringsSep ", " capped;
+        truncSuffix =
+          if nNames > frameBinderCap
+          then " (+${toString (nNames - frameBinderCap)} more)"
+          else "";
+        namesLine = "  frame.names: [${listBody}]${truncSuffix}";
+      in
+      [
+        "  frame.depth: ${toString depth}"
+        namesLine
+      ];
+
+  traceLines = d:
+    let trace = d.trace or [ ]; in
+    if trace == [ ] then [ ]
+    else
+      let
+        renderEntry = i:
+          let
+            entry = builtins.elemAt trace i;
+            rule = entry.rule or null;
+            seg = renderSegment entry.position;
+            ruleStr = if rule == null then "(no rule)" else rule;
+          in
+          "    [${toString i}] rule=${ruleStr} via ${seg}";
+        entries = builtins.genList renderEntry (builtins.length trace);
+      in
+      [ "  trace:" ] ++ entries;
+
+  kernelDetailLines = d:
+    kernelCoreLines d ++ termLines d ++ frameLines d ++ traceLines d;
 
   genericDetailLines = d: lib.filter (l: l != null) [
     (line "type" d.type)
@@ -152,16 +218,43 @@ let
     (line "desc" d.desc)
     (line "index" d.index)
     (if d.guard == null then null
-     else "  guard: ${renderValue d.guard.predicate}")
+    else "  guard: ${renderValue d.guard.predicate}")
+  ];
+
+  contractDetailLines = d: lib.filter (l: l != null) [
+    (line "type" d.type)
+    (line "context" d.context)
+    (line "value" d.value)
+    (if d.guard == null then null
+    else "  guard: ${renderValue (d.guard.predicate or d.guard)}")
   ];
 
   detailLines = err:
-    if err.layer.tag == "Kernel"
-    then kernelDetailLines err.detail
-    else genericDetailLines err.detail;
+    let tag = err.layer.tag; in
+    if tag == "Kernel" then kernelDetailLines err.detail
+    else if tag == "Generic" then genericDetailLines err.detail
+    else if tag == "Contract" then contractDetailLines err.detail
+    else [ ];
+
+  # Render an intent-stack block from an already-computed positions
+  # list. Factored out of `intentStackLines` so `multiLine` can reuse a
+  # single chain walk for both `path` and `intent` rendering.
+  intentLinesFromPositions = positions:
+    let
+      intents = lib.filter (s: builtins.isString s && s != "")
+        (map (p: p.intent or null) positions);
+    in
+    if intents == [ ]
+    then [ ]
+    else [ "  intent:" ] ++ map (i: "    - ${i}") intents;
+
+  # Per-position intent stack: walk the chain and render the intent
+  # gloss. Standalone wrapper around `intentLinesFromPositions` for
+  # consumers that don't already have the positions list in hand.
+  intentStackLines = err: intentLinesFromPositions (chainPositions err);
 
   hintLines = err:
-    if err.hint == null then [] else [ "  hint: ${err.hint.text}" ];
+    if err.hint == null then [ ] else [ "  hint: ${err.hint.text}" ];
 
   # Indent every line of a multi-line block by two spaces.
   indent = s:
@@ -169,32 +262,49 @@ let
     in lib.concatStringsSep "\n" (map (l: "  ${l}") ls);
 
   # Multi-line trace. At a branching endpoint, emits one indented
-  # sub-trace per child.
+  # sub-trace per child. Intent stack renders only on the chained form
+  # (path non-empty); a leaf-only Error has no positions to gloss.
+  #
+  # Position chain is walked exactly once and reused for both `path` and
+  # `intent:` block — `pathString err`/`intentStackLines err` would each
+  # call `chainPositions err` independently.
   multiLine = err:
     let
-      path = pathString err;
+      positions = chainPositions err;
+      pathSegs = map renderSegment positions;
+      path =
+        if pathSegs == [ ] then ""
+        else lib.concatStringsSep " -> " pathSegs;
+      intentLines = intentLinesFromPositions positions;
+      intentBlock =
+        if intentLines == [ ] then ""
+        else "\n" + lib.concatStringsSep "\n" intentLines;
       header =
         if path == ""
         then "[${layerTag err}] ${err.msg}"
-        else "[${layerTag err}] ${err.msg}\n  path: ${path}";
+        else "[${layerTag err}] ${err.msg}\n  path: ${path}${intentBlock}";
       endpoint = chainEndpoint err;
       leafBlock = lib.concatStringsSep "\n"
-                    (detailLines endpoint ++ hintLines endpoint);
+        (detailLines endpoint ++ hintLines endpoint);
       childrenOfEndpoint = endpoint.children;
       isBranch = builtins.length childrenOfEndpoint > 1;
-      childBlocks = map (edge:
-        let
-          p = renderSegment edge.position;
-          sub = multiLine edge.error;
-        in "  at ${p}:\n${indent sub}"
-      ) childrenOfEndpoint;
+      childBlocks = map
+        (edge:
+          let
+            p = renderSegment edge.position;
+            sub = multiLine edge.error;
+          in
+          "  at ${p}:\n${indent sub}"
+        )
+        childrenOfEndpoint;
       bodyLines =
         if isBranch
         then [ header ] ++ childBlocks
         else if leafBlock == ""
         then [ header ]
         else [ header leafBlock ];
-    in lib.concatStringsSep "\n" bodyLines;
+    in
+    lib.concatStringsSep "\n" bodyLines;
 
   # -- Chain fixtures reused by construction and walker tests. --
   leafErr = fx.diag.error.mkKernelError {
@@ -207,18 +317,17 @@ let
   # Build an n-deep nestUnder chain over a single leaf. Each hop is
   # an O(1) attrset build; foldl' threads the accumulator iteratively.
   chain5000 =
-    builtins.foldl' (inner: _:
-      fx.diag.error.nestUnder fx.diag.positions.DArgSort inner
-    ) leafErr (lib.range 1 5000);
+    builtins.foldl'
+      (inner: _:
+        fx.diag.error.nestUnder fx.diag.positions.DArgSort inner
+      )
+      leafErr
+      (lib.range 1 5000);
 
-in {
-  inherit pathSegments pathString oneLine multiLine renderValue;
-
-
-
-  __docs = {
-    _self = {
-      doc = ''
+in
+api.namespace {
+  description = "fx.diag.pretty: pretty-print diagnostic Errors — `pathSegments`/`pathString`/`oneLine`/`multiLine` walkers, stack-safe via genericClosure past 500 frames.";
+  doc = ''
     Pretty-printing for diagnostic Errors.
 
     Exports:
@@ -233,11 +342,11 @@ in {
 
     Pure data -> string; no effects.
   '';
-      tests = {
+  tests = {
     # -- pathSegments / pathString on leaves and chains --
     "pathSegments-leaf" = {
       expr = pathSegments leafErr;
-      expected = [];
+      expected = [ ];
     };
     "pathString-leaf" = {
       expr = pathString leafErr;
@@ -245,21 +354,22 @@ in {
     };
     "pathSegments-one-hop" = {
       expr = pathSegments (fx.diag.error.nestUnder
-                            fx.diag.positions.DArgSort leafErr);
+        fx.diag.positions.DArgSort
+        leafErr);
       expected = [ "arg.S" ];
     };
     "pathSegments-two-hops" = {
       expr = pathSegments
-               (fx.diag.error.nestUnder fx.diag.positions.DArgSort
-                 (fx.diag.error.nestUnder fx.diag.positions.DPlusL
-                   leafErr));
+        (fx.diag.error.nestUnder fx.diag.positions.DArgSort
+          (fx.diag.error.nestUnder fx.diag.positions.DPlusL
+            leafErr));
       expected = [ "arg.S" "plus.L" ];
     };
     "pathString-two-hops" = {
       expr = pathString
-               (fx.diag.error.nestUnder fx.diag.positions.DArgSort
-                 (fx.diag.error.nestUnder fx.diag.positions.DPlusL
-                   leafErr));
+        (fx.diag.error.nestUnder fx.diag.positions.DArgSort
+          (fx.diag.error.nestUnder fx.diag.positions.DPlusL
+            leafErr));
       expected = "arg.S -> plus.L";
     };
 
@@ -270,12 +380,14 @@ in {
     };
     "oneLine-with-path" = {
       expr = oneLine (fx.diag.error.nestUnder
-                       fx.diag.positions.DArgSort leafErr);
+        fx.diag.positions.DArgSort
+        leafErr);
       expected = "[Kernel] type mismatch @ arg.S";
     };
     "oneLine-generic" = {
       expr = oneLine (fx.diag.error.mkGenericError {
-        value = 42; msg = "value does not inhabit description";
+        value = 42;
+        msg = "value does not inhabit description";
       });
       expected = "[Generic] value does not inhabit description";
     };
@@ -310,7 +422,8 @@ in {
         let
           err = fx.diag.error.nestUnder fx.diag.positions.DArgSort leafErr;
           ls = lib.splitString "\n" (multiLine err);
-        in builtins.any (l: l == "  path: arg.S") ls;
+        in
+        builtins.any (l: l == "  path: arg.S") ls;
       expected = true;
     };
 
@@ -319,10 +432,13 @@ in {
       expr =
         let
           err = fx.diag.error.mkGenericError {
-            type = "PersonT"; value = { n = "wrong"; }; msg = "m";
+            type = "PersonT";
+            value = { n = "wrong"; };
+            msg = "m";
           };
           ls = lib.splitString "\n" (multiLine err);
-        in builtins.any (l: l == "  type: PersonT") ls;
+        in
+        builtins.any (l: l == "  type: PersonT") ls;
       expected = true;
     };
     "multiLine-generic-guard-predicate-rendered" = {
@@ -334,18 +450,21 @@ in {
             msg = "refinement failed";
           };
           ls = lib.splitString "\n" (multiLine err);
-        in builtins.any (l: l == "  guard: x > 18") ls;
+        in
+        builtins.any (l: l == "  guard: x > 18") ls;
       expected = true;
     };
     "multiLine-hint-rendered" = {
       expr =
         let
           err = fx.diag.error.mkKernelError {
-            rule = "desc-arg"; msg = "m";
+            rule = "desc-arg";
+            msg = "m";
             hint = fx.diag.hints.mkHint "universe" "try using u 0";
           };
           ls = lib.splitString "\n" (multiLine err);
-        in builtins.any (l: l == "  hint: try using u 0") ls;
+        in
+        builtins.any (l: l == "  hint: try using u 0") ls;
       expected = true;
     };
 
@@ -354,24 +473,28 @@ in {
       expr =
         let
           root = fx.diag.error.mkGenericError {
-            type = "PersonT"; value = {}; msg = "record validation failed";
+            type = "PersonT";
+            value = { };
+            msg = "record validation failed";
           };
           c1 = fx.diag.error.mkGenericError {
-            value = "wrong"; msg = "string is not Nat";
+            value = "wrong";
+            msg = "string is not Nat";
           };
           c2 = fx.diag.error.mkGenericError {
-            value = 42; msg = "int is not String";
+            value = 42;
+            msg = "int is not String";
           };
           r1 = fx.diag.error.addChild (fx.diag.positions.Field "n") root c1;
           r2 = fx.diag.error.addChild (fx.diag.positions.Field "s") r1 c2;
           s = multiLine r2;
         in
-          lib.all (sub: lib.strings.hasInfix sub s) [
-            "at .n"
-            "at .s"
-            "string is not Nat"
-            "int is not String"
-          ];
+        lib.all (sub: lib.strings.hasInfix sub s) [
+          "at .n"
+          "at .s"
+          "string is not Nat"
+          "int is not String"
+        ];
       expected = true;
     };
 
@@ -382,22 +505,222 @@ in {
     };
     "pathString-5000-deep-chain-has-prefix" = {
       expr = lib.strings.hasPrefix "arg.S -> arg.S -> arg.S"
-               (pathString chain5000);
+        (pathString chain5000);
       expected = true;
     };
     "oneLine-5000-deep-chain-has-header" = {
       expr = lib.strings.hasPrefix "[Kernel] type mismatch @ arg.S"
-               (oneLine chain5000);
+        (oneLine chain5000);
       expected = true;
     };
     "multiLine-5000-deep-chain-has-path-line" = {
       expr =
-        let s = multiLine chain5000;
-            ls = lib.splitString "\n" s;
-        in builtins.any
-             (l: lib.strings.hasPrefix "  path: arg.S -> arg.S" l)
-             ls;
+        let
+          s = multiLine chain5000;
+          ls = lib.splitString "\n" s;
+        in
+        builtins.any
+          (l: lib.strings.hasPrefix "  path: arg.S -> arg.S" l)
+          ls;
       expected = true;
+    };
+
+    # -- 3-layer detail dispatch --
+    "multiLine-contract-renders-type" = {
+      expr =
+        let
+          err = fx.diag.error.mkContractError {
+            type = "PositiveInt";
+            value = -3;
+            guard = { predicate = "x > 0"; };
+            msg = "refinement failed";
+          };
+          ls = lib.splitString "\n" (multiLine err);
+        in
+        builtins.any (l: l == "  type: PositiveInt") ls;
+      expected = true;
+    };
+    "multiLine-contract-renders-guard" = {
+      expr =
+        let
+          err = fx.diag.error.mkContractError {
+            value = -3;
+            guard = { predicate = "x > 0"; };
+            msg = "refinement failed";
+          };
+          ls = lib.splitString "\n" (multiLine err);
+        in
+        builtins.any (l: l == "  guard: x > 0") ls;
+      expected = true;
+    };
+    "oneLine-contract" = {
+      expr = oneLine (fx.diag.error.mkContractError {
+        value = -3;
+        guard = { predicate = "x > 0"; };
+        msg = "refinement failed";
+      });
+      expected = "[Contract] refinement failed";
+    };
+
+    # -- term block --
+    "multiLine-kernel-term-tag-renders" = {
+      expr =
+        let
+          err = fx.diag.error.mkKernelError {
+            rule = "infer";
+            msg = "no inference rule for term shape pair";
+            term = { tag = "pair"; };
+          };
+          ls = lib.splitString "\n" (multiLine err);
+        in
+        builtins.any (l: l == "  term: pair") ls;
+      expected = true;
+    };
+    "multiLine-kernel-term-quoted-renders" = {
+      expr =
+        let
+          err = fx.diag.error.mkKernelError {
+            rule = "infer";
+            msg = "m";
+            term = { tag = "pair"; quoted = { tag = "pair"; fst = "tt"; snd = "tt"; }; };
+          };
+          ls = lib.splitString "\n" (multiLine err);
+        in
+        builtins.any (lib.strings.hasPrefix "  term.quoted: pair(") ls;
+      expected = true;
+    };
+    "multiLine-kernel-term-null-omitted" = {
+      expr =
+        let
+          err = fx.diag.error.mkKernelError { rule = "r"; msg = "m"; };
+          ls = lib.splitString "\n" (multiLine err);
+        in
+        builtins.any (lib.strings.hasPrefix "  term") ls;
+      expected = false;
+    };
+
+    # -- frame block --
+    "multiLine-kernel-frame-depth-renders" = {
+      expr =
+        let
+          err = fx.diag.error.mkKernelError {
+            rule = "r";
+            msg = "m";
+            frame = { depth = 7; env = [ ]; types = [ ]; names = [ "a" "b" ]; };
+          };
+          ls = lib.splitString "\n" (multiLine err);
+        in
+        builtins.any (l: l == "  frame.depth: 7") ls;
+      expected = true;
+    };
+    "multiLine-kernel-frame-names-renders" = {
+      expr =
+        let
+          err = fx.diag.error.mkKernelError {
+            rule = "r";
+            msg = "m";
+            frame = { depth = 3; env = [ ]; types = [ ]; names = [ "x" "y" "z" ]; };
+          };
+          ls = lib.splitString "\n" (multiLine err);
+        in
+        builtins.any (l: l == "  frame.names: [x, y, z]") ls;
+      expected = true;
+    };
+    "multiLine-kernel-frame-names-truncated-above-cap" = {
+      expr =
+        let
+          names = builtins.genList (i: "v${toString i}") 20;
+          err = fx.diag.error.mkKernelError {
+            rule = "r";
+            msg = "m";
+            frame = { depth = 20; env = [ ]; types = [ ]; inherit names; };
+          };
+          ls = lib.splitString "\n" (multiLine err);
+        in
+        builtins.any (lib.strings.hasInfix "(+8 more)") ls;
+      expected = true;
+    };
+    "multiLine-kernel-frame-null-omitted" = {
+      expr =
+        let
+          err = fx.diag.error.mkKernelError { rule = "r"; msg = "m"; };
+          ls = lib.splitString "\n" (multiLine err);
+        in
+        builtins.any (lib.strings.hasPrefix "  frame") ls;
+      expected = false;
+    };
+
+    # -- trace block --
+    "multiLine-kernel-trace-renders-header" = {
+      expr =
+        let
+          leaf = fx.diag.error.mkKernelError { rule = "r"; msg = "m"; };
+          err = fx.diag.error.appendTrace "check"
+            fx.diag.positions.Sub
+            leaf;
+          ls = lib.splitString "\n" (multiLine err);
+        in
+        builtins.any (l: l == "  trace:") ls;
+      expected = true;
+    };
+    "multiLine-kernel-trace-renders-rule-and-segment" = {
+      expr =
+        let
+          leaf = fx.diag.error.mkKernelError { rule = "r"; msg = "m"; };
+          err = fx.diag.error.appendTrace "check"
+            fx.diag.positions.Sub
+            leaf;
+          ls = lib.splitString "\n" (multiLine err);
+        in
+        builtins.any (l: l == "    [0] rule=check via sub") ls;
+      expected = true;
+    };
+    "multiLine-kernel-trace-empty-omitted" = {
+      expr =
+        let
+          err = fx.diag.error.mkKernelError { rule = "r"; msg = "m"; };
+          ls = lib.splitString "\n" (multiLine err);
+        in
+        builtins.any (l: l == "  trace:") ls;
+      expected = false;
+    };
+    "multiLine-kernel-trace-null-rule-renders-placeholder" = {
+      expr =
+        let
+          leaf = fx.diag.error.mkKernelError { rule = "r"; msg = "m"; };
+          err = fx.diag.error.appendTrace null
+            fx.diag.positions.AnnTerm
+            leaf;
+          ls = lib.splitString "\n" (multiLine err);
+        in
+        builtins.any (l: l == "    [0] rule=(no rule) via ann.term") ls;
+      expected = true;
+    };
+
+    # -- intent stack --
+    "multiLine-chain-intent-renders-from-root-to-leaf" = {
+      expr =
+        let
+          leaf = fx.diag.error.mkKernelError { rule = "r"; msg = "m"; };
+          err = fx.diag.error.nestUnder fx.diag.positions.AppHead
+            (fx.diag.error.nestUnder fx.diag.positions.LamBody leaf);
+          ls = lib.splitString "\n" (multiLine err);
+          intents = lib.filter (lib.strings.hasPrefix "    - ") ls;
+        in
+        intents;
+      expected = [
+        "    - the function applied"
+        "    - the body of the lambda under its bound variable"
+      ];
+    };
+    "multiLine-leaf-no-intent-block" = {
+      expr =
+        let
+          err = fx.diag.error.mkKernelError { rule = "r"; msg = "m"; };
+          ls = lib.splitString "\n" (multiLine err);
+        in
+        builtins.any (l: l == "  intent:") ls;
+      expected = false;
     };
 
     # -- renderValue smoke --
@@ -422,25 +745,30 @@ in {
       expected = "VU(level=0)";
     };
   };
-    };
 
-    pathSegments = {
+  value = {
+    pathSegments = api.leaf {
+      value = pathSegments;
       description = "pathSegments: walk an `Error` from root to leaf collecting position tags as strings; stack-safe to kernel-descent depth via the same fast/slow split as the other chain walkers.";
       signature = "pathSegments : Error -> [String]";
     };
-    pathString = {
+    pathString = api.leaf {
+      value = pathString;
       description = "pathString: render `Error`'s root-to-leaf positions as a dotted path (e.g. `\"DArgSort.PiCod.AppArg\"`); useful for log lines and one-line diagnostic summaries.";
       signature = "pathString : Error -> String";
     };
-    oneLine = {
+    oneLine = api.leaf {
+      value = oneLine;
       description = "oneLine: render `Error` as a single-line diagnostic combining `pathString`, layer tag, msg, and (when present) hint text — suited for editor squigglies and terse log output.";
       signature = "oneLine : Error -> String";
     };
-    multiLine = {
+    multiLine = api.leaf {
+      value = multiLine;
       description = "multiLine: render `Error` as a multi-line block — header line, blame path, detail fields rendered with `renderValue`, and the optional hint text indented under the leaf.";
       signature = "multiLine : Error -> String";
     };
-    renderValue = {
+    renderValue = api.leaf {
+      value = renderValue;
       description = "renderValue: render an arbitrary detail value (term/type/payload) as a string suitable for inclusion in diagnostic output; centralises the formatting policy across `oneLine`/`multiLine`.";
       signature = "renderValue : Any -> String";
     };

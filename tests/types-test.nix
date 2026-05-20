@@ -23,31 +23,34 @@ let
   # Resumes with the check result so computation proceeds naturally, while
   # tracking via boolean state whether ALL typeCheck effects passed.
   #
-  # Adequacy invariant: T.check v ⟺ (allPassHandle(T.validate v)).state
-  allPassHandle = comp:
-    fx.handle {
-      handlers.typeCheck = { param, state }:
-        let passed = param.type.check param.value;
-        in { resume = passed; state = state && passed; };
-      state = true;
-    } comp;
+  # Adequacy invariant: T.check v ⟺ (validationPassHandle(T.validate v)).state
+  validationPassHandle = comp:
+    fx.handle
+      {
+        handlers.typeCheck = { param, state }:
+          let passed = param.type.check param.value;
+          in { resume = passed; state = state && passed; };
+        state = true;
+      }
+      comp;
 
   # -- Test 1: ValidPort refinement type --
   validPortTest =
     let
       ValidPort = types.refined "ValidPort" types.Int (types.inRange 1 65535);
-    in types.check ValidPort 8080
-       && !(types.check ValidPort 99999)
-       && !(types.check ValidPort 0)
-       && !(types.check ValidPort (-1));
+    in
+    types.check ValidPort 8080
+    && !(types.check ValidPort 99999)
+    && !(types.check ValidPort 0)
+    && !(types.check ValidPort (-1));
 
   # -- Test 2: Vector 3 Int (Vector is now a Pi type family) --
   vectorTest =
     let V3I = (types.Vector types.Int).apply 3;
-    in types.check V3I [1 2 3]
-       && !(types.check V3I [1 2])
-       && !(types.check V3I [1 2 3 4])
-       && !(types.check V3I [1 "two" 3]);
+    in types.check V3I [ 1 2 3 ]
+      && !(types.check V3I [ 1 2 ])
+      && !(types.check V3I [ 1 2 3 4 ])
+      && !(types.check V3I [ 1 "two" 3 ]);
 
   # -- Test 3: Universe hierarchy --
   universeTest =
@@ -63,39 +66,44 @@ let
         name = types.String;
         port = types.refined "ValidPort" types.Int (types.inRange 1 65535);
       };
-    in types.check ServiceConfig { name = "nginx"; port = 443; }
-       && !(types.check ServiceConfig { name = "nginx"; port = 99999; })
-       && !(types.check ServiceConfig { name = "nginx"; });
+    in
+    types.check ServiceConfig { name = "nginx"; port = 443; }
+    && !(types.check ServiceConfig { name = "nginx"; port = 99999; })
+    && !(types.check ServiceConfig { name = "nginx"; });
 
   # -- Test 5: Maybe type --
   maybeTest =
     let MaybeInt = types.Maybe types.Int;
     in types.check MaybeInt null
-       && types.check MaybeInt 42
-       && !(types.check MaybeInt "hello");
+      && types.check MaybeInt 42
+      && !(types.check MaybeInt "hello");
 
   # -- Test 6: Dependent record (nested Sigma pairs) --
   depRecordTest =
     let
       SizedList = types.DepRecord [
         { name = "n"; type = types.Int; }
-        { name = "items"; type = (self:
-          types.mkType {
-            name = "List[n=${toString self.n}]";
-            kernelType = H.any;
-            guard = v: builtins.isList v && builtins.length v == self.n;
-          });
+        {
+          name = "items";
+          type = (self:
+            types.mkType {
+              name = "List[n=${toString self.n}]";
+              kernelType = H.any;
+              guard = v: builtins.isList v && builtins.length v == self.n;
+            });
         }
       ];
-    # Values are now nested Sigma: { fst = n; snd = items; }
-    in types.check SizedList { fst = 2; snd = [ "a" "b" ]; }
-       && !(types.check SizedList { fst = 3; snd = [ "a" "b" ]; });
+      # Values are now nested Sigma: { fst = n; snd = items; }
+    in
+    types.check SizedList { fst = 2; snd = [ "a" "b" ]; }
+    && !(types.check SizedList { fst = 3; snd = [ "a" "b" ]; });
 
   # -- Test 7: make throws on invalid --
   makeThrowsTest =
     let
       result = builtins.tryEval (types.make types.Int "not-an-int");
-    in !result.success;
+    in
+      !result.success;
 
   # -- Test 8: Variant type --
   variantTest =
@@ -104,26 +112,29 @@ let
         circle = types.Float;
         rect = types.Record { w = types.Float; h = types.Float; };
       };
-    in types.check Shape { _tag = "circle"; value = 5.0; }
-       && types.check Shape { _tag = "rect"; value = { w = 3.0; h = 4.0; }; }
-       && !(types.check Shape { _tag = "triangle"; value = null; });
+    in
+    types.check Shape { _tag = "circle"; value = 5.0; }
+    && types.check Shape { _tag = "rect"; value = { w = 3.0; h = 4.0; }; }
+    && !(types.check Shape { _tag = "triangle"; value = null; });
 
   # -- Test 9: Predicate combinators --
   predicateTest =
     let
       EvenPositive = types.refined "EvenPositive" types.Int
         (types.allOf [ types.positive (x: lib.mod x 2 == 0) ]);
-    in types.check EvenPositive 4
-       && !(types.check EvenPositive 3)
-       && !(types.check EvenPositive (-2));
+    in
+    types.check EvenPositive 4
+    && !(types.check EvenPositive 3)
+    && !(types.check EvenPositive (-2));
 
   # -- Test 10: Universe tower safety --
   universeSafetyTest =
     let
       noSelfMembership = !(types.check (types.typeAt 5) (types.typeAt 5));
       chain = types.check types.Type_2 types.Type_1
-              && types.check types.Type_1 types.Type_0;
-    in noSelfMembership && chain;
+        && types.check types.Type_1 types.Type_0;
+    in
+    noSelfMembership && chain;
 
   # ===========================================================================
   # EFFECTFUL TYPE CHECKING TESTS
@@ -139,22 +150,26 @@ let
     let
       piT = types.Pi { domain = types.Int; codomain = _: types.Int; universe = 0; };
       comp = piT.checkAt (x: x * 2) 21;
-    in !(fx.isPure comp)
-       && comp.effect.name == "typeCheck"
-       && comp.effect.param.type.name == "Int";
+    in
+    !(fx.isPure comp)
+    && comp.effect.name == "typeCheck"
+    && comp.effect.param.type.name == "Int";
 
   # -- Test 12: Strict handler — passes when types match --
   strictHandlerPassesTest =
     let
       piT = types.Pi { domain = types.Int; codomain = _: types.Int; universe = 0; };
       comp = piT.checkAt (x: x * 2) 21;
-      result = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else throw "Type error in ${param.context}: expected ${param.type.name}";
-      } comp;
-    in result.value == 42;
+      result = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else throw "Type error in ${param.context}: expected ${param.type.name}";
+        }
+        comp;
+    in
+    result.value == 42;
 
   # -- Test 13: Collecting handler — gathers codomain error --
   collectingHandlerTest =
@@ -162,35 +177,41 @@ let
       piT = types.Pi { domain = types.Int; codomain = _: types.String; universe = 0; };
       # f returns int (42), but codomain expects String → codomain check fails
       comp = piT.checkAt (x: x * 2) 21;
-      result = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [{ context = param.context; expected = param.type.name; }]; };
-        state = [];
-      } comp;
-    in builtins.length result.state == 1
-       && (builtins.head result.state).expected == "String";
+      result = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else { resume = false; state = state ++ [{ context = param.context; expected = param.type.name; }]; };
+          state = [ ];
+        }
+        comp;
+    in
+    builtins.length result.state == 1
+    && (builtins.head result.state).expected == "String";
 
   # -- Test 14: Logging handler — records ALL checks --
   loggingHandlerTest =
     let
       piT = types.Pi { domain = types.Int; codomain = _: types.Int; universe = 0; };
       comp = piT.checkAt (x: x * 2) 21;
-      result = fx.handle {
-        handlers.typeCheck = { param, state }: {
-          resume = (param.type.check param.value);
-          state = state ++ [{
-            context = param.context;
-            passed = (param.type.check param.value);
-          }];
-        };
-        state = [];
-      } comp;
-    # Both domain (Int check on 21) and codomain (Int check on 42) pass
-    in builtins.length result.state == 2
-       && (builtins.elemAt result.state 0).passed
-       && (builtins.elemAt result.state 1).passed;
+      result = fx.handle
+        {
+          handlers.typeCheck = { param, state }: {
+            resume = (param.type.check param.value);
+            state = state ++ [{
+              context = param.context;
+              passed = (param.type.check param.value);
+            }];
+          };
+          state = [ ];
+        }
+        comp;
+      # Both domain (Int check on 21) and codomain (Int check on 42) pass
+    in
+    builtins.length result.state == 2
+    && (builtins.elemAt result.state 0).passed
+    && (builtins.elemAt result.state 1).passed;
 
   # -- Test 15: Same computation, different handler, different outcome --
   sameCompDifferentHandlerTest =
@@ -200,29 +221,33 @@ let
       comp = piT.checkAt (x: x * 2) 21;
 
       # Handler A: collecting (gathers errors)
-      collectResult = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [param.context]; };
-        state = [];
-      } comp;
+      collectResult = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else { resume = false; state = state ++ [ param.context ]; };
+          state = [ ];
+        }
+        comp;
 
       # Handler B: logging (records all checks, no errors)
-      logResult = fx.handle {
-        handlers.typeCheck = { param, state }: {
-          resume = (param.type.check param.value);
-          state = state ++ [(param.type.check param.value)];
-        };
-        state = [];
-      } comp;
+      logResult = fx.handle
+        {
+          handlers.typeCheck = { param, state }: {
+            resume = (param.type.check param.value);
+            state = state ++ [ (param.type.check param.value) ];
+          };
+          state = [ ];
+        }
+        comp;
     in
-      # Collecting handler: 1 error (codomain)
-      builtins.length collectResult.state == 1
-      # Logging handler: 2 entries (domain + codomain), second is false
-      && builtins.length logResult.state == 2
-      && builtins.elemAt logResult.state 0 == true   # domain passes
-      && builtins.elemAt logResult.state 1 == false;  # codomain fails
+    # Collecting handler: 1 error (codomain)
+    builtins.length collectResult.state == 1
+    # Logging handler: 2 entries (domain + codomain), second is false
+    && builtins.length logResult.state == 2
+    && builtins.elemAt logResult.state 0 == true   # domain passes
+    && builtins.elemAt logResult.state 1 == false; # codomain fails
 
   # -- Test 16: Sigma.validate emits typeCheck on failure --
   # Under fail-only emission, a well-typed pair walks through without
@@ -231,8 +256,9 @@ let
     let
       sigT = types.Sigma { fst = types.Int; snd = _: types.Int; universe = 0; };
       comp = sigT.validate { fst = 1; snd = "bad"; };
-    in !(fx.isPure comp)
-       && comp.effect.name == "typeCheck";
+    in
+    !(fx.isPure comp)
+    && comp.effect.name == "typeCheck";
 
   # -- Test 17: Sigma.validate through strict handler --
   sigmaStrictHandlerTest =
@@ -247,13 +273,16 @@ let
         universe = 0;
       };
       comp = sigT.validate { fst = 2; snd = [ "a" "b" ]; };
-      result = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else throw "Type error: ${param.context}";
-      } comp;
-    in result.value == { fst = 2; snd = [ "a" "b" ]; };
+      result = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else throw "Type error: ${param.context}";
+        }
+        comp;
+    in
+    result.value == { fst = 2; snd = [ "a" "b" ]; };
 
   # -- Test 18: Certified.certifyE is effectful --
   certifiedCertifyETest =
@@ -264,8 +293,9 @@ let
         name = "PosInt";
       };
       comp = PosInt.certifyE 5;
-    in !(fx.isPure comp)
-       && comp.effect.name == "typeCheck";
+    in
+    !(fx.isPure comp)
+    && comp.effect.name == "typeCheck";
 
   # -- Test 19: Certified.certifyE through collecting handler --
   certifiedCertifyECollectingTest =
@@ -276,15 +306,18 @@ let
         name = "PosInt";
       };
       comp = PosInt.certifyE 5;
-      result = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [param.context]; };
-        state = [];
-      } comp;
-    in result.value == { fst = 5; snd = true; }
-       && builtins.length result.state == 0;  # no errors
+      result = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else { resume = false; state = state ++ [ param.context ]; };
+          state = [ ];
+        }
+        comp;
+    in
+    result.value == { fst = 5; snd = true; }
+    && builtins.length result.state == 0; # no errors
 
   # -- Test 20: Certified.certifyE failing predicate through collecting handler --
   certifiedCertifyEFailTest =
@@ -296,25 +329,29 @@ let
       };
       # -5 is int (base passes) but predicate fails
       comp = PosInt.certifyE (-5);
-      result = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [param.context]; };
-        state = [];
-      } comp;
-    in builtins.length result.state == 1;  # predicate check fails
+      result = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else { resume = false; state = state ++ [ param.context ]; };
+          state = [ ];
+        }
+        comp;
+    in
+    builtins.length result.state == 1; # predicate check fails
 
   # -- Test 21: Vector-as-Pi has checkAt, validate, and other Pi operations --
   vectorIsEffectful =
     let
       vecFamily = types.Vector types.Int;
-    in vecFamily ? validate
-       && vecFamily ? checkAt
-       && vecFamily ? compose
-       && vecFamily ? apply
-       && vecFamily ? domain
-       && vecFamily ? codomain;
+    in
+    vecFamily ? validate
+    && vecFamily ? checkAt
+    && vecFamily ? compose
+    && vecFamily ? apply
+    && vecFamily ? domain
+    && vecFamily ? codomain;
 
   # -- Test 22: Vector.checkAt through strict handler --
   vectorCheckAtStrictTest =
@@ -323,13 +360,16 @@ let
       # A function from Nat to sized lists — a valid Vector value
       mkList = n: builtins.genList (i: i) n;
       comp = vecFamily.checkAt mkList 3;
-      result = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else throw "Type error: ${param.context}";
-      } comp;
-    in result.value == [0 1 2];
+      result = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else throw "Type error: ${param.context}";
+        }
+        comp;
+    in
+    result.value == [ 0 1 2 ];
 
   # -- Test 23: DepRecord-as-Sigma has validate (effectful) --
   depRecordIsEffectful =
@@ -338,7 +378,8 @@ let
         { name = "n"; type = types.Int; }
         { name = "s"; type = types.String; }
       ];
-    in recT ? validate && recT ? proj1 && recT ? proj2;
+    in
+    recT ? validate && recT ? proj1 && recT ? proj2;
 
   # -- Test 24: DepRecord.validate through strict handler --
   depRecordValidateStrictTest =
@@ -349,21 +390,25 @@ let
       ];
       # Nested Sigma value: { fst = 42; snd = "hello"; }
       comp = recT.validate { fst = 42; snd = "hello"; };
-      result = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else throw "Type error: ${param.context}";
-      } comp;
-    in result.value == { fst = 42; snd = "hello"; };
+      result = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else throw "Type error: ${param.context}";
+        }
+        comp;
+    in
+    result.value == { fst = 42; snd = "hello"; };
 
   # -- Test 25: foundation.validate is now effectful (not result attrset) --
   foundationValidateIsEffectful =
     let
       comp = types.validate types.Int 42 "test-context";
-    in !(fx.isPure comp)
-       && comp.effect.name == "typeCheck"
-       && comp.effect.param.context == "test-context";
+    in
+    !(fx.isPure comp)
+    && comp.effect.name == "typeCheck"
+    && comp.effect.param.context == "test-context";
 
   # ===========================================================================
   # ADEQUACY AND CONTRACT TESTS
@@ -380,11 +425,12 @@ let
       piT = types.Pi { domain = types.Int; codomain = _: types.Int; universe = 0; };
       # validate takes ONE arg (the value to check as introduction form)
       comp = piT.validate 42;
-    in !(fx.isPure comp)
-       && comp.effect.name == "typeCheck"
-       # The context is the type name, not "Π domain" — it's the guard,
-       # not the elimination check
-       && comp.effect.param.context == "Π(Int)";
+    in
+    !(fx.isPure comp)
+    && comp.effect.name == "typeCheck"
+    # The context is the type name, not "Π domain" — it's the guard,
+    # not the elimination check
+    && comp.effect.param.context == "Π(Int)";
 
   # -- Test 27: Pi adequacy — check and validate agree --
   # Adequacy uses the all-pass handler's state (bool) rather than
@@ -397,9 +443,9 @@ let
       f = x: x * 2;
       notF = 42;
     in
-      # Adequacy: check f ⟺ (allPassHandle (validate f)).state
-      (types.check piT f) == (allPassHandle (piT.validate f)).state
-      && (types.check piT notF) == (allPassHandle (piT.validate notF)).state;
+    # Adequacy: check f ⟺ (validationPassHandle (validate f)).state
+    (types.check piT f) == (validationPassHandle (piT.validate f)).state
+    && (types.check piT notF) == (validationPassHandle (piT.validate notF)).state;
 
   # -- Test 28: Sigma adequacy — check and validate agree --
   #
@@ -412,10 +458,10 @@ let
       good = { fst = 42; snd = "hello"; };
       bad = { fst = 42; snd = 99; };
     in
-      # Good pair: check passes, all effects pass
-      (types.check sigT good) == (allPassHandle (sigT.validate good)).state
-      # Bad pair: check fails, some effect fails
-      && (types.check sigT bad) == (allPassHandle (sigT.validate bad)).state;
+    # Good pair: check passes, all effects pass
+    (types.check sigT good) == (validationPassHandle (sigT.validate good)).state
+    # Bad pair: check fails, some effect fails
+    && (types.check sigT bad) == (validationPassHandle (sigT.validate bad)).state;
 
   # -- Test 29: checkAt differs from validate — a bad function passes
   #    validate (it IS a function) but fails checkAt (wrong codomain) --
@@ -428,20 +474,22 @@ let
       # fires, so the computation is pure.
       guardPasses = fx.isPure (piT.validate badF);
       # checkAt (deferred contract): fails at codomain
-      checkAtResult = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; state = state ++ ["pass"]; }
-          else { resume = false; state = state ++ ["fail:${param.context}"]; };
-        state = [];
-      } (piT.checkAt badF 21);
+      checkAtResult = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; state = state ++ [ "pass" ]; }
+            else { resume = false; state = state ++ [ "fail:${param.context}" ]; };
+          state = [ ];
+        }
+        (piT.checkAt badF 21);
     in
-      # Guard passes (it IS a function)
-      guardPasses
-      # Deferred contract: domain passes (21 is Int), codomain fails (42 is not String)
-      && builtins.length checkAtResult.state == 2
-      && builtins.elemAt checkAtResult.state 0 == "pass"
-      && builtins.elemAt checkAtResult.state 1 == "fail:Π codomain (Π(Int))";
+    # Guard passes (it IS a function)
+    guardPasses
+    # Deferred contract: domain passes (21 is Int), codomain fails (42 is not String)
+    && builtins.length checkAtResult.state == 2
+    && builtins.elemAt checkAtResult.state 0 == "pass"
+    && builtins.elemAt checkAtResult.state 1 == "fail:Π codomain (Π(Int))";
 
   # -- Test 30: Certified adequacy — check and validate agree --
   certifiedAdequacy =
@@ -454,8 +502,8 @@ let
       good = { fst = 5; snd = true; };
       bad = { fst = -1; snd = true; };
     in
-      (types.check PosInt good) == (allPassHandle (PosInt.validate good)).state
-      && (types.check PosInt bad) == (allPassHandle (PosInt.validate bad)).state;
+    (types.check PosInt good) == (validationPassHandle (PosInt.validate good)).state
+    && (types.check PosInt bad) == (validationPassHandle (PosInt.validate bad)).state;
 
   # -- Test 31: DepRecord adequacy — check and validate agree --
   depRecordAdequacy =
@@ -467,13 +515,13 @@ let
       good = { fst = 42; snd = "hello"; };
       bad = { fst = "nope"; snd = "hello"; };
     in
-      (types.check recT good) == (allPassHandle (recT.validate good)).state
-      && (types.check recT bad) == (allPassHandle (recT.validate bad)).state;
+    (types.check recT good) == (validationPassHandle (recT.validate good)).state
+    && (types.check recT bad) == (validationPassHandle (recT.validate bad)).state;
 
   # -- Test 32: Primitive (Int) adequacy — auto-derived validate --
   primitiveAdequacy =
-    (types.check types.Int 42) == (allPassHandle (types.Int.validate 42)).state
-    && (types.check types.Int "bad") == (allPassHandle (types.Int.validate "bad")).state;
+    (types.check types.Int 42) == (validationPassHandle (types.Int.validate 42)).state
+    && (types.check types.Int "bad") == (validationPassHandle (types.Int.validate "bad")).state;
 
   # -- Test 33: Vector (Pi-based) adequacy — auto-derived validate --
   vectorAdequacy =
@@ -482,8 +530,8 @@ let
       good = n: builtins.genList (i: i) n;
       bad = 42;
     in
-      (types.check vecFamily good) == (allPassHandle (vecFamily.validate good)).state
-      && (types.check vecFamily bad) == (allPassHandle (vecFamily.validate bad)).state;
+    (types.check vecFamily good) == (validationPassHandle (vecFamily.validate good)).state
+    && (types.check vecFamily bad) == (validationPassHandle (vecFamily.validate bad)).state;
 
   # ===========================================================================
   # EXHAUSTIVE EDGE-CASE TESTS
@@ -493,48 +541,58 @@ let
   sigmaValidateEmpty =
     let
       sigT = types.Sigma { fst = types.Int; snd = _: types.String; universe = 0; };
-    in (allPassHandle (sigT.validate {})).state == false;
+    in
+    (validationPassHandle (sigT.validate { })).state == false;
 
   # -- Test 35: Sigma.validate on {fst=1} (missing snd) --
   sigmaValidateMissingSnd =
     let
       sigT = types.Sigma { fst = types.Int; snd = _: types.String; universe = 0; };
-    in (allPassHandle (sigT.validate { fst = 1; })).state == false;
+    in
+    (validationPassHandle (sigT.validate { fst = 1; })).state == false;
 
   # -- Test 36: Sigma.validate on {snd=1} (missing fst) --
   sigmaValidateMissingFst =
     let
       sigT = types.Sigma { fst = types.Int; snd = _: types.String; universe = 0; };
-    in (allPassHandle (sigT.validate { snd = 1; })).state == false;
+    in
+    (validationPassHandle (sigT.validate { snd = 1; })).state == false;
 
   # -- Test 37: Sigma.validate wrong snd through collecting handler --
   # Deep recursive validation: snd type's own validate produces the context
   sigmaValidateWrongSnd =
     let
       sigT = types.Sigma { fst = types.Int; snd = _: types.Int; universe = 0; };
-      result = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [param.context]; };
-        state = [];
-      } (sigT.validate { fst = 1; snd = "wrong"; });
+      result = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else { resume = false; state = state ++ [ param.context ]; };
+          state = [ ];
+        }
+        (sigT.validate { fst = 1; snd = "wrong"; });
     in
-      builtins.length result.state == 1
-      && builtins.head result.state == "Int";
+    builtins.length result.state == 1
+    && builtins.head result.state == "Int";
 
   # -- Test 38: Pi.checkAt domain failure — strict handler throws --
   piCheckAtDomainFailure =
     let
       piT = types.Pi { domain = types.Int; codomain = _: types.Int; universe = 0; };
       # Force .value to trigger trampoline execution (tryEval only evals to WHNF)
-      result = builtins.tryEval ((fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else builtins.throw "Type error: ${param.context}";
-      } (piT.checkAt (x: x * 2) "not-int")).value);
-    in !result.success;
+      result = builtins.tryEval (
+        (fx.handle
+          {
+            handlers.typeCheck = { param, state }:
+              if param.type.check param.value
+              then { resume = true; inherit state; }
+              else builtins.throw "Type error: ${param.context}";
+          }
+          (piT.checkAt (x: x * 2) "not-int")).value
+      );
+    in
+      !result.success;
 
   # -- Test 39: certifyE with crashing predicate — caught by tryEval guard --
   certifyECrashingPredicate =
@@ -544,17 +602,19 @@ let
         predicate = _: builtins.throw "crash";
         name = "CrashType";
       };
-      result = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [param.context]; };
-        state = [];
-      } (CrashType.certifyE 5);
+      result = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else { resume = false; state = state ++ [ param.context ]; };
+          state = [ ];
+        }
+        (CrashType.certifyE 5);
     in
-      # Base passes (5 is Int), predicate crash caught → proof check fails
-      builtins.length result.state == 1
-      && builtins.head result.state == "Certified predicate (CrashType)";
+    # Base passes (5 is Int), predicate crash caught → proof check fails
+    builtins.length result.state == 1
+    && builtins.head result.state == "Certified predicate (CrashType)";
 
   # -- Test 40: certifyE with wrong base type --
   # certifyE short-circuits on base failure: predicate is never evaluated
@@ -566,17 +626,19 @@ let
         predicate = x: builtins.isInt x && x > 0;
         name = "PosInt";
       };
-      result = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [param.context]; };
-        state = [];
-      } (PosInt.certifyE "not-int");
+      result = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else { resume = false; state = state ++ [ param.context ]; };
+          state = [ ];
+        }
+        (PosInt.certifyE "not-int");
     in
-      # Base fails → short-circuit, predicate never evaluated
-      builtins.length result.state == 1
-      && builtins.elemAt result.state 0 == "Int";
+    # Base fails → short-circuit, predicate never evaluated
+    builtins.length result.state == 1
+    && builtins.elemAt result.state 0 == "Int";
 
   # -- Test 41: DepRecord.validate non-attrset --
   depRecordValidateNonAttrset =
@@ -585,7 +647,8 @@ let
         { name = "n"; type = types.Int; }
         { name = "s"; type = types.String; }
       ];
-    in (allPassHandle (recT.validate 42)).state == false;
+    in
+    (validationPassHandle (recT.validate 42)).state == false;
 
   # -- Test 42: DepRecord.validate missing field --
   depRecordValidateMissingField =
@@ -594,7 +657,8 @@ let
         { name = "n"; type = types.Int; }
         { name = "s"; type = types.String; }
       ];
-    in (allPassHandle (recT.validate { fst = 42; })).state == false;
+    in
+    (validationPassHandle (recT.validate { fst = 42; })).state == false;
 
   # -- Test 43: DepRecord.validate wrong field types --
   # DepRecord inherits Sigma's short-circuit: when fst fails, snd type
@@ -605,38 +669,44 @@ let
         { name = "n"; type = types.Int; }
         { name = "s"; type = types.String; }
       ];
-      result = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [param.context]; };
-        state = [];
-      } (recT.validate { fst = "wrong"; snd = 42; });
+      result = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else { resume = false; state = state ++ [ param.context ]; };
+          state = [ ];
+        }
+        (recT.validate { fst = "wrong"; snd = 42; });
     in
-      # fst fails → short-circuit, snd type family never evaluated
-      builtins.length result.state == 1;
+    # fst fails → short-circuit, snd type family never evaluated
+    builtins.length result.state == 1;
 
   # -- Test 44: pairE through handlers — success and failure --
   pairEThroughHandlers =
     let
       sigT = types.Sigma { fst = types.Int; snd = _: types.String; universe = 0; };
-      goodResult = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else builtins.throw "Type error: ${param.context}";
-      } (sigT.pairE 42 "hello");
-      badResult = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [param.context]; };
-        state = [];
-      } (sigT.pairE 42 99);
+      goodResult = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else builtins.throw "Type error: ${param.context}";
+        }
+        (sigT.pairE 42 "hello");
+      badResult = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else { resume = false; state = state ++ [ param.context ]; };
+          state = [ ];
+        }
+        (sigT.pairE 42 99);
     in
-      goodResult.value == { fst = 42; snd = "hello"; }
-      && builtins.length badResult.state == 1
-      && builtins.head badResult.state == "String";
+    goodResult.value == { fst = 42; snd = "hello"; }
+    && builtins.length badResult.state == 1
+    && builtins.head badResult.state == "String";
 
   # -- Test 45: Pi compose + checkAt interaction --
   composeCheckAt =
@@ -645,13 +715,13 @@ let
       piG = types.Pi { domain = types.String; codomain = _: types.Int; name = "g"; universe = 0; };
       composed = piF.compose toString piG;
       comp = composed.checkAt (x: builtins.stringLength (toString x)) 42;
-      result = allPassHandle comp;
+      result = validationPassHandle comp;
     in
-      composed.name == "compose(f, g)"
-      && composed.domain.name == "Int"
-      && (composed.apply 42).name == "Int"
-      && result.state == true
-      && result.value == 2;
+    composed.name == "compose(f, g)"
+    && composed.domain.name == "Int"
+    && (composed.apply 42).name == "Int"
+    && result.state == true
+    && result.value == 2;
 
   # -- Test 46: Handler diversity — Sigma through strict/collecting/logging --
   # Under fail-only emission, only failing components emit. With
@@ -664,37 +734,45 @@ let
       comp = sigT.validate bad;
 
       # Strict: throws on snd failure (force .value — tryEval only evals to WHNF)
-      strictFails = !(builtins.tryEval ((fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else builtins.throw "Type error: ${param.context}";
-      } comp).value)).success;
+      strictFails = !(builtins.tryEval (
+        (fx.handle
+          {
+            handlers.typeCheck = { param, state }:
+              if param.type.check param.value
+              then { resume = true; inherit state; }
+              else builtins.throw "Type error: ${param.context}";
+          }
+          comp).value
+      )).success;
 
       # Collecting: gathers snd error
-      collectResult = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [param.context]; };
-        state = [];
-      } comp;
+      collectResult = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else { resume = false; state = state ++ [ param.context ]; };
+          state = [ ];
+        }
+        comp;
 
       # Logging: records every emitted event. Under fail-only, that's
       # exactly the snd failure.
-      logResult = fx.handle {
-        handlers.typeCheck = { param, state }: {
-          resume = param.type.check param.value;
-          state = state ++ [{ context = param.context; passed = param.type.check param.value; }];
-        };
-        state = [];
-      } comp;
+      logResult = fx.handle
+        {
+          handlers.typeCheck = { param, state }: {
+            resume = param.type.check param.value;
+            state = state ++ [{ context = param.context; passed = param.type.check param.value; }];
+          };
+          state = [ ];
+        }
+        comp;
     in
-      strictFails
-      && builtins.length collectResult.state == 1
-      && builtins.head collectResult.state == "String"
-      && builtins.length logResult.state == 1
-      && (builtins.head logResult.state).passed == false;
+    strictFails
+    && builtins.length collectResult.state == 1
+    && builtins.head collectResult.state == "String"
+    && builtins.length logResult.state == 1
+    && (builtins.head logResult.state).passed == false;
 
   # -- Test 47: Sigma short-circuit guards crash path --
   # The snd type family crashes on non-int fst. Without short-circuit,
@@ -705,7 +783,7 @@ let
         fst = types.Int;
         # Type family that CRASHES on non-int fst (arithmetic on string)
         snd = n: types.mkType {
-          name = "Items[${toString (n + 1)}]";  # n + 1 crashes if n is string
+          name = "Items[${toString (n + 1)}]"; # n + 1 crashes if n is string
           kernelType = H.any;
           guard = v: builtins.isList v && builtins.length v == n + 1;
         };
@@ -713,8 +791,9 @@ let
       };
       # fst = "bad" is wrong type. Without short-circuit, snd "bad" would
       # crash at "bad" + 1. With short-circuit, it's never evaluated.
-      result = allPassHandle (sigT.validate { fst = "bad"; snd = [1]; });
-    in result.state == false;
+      result = validationPassHandle (sigT.validate { fst = "bad"; snd = [ 1 ]; });
+    in
+    result.state == false;
 
   # -- Test 48: Sigma adequacy with wrong fst (short-circuit path) --
   sigmaAdequacyWrongFst =
@@ -722,29 +801,31 @@ let
       sigT = types.Sigma { fst = types.Int; snd = _: types.String; universe = 0; };
       badFst = { fst = "wrong"; snd = "hello"; };
     in
-      # check short-circuits via &&, validate short-circuits via fstPassed==false
+    # check short-circuits via &&, validate short-circuits via fstPassed==false
       # Both return false — adequacy holds on the short-circuit path.
-      (types.check sigT badFst) == (allPassHandle (sigT.validate badFst)).state;
+    (types.check sigT badFst) == (validationPassHandle (sigT.validate badFst)).state;
 
   # -- Test 49: Pi.checkAt short-circuit on domain failure --
   piCheckAtShortCircuit =
     let
       piT = types.Pi { domain = types.Int; codomain = _: types.Int; universe = 0; };
       # f that crashes on non-int arg
-      crashF = x: x + 1;  # "str" + 1 would crash
-      result = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [param.context]; };
-        state = [];
-      } (piT.checkAt crashF "not-int");
+      crashF = x: x + 1; # "str" + 1 would crash
+      result = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else { resume = false; state = state ++ [ param.context ]; };
+          state = [ ];
+        }
+        (piT.checkAt crashF "not-int");
     in
-      # Domain fails → short-circuit, f("not-int") never evaluated
-      builtins.length result.state == 1
-      && builtins.head result.state == "Π domain (Π(Int))"
-      # Result is null sentinel (f was never applied)
-      && result.value == null;
+    # Domain fails → short-circuit, f("not-int") never evaluated
+    builtins.length result.state == 1
+    && builtins.head result.state == "Π domain (Π(Int))"
+    # Result is null sentinel (f was never applied)
+    && result.value == null;
 
   # -- Test 50: Universe trust boundary — typeAt guards missing fields --
   universeTrustBoundary =
@@ -753,12 +834,12 @@ let
       fakeNoKernel = { _tag = "Type"; name = "fake"; check = _: true; universe = 0; };
       wellFormed = { _tag = "Type"; name = "fake"; check = _: true; universe = 0; _kernel = H.nat; };
     in
-      # Missing universe → rejected by guard
-      !(types.check types.Type_0 fakeNoUniverse)
-      # Missing _kernel → rejected by kernel (can't elaborate for U)
-      && !(types.check types.Type_0 fakeNoKernel)
-      # Well-formed fake type → accepted (kernel verifies level, guard verifies universe)
-      && types.check types.Type_0 wellFormed;
+    # Missing universe → rejected by guard
+    !(types.check types.Type_0 fakeNoUniverse)
+    # Missing _kernel → rejected by kernel (can't elaborate for U)
+    && !(types.check types.Type_0 fakeNoKernel)
+    # Well-formed fake type → accepted (kernel verifies level, guard verifies universe)
+    && types.check types.Type_0 wellFormed;
 
   # -- Test 51: ListOf validate is effectful when an element fails --
   # Walker contract: per-element checks are predicate-based; typeCheck
@@ -768,20 +849,23 @@ let
     let
       IntT = types.mkType { name = "Int"; kernelType = H.int_; };
       listT = types.ListOf IntT;
-    in !(fx.isPure (listT.validate [1 "bad" 3]));
+    in
+      !(fx.isPure (listT.validate [ 1 "bad" 3 ]));
 
   # -- Test 52: ListOf collecting handler gets per-element errors with indices --
   listOfCollectingPerElement =
     let
       IntT = types.mkType { name = "Int"; kernelType = H.int_; };
       listT = types.ListOf IntT;
-      result = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [{ inherit (param) path; }]; };
-        state = [];
-      } (listT.validate [1 "bad" 3 "worse"]);
+      result = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else { resume = false; state = state ++ [{ inherit (param) path; }]; };
+          state = [ ];
+        }
+        (listT.validate [ 1 "bad" 3 "worse" ]);
       # Inspect path segments via tag/idx instead of constructor equality.
       # User-facing pattern: the typeCheck handler reads `param.path` and
       # asserts shapes without depending on the internal `diag.positions`
@@ -789,18 +873,19 @@ let
       seg0 = builtins.elemAt (builtins.elemAt result.state 0).path 0;
       seg1 = builtins.elemAt (builtins.elemAt result.state 1).path 0;
     in
-      # Two errors: indices 1 and 3 — path carries the structural descent
+    # Two errors: indices 1 and 3 — path carries the structural descent
       # as a list of Position records.
-      builtins.length result.state == 2
-      && seg0.tag == "Elem" && seg0.idx == 1
-      && seg1.tag == "Elem" && seg1.idx == 3;
+    builtins.length result.state == 2
+    && seg0.tag == "Elem" && seg0.idx == 1
+    && seg1.tag == "Elem" && seg1.idx == 3;
 
   # -- Test 53: ListOf empty list validate returns pure --
   listOfEmptyValidatePure =
     let
       IntT = types.mkType { name = "Int"; kernelType = H.int_; };
       listT = types.ListOf IntT;
-    in fx.isPure (listT.validate []);
+    in
+    fx.isPure (listT.validate [ ]);
 
   # -- Test 54: ListOf non-list input totality --
   listOfNonListTotality =
@@ -808,8 +893,9 @@ let
       IntT = types.mkType { name = "Int"; kernelType = H.int_; };
       listT = types.ListOf IntT;
       # Non-list goes through effect system, doesn't crash
-    in !(fx.isPure (listT.validate 42))
-       && (listT.validate 42).effect.name == "typeCheck";
+    in
+    !(fx.isPure (listT.validate 42))
+    && (listT.validate 42).effect.name == "typeCheck";
 
   # -- Test 55: ListOf adequacy (check agrees with all-pass handler) --
   listOfAdequacy =
@@ -817,7 +903,7 @@ let
       IntT = types.mkType { name = "Int"; kernelType = H.int_; };
       listT = types.ListOf IntT;
       # All-pass handler: state = state AND check-passed
-      allPassHandler = {
+      validationPassHandler = {
         typeCheck = { param, state }:
           let passed = param.type.check param.value;
           in { resume = passed; state = state && passed; };
@@ -825,13 +911,14 @@ let
       testAdequacy = v:
         let
           checkResult = listT.check v;
-          handleResult = fx.run (listT.validate v) allPassHandler true;
-        in checkResult == handleResult.state;
+          handleResult = fx.run (listT.validate v) validationPassHandler true;
+        in
+        checkResult == handleResult.state;
     in
-      testAdequacy [1 2 3]       # all pass
-      && testAdequacy [1 "x" 3]  # mixed
-      && testAdequacy []          # empty
-      && testAdequacy "not-list"; # wrong type
+    testAdequacy [ 1 2 3 ]       # all pass
+    && testAdequacy [ 1 "x" 3 ]  # mixed
+    && testAdequacy [ ]          # empty
+    && testAdequacy "not-list"; # wrong type
 
   # ===========================================================================
   # DEEP RECURSIVE VALIDATION TESTS
@@ -851,43 +938,50 @@ let
         snd = _: types.String;
         universe = 0;
       };
-      result = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [param.path]; };
-        state = [];
-      } (sigT.validate { fst = [1 "bad" 3]; snd = "hello"; });
+      result = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else { resume = false; state = state ++ [ param.path ]; };
+          state = [ ];
+        }
+        (sigT.validate { fst = [ 1 "bad" 3 ]; snd = "hello"; });
     in
-      # Per-element blame: only index 1 fails, fst ListOf fails overall → snd short-circuited
-      builtins.length result.state == 1
-      && fx.types.generic.path.renderAll (builtins.head result.state) == "Σ.fst[1]";
+    # Per-element blame: only index 1 fails, fst ListOf fails overall → snd short-circuited
+    builtins.length result.state == 1
+    && fx.types.generic.path.renderAll (builtins.head result.state) == "Σ.fst[1]";
 
   # -- Test 57: DepRecord with dependent ListOf — per-element blame through nested Sigma --
   depRecordDeepBlame =
     let
       recT = types.DepRecord [
         { name = "mode"; type = types.Bool; }
-        { name = "items"; type = self:
+        {
+          name = "items";
+          type = self:
             if self.mode
             then types.ListOf types.Int
-            else types.ListOf types.String; }
+            else types.ListOf types.String;
+        }
       ];
-      bad = { mode = true; items = [1 "oops" 3]; };
+      bad = { mode = true; items = [ 1 "oops" 3 ]; };
       packed = recT.pack bad;
-      result = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [param.path]; };
-        state = [];
-      } (recT.validate packed);
+      result = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else { resume = false; state = state ++ [ param.path ]; };
+          state = [ ];
+        }
+        (recT.validate packed);
     in
-      # Bool passes (no error), ListOf Int decomposes: index 1 fails.
+    # Bool passes (no error), ListOf Int decomposes: index 1 fails.
       # DepRecord is a Sigma-of-Sigma chain, so the path picks up a
       # structural tag for the nested position before entering the list.
-      builtins.length result.state == 1
-      && (lib.last (builtins.head result.state)).segment == "[1]";
+    builtins.length result.state == 1
+    && (lib.last (builtins.head result.state)).segment == "[1]";
 
   # -- Test 58: Adequacy holds for Sigma with compound sub-types --
   sigmaDeepAdequacy =
@@ -897,11 +991,11 @@ let
         snd = _: types.String;
         universe = 0;
       };
-      good = { fst = [1 2 3]; snd = "hello"; };
-      bad = { fst = [1 "x" 3]; snd = "hello"; };
+      good = { fst = [ 1 2 3 ]; snd = "hello"; };
+      bad = { fst = [ 1 "x" 3 ]; snd = "hello"; };
     in
-      (types.check sigT good) == (allPassHandle (sigT.validate good)).state
-      && (types.check sigT bad) == (allPassHandle (sigT.validate bad)).state;
+    (types.check sigT good) == (validationPassHandle (sigT.validate good)).state
+    && (types.check sigT bad) == (validationPassHandle (sigT.validate bad)).state;
 
   # -- Test 59: Deep validation + short-circuit interaction --
   # fst is compound (ListOf), snd type family crashes on wrong-typed fst.
@@ -919,22 +1013,24 @@ let
         universe = 0;
       };
       # fst = "not-a-list": ListOf validates (1 effect, fails), short-circuit
-      nonListResult = allPassHandle (sigT.validate { fst = "not-a-list"; snd = null; });
+      nonListResult = validationPassHandle (sigT.validate { fst = "not-a-list"; snd = null; });
       # fst = [1 "bad"]: ListOf validates per-element, short-circuits before snd
-      mixedResult = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; state = state ++ [param.path]; }
-          else { resume = false; state = state ++ [param.path]; };
-        state = [];
-      } (sigT.validate { fst = [1 "bad"]; snd = null; });
+      mixedResult = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; state = state ++ [ param.path ]; }
+            else { resume = false; state = state ++ [ param.path ]; };
+          state = [ ];
+        }
+        (sigT.validate { fst = [ 1 "bad" ]; snd = null; });
     in
-      nonListResult.state == false
-      # Walker contract: typeCheck emits per failing element only; the
-      # passing element at index 0 produces no event. Short-circuit
-      # still holds: snd is never reached (no `Σ.snd*` path in state).
-      && builtins.length mixedResult.state == 1
-      && fx.types.generic.path.renderAll (builtins.head mixedResult.state) == "Σ.fst[1]";
+    nonListResult.state == false
+    # Walker contract: typeCheck emits per failing element only; the
+    # passing element at index 0 produces no event. Short-circuit
+    # still holds: snd is never reached (no `Σ.snd*` path in state).
+    && builtins.length mixedResult.state == 1
+    && fx.types.generic.path.renderAll (builtins.head mixedResult.state) == "Σ.fst[1]";
 
   # -- Test 60: pairE with compound types gets per-element blame --
   pairEDeepBlame =
@@ -944,22 +1040,24 @@ let
         snd = _: types.String;
         universe = 0;
       };
-      badResult = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [param.path]; };
-        state = [];
-      } (sigT.pairE [1 "bad" 3] "hello");
-      goodResult = allPassHandle (sigT.pairE [1 2 3] "hello");
+      badResult = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else { resume = false; state = state ++ [ param.path ]; };
+          state = [ ];
+        }
+        (sigT.pairE [ 1 "bad" 3 ] "hello");
+      goodResult = validationPassHandle (sigT.pairE [ 1 2 3 ] "hello");
     in
-      # Bad fst: per-element blame flows through pairE, snd short-circuited.
+    # Bad fst: per-element blame flows through pairE, snd short-circuited.
       # pairE calls fst.validate (1-arg → empty path root), so the ListOf
       # element index is the full path.
-      builtins.length badResult.state == 1
-      && fx.types.generic.path.renderAll (builtins.head badResult.state) == "[1]"
-      # Good: all pass, adequacy holds
-      && goodResult.state == true;
+    builtins.length badResult.state == 1
+    && fx.types.generic.path.renderAll (builtins.head badResult.state) == "[1]"
+    # Good: all pass, adequacy holds
+    && goodResult.state == true;
 
   # -- Test 61: certifyE with compound base gets deep blame --
   certifyEDeepBlame =
@@ -970,127 +1068,95 @@ let
         predicate = lst: builtins.length lst > 0;
         name = "NonEmptyIntList";
       };
-      result = fx.handle {
-        handlers.typeCheck = { param, state }:
-          if param.type.check param.value
-          then { resume = true; inherit state; }
-          else { resume = false; state = state ++ [param.path]; };
-        state = [];
-      } (CertifiedList.certifyE [1 "bad" 3]);
+      result = fx.handle
+        {
+          handlers.typeCheck = { param, state }:
+            if param.type.check param.value
+            then { resume = true; inherit state; }
+            else { resume = false; state = state ++ [ param.path ]; };
+          state = [ ];
+        }
+        (CertifiedList.certifyE [ 1 "bad" 3 ]);
     in
-      # Per-element blame from ListOf flows through certifyE.
+    # Per-element blame from ListOf flows through certifyE.
       # Base fails at index 1 → short-circuit, predicate never evaluated.
       # certifyE delegates to base.validate (1-arg), so the ListOf element
       # index is the full path.
-      builtins.length result.state == 1
-      && fx.types.generic.path.renderAll (builtins.head result.state) == "[1]";
+    builtins.length result.state == 1
+    && fx.types.generic.path.renderAll (builtins.head result.state) == "[1]";
 
   # -- Test 62: Cross-type parametric adequacy --
-  # check and allPassHandle agree across multiple type constructors and values
+  # check and validationPassHandle agree across multiple type constructors and values
   crossTypeAdequacy =
     let
       testAdequacy = type: value:
         let
           checkResult = types.check type value;
-          handleResult = allPassHandle (type.validate value);
-        in checkResult == handleResult.state;
+          handleResult = validationPassHandle (type.validate value);
+        in
+        checkResult == handleResult.state;
     in
-      # Primitives
-      testAdequacy types.Int 42
-      && testAdequacy types.Int "bad"
-      && testAdequacy types.String "hello"
-      && testAdequacy types.String 42
-      && testAdequacy types.Bool true
-      && testAdequacy types.Bool "bad"
-      # Compound
-      && testAdequacy (types.ListOf types.Int) [1 2 3]
-      && testAdequacy (types.ListOf types.Int) [1 "x" 3]
-      && testAdequacy (types.Maybe types.Int) null
-      && testAdequacy (types.Maybe types.Int) 42
-      && testAdequacy (types.Maybe types.Int) "bad"
-      # Refinement
-      && testAdequacy (types.refined "Pos" types.Int (x: x > 0)) 5
-      && testAdequacy (types.refined "Pos" types.Int (x: x > 0)) (0 - 1)
-      # Sigma
-      && testAdequacy (types.Sigma { fst = types.Bool; snd = _: types.Int; universe = 0; }) { fst = true; snd = 1; }
-      && testAdequacy (types.Sigma { fst = types.Bool; snd = _: types.Int; universe = 0; }) { fst = "bad"; snd = 1; };
+    # Primitives
+    testAdequacy types.Int 42
+    && testAdequacy types.Int "bad"
+    && testAdequacy types.String "hello"
+    && testAdequacy types.String 42
+    && testAdequacy types.Bool true
+    && testAdequacy types.Bool "bad"
+    # Compound
+    && testAdequacy (types.ListOf types.Int) [ 1 2 3 ]
+    && testAdequacy (types.ListOf types.Int) [ 1 "x" 3 ]
+    && testAdequacy (types.Maybe types.Int) null
+    && testAdequacy (types.Maybe types.Int) 42
+    && testAdequacy (types.Maybe types.Int) "bad"
+    # Refinement
+    && testAdequacy (types.refined "Pos" types.Int (x: x > 0)) 5
+    && testAdequacy (types.refined "Pos" types.Int (x: x > 0)) (0 - 1)
+    # Sigma
+    && testAdequacy (types.Sigma { fst = types.Bool; snd = _: types.Int; universe = 0; }) { fst = true; snd = 1; }
+    && testAdequacy (types.Sigma { fst = types.Bool; snd = _: types.Int; universe = 0; }) { fst = "bad"; snd = 1; };
 
-in {
+in
+{
   inherit validPortTest vectorTest universeTest
-          recordRefinementTest maybeTest depRecordTest
-          makeThrowsTest variantTest predicateTest universeSafetyTest;
+    recordRefinementTest maybeTest depRecordTest
+    makeThrowsTest variantTest predicateTest universeSafetyTest;
 
   # Effectful type checking tests
   inherit piCheckAtIsEffectful
-          strictHandlerPassesTest collectingHandlerTest loggingHandlerTest
-          sameCompDifferentHandlerTest
-          sigmaValidateIsEffectful sigmaStrictHandlerTest
-          certifiedCertifyETest certifiedCertifyECollectingTest certifiedCertifyEFailTest;
+    strictHandlerPassesTest collectingHandlerTest loggingHandlerTest
+    sameCompDifferentHandlerTest
+    sigmaValidateIsEffectful sigmaStrictHandlerTest
+    certifiedCertifyETest certifiedCertifyECollectingTest certifiedCertifyEFailTest;
 
   # Semantic unification tests
   inherit vectorIsEffectful vectorCheckAtStrictTest
-          depRecordIsEffectful depRecordValidateStrictTest
-          foundationValidateIsEffectful;
+    depRecordIsEffectful depRecordValidateStrictTest
+    foundationValidateIsEffectful;
 
   # Adequacy and contract tests
   inherit piValidateIsGuard piAdequacy sigmaAdequacy piCheckAtDiffersFromValidate
-          certifiedAdequacy depRecordAdequacy primitiveAdequacy vectorAdequacy;
+    certifiedAdequacy depRecordAdequacy primitiveAdequacy vectorAdequacy;
 
   # Exhaustive edge-case tests
   inherit sigmaValidateEmpty sigmaValidateMissingSnd sigmaValidateMissingFst
-          sigmaValidateWrongSnd
-          piCheckAtDomainFailure
-          certifyECrashingPredicate certifyEWrongBase
-          depRecordValidateNonAttrset depRecordValidateMissingField depRecordValidateWrongTypes
-          pairEThroughHandlers composeCheckAt
-          sigmaHandlerDiversity
-          sigmaShortCircuitGuardsCrash sigmaAdequacyWrongFst piCheckAtShortCircuit
-          universeTrustBoundary;
+    sigmaValidateWrongSnd
+    piCheckAtDomainFailure
+    certifyECrashingPredicate certifyEWrongBase
+    depRecordValidateNonAttrset depRecordValidateMissingField depRecordValidateWrongTypes
+    pairEThroughHandlers composeCheckAt
+    sigmaHandlerDiversity
+    sigmaShortCircuitGuardsCrash sigmaAdequacyWrongFst piCheckAtShortCircuit
+    universeTrustBoundary;
 
   # ListOf effectful verify tests
   inherit listOfValidateIsEffectful listOfCollectingPerElement
-          listOfEmptyValidatePure listOfNonListTotality listOfAdequacy;
+    listOfEmptyValidatePure listOfNonListTotality listOfAdequacy;
 
   # Deep recursive validation tests
   inherit sigmaDeepCollecting depRecordDeepBlame sigmaDeepAdequacy
-          sigmaDeepShortCircuit pairEDeepBlame certifyEDeepBlame;
+    sigmaDeepShortCircuit pairEDeepBlame certifyEDeepBlame;
 
   # Cross-type parametric adequacy
   inherit crossTypeAdequacy;
-
-  allPass = validPortTest && vectorTest && universeTest
-            && recordRefinementTest && maybeTest && depRecordTest
-            && makeThrowsTest && variantTest && predicateTest
-            && universeSafetyTest
-            && piCheckAtIsEffectful
-            && strictHandlerPassesTest && collectingHandlerTest && loggingHandlerTest
-            && sameCompDifferentHandlerTest
-            && sigmaValidateIsEffectful && sigmaStrictHandlerTest
-            && certifiedCertifyETest && certifiedCertifyECollectingTest
-            && certifiedCertifyEFailTest
-            && vectorIsEffectful && vectorCheckAtStrictTest
-            && depRecordIsEffectful && depRecordValidateStrictTest
-            && foundationValidateIsEffectful
-            && piValidateIsGuard && piAdequacy && sigmaAdequacy
-            && piCheckAtDiffersFromValidate
-            && certifiedAdequacy && depRecordAdequacy
-            && primitiveAdequacy && vectorAdequacy
-            && sigmaValidateEmpty && sigmaValidateMissingSnd
-            && sigmaValidateMissingFst && sigmaValidateWrongSnd
-            && piCheckAtDomainFailure
-            && certifyECrashingPredicate && certifyEWrongBase
-            && depRecordValidateNonAttrset && depRecordValidateMissingField
-            && depRecordValidateWrongTypes
-            && pairEThroughHandlers && composeCheckAt
-            && sigmaHandlerDiversity
-            && sigmaShortCircuitGuardsCrash && sigmaAdequacyWrongFst
-            && piCheckAtShortCircuit
-            && universeTrustBoundary
-            && listOfValidateIsEffectful && listOfCollectingPerElement
-            && listOfEmptyValidatePure && listOfNonListTotality
-            && listOfAdequacy
-            && sigmaDeepCollecting && depRecordDeepBlame
-            && sigmaDeepAdequacy && sigmaDeepShortCircuit
-            && pairEDeepBlame && certifyEDeepBlame
-            && crossTypeAdequacy;
 }

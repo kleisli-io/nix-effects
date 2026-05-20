@@ -15,19 +15,23 @@ let
   # the check pass walks the resulting `desc-con` chain of length n.
   consChain = n:
     builtins.foldl'
-      (acc: _: H.cons H.nat H.zero acc)
-      (H.nil H.nat)
+      (acc: _: H.cons H.zero acc)
+      H.nil
       (builtins.genList (x: x) n);
 
   # Datatype with `n` data fields on a single constructor. Each field
   # is a `field "fI" H.nat` slot; checking a constructor application
   # forces the kernel to validate every payload position.
   bigCtorDT = n:
-    let fields = builtins.genList
-          (i: H.field "f${toString i}" H.nat) n;
-    in H.datatype "BigCtor" [ (H.con "mk" fields) ];
+    let
+      fields = builtins.genList
+        (i: H.field "f${toString i}" H.nat)
+        n;
+    in
+    H.datatype "BigCtor" [ (H.con "mk" fields) ];
 
-in {
+in
+{
   # 5000-deep `succ^5000 zero` checked at `Nat`. Forces the checker
   # over a desc-con tree whose recursion depth is dominated by
   # successive Nat constructor checks.
@@ -41,8 +45,10 @@ in {
   # the constructor application against the type forces 20 nested
   # field checks plus the surrounding mu walk.
   macro-field =
-    let DT = bigCtorDT 20;
-        args = builtins.genList (_: H.zero) 20;
-        applied = builtins.foldl' (acc: a: H.app acc a) DT.mk args;
-    in (H.checkHoas DT.T applied).tag;
+    let
+      DT = bigCtorDT 20;
+      args = builtins.genList (_: H.zero) 20;
+      applied = builtins.foldl' (acc: a: H.app acc a) DT.mk args;
+    in
+    (H.checkHoas DT.T applied).tag;
 }

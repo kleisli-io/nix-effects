@@ -19,19 +19,25 @@
 #   fail_cpu     → open_cpu.
 #   warn_cpu     → open_warn.
 #   (workload not in current.results) → unmeasured (bench regressed structurally).
-{ benchPath, baselinePath, currentPath,
-  budgetsPath ? null, trailersPath, since ? "<range>" }:
+{ benchPath
+, baselinePath
+, currentPath
+, budgetsPath ? null
+, trailersPath
+, since ? "<range>"
+}:
 
 let
   bench = import benchPath { };
 
   baseline = builtins.fromJSON (builtins.readFile baselinePath);
-  current  = builtins.fromJSON (builtins.readFile currentPath);
+  current = builtins.fromJSON (builtins.readFile currentPath);
   trailers = builtins.fromJSON (builtins.readFile trailersPath);
 
   defaultBudgets = { cpu = { }; allocTolerancePermille = 5; };
-  budgets = if budgetsPath == null then defaultBudgets
-            else builtins.fromTOML (builtins.readFile budgetsPath);
+  budgets =
+    if budgetsPath == null then defaultBudgets
+    else builtins.fromTOML (builtins.readFile budgetsPath);
 
   # Sanity (mirrors finalize-gate): a workload can be either cpu-gated
   # with a budget or declared noise-limited — not both.
@@ -61,7 +67,8 @@ let
         else if cls.status == "fail_cpu" then "open_cpu"
         else if cls.status == "warn_cpu" then "open_warn"
         else cls.status;
-    in {
+    in
+    {
       inherit (t) sha workload reason;
       inherit status;
       classification = cls;
@@ -76,7 +83,8 @@ let
     inherit entries since;
   };
 
-in {
+in
+{
   inherit entries markdown;
   pass = openCount == 0;
   openCount = openCount;

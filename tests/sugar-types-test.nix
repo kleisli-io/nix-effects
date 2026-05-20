@@ -17,9 +17,10 @@ let
         preservedAll = builtins.all (k: builtins.elem k sugKeys) origKeys;
         newKeys = lib.subtractLists origKeys sugKeys;
         onlyExpected = builtins.length newKeys == 2
-                    && builtins.elem "__functor" newKeys
-                    && builtins.elem "__toString" newKeys;
-      in preservedAll && onlyExpected;
+          && builtins.elem "__functor" newKeys
+          && builtins.elem "__toString" newKeys;
+      in
+      preservedAll && onlyExpected;
     expected = true;
   };
 
@@ -34,11 +35,13 @@ let
             sugKeys = builtins.attrNames sug';
             preserved = builtins.all (k: builtins.elem k sugKeys) origKeys;
             new = lib.subtractLists origKeys sugKeys;
-          in preserved
-             && builtins.length new == 2
-             && builtins.elem "__functor" new
-             && builtins.elem "__toString" new;
-      in builtins.all check (lib.range 0 (builtins.length primitives - 1));
+          in
+          preserved
+          && builtins.length new == 2
+          && builtins.elem "__functor" new
+          && builtins.elem "__toString" new;
+      in
+      builtins.all check (lib.range 0 (builtins.length primitives - 1));
     expected = true;
   };
 
@@ -74,7 +77,8 @@ let
         p = x: x > 0;
         sg = sug.Int p;
         dr = refined "Int?" Int p;
-      in {
+      in
+      {
         accept5 = sg.check 5 == dr.check 5;
         rejectNeg = sg.check (-1) == dr.check (-1);
         rejectStr = sg.check "hi" == dr.check "hi";
@@ -102,9 +106,11 @@ let
   universePreservation = {
     expr = builtins.all (u: u == 0)
       (map (t: t.universe) sugPrimitives
-       ++ [ (sug.Int (x: x > 0)).universe
-            (sug.Int (x: x > 0) (x: x < 10)).universe
-            (sug.String (s: builtins.stringLength s > 0)).universe ]);
+        ++ [
+        (sug.Int (x: x > 0)).universe
+        (sug.Int (x: x > 0) (x: x < 10)).universe
+        (sug.String (s: builtins.stringLength s > 0)).universe
+      ]);
     expected = true;
   };
 
@@ -133,7 +139,8 @@ let
       let
         UserInt = mkType { name = "UserInt"; kernelType = H.int_; };
         w = sug.wrap UserInt;
-      in {
+      in
+      {
         name = w.name;
         accept = w.check 42;
         reject = w.check "x";
@@ -165,7 +172,8 @@ let
       let
         r1 = Record { age = Int; };
         r2 = Record { age = sug.Int; };
-      in defEq r1 r2;
+      in
+      defEq r1 r2;
     expected = true;
   };
 
@@ -175,7 +183,8 @@ let
         p = x: x > 0;
         r1 = Record { age = refined "Int?" Int p; };
         r2 = Record { age = sug.Int p; };
-      in defEq r1 r2;
+      in
+      defEq r1 r2;
     expected = true;
   };
 
@@ -190,9 +199,10 @@ let
         ];
         lineContains = pat: s:
           builtins.any (l: builtins.match ".*${pat}.*" l != null)
-                       (lib.splitString "\n" s);
+            (lib.splitString "\n" s);
         anyFile = pat: builtins.any (lineContains pat) files;
-      in {
+      in
+      {
         diag = anyFile "fx\\.diag\\.";
         tc = anyFile "fx\\.tc\\.";
         recordVerify = anyFile "Record\\.verify";
@@ -208,22 +218,14 @@ let
 
   allTests = {
     inherit additiveKeysInt additiveKeysAllPrimitives keyValuesPreserved
-            delegationKernelEq delegationGuardEq
-            compositionCheck
-            universePreservation
-            toStringNoPred toStringOnePred toStringTwoPred toStringAllPrimitives
-            wrapUserType
-            recordStructuralIdentity recordWithRefinedField
-            noDiagImports;
+      delegationKernelEq delegationGuardEq
+      compositionCheck
+      universePreservation
+      toStringNoPred toStringOnePred toStringTwoPred toStringAllPrimitives
+      wrapUserType
+      recordStructuralIdentity recordWithRefinedField
+      noDiagImports;
   };
 
-  results = builtins.mapAttrs (_: test:
-    let actual = test.expr; in
-    { inherit actual; expected = test.expected; pass = actual == test.expected; }
-  ) allTests;
-
-  failed = lib.filterAttrs (_: r: !r.pass) results;
-
-in allTests // {
-  allPass = (builtins.length (builtins.attrNames failed)) == 0;
-}
+in
+allTests

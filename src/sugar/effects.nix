@@ -1,4 +1,4 @@
-{ fx, lib, ... }:
+{ fx, lib, api, ... }:
 
 let
   inherit (fx.binds) bindAttrs;
@@ -40,7 +40,7 @@ let
   #   do []        = x: pure x                     (identity Kleisli arrow)
   #   do steps x   = pipe (pure x) (map lift steps)
   #   kleisli f g  = do [f g]                       (when f, g are arrows)
-  do = list:
+  do_ = list:
     let
       # liftStep promotes a plain (a -> b) into a Kleisli arrow (a -> M b)
       # by inspecting the result: Computations pass through, plain values
@@ -53,18 +53,34 @@ let
     in
     x: builtins.foldl' (acc: f: bind acc f) (pure x) arrows;
 
-  letM = attrs: k: bind (bindAttrs attrs) k;
-in {
+  letM_ = attrs: k: bind (bindAttrs attrs) k;
+
+  reexport = src: name: description:
+    api.leaf {
+      inherit description;
+      value = src.${name};
+    };
+in
+{
   scope = {
-    inherit steps do letM;
-    inherit (fx.kernel) pure bind map seq pipe kleisli;
-    inherit (fx.trampoline) run handle;
-  };
+    steps = api.leaf {
+      description = "steps: sequence a list of `Comp` steps left-to-right via `bind`, returning a single composed `Comp`; each step receives the previous result, the seed is `pure null`.";
+      signature = "steps : [a -> Comp b] -> Comp b";
+      doc = ''
+        Use when only the side effects of each step matter — analogous to
+        Haskell's `sequence_`. The seed value is `pure null`, so the
+        first step's argument is `null`; discard it if the first step is
+        producer-shaped (`_: pure x`). An empty list returns `pure null`.
 
-  tests = {};
+        Prefer `do` for composable, point-free Kleisli pipelines that
+        thread values. Prefer `kleisli` when composing two Kleisli
+        arrows without an initial value, and `pipe` when threading a
+        non-monadic seed through effectful transforms.
+      '';
+      value = steps;
+    };
 
-  __docs = {
-    do = {
+    do = api.leaf {
       description = "do: build a composable Kleisli arrow `(a -> M b)` from a list of steps; plain functions `(a -> b)` are auto-lifted via `pure`, monadic functions `(a -> M b)` pass through. Apply the result to a seed to obtain a `Comp b`.";
       signature = "do : [a -> b | a -> M b] -> (a -> M b)";
       doc = ''
@@ -83,23 +99,10 @@ in {
         composition. Use `letM` when bound values are siblings rather
         than a left-to-right pipeline.
       '';
+      value = do_;
     };
-    steps = {
-      description = "steps: sequence a list of `Comp` steps left-to-right via `bind`, returning a single composed `Comp`; each step receives the previous result, the seed is `pure null`.";
-      signature = "steps : [a -> Comp b] -> Comp b";
-      doc = ''
-        Use when only the side effects of each step matter — analogous to
-        Haskell's `sequence_`. The seed value is `pure null`, so the
-        first step's argument is `null`; discard it if the first step is
-        producer-shaped (`_: pure x`). An empty list returns `pure null`.
 
-        Prefer `do` for composable, point-free Kleisli pipelines that
-        thread values. Prefer `kleisli` when composing two Kleisli
-        arrows without an initial value, and `pipe` when threading a
-        non-monadic seed through effectful transforms.
-      '';
-    };
-    letM = {
+    letM = api.leaf {
       description = "letM: `attrs`-based monadic binding — runs `bindAttrs attrs` to gather a record of results, then passes the record to continuation `k` for the next step.";
       signature = "letM : { name = Comp a } -> ({ name = a } -> Comp b) -> Comp b";
       doc = ''
@@ -114,14 +117,18 @@ in {
         left-to-right pipeline. For a single bind, plain `bind` is
         clearer.
       '';
+      value = letM_;
     };
-    pure   = { description = "Re-export of fx.kernel.pure. See fx.kernel for details."; };
-    bind   = { description = "Re-export of fx.kernel.bind. See fx.kernel for details."; };
-    map    = { description = "Re-export of fx.kernel.map. See fx.kernel for details."; };
-    seq    = { description = "Re-export of fx.kernel.seq. See fx.kernel for details."; };
-    pipe   = { description = "Re-export of fx.kernel.pipe. See fx.kernel for details."; };
-    kleisli = { description = "Re-export of fx.kernel.kleisli. See fx.kernel for details."; };
-    run    = { description = "Re-export of fx.trampoline.run. See fx.trampoline for details."; };
-    handle = { description = "Re-export of fx.trampoline.handle. See fx.trampoline for details."; };
+
+    pure = reexport fx.kernel "pure" "Re-export of fx.kernel.pure. See fx.kernel for details.";
+    bind = reexport fx.kernel "bind" "Re-export of fx.kernel.bind. See fx.kernel for details.";
+    map = reexport fx.kernel "map" "Re-export of fx.kernel.map. See fx.kernel for details.";
+    seq = reexport fx.kernel "seq" "Re-export of fx.kernel.seq. See fx.kernel for details.";
+    pipe = reexport fx.kernel "pipe" "Re-export of fx.kernel.pipe. See fx.kernel for details.";
+    kleisli = reexport fx.kernel "kleisli" "Re-export of fx.kernel.kleisli. See fx.kernel for details.";
+    run = reexport fx.trampoline "run" "Re-export of fx.trampoline.run. See fx.trampoline for details.";
+    handle = reexport fx.trampoline "handle" "Re-export of fx.trampoline.handle. See fx.trampoline for details.";
   };
+
+  tests = { };
 }

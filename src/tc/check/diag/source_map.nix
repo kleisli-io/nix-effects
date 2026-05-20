@@ -41,6 +41,7 @@ let
     else if pos.tag == "Elem" then "Elem:${toString pos.idx}"
     else if pos.tag == "Tag"  then "Tag:${pos.name}"
     else if pos.tag == "Case" then "Case:${pos.name}"
+    else if pos.tag == "DConLayer" then "DConLayer:${toString pos.layer}"
     else pos.tag;
 
   mkNode = hoas: subs:
@@ -125,6 +126,42 @@ in {
         isSourceMap;
     };
   };
+
+  __docs = {
+    sourceMap = {
+      description = "sourceMap: parallel structure threaded alongside elaborated `Tm` — back-maps a kernel `Error`'s `Position`-chain blame to the HOAS surface node that produced the offending sub-term.";
+      doc = ''
+        A SourceMap mirrors the shape of an elaborated `Tm`, carrying
+        at each node an opaque HOAS-origin reference plus a map from
+        `Position` keys to child SourceMaps. Its sole purpose is
+        back-mapping: given an error raised by the kernel during
+        `check`/`infer` — whose blame is expressed as a `Position`
+        chain threaded through `Error.children` by `bindP` — resolve
+        that chain to the HOAS surface node that produced the
+        offending sub-Tm.
+
+        Structure:
+
+        ```
+        SourceMap = {
+          _tag = "SourceMap";
+          hoas : Any | null;          # HOAS-origin reference (opaque)
+          subs : AttrSet SourceMap;   # keyed by positionKey(Position)
+        }
+        ```
+
+        Surface: constructors (`leaf`, `node`, `opaque`), descent
+        (`descend`, `descendChain`, `hoasAt`, `hoasAtError`), chain
+        extraction (`chainPositions`), key derivation (`positionKey`),
+        and the type predicate (`isSourceMap`). The key alphabet is
+        whatever `src/diag/positions.nix` emits via `positionKey`;
+        chain walking uses the same fast/slow split as
+        `src/diag/pretty.nix` (`builtins.genericClosure` beyond 500
+        steps).
+      '';
+    };
+  };
+
   tests =
     let
       P = fx.diag.positions;
@@ -196,6 +233,10 @@ in {
       "positionKey-Case" = {
         expr = positionKey (P.Case "zero");
         expected = "Case:zero";
+      };
+      "positionKey-DConLayer" = {
+        expr = positionKey (P.DConLayer 4000);
+        expected = "DConLayer:4000";
       };
 
       # -- Constructors / predicate --

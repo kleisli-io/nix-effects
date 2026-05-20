@@ -3,96 +3,102 @@
 # Specialized state for list accumulation. Provides emit/emitAll for
 # appending items, and collect for reading accumulated items.
 # Useful for building result lists incrementally through effects.
-{ fx, api, ... }:
-
+{ fx, ... }:
 let
   inherit (fx.kernel) pure bind send;
-  inherit (api) mk;
+  emit = item: send "emit" item;
 
-  emit = mk {
-    doc = ''
-      Append a single item to the accumulator.
+  emitAll = items: send "emitAll" items;
 
-      ```
-      emit : a -> Computation null
-      ```
-    '';
-    value = item: send "emit" item;
-    tests = {
-      "emit-is-impure" = {
-        expr = fx.comp.isPure (emit 42);
-        expected = false;
-      };
-      "emit-effect-name" = {
-        expr = (emit 42).effect.name;
-        expected = "emit";
-      };
-    };
+  collect = send "collect" null;
+
+  handler = {
+    emit = { param, state }: { resume = null; state = state ++ [ param ]; };
+    emitAll = { param, state }: { resume = null; state = state ++ param; };
+    collect = { state, ... }: { resume = state; inherit state; };
   };
 
-  emitAll = mk {
-    doc = ''
-      Append a list of items to the accumulator.
+in {
+  inherit emit emitAll collect handler;
 
-      ```
-      emitAll : [a] -> Computation null
-      ```
-    '';
-    value = items: send "emitAll" items;
-    tests = {
-      "emitAll-is-impure" = {
-        expr = fx.comp.isPure (emitAll [ 1 2 ]);
-        expected = false;
+
+
+  __docs = {
+    _self = {
+      description = "acc effect: incremental list building via emit/emitAll/collect with a default handler that appends to a list state.";
+      doc = "Accumulator effect: emit/emitAll/collect for incremental list building.";
+    };
+
+    emit = {
+      description = "emit: append a single item to the acc effect's accumulator; issues an impure effect request whose result is null.";
+      signature = "emit : a -> Computation null";
+      doc = ''
+        Append a single item to the accumulator. Pairs with `collect` to read
+        back all items emitted within the surrounding handled scope.
+      '';
+      tests = {
+        "emit-is-impure" = {
+          expr = fx.comp.isPure (emit 42);
+          expected = false;
+        };
+        "emit-effect-name" = {
+          expr = (emit 42).effect.name;
+          expected = "emit";
+        };
       };
     };
-  };
 
-  collect = mk {
-    doc = ''
-      Read the current accumulated items.
-
-      ```
-      collect : Computation [a]
-      ```
-    '';
-    value = send "collect" null;
-    tests = {
-      "collect-is-impure" = {
-        expr = fx.comp.isPure collect.value;
-        expected = false;
+    emitAll = {
+      description = "emitAll: append a list of items to the acc effect's accumulator in a single impure request; one bind instead of N from mapping emit.";
+      signature = "emitAll : [a] -> Computation null";
+      doc = ''
+        Append a list of items to the accumulator in a single effect request.
+        Equivalent to mapping `emit` over the list but cheaper at runtime.
+      '';
+      tests = {
+        "emitAll-is-impure" = {
+          expr = fx.comp.isPure (emitAll [ 1 2 ]);
+          expected = false;
+        };
       };
     };
-  };
 
-  handler = mk {
-    doc = ''
-      Standard accumulator handler. State is a list of accumulated items.
-      Initial state: `[]`
-
-      ```nix
-      handle { handlers = acc.handler; state = []; } comp
-      ```
-    '';
-    value = {
-      emit = { param, state }: { resume = null; state = state ++ [ param ]; };
-      emitAll = { param, state }: { resume = null; state = state ++ param; };
-      collect = { state, ... }: { resume = state; inherit state; };
-    };
-    tests = {
-      "emit-appends" = {
-        expr = (handler.value.emit { param = 42; state = [ 1 ]; }).state;
-        expected = [ 1 42 ];
-      };
-      "collect-returns-state" = {
-        expr = (handler.value.collect { param = null; state = [ 1 2 3 ]; }).resume;
-        expected = [ 1 2 3 ];
+    collect = {
+      description = "collect: read the acc effect's currently accumulated items as a list; impure request returning the contents captured so far.";
+      signature = "collect : Computation [a]";
+      doc = ''
+        Read the current accumulated items as a list. Returns whatever has been
+        emitted within the surrounding handled scope.
+      '';
+      tests = {
+        "collect-is-impure" = {
+          expr = fx.comp.isPure collect;
+          expected = false;
+        };
       };
     };
-  };
 
-in mk {
-  doc = "Accumulator effect: emit/emitAll/collect for incremental list building.";
-  value = {
-    inherit emit emitAll collect handler;
+    handler = {
+      description = "acc.handler: standard accumulator handler implementing emit/emitAll/collect over a list state with `[]` as the initial value.";
+      doc = ''
+        Standard accumulator handler. State is the list of accumulated items,
+        starting at `[]`.
+
+        ```nix
+        handle { handlers = acc.handler; state = []; } comp
+        ```
+      '';
+      tests = {
+        "emit-appends" = {
+          expr = (handler.emit { param = 42; state = [ 1 ]; }).state;
+          expected = [ 1 42 ];
+        };
+        "collect-returns-state" = {
+          expr = (handler.collect { param = null; state = [ 1 2 3 ]; }).resume;
+          expected = [ 1 2 3 ];
+        };
+      };
+    };
+
   };
 }

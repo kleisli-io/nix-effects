@@ -4,20 +4,19 @@
 { fx, api, lib, ... }:
 
 let
-  inherit (api) mk;
   inherit (fx.kernel) send;
-  inherit (fx.kernel) bind pure;
   inherit (fx.trampoline) handle;
 
-  hasHandler = mk {
+  hasHandler = send "has-handler";
+
+in {
+  inherit hasHandler;
+  __docs._self = {
+    description = "hasHandler: ask the runtime whether a handler with the given effect name exists in the surrounding scope; impure query.";
+    signature = "hasHandler : String -> Computation Bool";
     doc = ''
       Check if a handler with given name exists in current scope.
-
-      ```
-      hasHandler : String -> Computation Bool
-      ```
     '';
-    value = send "has-handler";
     tests = {
       "hasHandler-is-impure" = {
         expr = (fx.comp.isPure (hasHandler "foo"));
@@ -72,5 +71,4 @@ let
       };
     };
   };
-
-in hasHandler
+}

@@ -57,6 +57,8 @@ in {
     float_ = { _htag = "float"; };
     attrs = { _htag = "attrs"; };
     path = { _htag = "path"; };
+    derivation = { _htag = "derivation"; };
+    derivationThunk = { _htag = "derivation-thunk"; };
     function_ = { _htag = "function"; };
     any = { _htag = "any"; };
 
@@ -88,14 +90,44 @@ in {
           self.levelZero
           (builtins.genList (x: x) (if n < 0 then 0 else n));
 
-    # Compound types (sugar for nested sigma/sum — carry structural info
-    # for elaborateValue).
-    # fields : [ { name; type; } ... ] — sorted by name
-    record = fields: { _htag = "record"; inherit fields; };
+    # H.record fields → mono-constructor μ-datatype carrying _dtypeMeta.
+    # Surface signature `[{name; type;}…]` preserved. The kernel value is
+    # `mk a₀ … aₙ₋₁`; the i-th field projects via the datatype eliminator
+    # at a constant motive `λ_:R. Aᵢ` (see `v.field`). Walker dispatch
+    # routes through the `t == "mu"` branch + `walkAttrsetDatatype`.
+    record = fields:
+      let
+        sortedNames = builtins.sort builtins.lessThan (map (f: f.name) fields);
+        typeName = "Record{${builtins.concatStringsSep ", " sortedNames}}";
+        datatypeFields = map (f: self.field f.name f.type) fields;
+      in (self.datatype typeName [ (self.con "mk" datatypeFields) ]).T;
     # maybe = Sum(inner, Unit) — null for Right/Unit, value for Left/inner.
     maybe = inner: { _htag = "maybe"; inherit inner; };
-    # branches : [ { tag; type; } ... ] — sorted by tag
-    variant = branches: { _htag = "variant"; inherit branches; };
+    # H.variant branches → first-class kernel variant type former.
+    # Surface signature `[{tag; type;}…]` preserved. A value
+    # `{_tag = t; value = v}` is dispatched by `_tag`: the matching
+    # branch's `type` validates `value` directly, with `Pos.Tag t` as
+    # the leaf branch coordinate. No synthetic `Pos.Field "value"`
+    # appears in any path — the kernel knows about variants without
+    # going through a μ-encoding.
+    #
+    # Elaboration to Tm desugars to nested boot-sums via the `variant`
+    # arm in `elaborate.nix:574`; source-mapping handles `variant` at
+    # `source_map.nix:69`; value-side walking handles it at
+    # `tc/generic/check.nix`'s `walkVariant`.
+    variant = branches:
+      { _htag = "variant"; inherit branches; };
+
+    # H.product name fields → named single-constructor μ-datatype. Sugar
+    # for `datatype name [(con name fields)]`: the constructor name is the
+    # type name, since a product has no constructor to disambiguate. Field
+    # signature matches `H.datatype`'s — built from `H.field` / `H.fieldD`.
+    # Returns the full DataSpec (`{ T; cons; D; <name>; elim; _dtypeMeta }`)
+    # so deriveSchema/deriveDescriptor and validateValue work unchanged.
+    # Unlike `H.record`, the type name is user-supplied and stable; unlike
+    # `H.variant`, fields project flat (no inner `value` wrapper).
+    product = name: fields:
+      self.datatype name [ (self.con name fields) ];
 
     # Binding forms — take Nix lambda for the body.
     forall = name: domain: bodyFn:
@@ -119,6 +151,8 @@ in {
     floatLit = f: { _htag = "float-lit"; value = f; };
     attrsLit = { _htag = "attrs-lit"; };
     pathLit = { _htag = "path-lit"; };
+    derivationLit = { _htag = "derivation-lit"; };
+    derivationThunkLit = { _htag = "derivation-thunk-lit"; };
     fnLit = { _htag = "fn-lit"; };
     anyLit = { _htag = "any-lit"; };
 
@@ -421,6 +455,28 @@ in {
     plusI = I: k: A: B: { _htag = "desc-plus-enc"; inherit I k A B; };
     plus  = A: B: self.plusI self.unitPrim 0 A B;
 
+    # Erasable per-node presentation label on a description-encoding
+    # HOAS form. Decorates `desc-{ret,arg,rec,pi,plus}-enc` (and any
+    # equivalent encoded-description HOAS) with a sidecar `_label :
+    # String` that the elaborator threads into `mkAnnTrustedWithLabels`
+    # and the evaluator surfaces on the resulting `VDescCon`. Surfaces
+    # back through `descView`'s `.label` field. Label-irrelevant under
+    # conv (definitional equality), so two same-shape descriptions
+    # differing only in their labels are deep-equal. Idempotent —
+    # re-labeling overwrites the prior label.
+    withDescLabel = label: form: form // { _label = label; };
+
+    # Erasable surrounding-constructor label on a description-encoding
+    # HOAS form. Orthogonal to `withDescLabel`: lives in a separate
+    # `_conLabel` slot precisely so that wrapping a field-labeled
+    # description with a constructor name does not overwrite the
+    # field's identity. Surfaces through `descView`'s `.conLabel`
+    # field. Set by the `H.datatype` macro at the per-constructor
+    # spine site so each summand carries `c.name`. Conv ignores
+    # `_conLabel` (same as `_label`), so deepEqualDesc is
+    # constructor-label-irrelevant.
+    withConLabel = label: form: form // { _conLabel = label; };
+
     # Nat-specific equality lemma. Thin wrapper over `j` at type `Nat`;
     # consumed by `absurdFin0` to compose the ret-leaf `em : Eq Nat (succ
     # m) nArg` with `e0 : Eq Nat nArg zero` into `emz : Eq Nat (succ m)
@@ -447,6 +503,50 @@ in {
     finElim = k: P: Pz: Ps: n: x:
       self.app (self.app (self.app (self.app (self.app (self.FinDT.elim k) P) Pz) Ps) n) x;
 
+    # Le prelude forwarders onto `LeDT` (defined in
+    # `hoas/datatype.nix` via `datatypeI "Le" (Σ Nat Nat) [...]`).
+    # `Le : Nat → Nat → U` is the canonical Agda `Data.Nat.Base._≤_`
+    # inductive predicate. Surface curries the Σ-typed kernel index
+    # for ergonomics (`le m n` instead of `app LeDT.T (pair m n)`).
+    leDesc = self.LeDT.D;
+    le     = m: n: self.app self.LeDT.T (self.pair m n);
+    leZ    = n: self.app self.LeDT.leZ n;
+    leSS   = m: n: lemn:
+      self.app (self.app (self.app self.LeDT.leSS m) n) lemn;
+    # `leElim K P Pz Ps m n pf` — curried-motive adapter over
+    # `LeDT.elim K`'s Σ-indexed form. User supplies
+    # `P : Nat → Nat → Le m n → U(K)`; the adapter constructs the
+    # indexed motive `λ(i:Σ Nat Nat). λ(_le:Le i.fst i.snd).
+    # P i.fst i.snd _le` so case types unfold to the user-natural
+    # curried form via β-reduction.
+    leElim = K: P: Pz: Ps: m: n: pf:
+      let
+        inherit (self) lam app sigma fst_ snd_ nat pair LeDT;
+        iTy = sigma "_lem" nat (_: nat);
+        P_indexed = lam "i" iTy (i:
+                      lam "_le" (app LeDT.T i) (lePf:
+                        app (app (app P (fst_ i)) (snd_ i)) lePf));
+      in app (app (app (app (app (LeDT.elim K) P_indexed) Pz) Ps) (pair m n)) pf;
+
+    # IntZ prelude forwarders onto `IntZDT` (defined in
+    # `hoas/datatype.nix` via `datatype "IntZ" [pos; negSucc]`). Mirrors
+    # Agda `Data.Integer.Base`: `pos n` encodes the non-negative integer
+    # `n`; `negSucc n` encodes the negative integer `-(n+1)`. Unique
+    # representation — `pos 0` is the sole zero. The `intzElim`
+    # forwarder follows the `boolElim` shape with two payload-carrying
+    # case branches over a Nat field each.
+    intzDesc    = self.IntZDT.D;
+    intz        = self.IntZDT.T;
+    intzPos     = n: self.app self.IntZDT.pos n;
+    intzNegSucc = n: self.app self.IntZDT.negSucc n;
+    # intzElim : (k : Level) → (Q : intz → U(k)) →
+    #            ((n : nat) → Q (intzPos n)) →
+    #            ((n : nat) → Q (intzNegSucc n)) →
+    #            (z : intz) → Q z
+    intzElim = k: Q: onPos: onNegSucc: z:
+      let inherit (self) app IntZDT; in
+      app (app (app (app (IntZDT.elim k) Q) onPos) onNegSucc) z;
+
     # absurdFin0 : (P : U) → Fin 0 → P
     # Fin 0 is vacuous: both constructor payloads carry an `em : Eq (succ m) n`
     # leaf, and at n = 0 combining with the outer `e0 : Eq n zero` gives
@@ -463,13 +563,13 @@ in {
           bootEq bootRefl
           muI descInd interpD allD
           bootSum bootSumElim
-          descArg retI recI
           finDesc transNat unitPrim ttPrim;
 
         muFam = lam "i" nat (i: muI nat finDesc i);
 
-        fzeroSum = descArg nat 0 nat (m_: retI nat 0 (succ m_));
-        fsucSum  = descArg nat 0 nat (m_: recI nat 0 m_ (retI nat 0 (succ m_)));
+        finConDescs = self.FinDT.fzero.conDescs;
+        fzeroSum = builtins.elemAt finConDescs 0;
+        fsucSum  = builtins.elemAt finConDescs 1;
         lInterpAt = iArg_: interpD 0 nat fzeroSum muFam iArg_;
         rInterpAt = iArg_: interpD 0 nat fsucSum  muFam iArg_;
 
@@ -745,4 +845,733 @@ in {
       app fin zero;
   };
   tests = {};
+  __docs = {
+    LiftAt = {
+      description = "LiftAt: HOAS cross-level type former — `LiftAt l m A : U(m)` for `A : U(l)` with `l ≤ m`; bound witness auto-emitted as `mkBootRefl` when convLevel decides `Eq Level (max l m) m`.";
+      signature = "LiftAt : Level -> Level -> Hoas -> Hoas  -- l, m, A";
+      doc = ''
+        Idempotent at equal levels: `LiftAt l l A ≡ A` (no wrapping
+        when `sameLevelSyntax l l`). Use to transport a type from a
+        lower universe to a higher one without changing inhabitation.
+        For level-polymorphic binders where convLevel cannot decide,
+        use `LiftAtWithEq` and supply the proof explicitly.
+      '';
+    };
+    LiftAtWithEq = {
+      description = "LiftAtWithEq: LiftAt variant carrying an explicit bound-witness — `LiftAtWithEq l m eq A` supplies `eq : Eq Level (max l m) m` when convLevel cannot decide it.";
+      signature = "LiftAtWithEq : Level -> Level -> Hoas -> Hoas -> Hoas  -- l, m, eq, A";
+    };
+    absurd = {
+      description = "absurd: HOAS empty-type eliminator — `absurd P x` discharges `x : void` to produce a value of any type `P`; routes through `absurdFin0` (the Fin 0 vacuous family).";
+      signature = "absurd : Hoas -> Hoas -> Hoas";
+    };
+    absurdFin0 = {
+      description = "absurdFin0: vacuous-`fin 0` eliminator — `absurdFin0 P x` discharges `x : fin 0` to any type `P` via no-confusion on the impossible `Eq Nat (succ m) zero`.";
+      signature = "absurdFin0 : Hoas -> Hoas -> Hoas  -- P, x";
+      doc = ''
+        `fin 0` is vacuous because both fzero and fsuc constructor
+        payloads carry `Eq Nat (succ m) i` leaves, which at `i = 0`
+        give `Eq Nat (succ m) zero` — uninhabited. The implementation
+        uses a single J transport at motive `λx _. natCaseU P Unit x`,
+        landing at `Unit` for succ cases (filled by `tt`) and at `P`
+        at the goal case `i = zero`. Used by `void` and surface
+        `absurd`.
+      '';
+    };
+    allD = {
+      description = "allD: induction-hypothesis collector — `allD level I D K X M i d` produces the type `All D X M i d`, threading motive `M` through every recursive position in payload `d`.";
+      signature = "allD : Level -> Hoas -> Hoas -> Level -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas";
+    };
+    ann = {
+      description = "ann: HOAS type annotation — `ann term type` produces `(term : type)`; fixes the checking direction so the kernel verifies `term` against `type` rather than inferring.";
+      signature = "ann : Hoas -> Hoas -> Hoas";
+      doc = ''
+        Essential at every position where the kernel would otherwise
+        need to infer a type from a checkable form (e.g. lambda
+        bodies producing data constructors). The elaborator emits
+        `mkAnn`; `check` consumes the annotation and validates the
+        term against the declared type. For elaborator-trusted
+        annotations that skip the re-check pass, the kernel exposes
+        `mkAnnTrusted` directly — surface code should use `ann`.
+      '';
+    };
+    any = {
+      description = "any: kernel-primitive `Any` type — top type covering every Nix value; used as a fallback when no narrower type fits.";
+      signature = "any : Hoas";
+    };
+    anyLit = {
+      description = "anyLit: HOAS Any-literal marker — placeholder term checkable against `any`; covers any kernel-opaque Nix value.";
+      signature = "anyLit : Hoas";
+    };
+    app = {
+      description = "app: HOAS function application — `app f arg` builds the redex; β-reduces during normalisation when `f` is a lambda.";
+      signature = "app : Hoas -> Hoas -> Hoas";
+    };
+    attrs = {
+      description = "attrs: kernel-primitive `Attrs` type — opaque Nix attrset axiomatised at the kernel level; literal-only entry via `attrsLit`.";
+      signature = "attrs : Hoas";
+    };
+    attrsLit = {
+      description = "attrsLit: HOAS Attrs-literal marker — placeholder term checkable against `attrs`; the actual Nix attrset is not embedded in the kernel term.";
+      signature = "attrsLit : Hoas";
+    };
+    bool = {
+      description = "bool: HOAS `Bool` type former — generated by `BoolDT.T`; isomorphic to `Sum Unit Unit` under the description encoding.";
+      signature = "bool : Hoas";
+    };
+    boolElim = {
+      description = "boolElim: HOAS `Bool` eliminator — `boolElim k Q onT onF b` runs `BoolDT.elim k`; the motive `Q : bool -> U(k)` may depend on the scrutinee.";
+      signature = "boolElim : Level -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas  -- k, motive, onTrue, onFalse, scrut";
+      doc = ''
+        For constant motives use `tc.verified.if_` which auto-
+        generates `λ_:bool.resultTy`. Dependent motives are needed
+        when the result type differs between true and false cases —
+        e.g. dispatching to different datatypes via `natCaseU`.
+      '';
+    };
+    bootEq = {
+      description = "bootEq: bootstrap propositional-equality type former at the description layer — `bootEq T a b` is the kernel-internal `Eq` used before EqDT is available. Prefer the SumDT/EqDT-generated `eq` for end-user code.";
+      signature = "bootEq : Hoas -> Hoas -> Hoas -> Hoas  -- type, lhs, rhs";
+    };
+    bootInl = {
+      description = "bootInl: bootstrap left-injection at the description layer — `bootInl L R v` introduces a `boot-sum L R` from `v : L`. Used by the freer-monad-as-description encoding to build μ-values where no SumDT-generated `inl` applies.";
+      signature = "bootInl : Hoas -> Hoas -> Hoas -> Hoas  -- L, R, v";
+    };
+    bootInr = {
+      description = "bootInr: bootstrap right-injection at the description layer — `bootInr L R v` introduces a `boot-sum L R` from `v : R`. See `bootInl`.";
+      signature = "bootInr : Hoas -> Hoas -> Hoas -> Hoas  -- L, R, v";
+    };
+    bootJ = {
+      description = "bootJ: bootstrap J-eliminator at the description layer — `bootJ T a P b c eq` transports `b : P a a refl` along `eq : bootEq T a c` to `P a c eq`. Prefer EqDT-generated `j` for end-user code.";
+      signature = "bootJ : Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas  -- T, a, motive, base, c, eq";
+    };
+    bootRefl = {
+      description = "bootRefl: bootstrap reflexivity witness at the description layer — checkable against any `bootEq T a a`. Prefer EqDT-generated `refl` for end-user code.";
+      signature = "bootRefl : Hoas";
+    };
+    bootSum = {
+      description = "bootSum: bootstrap binary coproduct type former at the description layer — `bootSum L R` is the kernel-internal `Sum` used before SumDT is available; arises inside `descPlus` interpretation.";
+      signature = "bootSum : Hoas -> Hoas -> Hoas  -- L, R";
+    };
+    bootSumElim = {
+      description = "bootSumElim: bootstrap sum eliminator at the description layer — `bootSumElim L R P onL onR scrut` discharges `scrut : bootSum L R` to `P scrut`. Prefer SumDT-generated `sumElim` for end-user code.";
+      signature = "bootSumElim : Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas  -- L, R, motive, onLeft, onRight, scrut";
+    };
+    congSuc = {
+      description = "congSuc: Level-suc congruence — proof of `∀a b. Eq Level a b -> Eq Level (suc a) (suc b)`; derived via J transporting refl along the supplied equality.";
+      signature = "congSuc : Hoas";
+    };
+    derivation = {
+      description = "derivation: kernel-primitive `Derivation` type — Nix derivation values (attrsets carrying `type = \"derivation\"`); the store-producing irreducible Nix value category, axiomatised at the kernel level with literal-only entry via `derivationLit`.";
+      signature = "derivation : Hoas";
+    };
+    derivationLit = {
+      description = "derivationLit: HOAS Derivation-literal marker — placeholder term checkable against `derivation`; the Nix derivation is not embedded in the kernel term.";
+      signature = "derivationLit : Hoas";
+    };
+    derivationThunk = {
+      description = "derivationThunk: kernel-primitive `DerivationThunk` type — deepSeq-safe derivation carriers `{ _tag = \"DerivationThunk\"; _force = _: drv; }` produced by `fx.state.mkDerivationThunk`; disjoint from `derivation` (no implicit subtyping). Use as the payload type for effect descriptions that thread derivations through trampoline-deepSeq'd state.";
+      signature = "derivationThunk : Hoas";
+    };
+    derivationThunkLit = {
+      description = "derivationThunkLit: HOAS DerivationThunk-literal marker — placeholder term checkable against `derivationThunk`; the carrier is not embedded in the kernel term.";
+      signature = "derivationThunkLit : Hoas";
+    };
+    desc = {
+      description = "desc: ⊤-slice description type former — alias for `descI unitPrim`; descriptions over the kernel-primitive unit index type.";
+      signature = "desc : Hoas";
+    };
+    descArg = {
+      description = "descArg: argument-position description-encoder — `descArg I k S T` extends a description with a non-recursive field of sort `S`, with `T` the continuation under the bound value.";
+      signature = "descArg : Hoas -> Level -> Hoas -> Hoas -> Hoas";
+    };
+    descArgAt = {
+      description = "descArgAt: universe-polymorphic descArg — `descArgAt I l k S T` builds the same with explicit sort level `l`.";
+      signature = "descArgAt : Hoas -> Level -> Level -> Hoas -> Hoas -> Hoas";
+    };
+    descArgWithEq = {
+      description = "descArgWithEq: descArgAt variant with explicit bound-witness — supplies the `eq : Eq Level (max l k) k` proof for level-polymorphic positions.";
+      signature = "descArgWithEq : Hoas -> Level -> Level -> Hoas -> Hoas -> Hoas -> Hoas";
+    };
+    descAt = {
+      description = "descAt: universe-polymorphic ⊤-slice description — alias for `descIAt k unitPrim`; descriptions at level `k` over the unit index type.";
+      signature = "descAt : Level -> Hoas";
+    };
+    descCon = {
+      description = "descCon: description-constructor introduction — `descCon D i d` builds an element of `μ I D i` from payload `d` matching `D`'s shape at index `i`.";
+      signature = "descCon : Hoas -> Hoas -> Hoas -> Hoas  -- D, index, payload";
+      doc = ''
+        Used internally by the elaborator to emit `mu` carriers from
+        interpreted payloads. Surface code building inductive values
+        typically routes through generated constructors
+        (`zero`/`succ`/`true_`/`nil`/etc.) which call `descCon` with
+        the right payload shape. Direct use is for advanced
+        ornament-bridging code.
+      '';
+    };
+    descElim = {
+      description = "descElim: encoded description eliminator — `descElim I k L motive onRet onArg onRec onPi onPlus scrut` walks the cascade over `descDesc I k`'s plus-tree to dispatch on `scrut`'s constructor summand.";
+      signature = "descElim : Hoas -> Level -> Level -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas";
+      doc = ''
+        The deep machinery for analysing description shapes. Each
+        `on*` callback handles one summand of the description
+        encoding. Surface code rarely needs this directly — `descInd`
+        is the friendlier face for value-level induction; `descElim`
+        is needed for type-level dispatch over description shape
+        (e.g. inside ornament machinery).
+      '';
+    };
+    descI = {
+      description = "descI: indexed description type former — `descI I` builds `Desc I`, the universe of descriptions over index sort `I`; level defaults to 0.";
+      signature = "descI : Hoas -> Hoas";
+    };
+    descIAt = {
+      description = "descIAt: universe-polymorphic indexed description — `descIAt k I` builds `Desc^k I`; the level-omitting `descI` defaults to level 0.";
+      signature = "descIAt : Level -> Hoas -> Hoas";
+    };
+    descInd = {
+      description = "descInd: description-induction principle — `descInd D motive step i scrut` eliminates `scrut : μ I D i` against motive `Q : ∀i:I. μ I D i -> U`, using `step` to handle each summand with its inductive hypotheses.";
+      signature = "descInd : Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas  -- D, motive, step, index, scrut";
+      doc = ''
+        Generic indexed induction. The `step` argument receives the
+        index, the payload, and the inductive hypotheses (`allD`-
+        wrapped). Generated eliminators like `NatDT.elim`,
+        `ListDT.elim` are pre-applied specialisations of `descInd`.
+      '';
+    };
+    descPi = {
+      description = "descPi: ⊤-slice piI alias — `descPi k S D` quantifies over sort `S` and continues with `D` under a constant-index function; the index-of-payload defaults to `ttPrim`.";
+      signature = "descPi : Level -> Hoas -> Hoas -> Hoas  -- k, sort, continuation";
+    };
+    descPiAt = {
+      description = "descPiAt: universe-polymorphic ⊤-slice descPi — `descPiAt l k S D` with explicit sort level `l`.";
+      signature = "descPiAt : Level -> Level -> Hoas -> Hoas -> Hoas";
+    };
+    descPiWithEq = {
+      description = "descPiWithEq: descPiAt variant with explicit bound-witness — supplies the `eq : Eq Level (max l k) k` proof for level-polymorphic descriptions.";
+      signature = "descPiWithEq : Level -> Level -> Hoas -> Hoas -> Hoas -> Hoas";
+    };
+    descRec = {
+      description = "descRec: ⊤-slice recI alias — `recI unitPrim 0 ttPrim D`; adds a ⊤-indexed recursive child to a description.";
+      signature = "descRec : Hoas -> Hoas  -- continuation";
+    };
+    descRet = {
+      description = "descRet: ⊤-slice retI alias — `retI unitPrim 0 ttPrim`; the standard leaf of a ⊤-indexed description, used by prelude descriptions like `natDesc`.";
+      signature = "descRet : Hoas";
+    };
+    eq = {
+      description = "eq: HOAS propositional equality — `eq A a b` builds `EqDT A a b`, the levitated identity type over a sort `A`; `refl` introduces, `j` eliminates.";
+      signature = "eq : Hoas -> Hoas -> Hoas -> Hoas";
+    };
+    eqDT = {
+      description = "eqDT: prelude equality type — `eqDT A a b` is `μ A (eqDesc A a) b`, the indexed datatype carrier of equality at sort `A`.";
+      signature = "eqDT : Hoas -> Hoas -> Hoas -> Hoas  -- A, lhs, rhs";
+    };
+    eqDTToEq = {
+      description = "eqDTToEq: datatype equality → bootstrap equality — `eqDTToEq A a b x` extracts a `bootEq A a b` witness from `x : eqDT A a b` via descInd at motive `Q i x = bootEq A a i`.";
+      signature = "eqDTToEq : Hoas -> Hoas -> Hoas -> Hoas -> Hoas  -- A, lhs, rhs, x";
+    };
+    eqDesc = {
+      description = "eqDesc: prelude equality description — `eqDesc A a` builds the single-constructor retI-only description of `EqDT A a : A -> U`, used as the carrier description of equality at sort `A`.";
+      signature = "eqDesc : Hoas -> Hoas -> Hoas  -- A, lhs";
+    };
+    eqIsoBwd = {
+      description = "eqIsoBwd: backward leg of the eq ↔ eqDT iso — proves `bootEq (eqDT A a b) (eqToEqDT (eqDTToEq x)) x`; descInd on `x` reduces to the diagonal via inner J transport.";
+      signature = "eqIsoBwd : Hoas -> Hoas -> Hoas -> Hoas  -- A, lhs, rhs";
+    };
+    eqIsoFwd = {
+      description = "eqIsoFwd: forward leg of the eq ↔ eqDT iso — proves `bootEq (bootEq A a b) (eqDTToEq (eqToEqDT e)) e`; J on `e` collapses both sides at the base case.";
+      signature = "eqIsoFwd : Hoas -> Hoas -> Hoas -> Hoas  -- A, lhs, rhs";
+    };
+    eqToEqDT = {
+      description = "eqToEqDT: bootstrap equality → datatype equality — `eqToEqDT A a b e` converts `e : bootEq A a b` to `eqDT A a b` via J transporting `reflDT` along the witness.";
+      signature = "eqToEqDT : Hoas -> Hoas -> Hoas -> Hoas -> Hoas  -- A, lhs, rhs, eq";
+    };
+    everywhereD = {
+      description = "everywhereD: induction-hypothesis constructor — `everywhereD level I D K X M ih i d` builds the `allD …` witness by applying `ih` at every recursive subposition.";
+      signature = "everywhereD : Level -> Hoas -> Hoas -> Level -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas";
+    };
+    false_ = {
+      description = "false_: HOAS `Bool` constructor `false` — generated by `BoolDT`; corresponds to the left summand of bool-as-`Sum Unit Unit`.";
+      signature = "false_ : Hoas";
+    };
+    fin = {
+      description = "fin: prelude `Fin` type family — forwarder for `FinDT.T`; `app fin n` is the type of natural numbers strictly less than `n`.";
+      signature = "fin : Hoas  -- application yields fin n : Hoas";
+    };
+    finDesc = {
+      description = "finDesc: prelude `Fin` description — forwarder for `FinDT.D`, the indexed description of the finite-natural family `Fin : nat -> U`.";
+      signature = "finDesc : Hoas";
+    };
+    finElim = {
+      description = "finElim: prelude `Fin` eliminator — `finElim k P Pz Ps n x` discharges `x : fin n` against motive `P : ∀n:nat. fin n -> U(k)` with branches for fzero / fsuc.";
+      signature = "finElim : Level -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas";
+    };
+    floatLit = {
+      description = "floatLit: HOAS Float literal — `floatLit f` lifts a Nix float to a kernel `floatLit` Tm checkable against `float_`.";
+      signature = "floatLit : Float -> Hoas";
+    };
+    float_ = {
+      description = "float_: kernel-primitive `Float` type — Nix-meta floats axiomatised at the kernel level; literals enter via `floatLit`.";
+      signature = "float_ : Hoas";
+    };
+    fnLit = {
+      description = "fnLit: HOAS Function-literal marker — placeholder term checkable against `function_`; the Nix function is not embedded in the kernel term.";
+      signature = "fnLit : Hoas";
+    };
+    forall = {
+      description = "forall: HOAS Π-type former — `forall name dom body` builds `Π(name:dom). body` with `body` a Nix function receiving the bound variable as a HOAS term.";
+      signature = "forall : String -> Hoas -> (Hoas -> Hoas) -> Hoas";
+      doc = ''
+        The body is a Nix function so the binder is a real Nix-level
+        variable inside the user's scope. `elaborate` converts it to a
+        de Bruijn `Tm` with the correct index. Chains of `forall` are
+        elaborated iteratively via `genericClosure`, so deeply-nested
+        Π-types are stack-safe to depths of 8000+. The `name` is
+        cosmetic — used only in error messages and never in equality
+        checking.
+      '';
+    };
+    fst_ = {
+      description = "fst_: HOAS Σ-pair first projection — extracts the left component; reduces by π₁ during normalisation when the argument is a `pair`.";
+      signature = "fst_ : Hoas -> Hoas";
+    };
+    fsuc = {
+      description = "fsuc: prelude `Fin` successor constructor — `fsuc m k` lifts `k : fin m` to `succ k : fin (succ m)`.";
+      signature = "fsuc : Hoas -> Hoas -> Hoas  -- predecessor, fin-predecessor";
+    };
+    function_ = {
+      description = "function_: kernel-primitive `Function` type — opaque Nix function axiomatised at the kernel level; literal-only entry via `fnLit`.";
+      signature = "function_ : Hoas";
+    };
+    fzero = {
+      description = "fzero: prelude `Fin` zero constructor — `fzero m` is the element `0 : fin (succ m)`; refuses `fin 0` by typing.";
+      signature = "fzero : Hoas -> Hoas  -- predecessor";
+    };
+    ind = {
+      description = "ind: HOAS `Nat` induction principle wrapper — `ind k P B S n` runs `NatDT.elim k` after binding motive `P`, base `B`, and step `S` at their required types.";
+      signature = "ind : Level -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas  -- k, motive, base, step, scrut";
+      doc = ''
+        The motive `P : nat -> U(k)` may depend on the scrutinee; for
+        constant motives drop to `tc.verified.match` which auto-
+        generates `λ_:nat.resultTy`. The wrapper inserts three `let_`
+        bindings before the application spine so the kernel can infer
+        each leg of the dependent application chain. Level `k`
+        accepts a Nix Int, a HOAS Level term, or a kernel Tm.
+      '';
+    };
+    intLit = {
+      description = "intLit: HOAS Int literal — `intLit n` lifts a Nix integer to a kernel `intLit` Tm checkable against `int_`.";
+      signature = "intLit : Int -> Hoas";
+    };
+    int_ = {
+      description = "int_: kernel-primitive `Int` type — Nix-meta integers axiomatised at the kernel level; distinct from `nat`, which is the description-derived `Nat`.";
+      signature = "int_ : Hoas";
+    };
+    interpD = {
+      description = "interpD: description interpreter — `interpD level I D X i` produces the payload type `⟦D⟧ X i` at level `level`, the fibre over index `i` when the recursive position is filled by `X`.";
+      signature = "interpD : Level -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas  -- level, I, D, X, i";
+    };
+    intz = {
+      description = "intz: prelude `IntZ` type — `IntZDT.T`. Literature-canonical 2-constructor inductive integer with unique representation.";
+      signature = "intz : Hoas";
+    };
+    intzDesc = {
+      description = "intzDesc: prelude `IntZ` description — `IntZDT.D`. Two-summand description with one Nat field per constructor (`pos` / `negSucc`).";
+      signature = "intzDesc : Hoas";
+    };
+    intzElim = {
+      description = "intzElim: prelude `IntZ` eliminator — `intzElim k Q onPos onNegSucc z` runs `IntZDT.elim k`; the motive `Q : intz -> U(k)` may depend on the scrutinee. Mirrors `boolElim`'s shape with two payload-carrying case branches over a Nat field each.";
+      signature = "intzElim : Level -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas  -- k, motive, onPos, onNegSucc, scrut";
+    };
+    intzNegSucc = {
+      description = "intzNegSucc: prelude `IntZ` negative constructor — `intzNegSucc n : intz` encodes the integer `-(n+1)` for `n : Nat`. `intzNegSucc 0` is `-1`.";
+      signature = "intzNegSucc : Hoas -> Hoas  -- n";
+    };
+    intzPos = {
+      description = "intzPos: prelude `IntZ` non-negative constructor — `intzPos n : intz` encodes the integer `n` for `n : Nat`. `intzPos 0` is the canonical zero.";
+      signature = "intzPos : Hoas -> Hoas  -- n";
+    };
+    j = {
+      description = "j: HOAS J-eliminator for `EqDT` — `j A a P base b e` discharges `e : EqDT A a b` against motive `P : ∀x:A. EqDT A a x -> U`, computing the goal type at `b`.";
+      signature = "j : Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas  -- type, lhs, motive, base, rhs, eq";
+      doc = ''
+        The classic Martin-Löf J: given a base case at the diagonal
+        (`base : P a refl`), transports along any equality. Used by
+        `transNat`, `congSuc`, `maxSucDom`, `eqToEqDT`, etc. The
+        motive must accept both the right-hand side and the equality
+        term; for substitution-only patterns, write a constant-in-eq
+        motive `λx _. ...`.
+      '';
+    };
+    lam = {
+      description = "lam: HOAS lambda — `lam name dom body` builds `λ(name:dom). body` with `body` a Nix function receiving the bound variable; the principal term-binding form.";
+      signature = "lam : String -> Hoas -> (Hoas -> Hoas) -> Hoas";
+      doc = ''
+        Body is a Nix function, so the variable binding flows through
+        Nix's own scope. `elaborate` produces a de Bruijn `Tm` with
+        index 0 for the innermost binder. Chains of `lam` are
+        elaborated iteratively (stack-safe to 8000+). Use `opaqueLam`
+        when wrapping a non-HOAS Nix function for which kernel
+        checking would otherwise require recovering structure.
+      '';
+    };
+    le = {
+      description = "le: prelude `Le` curried type family — `le m n` is the type of proofs that `m ≤ n` over `Nat`. The Agda `Data.Nat.Base._≤_` inductive predicate (z≤n / s≤s constructors).";
+      signature = "le : Hoas -> Hoas -> Hoas  -- m, n";
+    };
+    leDesc = {
+      description = "leDesc: prelude `Le` description — forwarder for `LeDT.D`, the indexed description of the order family `Le : Σ Nat (_: Nat) -> U` (curried at surface as `le m n`).";
+      signature = "leDesc : Hoas";
+    };
+    leElim = {
+      description = "leElim: prelude `Le` eliminator with curried-motive adapter — `leElim K P Pz Ps m n pf` discharges `pf : le m n` against motive `P : (m n : nat) -> le m n -> U(K)` with branches for `leZ` / `leSS`. Internally adapts the Σ-indexed motive of `LeDT.elim`.";
+      signature = "leElim : Level -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas";
+    };
+    leSS = {
+      description = "leSS: prelude `Le` step constructor (s≤s) — `leSS m n lemn : Le (suc m) (suc n)` for `lemn : Le m n`. Lifts ≤-witnesses through simultaneous successor.";
+      signature = "leSS : Hoas -> Hoas -> Hoas -> Hoas  -- m, n, lemn";
+    };
+    leZ = {
+      description = "leZ: prelude `Le` base constructor (z≤n) — `leZ n : Le 0 n` for any `n : Nat`. Decidability witness for `decideLeNat 0 n`.";
+      signature = "leZ : Hoas -> Hoas  -- n";
+    };
+    let_ = {
+      description = "let_: HOAS let binding — `let_ name ty val body` builds `let name : ty = val in body` with `body` a Nix function receiving the bound variable.";
+      signature = "let_ : String -> Hoas -> Hoas -> (Hoas -> Hoas) -> Hoas";
+      doc = ''
+        Used internally by eliminator wrappers (`ind`, `listElim`,
+        `sumElim`) to bind motive / base / step at their required
+        types before the application spine, making each subterm
+        inferable. User code typically uses `let_` to share
+        subexpressions or to name intermediate values for clarity.
+      '';
+    };
+    level = {
+      description = "level: HOAS universe-level type former — inhabits `U(0)`; lets users quantify over universes via `forall \"k\" level (k: …)` and build level expressions inline.";
+      signature = "level : Hoas";
+    };
+    levelMax = {
+      description = "levelMax: HOAS Level join — `levelMax l m` produces `max(l, m)`; the semilattice operation used by `descArg` / `descPi` and the universe of dependent products.";
+      signature = "levelMax : Hoas -> Hoas -> Hoas";
+    };
+    levelSuc = {
+      description = "levelSuc: HOAS Level successor — `levelSuc l` produces `l + 1`; used to build closed level expressions and inside `congSuc` for Eq-on-Level transport.";
+      signature = "levelSuc : Hoas -> Hoas";
+    };
+    levelZero = {
+      description = "levelZero: HOAS Level constant `0` — the base universe level; combines with `levelSuc` / `levelMax` to form arbitrary closed level expressions.";
+      signature = "levelZero : Hoas";
+    };
+    liftAt = {
+      description = "liftAt: HOAS lift introduction — `liftAt l m A a` produces `LiftAt l m A` from `a : A`; idempotent at equal levels (no introducer when `l = m`).";
+      signature = "liftAt : Level -> Level -> Hoas -> Hoas -> Hoas  -- l, m, A, a";
+    };
+    liftAtWithEq = {
+      description = "liftAtWithEq: explicit-witness lift introduction — `liftAtWithEq l m eq A a` with the caller-provided `eq` term derived via `congSuc` / `maxSucDom` for level-polymorphic positions.";
+      signature = "liftAtWithEq : Level -> Level -> Hoas -> Hoas -> Hoas -> Hoas  -- l, m, eq, A, a";
+    };
+    listElim = {
+      description = "listElim: HOAS list eliminator wrapper — `listElim k A P N C xs` runs `ListDT.elim k A` after binding motive / nil-branch / cons-step at their required types.";
+      signature = "listElim : Level -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas  -- k, A, motive, onNil, onCons, scrut";
+      doc = ''
+        The cons step has type `∀h:A. ∀t:listOf A. ∀_:P t. P (cons A h t)`
+        — the inductive hypothesis is the recursive call's result.
+        For constant motives use `tc.verified.matchList`. The level
+        argument threads into the motive's codomain universe.
+      '';
+    };
+    lowerAt = {
+      description = "lowerAt: HOAS lift elimination — `lowerAt l m A x` extracts `a : A` from `x : LiftAt l m A`; β-reduces with `liftAt`, idempotent at equal levels.";
+      signature = "lowerAt : Level -> Level -> Hoas -> Hoas -> Hoas  -- l, m, A, x";
+    };
+    lowerAtWithEq = {
+      description = "lowerAtWithEq: explicit-witness lift elimination — `lowerAtWithEq l m eq A x` mirroring `liftAtWithEq`; uses the supplied `eq` to discharge the level bound.";
+      signature = "lowerAtWithEq : Level -> Level -> Hoas -> Hoas -> Hoas -> Hoas  -- l, m, eq, A, x";
+    };
+    maxSucDom = {
+      description = "maxSucDom: Level-max-suc transport — proof of `∀a b. Eq Level (max a b) b -> Eq Level (max a (suc b)) (suc b)`; lifts max-bound witness through suc on the right operand.";
+      signature = "maxSucDom : Hoas";
+    };
+    maybe = {
+      description = "maybe: HOAS optional type — `maybe inner` is `Sum inner Unit`; left payload carries a value, right marks absence.";
+      signature = "maybe : Hoas -> Hoas";
+    };
+    mu = {
+      description = "mu: ⊤-slice inductive carrier — alias for `muI unitPrim D i`; the unit-indexed special case used by prelude datatypes like nat, list, bool.";
+      signature = "mu : Hoas -> Hoas -> Hoas  -- D, i";
+    };
+    muI = {
+      description = "muI: indexed inductive carrier former — `muI I D i` builds `μ I D i`, the value type at index `i` of the description `D : Desc I`.";
+      signature = "muI : Hoas -> Hoas -> Hoas -> Hoas  -- I, D, i";
+      doc = ''
+        The carrier is constructed by `descCon D i d` from interpreted
+        payloads. Eliminated via `descInd D Q step i x` for indexed
+        induction. The kernel routes `mu` through the description-
+        rule path, never as a bare `mu` constructor — every `muI` flow
+        eventually applies the encoder cascade.
+      '';
+    };
+    natCaseU = {
+      description = "natCaseU: nat-case at the universe level — `natCaseU A B` is `λn:nat. case n { zero => A; succ _ => B; }`; built on `descInd nat.D` with sum-branching on the per-constructor payload.";
+      signature = "natCaseU : Hoas -> Hoas -> Hoas  -- zeroBranch, succBranch";
+      doc = ''
+        The discriminator's result type is `U(0)` regardless of
+        scrutinee; the inductive hypothesis is discarded since
+        discrimination is value-shape-driven, not recursive. Used by
+        `vhead` to make the vnil/vcons branches target different
+        types (`unit` vs the element type), and by `absurdFin0` to
+        target the goal type at zero and `Unit` at succ.
+      '';
+    };
+    natPredCase = {
+      description = "natPredCase: nat-case with predecessor-dependent succ branch — `natPredCase A n` returns `unit` at zero and `vec A m` at `succ m`; generalises `natCaseU` to payload-dependent succ cases.";
+      signature = "natPredCase : Hoas -> Hoas  -- elemTy";
+      doc = ''
+        Used by `vtail` to build the vecElim motive
+        `P n xs = natPredCase A n` so the vnil branch targets `unit`
+        (filled by `tt`) and the vcons branch targets `vec A pred`
+        (filled by the tail). Implementation extracts the
+        predecessor via `fst_ r` on the inr summand.
+      '';
+    };
+    natToLevel = {
+      description = "natToLevel: meta-level integer-to-Level helper — `natToLevel n` produces `levelSuc^n levelZero`; throws on non-Int input; emits closed Level syntax only.";
+      signature = "natToLevel : Int -> Hoas";
+    };
+    opaqueLam = {
+      description = "opaqueLam: HOAS opaque-lambda wrapper — `opaqueLam nixFn piHoas` packages a non-HOAS Nix function with its declared Π-type; the kernel treats the body as an unverified trust boundary.";
+      signature = "opaqueLam : (Any -> Any) -> Hoas -> Hoas";
+      doc = ''
+        Use only when the body cannot be expressed as HOAS — e.g.
+        wrapping a recursion-irregular helper produced outside the
+        kernel. The elaborator emits `mkOpaqueLam`; the type-checker
+        cannot recover the body's HOAS shape, so it accepts the
+        declared `piHoas` without re-validation. Prefer `verifiedFn`
+        from `tc.verified` when the body IS expressible as HOAS — that
+        path keeps body verification.
+      '';
+    };
+    pair = {
+      description = "pair: HOAS Σ-pair introduction — `pair fst snd` packages two HOAS values; the surrounding type annotation pins which Σ-type the pair inhabits.";
+      signature = "pair : Hoas -> Hoas -> Hoas";
+    };
+    path = {
+      description = "path: kernel-primitive `Path` type — opaque Nix path axiomatised at the kernel level; literal-only entry via `pathLit`.";
+      signature = "path : Hoas";
+    };
+    pathLit = {
+      description = "pathLit: HOAS Path-literal marker — placeholder term checkable against `path`; the Nix path is not embedded in the kernel term.";
+      signature = "pathLit : Hoas";
+    };
+    piI = {
+      description = "piI: indexed piI-constructor — `piI I k S f D` builds a description that quantifies over `S` then continues with `D` parametrised by the chosen element via `f : S -> Tm` (the index function).";
+      signature = "piI : Hoas -> Level -> Hoas -> Hoas -> Hoas -> Hoas  -- I, k, sort, indexFn, continuation";
+    };
+    piIAt = {
+      description = "piIAt: universe-polymorphic piI — `piIAt I l k S f D` builds the same shape as `piI` but with explicit sort level `l` and continuation level `k`, used when level decisions cannot be left to convLevel.";
+      signature = "piIAt : Hoas -> Level -> Level -> Hoas -> Hoas -> Hoas -> Hoas";
+    };
+    piIWithEq = {
+      description = "piIWithEq: piIAt variant carrying an explicit bound-witness — `piIWithEq I l k S f eq D` supplies the `eq : Eq Level (max l k) k` proof when the elaborator cannot auto-decide via `convLevel`.";
+      signature = "piIWithEq : Hoas -> Level -> Level -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas";
+    };
+    plus = {
+      description = "plus: ⊤-slice description sum — alias for `plusI unitPrim 0 A B`; the standard form for combining prelude descriptions like nat = retI + recI(retI).";
+      signature = "plus : Hoas -> Hoas -> Hoas";
+    };
+    plusI = {
+      description = "plusI: indexed description sum — `plusI I k A B` builds `A + B` at index sort `I` and level `k`; both `A` and `B` must share index sort and level.";
+      signature = "plusI : Hoas -> Level -> Hoas -> Hoas -> Hoas";
+    };
+    product = {
+      description = "product: HOAS named single-constructor μ-datatype — `product name [H.field …]` is sugar for `datatype name [(con name fields)]`; returns the full DataSpec so deriveSchema/deriveDescriptor and validateValue work unchanged.";
+      signature = "product : String -> [Field] -> DataSpec";
+      doc = ''
+        The named parallel to `record` (anonymous, `.T`-only) and
+        `variant` (n-con sum). The single constructor's name is the
+        type name, since a product has no constructor to disambiguate.
+        Fields project flat, with no inner `value` wrapper. Use when
+        the domain type has a stable user-supplied name and consumers
+        need the full DataSpec (`.T`, `.cons`, `.<name>` ctor, `.elim`).
+      '';
+    };
+    recI = {
+      description = "recI: indexed recI-constructor — `recI I k j D` adds a recursive child at target index `j` to the continuation description `D`; the recursive position contributes payload at `μ I D' j` for the inner D'.";
+      signature = "recI : Hoas -> Level -> Hoas -> Hoas -> Hoas  -- I, k, targetIndex, continuation";
+    };
+    record = {
+      description = "record: HOAS record type — `record [{name; type}…]` builds a mono-constructor μ-datatype whose single constructor takes the listed fields in order; surface for `v.field` projection.";
+      signature = "record : [{ name : String; type : Hoas; }] -> Hoas";
+      doc = ''
+        Compiled to a mono-constructor μ-datatype carrying `_dtypeMeta`
+        with one constructor named `mk` whose fields match the input
+        list. The type's canonical name is `Record{fieldName1, …}`
+        sorted alphabetically. Use `v.field recordTy "name" record` to
+        project a field by name; the eliminator is derived once and
+        reused across projections.
+      '';
+    };
+    refl = {
+      description = "refl: HOAS reflexivity introduction for `EqDT` — emitted in check-mode against a goal `EqDT A a a`; the elaborator handles the level/index inference.";
+      signature = "refl : Hoas";
+    };
+    reflDT = {
+      description = "reflDT: prelude equality reflexivity — `reflDT A a : eqDT A a a`; the canonical inhabitant of the diagonal.";
+      signature = "reflDT : Hoas -> Hoas -> Hoas  -- A, value";
+    };
+    retI = {
+      description = "retI: indexed retI-constructor — `retI I k j` builds a `Desc^k I` leaf returning index `j`; level-polymorphic over `k`.";
+      signature = "retI : Hoas -> Level -> Hoas -> Hoas  -- I, k, targetIndex";
+    };
+    sigma = {
+      description = "sigma: HOAS Σ-type former — `sigma name fst body` builds `Σ(name:fst). body`; the dependent-pair counterpart to `forall`.";
+      signature = "sigma : String -> Hoas -> (Hoas -> Hoas) -> Hoas";
+      doc = ''
+        Stack-safe like `forall` (iterative `genericClosure`
+        elaboration). Pairs enter via `pair`, project via `fst_` /
+        `snd_`. For records of more than two fields, prefer `record`
+        which is encoded as a mono-constructor μ-datatype with named
+        projections via `v.field`.
+      '';
+    };
+    snd_ = {
+      description = "snd_: HOAS Σ-pair second projection — extracts the right component; reduces by π₂ during normalisation when the argument is a `pair`.";
+      signature = "snd_ : Hoas -> Hoas";
+    };
+    squash = {
+      description = "squash: HOAS propositional truncation — `squash A` is the type `‖A‖` whose elements are all conv-equal; collapses A's content to mere inhabitation.";
+      signature = "squash : Hoas -> Hoas";
+      doc = ''
+        Two `squashIntro _` values inhabiting the same `squash A` are
+        conv-equal by definitional irrelevance — equality holds
+        without inspecting payloads. Use to express subsingleton
+        propositions or to enforce proof-irrelevance on otherwise
+        relevant data.
+      '';
+    };
+    squashElim = {
+      description = "squashElim: HOAS truncation eliminator — `squashElim A B f x` lifts `f : A -> squash B` over `x : squash A`; restricted to `squash`-typed motives so irrelevance is preserved.";
+      signature = "squashElim : Hoas -> Hoas -> Hoas -> Hoas -> Hoas  -- A, B, f, x";
+      doc = ''
+        Restricted to motives whose target is `squash B` — eliminating
+        out of a squash into a relevant type is forbidden (would
+        violate irrelevance). For relevant-target elimination, the
+        only path is constructing a derivation that requires no
+        inspection of the squashed value.
+      '';
+    };
+    squashIntro = {
+      description = "squashIntro: HOAS truncation introduction — `squashIntro a` wraps `a : A` into `squash A`; the resulting witness ignores the underlying value under conv.";
+      signature = "squashIntro : Hoas -> Hoas";
+    };
+    strEq = {
+      description = "strEq: HOAS kernel string equality — `strEq a b` produces a `bool` HOAS term; reflects the `mkStrEq` primitive of the kernel.";
+      signature = "strEq : Hoas -> Hoas -> Hoas";
+    };
+    string = {
+      description = "string: kernel-primitive `String` type — axiomatised; literals enter via `stringLit`, equality is decidable via `strEq`.";
+      signature = "string : Hoas";
+    };
+    stringLit = {
+      description = "stringLit: HOAS String literal — `stringLit s` lifts a Nix string to a kernel `stringLit` Tm checkable against `string`.";
+      signature = "stringLit : String -> Hoas";
+    };
+    sumElim = {
+      description = "sumElim: HOAS sum eliminator wrapper — `sumElim k A B P L R s` runs `SumDT.elim k` at the base universe level; `L` and `R` are dependent on the injected payload.";
+      signature = "sumElim : Level -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas  -- k, A, B, motive, onLeft, onRight, scrut";
+      doc = ''
+        Calls `sumElimAt levelZero …` for the homogeneous-level
+        common case. For sums constructed via `inlAt` / `inrAt` at a
+        non-zero level, use `sumElimAt` directly with the matching
+        level. For constant motives use `tc.verified.matchSum`.
+      '';
+    };
+    sumElimAt = {
+      description = "sumElimAt: universe-polymorphic sum eliminator — `sumElimAt level k A B P L R s` runs the sum eliminator at the given universe level, matching `inlAt` / `inrAt` construction.";
+      signature = "sumElimAt : Hoas -> Level -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas  -- level, k, A, B, motive, onLeft, onRight, scrut";
+    };
+    true_ = {
+      description = "true_: HOAS `Bool` constructor `true` — generated by `BoolDT`; corresponds to the right summand of bool-as-`Sum Unit Unit`.";
+      signature = "true_ : Hoas";
+    };
+    tt = {
+      description = "tt: HOAS unit value — the unique inhabitant of `unit`; ⊤-slice convention places this at every retI leaf of description scaffolding.";
+      signature = "tt : Hoas";
+    };
+    u = {
+      description = "u: HOAS universe former — `u level` builds `U(level)`, the universe of types at the given level; `level` accepts a Nix Int, a HOAS Level term, or a kernel Tm.";
+      signature = "u : Level -> Hoas";
+    };
+    unit = {
+      description = "unit: HOAS unit type — alias for the kernel-primitive `unitPrim`; the ⊤-slice index sort for description machinery and refinement bound markers.";
+      signature = "unit : Hoas";
+    };
+    variant = {
+      description = "variant: HOAS tagged-union type — `variant [{tag; type}…]` builds an n-constructor μ-datatype whose tags become single-field constructor names.";
+      signature = "variant : [{ tag : String; type : Hoas; }] -> Hoas";
+      doc = ''
+        Each branch becomes a single-field constructor named after the
+        tag, so a value `{ _tag = "Left"; value = v; }` walks via the
+        recovery `_tag` branch finding constructor "Left" and reading
+        its `value` field. The canonical type name is
+        `Variant{tag1, tag2, …}` with tags sorted alphabetically.
+      '';
+    };
+    vcons = {
+      description = "vcons: prelude `Vec` cons constructor — `vcons A m x xs` prepends `x : A` to `xs : vec A m`, producing `vec A (succ m)`.";
+      signature = "vcons : Hoas -> Hoas -> Hoas -> Hoas -> Hoas  -- elemTy, predecessor, head, tail";
+    };
+    vec = {
+      description = "vec: prelude `Vec` type family — forwarder for `app VecDT.T A`; `app (vec A) n` is the type of vectors of length `n` carrying elements of type `A`.";
+      signature = "vec : Hoas -> Hoas  -- elemTy";
+    };
+    vecDesc = {
+      description = "vecDesc: prelude `Vec` description — forwarder for `app VecDT.D A`; the indexed description of length-indexed vectors over element type `A`.";
+      signature = "vecDesc : Hoas -> Hoas  -- elemTy";
+    };
+    vecElim = {
+      description = "vecElim: prelude `Vec` eliminator — `vecElim k A P Pn Pc n xs` discharges `xs : vec A n` against motive `P : ∀n:nat. vec A n -> U(k)`.";
+      signature = "vecElim : Level -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas";
+    };
+    vhead = {
+      description = "vhead: prelude `Vec` head extractor — `vhead A n xs` returns the first element of `xs : vec A (succ n)`; eliminator-driven via the `natCaseU unit A` motive.";
+      signature = "vhead : Hoas -> Hoas";
+    };
+    vnil = {
+      description = "vnil: prelude `Vec` empty constructor — `vnil A` builds `[] : vec A zero`; generated by `VecDT`.";
+      signature = "vnil : Hoas -> Hoas  -- elemTy";
+    };
+    void = {
+      description = "void: HOAS empty type — derived as `app fin zero` (i.e. `Fin 0`); inhabited only at the vacuous index, eliminated via `absurdFin0`.";
+      signature = "void : Hoas";
+    };
+    vtail = {
+      description = "vtail: prelude `Vec` tail extractor — `vtail A n xs` returns the tail of `xs : vec A (succ n)` at type `vec A n`; eliminator-driven via the `natPredCase A` motive.";
+      signature = "vtail : Hoas -> Hoas";
+    };
+    withConLabel = {
+      description = "withConLabel: attach a surrounding-constructor label to a description-encoding HOAS form — `withConLabel label form` adds `_conLabel = label`; conv-irrelevant.";
+      signature = "withConLabel : String -> Hoas -> Hoas";
+      doc = ''
+        Set by the `datatype` macro at each constructor's spine site,
+        so each summand carries its constructor name. Surfaces
+        through `descView`'s `.conLabel` field. Orthogonal to
+        `withDescLabel` (separate slot) so labeling a field-labeled
+        description with a constructor name doesn't overwrite the
+        field's identity.
+      '';
+    };
+    withDescLabel = {
+      description = "withDescLabel: attach a presentation label to a description-encoding HOAS form — `withDescLabel label form` adds `_label = label`; conv-irrelevant, idempotent under re-labeling.";
+      signature = "withDescLabel : String -> Hoas -> Hoas";
+      doc = ''
+        Surfaces back through `descView`'s `.label` field. Used by
+        renderers (pretty-printers, doc generators) to surface field
+        names without affecting type equality — two descriptions
+        differing only in labels are conv-equal. Orthogonal to
+        `withConLabel`, which lives in a separate `_conLabel` slot.
+      '';
+    };
+  };
 }

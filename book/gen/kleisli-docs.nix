@@ -24,19 +24,35 @@
 let
   docs = nix-effects.extractDocs;
   bookSrc = ../src;
+  nxSrc = ../../src;
 
-  # mtime data is optional; absent → null → front-matter mtime omitted.
-  bookMtimes =
-    let f = bookSrc + "/mtimes.json";
-    in if builtins.pathExists f
-       then builtins.fromJSON (builtins.readFile f)
-       else {};
+  # mtime + sha data is optional; absent → null → front-matter key omitted.
+  readJsonMap = path:
+    if builtins.pathExists path
+    then builtins.fromJSON (builtins.readFile path)
+    else {};
 
+  bookMtimes = readJsonMap (bookSrc + "/mtimes.json");
+  bookShas = readJsonMap (bookSrc + "/shas.json");
   mtimeForBookFile = relPath: bookMtimes.${relPath} or null;
+  shaForBookFile = relPath: bookShas.${relPath} or null;
+
+  # Per-bucket mtimes + shas for auto-generated API pages. Keyed by first
+  # path component under nix-effects/src/ (or `_root` for top-level .nix
+  # files). Mtime value = max git_mtime across the bucket's files; sha
+  # value = commit at that max-mtime file (the two agree by construction
+  # in regenerate_mtimes.py).
+  srcMtimes = readJsonMap (nxSrc + "/mtimes.json");
+  srcShas = readJsonMap (nxSrc + "/shas.json");
+  mtimeForSrcBucket = bucket: srcMtimes.${bucket} or null;
+  shaForSrcBucket = bucket: srcShas.${bucket} or null;
+
+  # Escape `\` and `"` for a YAML double-quoted scalar.
+  yamlEscape = s: builtins.replaceStrings ["\\" "\""] ["\\\\" "\\\""] s;
 
   # Add YAML front matter to markdown content.
-  # Strips leading "# Title\n" from body if present (since title is in front matter).
-  addFrontMatter = { title, body, mtime ? null }:
+  # Strips a leading `# Title` from body to avoid duplicate heading.
+  addFrontMatter = { title, body, mtime ? null, sha ? null, description ? null }:
     let
       # Strip leading "# Title\n\n" from body to avoid duplicate heading
       lines = lib.splitString "\n" body;
@@ -53,47 +69,139 @@ let
           in lib.concatStringsSep "\n" trimmed
         else body;
       mtimeLine = if mtime != null then "mtime: ${toString mtime}\n" else "";
+      shaLine = if sha != null && sha != "" then "sha: ${sha}\n" else "";
+      descriptionLine =
+        if description != null && description != ""
+        then "description: \"${yamlEscape description}\"\n"
+        else "";
     in
-    "---\ntitle: \"${title}\"\n${mtimeLine}---\n\n${strippedBody}";
+    "---\ntitle: \"${title}\"\n${mtimeLine}${shaLine}${descriptionLine}---\n\n${strippedBody}";
+
+  # Enumerate .nix files contributed by a split-module directory under
+  # nix-effects/src/. Returns an empty list for non-split-module dirs (no
+  # module.nix) and for missing paths. `module.nix` and `tests.nix` are
+  # excluded (the former is the aggregator, the latter is test scaffolding).
+  #
+  # extractDocs strips internal scope from split modules (whose value is a
+  # flat function attrset), so this list is the agent's only visibility into
+  # which files contribute to the rendered page.
+  sourceFilesFor = subPath:
+    let
+      dir = nxSrc + "/${subPath}";
+      hasModuleNix = builtins.pathExists (dir + "/module.nix");
+      entries =
+        if hasModuleNix && builtins.pathExists dir
+        then builtins.readDir dir
+        else {};
+      isContributing = name: type:
+        type == "regular"
+        && lib.hasSuffix ".nix" name
+        && name != "module.nix"
+        && name != "tests.nix";
+      files = lib.filter (n: isContributing n entries.${n}) (builtins.attrNames entries);
+    in lib.sort (a: b: a < b) files;
+
+  renderSourceFilesSection = files:
+    lib.optionalString (files != [])
+      ("## Source files\n\n"
+       + "This module is built from multiple files; functions surface via the\n"
+       + "module aggregator. The contributing source files are:\n\n"
+       + lib.concatMapStrings (f: "- `${f}`\n") files
+       + "\n");
+
+  # Metadata keys present alongside documented children on a doc-tree node.
+  # The walker treats these as scalar fields, not as candidate child pages/entries.
+  metaKeys = [ "doc" "description" "signature" "tests" "appendix" ];
 
   # Render an API module page with front matter.
-  renderApiPage = title: node:
+  # `sourceFiles` is an optional list of filenames; non-empty triggers a
+  # "Source files" section, used for split-module pages where extractDocs
+  # has collapsed internal structure to `{ doc, tests }`.
+  # `appendBody` is markdown injected between the per-symbol entries and
+  # the source-files footer; used by the diag/hints page to attach the
+  # Hint registry and by the walker to attach sub-namespace navigation.
+  renderApiPage = { title, node, mtime ? null, sha ? null, sourceFiles ? [], appendBody ? "" }:
     let
       moduleDoc = lib.optionalString (node ? doc && node.doc != "")
-        (lib.removeSuffix "\n" (lib.trimWith { start = true; end = true; } node.doc) + "\n\n");
+        (linkifyHints
+          (lib.removeSuffix "\n" (lib.trimWith { start = true; end = true; } node.doc))
+         + "\n\n");
 
-      entries = lib.filterAttrs (k: _: k != "doc" && k != "tests") node;
+      entries = lib.filterAttrs (k: _: !(builtins.elem k metaKeys)) node;
 
       renderEntry = name: entry:
-        lib.optionalString (entry ? doc)
-          "## `${name}`\n\n${lib.removeSuffix "\n" (lib.trimWith { start = true; end = true; } entry.doc)}\n\n";
+        let
+          hasDesc = entry ? description && entry.description != "";
+          hasDoc = entry ? doc && entry.doc != "";
+          hasSig = entry ? signature && entry.signature != "";
+          trim = s: lib.removeSuffix "\n" (lib.trimWith { start = true; end = true; } s);
+          descBlock = lib.optionalString hasDesc "_${trim entry.description}_\n\n";
+          sigBlock = lib.optionalString hasSig "```\n${trim entry.signature}\n```\n\n";
+          docBlock = lib.optionalString hasDoc "${linkifyHints (trim entry.doc)}\n\n";
+        in
+        lib.optionalString (hasDesc || hasDoc || hasSig)
+          "## `${name}`\n\n${descBlock}${sigBlock}${docBlock}";
 
-      body = lib.concatStringsSep "" (lib.mapAttrsToList renderEntry entries);
+      entriesBody = lib.concatStringsSep "" (lib.mapAttrsToList renderEntry entries);
+
+      sourceFilesSection = renderSourceFilesSection sourceFiles;
     in
-    addFrontMatter { inherit title; body = "${moduleDoc}${body}"; };
+    addFrontMatter {
+      inherit title mtime sha;
+      description = node.description or null;
+      body = "${moduleDoc}${entriesBody}${appendBody}${sourceFilesSection}";
+    };
 
-  # Parse SUMMARY.md to extract ordered guide chapters.
-  # Returns list of { title, filename } for lines matching "- [Title](filename.md)".
-  # Only includes guide chapters (no "/" in filename — excludes api/ paths).
-  # Uses POSIX ERE bracket expressions ([[] for literal [) since builtins.match
-  # doesn't support backslash escapes for brackets.
-  parseSummary = let
-    lines = builtins.filter builtins.isString
-      (builtins.split "\n" (builtins.readFile (bookSrc + "/SUMMARY.md")));
-    parse = line:
-      let m = builtins.match "- [[]([^]]+)[]][(]([^)]+)[.]md[)]" line;
-      in if m != null
-        then { title = builtins.elemAt m 0; filename = builtins.elemAt m 1; }
-        else null;
-    all = builtins.filter (x: x != null) (map parse lines);
-  in builtins.filter (x: builtins.match ".+/.+" x.filename == null) all;
+  handwrittenSections = [
+    {
+      slug = "guide";
+      title = "Guide";
+      order = 1;
+      pages = [
+        { slug = "introduction"; title = "Introduction"; }
+        { slug = "getting-started"; title = "Getting Started"; }
+        { slug = "effects-and-handlers"; title = "Effects and Handlers"; }
+        { slug = "typed-validation"; title = "Typed Validation"; }
+        { slug = "generated-datatypes"; title = "Generated Datatypes"; }
+        { slug = "generic-programming"; title = "Generic Programming"; }
+        { slug = "sugar"; title = "Sugar"; }
+        { slug = "ornaments"; title = "Ornaments and Description-Backed Data"; }
+        { slug = "proof-guide"; title = "Proof Guide"; }
+      ];
+    }
+    {
+      slug = "concepts";
+      title = "Concepts";
+      order = 2;
+      pages = [
+        { slug = "theory"; title = "Theory"; }
+      ];
+    }
+    {
+      slug = "internals";
+      title = "Internals";
+      order = 3;
+      pages = [
+        { slug = "trampoline"; title = "Trampoline"; }
+        { slug = "systems-architecture"; title = "Systems Architecture"; }
+        { slug = "kernel-architecture"; title = "Kernel Architecture"; }
+        { slug = "kernel-spec"; title = "Kernel Formal Specification"; }
+      ];
+    }
+  ];
 
-  # Map of hand-written chapters to their display titles (derived from SUMMARY.md).
-  guideChapters = builtins.listToAttrs
-    (map (ch: { name = ch.filename; value = ch.title; }) parseSummary);
+  handwrittenChapters = lib.concatMap
+    (section:
+      map (page: page // { section = section.slug; }) section.pages)
+    handwrittenSections;
 
-  # Ordered page slugs for the guide section (preserves SUMMARY.md reading order).
-  guidePageOrder = map (ch: ch.filename) parseSummary;
+  chapterBySlug = builtins.listToAttrs
+    (map (chapter: { name = chapter.slug; value = chapter; }) handwrittenChapters);
+
+  manualSectionManifest = map (section: {
+    inherit (section) slug title order;
+    pages = map (page: page.slug) section.pages;
+  }) handwrittenSections;
 
   # Capitalise a module name for display: "state" -> "State", "acc" -> "Acc".
   capitalise = s:
@@ -103,49 +211,34 @@ let
     in lib.toUpper first + rest;
 
   # Rewrite internal mdBook links (e.g. [Trampoline](trampoline.md)) to
-  # kleisli-docs route format (/nix-effects/guide/trampoline).
+  # kleisli-docs route format.
   rewriteGuideLinks = body:
     builtins.replaceStrings
-      (map (f: "](${f}.md)") (builtins.attrNames guideChapters))
-      (map (f: "](/nix-effects/guide/${f})") (builtins.attrNames guideChapters))
+      (map (f: "](${f}.md)") (builtins.attrNames chapterBySlug))
+      (map (f: "](/nix-effects/${chapterBySlug.${f}.section}/${f})")
+        (builtins.attrNames chapterBySlug))
       body;
 
-  # Generate linkFarm entries for hand-written guide chapters.
-  guideEntries = lib.mapAttrsToList (filename: title: {
-    name = "nix-effects/guide/${filename}.md";
-    path = pkgs.writeText "${filename}.md"
+  # Generate linkFarm entries for hand-written chapters.
+  guideEntries = map (chapter: {
+    name = "nix-effects/${chapter.section}/${chapter.slug}.md";
+    path = pkgs.writeText "${chapter.slug}.md"
       (addFrontMatter {
-        inherit title;
-        body = rewriteGuideLinks (builtins.readFile (bookSrc + "/${filename}.md"));
-        mtime = mtimeForBookFile "${filename}.md";
+        title = chapter.title;
+        body = rewriteGuideLinks (builtins.readFile (bookSrc + "/${chapter.slug}.md"));
+        mtime = mtimeForBookFile "${chapter.slug}.md";
+        sha = shaForBookFile "${chapter.slug}.md";
       });
-  }) guideChapters;
+  }) handwrittenChapters;
 
-  # Render the diag namespace as a single core-api page. The diag
-  # subtree is a directory of submodules (error, hints, positions,
-  # pretty) with no top-level `.doc` field, so it isn't picked up by
-  # the generic core-modules filter; it has its own renderer because
-  # nix/nix-effects/src/diag/hints.nix points every Hint's docLink at
-  # /nix-effects/core-api/diag#<slug-of-key> and we need the rendered
-  # page to expose those anchors.
-  renderDiagPage = diagDocs: hintsRegistry:
+  # Render the Hint registry as a markdown section. Used as an
+  # `appendBody` on the diag/hints page to provide a single in-page
+  # overview of the closed key set. The canonical per-key `docLink`
+  # targets are the dedicated pages emitted by `diagHintsEntries`; this
+  # registry remains as a navigable index on the hints module page.
+  renderHintsRegistry = hintsRegistry:
     let
-      submoduleSection = name: node:
-        lib.optionalString (node ? doc && node.doc != "")
-          ("## ${name}\n\n"
-           + lib.removeSuffix "\n"
-               (lib.trimWith { start = true; end = true; } node.doc)
-           + "\n\n");
-
-      submoduleSections = lib.concatStrings [
-        (submoduleSection "error" (diagDocs.error or {}))
-        (submoduleSection "positions" (diagDocs.positions or {}))
-        (submoduleSection "pretty" (diagDocs.pretty or {}))
-        (submoduleSection "hints" (diagDocs.hints or {}))
-      ];
-
       sortedKeys = lib.sort (a: b: a < b) (builtins.attrNames hintsRegistry);
-
       renderHintEntry = key:
         let h = hintsRegistry.${key};
         in ''
@@ -156,93 +249,209 @@ let
           ${h.text}
 
         '';
-
-      hintsSection =
-        "## Hint registry\n\n"
-        + ''
-          The Hint table maps each *blame-path-suffix · classifier-pattern*
-          key to a structured Hint record. Each subsection below
-          corresponds to one such key; the heading anchor is the canonical
-          `docLink` target referenced from `hints.nix`.
-
-        ''
-        + lib.concatStrings (map renderHintEntry sortedKeys);
-
-      preamble = ''
-        The `diag` namespace provides typed diagnostic Errors and
-        structured Hints for the type-checker and runtime contracts.
-
-      '';
-
-      body = preamble + submoduleSections + hintsSection;
     in
-      addFrontMatter { title = "Diag"; inherit body; };
+      "## Hint registry\n\n"
+      + ''
+        The Hint table maps each *blame-path-suffix · classifier-pattern*
+        key to a structured Hint record. Each subsection below
+        corresponds to one such key; the canonical per-key page
+        referenced by `hints.nix:docLink` lives under
+        [/nix-effects/diag-hints/<slug>](/nix-effects/diag-hints).
 
-  # Generate linkFarm entries for API docs.
-  # Maps extractDocs tree structure to flat section directories.
+      ''
+      + lib.concatStrings (map renderHintEntry sortedKeys);
+
+  # API section configuration. Single source of truth for the namespace
+  # roots that mount under their own URL path; top-level modules not listed
+  # here render under `core-api/`. Adding a new root is one row.
+  apiSections = [
+    { key = "diag";    url = "diag";         bucket = "diag";    title = "Diagnostics";
+      banner = "Auto-generated API reference for the typed diagnostics namespace."; }
+    { key = "effects"; url = "effects";      bucket = "effects"; title = "Effects";
+      banner = "Auto-generated API reference from nix-effects source."; }
+    { key = "types";   url = "types";        bucket = "types";   title = "Types";
+      banner = "Auto-generated API reference from nix-effects source."; }
+    { key = "stream";  url = "streams";      bucket = "stream";  title = "Streams";
+      banner = "Auto-generated API reference from nix-effects source."; }
+    { key = "tc";      url = "type-checker"; bucket = "tc";      title = "Type Checker";
+      banner = "Auto-generated API reference from the MLTT type-checking kernel."; }
+  ];
+  sectionKeys = map (s: s.key) apiSections;
+
+  # Decorate the doc tree with auxiliary content that the renderer treats
+  # uniformly via `node.appendix`. The Hint registry attaches here so the
+  # renderer needs no per-namespace special case. Hint records are stripped
+  # from `extractDocs` by `_tag`-terminal recursion, so we read the raw
+  # registry off `nix-effects.src`.
+  hintsRegistry = nix-effects.src.diag.hints.hints or {};
+  augmentedDocs =
+    if hintsRegistry == {} || !(docs ? diag) || !(docs.diag ? hints)
+    then docs
+    else lib.recursiveUpdate docs {
+      diag.hints.appendix = renderHintsRegistry hintsRegistry;
+    };
+
+  # Rewrite `Hint::<key>` substrings in any doc body to a markdown link at
+  # the per-key page `/nix-effects/diag-hints/<slug>`. The registry's own
+  # `docLink` (computed by hints.nix:slugify) is the ground-truth target —
+  # no slug logic is duplicated here.
+  linkifyHints = doc:
+    let
+      keys = builtins.attrNames hintsRegistry;
+      needles = map (k: "Hint::${k}") keys;
+      replacements = map (k:
+        let entry = hintsRegistry.${k};
+            target = entry.docLink or "/nix-effects/diag/hints";
+        in "[Hint::${k}](${target})"
+      ) keys;
+    in if keys == [] then doc
+       else builtins.replaceStrings needles replacements doc;
+
+  # Emit one .md per Hint key under nix-effects/diag-hints/. Each page is
+  # the canonical destination of `docLink` (set in hints.nix to
+  # `${docBase}/${slugify key}`), so a compiler `Hint::<key>` resolves to
+  # focused agent-readable content in one fetch. scan-docs picks these up
+  # automatically (kleisli-docs/src/content.lisp:254), giving us
+  # `docs://kleisli/nix-effects/diag-hints/<slug>` MCP resources via the
+  # existing register-doc-resources maphash with no Lisp changes.
+  #
+  # Slug derivation reuses the registry's own docLink (its last path
+  # segment), avoiding any duplicate of hints.nix:slugify here.
+  diagHintsMtime = mtimeForSrcBucket "diag";
+  diagHintsSha = shaForSrcBucket "diag";
+  slugOfHintKey = key:
+    lib.last (lib.splitString "/" hintsRegistry.${key}.docLink);
+  diagHintsPages = lib.sort (a: b: a < b)
+    (map slugOfHintKey (builtins.attrNames hintsRegistry));
+  diagHintsEntries =
+    let
+      renderHintPage = key:
+        let h = hintsRegistry.${key};
+            slug = slugOfHintKey key;
+            body = ''
+              **Key:** `${key}`
+
+              **Category:** ${h.category} · **Severity:** ${h.severity}
+
+              ${h.text}
+            '';
+        in {
+          name = "nix-effects/diag-hints/${slug}.md";
+          path = pkgs.writeText "${slug}.md" (addFrontMatter {
+            title = key;
+            inherit body;
+            mtime = diagHintsMtime;
+            sha = diagHintsSha;
+          });
+        };
+    in lib.optionals (hintsRegistry != {})
+         (map renderHintPage
+              (lib.sort (a: b: a < b) (builtins.attrNames hintsRegistry)));
+
+  # A child node either renders inline (leaf, no documented descendants)
+  # or as its own page (any documented descendant).
+  isChild = k: v: !(builtins.elem k metaKeys) && builtins.isAttrs v;
+  isLeafChild = c: lib.filterAttrs isChild c == {};
+
+  documentedNames = node:
+    lib.sort (a: b: a < b)
+      (builtins.attrNames (lib.filterAttrs isChild node));
+
+  # Top-level modules that aren't section roots. These render flatly under
+  # `core-api/`. The filter excludes section keys and bare metadata.
+  coreModuleNames = lib.sort (a: b: a < b) (builtins.filter
+    (name: !(builtins.elem name sectionKeys)
+           && !(builtins.elem name metaKeys)
+           && builtins.isAttrs augmentedDocs.${name}
+           && (augmentedDocs.${name} ? doc
+               || augmentedDocs.${name} ? description))
+    (builtins.attrNames augmentedDocs));
+
+  # Recursive page emitter. One rule:
+  #   - leaf children render as `## name` entries on this page;
+  #   - nested children become their own pages reached via a
+  #     "Sub-namespaces" link list at the bottom;
+  #   - emit a page iff this node has any of {own doc, leaf entries,
+  #     nested children}.
+  # URL depth tracks doc-tree depth uniformly — no per-namespace dispatch,
+  # arbitrarily deep nesting renders for free.
+  walkApi = { urlPrefix, srcPath, node, mtime ? null, sha ? null }:
+    let
+      children = lib.filterAttrs isChild node;
+      leafChildren = lib.filterAttrs (_: isLeafChild) children;
+      nestedChildren = lib.filterAttrs (_: c: !(isLeafChild c)) children;
+
+      hasOwnDoc = (node ? doc && node.doc != "")
+               || (node ? description && node.description != "")
+               || (node ? signature && node.signature != "");
+      hasPageContent = hasOwnDoc || leafChildren != {} || nestedChildren != {};
+
+      metaFields = lib.filterAttrs
+        (k: _: builtins.elem k [ "doc" "description" "signature" ]) node;
+      pageNode = metaFields // leafChildren;
+
+      subNamespaceSection =
+        lib.optionalString (nestedChildren != {})
+          ("## Sub-namespaces\n\n"
+           + lib.concatStrings (map (n: "- [`${n}`](/${urlPrefix}/${n})\n")
+                                     (lib.sort (a: b: a < b)
+                                       (builtins.attrNames nestedChildren)))
+           + "\n");
+
+      pageName = baseNameOf urlPrefix;
+      selfPage = lib.optional hasPageContent {
+        name = "${urlPrefix}.md";
+        path = pkgs.writeText "${pageName}.md" (renderApiPage {
+          title = capitalise pageName;
+          node = pageNode;
+          inherit mtime sha;
+          sourceFiles = sourceFilesFor srcPath;
+          appendBody = (node.appendix or "") + subNamespaceSection;
+        });
+      };
+
+      nestedPages = lib.concatLists (lib.mapAttrsToList
+        (name: child: walkApi {
+          urlPrefix = "${urlPrefix}/${name}";
+          srcPath = "${srcPath}/${name}";
+          node = child;
+          inherit mtime sha;
+        }) nestedChildren);
+    in selfPage ++ nestedPages;
+
+  # Drive page generation from the doc tree. core-api/ holds top-level
+  # un-sectioned modules; each row of `apiSections` mounts a namespace
+  # root whose direct children are Tier-1 module pages and whose deeper
+  # plain-namespace descendants become Tier-2 pages by the same walker.
   apiEntries =
     let
-      # Core API modules — derived dynamically from extractDocs.
-      # Everything at the top level that isn't a sub-namespace container
-      # (effects, types, stream) and has documentation. `diag` is also
-      # excluded — it gets a dedicated renderer below that walks the
-      # raw Hints registry to emit per-key anchors.
-      subNamespaces = [ "effects" "types" "stream" "tc" "diag" ];
-      coreModules = builtins.filter
-        (name: !(builtins.elem name subNamespaces)
-               && builtins.isAttrs docs.${name}
-               && docs.${name} ? doc)
-        (builtins.attrNames docs);
-      coreEntries = builtins.filter (e: e != null) (map (name:
-        if docs ? ${name} then {
-          name = "nix-effects/core-api/${name}.md";
-          path = pkgs.writeText "${name}.md" (renderApiPage (capitalise name) docs.${name});
-        } else null
-      ) coreModules);
+      corePages = lib.concatLists (map (name:
+        walkApi {
+          urlPrefix = "nix-effects/core-api/${name}";
+          srcPath = name;
+          node = augmentedDocs.${name};
+          mtime = mtimeForSrcBucket "_root";
+          sha = shaForSrcBucket "_root";
+        }
+      ) coreModuleNames);
 
-      # Diag page: one core-api page generated from extractDocs.diag
-      # plus the raw Hints registry (the registry is accessed through
-      # `nix-effects.src` because extractDocs strips `_tag`-marked Hint
-      # records via api.extractValue's terminal-tag rule).
-      diagEntry = lib.optionals (docs ? diag && nix-effects ? src) [{
-        name = "nix-effects/core-api/diag.md";
-        path = pkgs.writeText "diag.md"
-          (renderDiagPage docs.diag nix-effects.src.diag.hints.hints);
-      }];
+      sectionedPages = lib.concatLists (map (sec:
+        lib.concatLists (lib.mapAttrsToList
+          (childName: childNode: walkApi {
+            urlPrefix = "nix-effects/${sec.url}/${childName}";
+            srcPath = "${sec.key}/${childName}";
+            node = childNode;
+            mtime = mtimeForSrcBucket sec.bucket;
+            sha = shaForSrcBucket sec.bucket;
+          })
+          (lib.filterAttrs isChild (augmentedDocs.${sec.key} or {})))
+      ) apiSections);
+    in corePages ++ sectionedPages;
 
-      # Effects modules
-      effectsEntries = lib.optionals (docs ? effects)
-        (lib.mapAttrsToList (name: node: {
-          name = "nix-effects/effects/${name}.md";
-          path = pkgs.writeText "${name}.md" (renderApiPage (capitalise name) node);
-        }) (lib.filterAttrs (k: v: builtins.isAttrs v && v ? doc) docs.effects));
-
-      # Types modules
-      typesEntries = lib.optionals (docs ? types)
-        (lib.mapAttrsToList (name: node: {
-          name = "nix-effects/types/${name}.md";
-          path = pkgs.writeText "${name}.md" (renderApiPage (capitalise name) node);
-        }) (lib.filterAttrs (k: v: builtins.isAttrs v && v ? doc) docs.types));
-
-      # Stream modules
-      streamEntries = lib.optionals (docs ? stream)
-        (lib.mapAttrsToList (name: node: {
-          name = "nix-effects/streams/${name}.md";
-          path = pkgs.writeText "${name}.md" (renderApiPage (capitalise name) node);
-        }) (lib.filterAttrs (k: v: builtins.isAttrs v && v ? doc) docs.stream));
-
-      # Type checker modules
-      tcEntries = lib.optionals (docs ? tc)
-        (lib.mapAttrsToList (name: node: {
-          name = "nix-effects/type-checker/${name}.md";
-          path = pkgs.writeText "${name}.md" (renderApiPage (capitalise name) node);
-        }) (lib.filterAttrs (k: v: builtins.isAttrs v && v ? doc) docs.tc));
-
-    in coreEntries ++ diagEntry ++ effectsEntries ++ typesEntries ++ streamEntries ++ tcEntries;
-
-  # project.json — standard contract for the doc service to auto-discover
+  # project.json — standard contract for the documentation app to auto-discover
   # this project. Section ordering, reference flags, and banner templates
   # are all declared here so the Lisp server needs zero project-specific code.
+  # API Reference children derive from `apiSections` plus core-api.
   projectJson = builtins.toJSON {
     id = "nix-effects";
     name = "nix-effects";
@@ -250,22 +459,34 @@ let
     source-url = "https://github.com/kleisli-io/nix-effects";
     index = "index.md";
     sections = [
-      { slug = "guide"; title = "Guide"; order = 1; pages = guidePageOrder; }
-      { slug = "core-api"; title = "Core API"; order = 2;
+      {
+        title = "Manual";
+        order = 1;
+        children = manualSectionManifest;
+      }
+      {
+        title = "API Reference";
+        order = 2;
         reference = true;
-        banner = "Auto-generated API reference from nix-effects source."; }
-      { slug = "effects"; title = "Effects"; order = 3;
-        reference = true;
-        banner = "Auto-generated API reference from nix-effects source."; }
-      { slug = "types"; title = "Types"; order = 4;
-        reference = true;
-        banner = "Auto-generated API reference from nix-effects source."; }
-      { slug = "streams"; title = "Streams"; order = 5;
-        reference = true;
-        banner = "Auto-generated API reference from nix-effects source."; }
-      { slug = "type-checker"; title = "Type Checker"; order = 6;
-        reference = true;
-        banner = "Auto-generated API reference from the MLTT type-checking kernel."; }
+        children = [
+          { slug = "core-api"; title = "Core API"; order = 1;
+            pages = coreModuleNames;
+            banner = "Auto-generated API reference from nix-effects source."; }
+        ] ++ lib.imap1 (i: sec: {
+          slug = sec.url;
+          title = sec.title;
+          order = i + 1;
+          pages = documentedNames (augmentedDocs.${sec.key} or {});
+          inherit (sec) banner;
+        }) apiSections
+        ++ lib.optional (hintsRegistry != {}) {
+          slug = "diag-hints";
+          title = "Diagnostic Hints";
+          order = (builtins.length apiSections) + 2;
+          pages = diagHintsPages;
+          banner = "Per-key diagnostic Hint pages, one per blame-path-suffix · classifier-pattern key — each compiler `Hint::<key>` resolves to its own page in one fetch.";
+        };
+      }
     ];
   };
 
@@ -283,8 +504,10 @@ let
         title = "nix-effects";
         body = builtins.readFile (bookSrc + "/index.md");
         mtime = mtimeForBookFile "index.md";
+        sha = shaForBookFile "index.md";
       });
   };
 
 in
-  pkgs.linkFarm "nix-effects-kleisli-docs" ([ projectEntry indexEntry ] ++ guideEntries ++ apiEntries)
+  pkgs.linkFarm "nix-effects-kleisli-docs"
+    ([ projectEntry indexEntry ] ++ guideEntries ++ apiEntries ++ diagHintsEntries)

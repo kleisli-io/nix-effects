@@ -3,9 +3,11 @@
 # Public export assembly for the evaluator. `self` is the disjoint-union
 # fixpoint of `core.nix` and `desc.nix`; `partTests` is the aggregated
 # test map from both parts.
-{ self, partTests, api, ... }:
+{ self, partTests, partDocs, api, ... }:
 
-api.mk {
+api.mkModule {
+  inherit partDocs;
+  description = "fx.tc.eval: pure kernel evaluator (kernel-spec §4, §9) — `eval`/`evalF`/`instantiate` plus elimination helpers; zero effect-system imports, part of the TCB.";
   doc = ''
     # fx.tc.eval — Evaluator
 
@@ -50,6 +52,11 @@ api.mk {
       sumPayloadTmView sumPayloadValView
       vInterpD vAllD vEverywhereD
       mkDescDescAppV mkDescDescAppVF;
+
+    _internal = api.mk {
+      description = "fx.tc.eval._internal: cross-part evaluator helpers reachable from sibling parts via the self-fixpoint; not part of the stable consumer surface.";
+      value = { inherit (self) mkCanonAppVF; };
+    };
   };
   tests = partTests;
 }

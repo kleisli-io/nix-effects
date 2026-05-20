@@ -167,18 +167,19 @@ a second `inherit` line.
 `fx.sugar.types` pre-wraps the eight zero-ary primitives —
 `Int`, `String`, `Bool`, `Float`, `Path`, `Null`, `Unit`, `Any` —
 with a `__functor` that builds a refinement when you apply a
-predicate. A port number, written without sugar:
+predicate. A target class, written without sugar:
 
 ```nix
-let inherit (fx.types) Int refined;
-in refined "Port" Int (x: x >= 0 && x <= 65535)
+let inherit (fx.types) String refined;
+in refined "TargetClass" String
+  (x: builtins.elem x [ "module" "file" "package" "check" ])
 ```
 
 and with sugar:
 
 ```nix
-let inherit (fx.sugar.types) Int;
-in Int (x: x >= 0) (x: x <= 65535)
+let inherit (fx.sugar.types) String;
+in String (x: builtins.elem x [ "module" "file" "package" "check" ])
 ```
 
 Both produce a kernel-identical type. The difference is readability
@@ -203,8 +204,9 @@ descriptive enough, drop back to `fx.types.refined` and give the type
 an explicit name:
 
 ```nix
-let inherit (fx.types) refined Int;
-in refined "Port" Int (x: x >= 0 && x <= 65535)
+let inherit (fx.types) refined String;
+in refined "RendererClass" String
+  (x: builtins.elem x [ "module" "file" "package" "check" ])
 ```
 
 ### `wrap` for user-defined types

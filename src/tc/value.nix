@@ -6,11 +6,8 @@
 # Neutrals use spine representation: { tag, level, spine }.
 #
 # Spec reference: kernel-spec.md §3
-{ api, ... }:
-
+{ ... }:
 let
-  inherit (api) mk;
-
   # -- Closures --
   mkClosure = env: body: { inherit env body; };
 
@@ -117,6 +114,7 @@ let
   vFloat = { tag = "VFloat"; };
   vAttrs = { tag = "VAttrs"; };
   vPath = { tag = "VPath"; };
+  vDerivation = { tag = "VDerivation"; };
   vFunction = { tag = "VFunction"; };
   vAny = { tag = "VAny"; };
 
@@ -126,6 +124,7 @@ let
   vFloatLit = f: { tag = "VFloatLit"; value = f; };
   vAttrsLit = { tag = "VAttrsLit"; };
   vPathLit = { tag = "VPathLit"; };
+  vDerivationLit = { tag = "VDerivationLit"; };
   vFnLit = { tag = "VFnLit"; };
   vAnyLit = { tag = "VAnyLit"; };
 
@@ -177,8 +176,33 @@ let
   # so a quoted spine round-trips to `mkSquashElim A B f x`.
   eSquashElim = A: B: f: { tag = "ESquashElim"; inherit A B f; };
 
-in mk {
-  doc = ''
+in {
+  inherit
+    mkClosure
+    vLam vPi
+    vSigma vPair
+    vUnit vTt
+    vBootSum vBootInl vBootInr
+    vBootEq vBootRefl vFunext
+    vSquash vSquashIntro
+    vDesc vMu vDescCon vDescConTagged
+    vInterpD vAllD vEverywhereD
+    vU
+    vLift vLiftIntro
+    vLevel vLevelZero vLevelSuc vLevelMax vLevelLit
+    vString vInt vFloat vAttrs vPath vDerivation vFunction vAny
+    vStringLit vIntLit vFloatLit vAttrsLit vPathLit vDerivationLit vFnLit vAnyLit
+    vOpaqueLam
+    vNe freshVar
+    eApp eFst eSnd eBootSumElim eBootJ eStrEq eDescInd eLiftElim
+    eInterpD eAllD eEverywhereD
+    eSquashElim
+  ;
+
+
+  __docs = {
+    _self = {
+      doc = ''
     # fx.tc.value — Value Domain (Val)
 
     Values are the semantic domain produced by evaluation. They use
@@ -203,8 +227,8 @@ in mk {
     - `vBootSum`, `vBootInl`, `vBootInr` — bootstrap coproduct values
     - `vBootEq`, `vBootRefl` — identity values
     - `vU` — universe values
-    - `vString`, `vInt`, `vFloat`, `vAttrs`, `vPath`, `vFunction`, `vAny` — primitive types
-    - `vStringLit`, `vIntLit`, `vFloatLit`, `vAttrsLit`, `vPathLit`, `vFnLit`, `vAnyLit` — primitive literals
+    - `vString`, `vInt`, `vFloat`, `vAttrs`, `vPath`, `vDerivation`, `vFunction`, `vAny` — primitive types
+    - `vStringLit`, `vIntLit`, `vFloatLit`, `vAttrsLit`, `vPathLit`, `vDerivationLit`, `vFnLit`, `vAnyLit` — primitive literals
 
     ## Neutrals
 
@@ -219,28 +243,7 @@ in mk {
     - `eApp`, `eFst`, `eSnd` — function/pair eliminators
     - `eBootSumElim`, `eBootJ` — inductive eliminators
   '';
-  value = {
-    inherit mkClosure;
-    inherit vLam vPi;
-    inherit vSigma vPair;
-    inherit vUnit vTt;
-    inherit vBootSum vBootInl vBootInr;
-    inherit vBootEq vBootRefl vFunext;
-    inherit vSquash vSquashIntro;
-    inherit vDesc vMu vDescCon vDescConTagged;
-    inherit vInterpD vAllD vEverywhereD;
-    inherit vU;
-    inherit vLift vLiftIntro;
-    inherit vLevel vLevelZero vLevelSuc vLevelMax vLevelLit;
-    inherit vString vInt vFloat vAttrs vPath vFunction vAny;
-    inherit vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit;
-    inherit vOpaqueLam;
-    inherit vNe freshVar;
-    inherit eApp eFst eSnd eBootSumElim eBootJ eStrEq eDescInd eLiftElim;
-    inherit eInterpD eAllD eEverywhereD;
-    inherit eSquashElim;
-  };
-  tests = {
+      tests = {
     # Closures
     "closure-env" = {
       expr = (mkClosure [ vTt ] { tag = "var"; idx = 0; }).env;
@@ -296,6 +299,7 @@ in mk {
     "vfloat-tag" = { expr = vFloat.tag; expected = "VFloat"; };
     "vattrs-tag" = { expr = vAttrs.tag; expected = "VAttrs"; };
     "vpath-tag" = { expr = vPath.tag; expected = "VPath"; };
+    "vderivation-tag" = { expr = vDerivation.tag; expected = "VDerivation"; };
     "vfunction-tag" = { expr = vFunction.tag; expected = "VFunction"; };
     "vany-tag" = { expr = vAny.tag; expected = "VAny"; };
     "vstringlit-tag" = { expr = (vStringLit "hi").tag; expected = "VStringLit"; };
@@ -306,6 +310,7 @@ in mk {
     "vfloatlit-value" = { expr = (vFloatLit 2.5).value; expected = 2.5; };
     "vattrslit-tag" = { expr = vAttrsLit.tag; expected = "VAttrsLit"; };
     "vpathlit-tag" = { expr = vPathLit.tag; expected = "VPathLit"; };
+    "vderivationlit-tag" = { expr = vDerivationLit.tag; expected = "VDerivationLit"; };
     "vfnlit-tag" = { expr = vFnLit.tag; expected = "VFnLit"; };
     "vanylit-tag" = { expr = vAnyLit.tag; expected = "VAnyLit"; };
     "vopaquelam-tag" = { expr = (vOpaqueLam { _fn = (x: x); } vUnit).tag; expected = "VOpaqueLam"; };
@@ -435,5 +440,256 @@ in mk {
       expr = (eEverywhereD vLevelZero vUnit vLevelZero vUnit vUnit vUnit vTt vBootRefl).tag;
       expected = "EEverywhereD";
     };
+  };
+    };
+
+    mkClosure = {
+      description = "mkClosure: defunctionalised closure `{ env, body }` — captures the evaluation environment and the kernel `Tm` body; instantiated by `eval.instantiate` without Nix lambdas in the TCB.";
+      signature = "mkClosure : Env -> Tm -> Closure";
+    };
+
+    vLam = {
+      description = "vLam: value-domain lambda `λ(name : domain). body` — carries a defunctionalised closure rather than a Nix function, keeping the TCB Nix-lambda-free.";
+      signature = "vLam : String -> Val -> Closure -> Val";
+    };
+    vPi = {
+      description = "vPi: value-domain dependent function type `Π(name : domain). codomain` — carries a closure for the codomain to permit semantic substitution.";
+      signature = "vPi : String -> Val -> Closure -> Val";
+    };
+
+    vSigma = {
+      description = "vSigma: value-domain dependent pair type `Σ(name : fst). snd` — carries a closure for the snd component to permit semantic substitution.";
+      signature = "vSigma : String -> Val -> Closure -> Val";
+    };
+    vPair = {
+      description = "vPair: value-domain pair `(fst, snd)` — components held in WHNF, projected by `eFst` / `eSnd` spine frames.";
+      signature = "vPair : Val -> Val -> Val";
+    };
+
+    vUnit = {
+      description = "vUnit: value-domain unit type — terminal type with single inhabitant `vTt`; eta-converted in `conv`.";
+    };
+    vTt = {
+      description = "vTt: value-domain unit value `tt` — sole inhabitant of `vUnit`; conv collapses all Unit-typed values to this.";
+    };
+
+    vBootSum = {
+      description = "vBootSum: value-domain bootstrap coproduct type `A + B` — used by `descPlus`'s sum-of-descriptions before generic sums become available.";
+      signature = "vBootSum : Val -> Val -> Val";
+    };
+    vBootInl = {
+      description = "vBootInl: value-domain left-injection `inl(a) : A + B` — carries `leftTy` and `rightTy` for elaboration shape recovery.";
+      signature = "vBootInl : Val -> Val -> Val -> Val  -- leftTy, rightTy, value";
+    };
+    vBootInr = {
+      description = "vBootInr: value-domain right-injection `inr(b) : A + B` — carries `leftTy` and `rightTy` for elaboration shape recovery.";
+      signature = "vBootInr : Val -> Val -> Val -> Val  -- leftTy, rightTy, value";
+    };
+
+    vBootEq = {
+      description = "vBootEq: value-domain bootstrap identity type `Eq(A, a, b)` — propositional equality used by `descRet`'s level transport and by the J eliminator.";
+      signature = "vBootEq : Val -> Val -> Val -> Val  -- A, a, b";
+    };
+    vBootRefl = {
+      description = "vBootRefl: value-domain reflexivity `refl : Eq(A, a, a)` — canonical inhabitant of every reflexive identity; conv collapses all proofs of refl to this.";
+    };
+    vFunext = {
+      description = "vFunext: value-domain funext axiom — given pointwise equality, produces equality of functions at `Π(a:A). B a`.";
+      signature = "vFunext : Val -> Val -> Val -> Val -> Val -> Val";
+    };
+
+    vSquash = {
+      description = "vSquash: value-domain propositional truncation `Squash A` — quotient of `A` collapsing all inhabitants to one for proof-irrelevant fields.";
+      signature = "vSquash : Val -> Val";
+    };
+    vSquashIntro = {
+      description = "vSquashIntro: value-domain introduction of `Squash A` — lifts any inhabitant of `A` to the sole inhabitant of `Squash A`.";
+      signature = "vSquashIntro : Val -> Val";
+    };
+
+    vDesc = {
+      description = "vDesc: value-domain description type `Desc I k` at index sort `I` and universe level `k`.";
+      signature = "vDesc : Val -> Val -> Val  -- I, k";
+    };
+    vMu = {
+      description = "vMu: value-domain levitated fixpoint `μ I D i` — carrier type of values whose constructors are described by `D` at index `i`.";
+      signature = "vMu : Val -> Val -> Val -> Val  -- I, D, i";
+    };
+    vDescCon = {
+      description = "vDescCon: value-domain constructor `descCon(D, i, payload)` — the canonical introducer for `μ I D i` values.";
+      signature = "vDescCon : Val -> Val -> Val -> Val  -- D, i, payload";
+    };
+    vDescConTagged = {
+      description = "vDescConTagged: value-domain `descCon` carrying a `Squash`-truncated guard certificate — surfaces refinement proofs on `fx.types.Certified` values.";
+      signature = "vDescConTagged : Val -> Val -> Val -> Val -> Val  -- D, i, payload, cert";
+    };
+
+    vInterpD = {
+      description = "vInterpD: value-domain interpretation `interpD D X i` — yields the payload type for a constructor described by `D` against carrier `X`.";
+      signature = "vInterpD : Val -> Val -> Val -> Val -> Val -> Val  -- k, I, D, X, i";
+    };
+    vAllD = {
+      description = "vAllD: value-domain induction-hypothesis collector — threads motive `P` through every recursive position in a payload.";
+      signature = "vAllD : Val -> Val -> Val -> Val -> Val -> Val -> Val -> Val";
+    };
+    vEverywhereD = {
+      description = "vEverywhereD: value-domain payload-traversal combinator — applies per-node `f` at every recursive position, producing a same-shape derived payload.";
+      signature = "vEverywhereD : Val -> Val -> Val -> Val -> Val -> Val -> Val -> Val -> Val";
+    };
+
+    vU = {
+      description = "vU: value-domain universe `U(level)` — the type of types at a given Level value.";
+      signature = "vU : Val -> Val";
+    };
+
+    vLift = {
+      description = "vLift: value-domain Tarski lift `Lift l m A` — non-cumulative cross-level transport of type `A : U(l)` into `U(m)` with `l ≤ m`.";
+      signature = "vLift : Val -> Val -> Val -> Val  -- l, m, A";
+    };
+    vLiftIntro = {
+      description = "vLiftIntro: value-domain introduction of `Lift l m A` — lifts a term `a : A` at level `l` to a term at level `m`.";
+      signature = "vLiftIntro : Val -> Val -> Val -> Val -> Val  -- l, m, A, a";
+    };
+
+    vLevel = {
+      description = "vLevel: value-domain Level type `Level : U(0)`.";
+    };
+    vLevelZero = {
+      description = "vLevelZero: value-domain level-zero literal `0 : Level`.";
+    };
+    vLevelSuc = {
+      description = "vLevelSuc: value-domain successor of a Level expression `suc(l) : Level`.";
+      signature = "vLevelSuc : Val -> Val";
+    };
+    vLevelMax = {
+      description = "vLevelMax: value-domain pointwise max `max(l, r) : Level` — used for universes of dependent products / pairs across distinct levels.";
+      signature = "vLevelMax : Val -> Val -> Val  -- l, r";
+    };
+    vLevelLit = {
+      description = "vLevelLit: value-domain concrete Level literal `n : Level` — derived from a Nix integer at evaluation time.";
+      signature = "vLevelLit : Int -> Val";
+    };
+
+    vString = {
+      description = "vString: value-domain axiomatised primitive `String : U(0)`.";
+    };
+    vInt = {
+      description = "vInt: value-domain axiomatised primitive `Int : U(0)`.";
+    };
+    vFloat = {
+      description = "vFloat: value-domain axiomatised primitive `Float : U(0)`.";
+    };
+    vAttrs = {
+      description = "vAttrs: value-domain axiomatised primitive `Attrs : U(0)` — inhabited by any Nix attrset.";
+    };
+    vPath = {
+      description = "vPath: value-domain axiomatised primitive `Path : U(0)`.";
+    };
+    vDerivation = {
+      description = "vDerivation: value-domain axiomatised primitive `Derivation : U(0)` — Nix derivation values; the store-producing irreducible value category.";
+    };
+    vFunction = {
+      description = "vFunction: value-domain axiomatised primitive `Function : U(0)` — opaque-function carrier.";
+    };
+    vAny = {
+      description = "vAny: value-domain axiomatised top primitive `Any : U(0)` — accepts every Nix value.";
+    };
+
+    vStringLit = {
+      description = "vStringLit: value-domain literal carrying a Nix string `s : String`.";
+      signature = "vStringLit : String -> Val";
+    };
+    vIntLit = {
+      description = "vIntLit: value-domain literal carrying a Nix integer `n : Int`.";
+      signature = "vIntLit : Int -> Val";
+    };
+    vFloatLit = {
+      description = "vFloatLit: value-domain literal carrying a Nix float `x : Float`.";
+      signature = "vFloatLit : Float -> Val";
+    };
+    vAttrsLit = {
+      description = "vAttrsLit: value-domain literal carrying an opaque Nix attrset `a : Attrs`.";
+      signature = "vAttrsLit : Attrs -> Val";
+    };
+    vPathLit = {
+      description = "vPathLit: value-domain literal carrying a Nix path `p : Path`.";
+      signature = "vPathLit : Path -> Val";
+    };
+    vDerivationLit = {
+      description = "vDerivationLit: value-domain literal carrying a Nix derivation `d : Derivation` opaquely.";
+      signature = "vDerivationLit : Derivation -> Val";
+    };
+    vFnLit = {
+      description = "vFnLit: value-domain literal carrying an opaque Nix function — `fnBox` preserves thunk identity for conv reflexivity.";
+      signature = "vFnLit : FnBox -> Val";
+    };
+    vAnyLit = {
+      description = "vAnyLit: value-domain literal carrying an arbitrary Nix value `v : Any` — used by approximate types whose kernel slot is `vAny`.";
+      signature = "vAnyLit : Any -> Val";
+    };
+
+    vOpaqueLam = {
+      description = "vOpaqueLam: value-domain opaque lambda over a Nix function — kernel never inspects it; `fnBox` thunk identity preserves conv reflexivity.";
+      signature = "vOpaqueLam : FnBox -> Val -> Val  -- fnBox, piType";
+    };
+
+    vNe = {
+      description = "vNe: neutral value — stuck computation `var^lvl <spine>`; head is a de Bruijn level, spine is a list of elimination frames awaiting reduction.";
+      signature = "vNe : Int -> Spine -> Val  -- level, spine";
+    };
+    freshVar = {
+      description = "freshVar: introduce a fresh neutral variable at the given depth — used during type-checking to bind a fresh witness under Π / Σ / let binders.";
+      signature = "freshVar : Int -> Val  -- depth";
+    };
+
+    eApp = {
+      description = "eApp: elimination frame for function application — pushes an argument onto a neutral spine.";
+      signature = "eApp : Val -> SpineEntry";
+    };
+    eFst = {
+      description = "eFst: elimination frame for first-projection on a Σ neutral.";
+    };
+    eSnd = {
+      description = "eSnd: elimination frame for second-projection on a Σ neutral.";
+    };
+    eBootSumElim = {
+      description = "eBootSumElim: elimination frame for `bootSumElim` on a neutral sum scrutinee — carries motive and case arms.";
+      signature = "eBootSumElim : Val -> Val -> Val -> Val -> Val -> SpineEntry";
+    };
+    eBootJ = {
+      description = "eBootJ: elimination frame for the J eliminator on a neutral identity proof — carries A, a, motive, refl-case, b.";
+      signature = "eBootJ : Val -> Val -> Val -> Val -> Val -> SpineEntry";
+    };
+    eStrEq = {
+      description = "eStrEq: elimination frame for `strEq` on a neutral string operand — carries the other operand for completion when the neutral resolves.";
+      signature = "eStrEq : Val -> Val -> SpineEntry";
+    };
+    eDescInd = {
+      description = "eDescInd: elimination frame for `descInd` on a neutral `μ`-typed scrutinee — carries `I`, `D`, motive, step.";
+      signature = "eDescInd : Val -> Val -> Val -> Val -> SpineEntry";
+    };
+    eLiftElim = {
+      description = "eLiftElim: elimination frame for `liftElim` on a neutral `Lift l m A` — carries `l`, `m`, `A` for level lowering.";
+      signature = "eLiftElim : Val -> Val -> Val -> SpineEntry";
+    };
+
+    eInterpD = {
+      description = "eInterpD: elimination frame for `interpD` on a neutral description — carries `k`, `I`, `X`, `i` for completion when the neutral resolves.";
+      signature = "eInterpD : Val -> Val -> Val -> Val -> SpineEntry";
+    };
+    eAllD = {
+      description = "eAllD: elimination frame for `allD` on a neutral description — carries motive `P` plus shape parameters.";
+      signature = "eAllD : Val -> Val -> Val -> Val -> Val -> Val -> SpineEntry";
+    };
+    eEverywhereD = {
+      description = "eEverywhereD: elimination frame for `everywhereD` on a neutral description — carries per-node `f` plus shape parameters.";
+      signature = "eEverywhereD : Val -> Val -> Val -> Val -> Val -> Val -> Val -> SpineEntry";
+    };
+
+    eSquashElim = {
+      description = "eSquashElim: elimination frame for `squashElim` on a neutral `Squash`-typed scrutinee — carries motive shape (`A`, `B`) and case function `f`.";
+      signature = "eSquashElim : Val -> Val -> Val -> SpineEntry";
+    };
+
   };
 }

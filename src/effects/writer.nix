@@ -3,78 +3,82 @@
 # Provides tell/listen operations for accumulating output.
 # The handler collects output into a list via state threading.
 # Writer is the append-only restriction of state: no get, only accumulate.
-{ fx, api, ... }:
-
+{ fx, ... }:
 let
   inherit (fx.kernel) pure bind send;
-  inherit (api) mk;
+  tell = w: send "tell" w;
 
-  tell = mk {
-    doc = ''
-      Append a value to the output log.
+  tellAll = ws: send "tellAll" ws;
 
-      ```
-      tell : w -> Computation null
-      ```
-    '';
-    value = w: send "tell" w;
-    tests = {
-      "tell-is-impure" = {
-        expr = fx.comp.isPure (tell "hello");
-        expected = false;
-      };
-      "tell-effect-name" = {
-        expr = (tell "hello").effect.name;
-        expected = "tell";
-      };
-    };
+  handler = {
+    tell = { param, state }: { resume = null; state = state ++ [ param ]; };
+    tellAll = { param, state }: { resume = null; state = state ++ param; };
   };
 
-  tellAll = mk {
-    doc = ''
-      Append a list of values to the output log.
+in {
+  inherit tell tellAll handler;
 
-      ```
-      tellAll : [w] -> Computation null
-      ```
-    '';
-    value = ws: send "tellAll" ws;
-    tests = {
-      "tellAll-is-impure" = {
-        expr = fx.comp.isPure (tellAll [ 1 2 3 ]);
-        expected = false;
+
+
+  __docs = {
+    _self = {
+      description = "writer effect: append-only output via tell/tellAll with a list-collecting handler. Append-only restriction of state.";
+      doc = "Append-only output effect: tell/tellAll with list-collecting handler.";
+    };
+
+    tell = {
+      description = "tell: append a single value to the writer effect's output log; impure request resuming with null.";
+      signature = "tell : w -> Computation null";
+      doc = ''
+        Append a value to the output log.
+      '';
+      tests = {
+        "tell-is-impure" = {
+          expr = fx.comp.isPure (tell "hello");
+          expected = false;
+        };
+        "tell-effect-name" = {
+          expr = (tell "hello").effect.name;
+          expected = "tell";
+        };
       };
     };
-  };
 
-  handler = mk {
-    doc = ''
-      Standard writer handler. Collects tell output in state as a list.
-      Initial state: `[]`
-
-      ```nix
-      handle { handlers = writer.handler; state = []; } comp
-      ```
-    '';
-    value = {
-      tell = { param, state }: { resume = null; state = state ++ [ param ]; };
-      tellAll = { param, state }: { resume = null; state = state ++ param; };
-    };
-    tests = {
-      "tell-appends" = {
-        expr = (handler.value.tell { param = "hi"; state = [ "a" ]; }).state;
-        expected = [ "a" "hi" ];
-      };
-      "tellAll-appends-list" = {
-        expr = (handler.value.tellAll { param = [ 1 2 ]; state = [ 0 ]; }).state;
-        expected = [ 0 1 2 ];
+    tellAll = {
+      description = "tellAll: append a list of values to the writer effect's output log in a single impure request; one bind instead of N from mapping tell.";
+      signature = "tellAll : [w] -> Computation null";
+      doc = ''
+        Append a list of values to the output log.
+      '';
+      tests = {
+        "tellAll-is-impure" = {
+          expr = fx.comp.isPure (tellAll [ 1 2 3 ]);
+          expected = false;
+        };
       };
     };
-  };
 
-in mk {
-  doc = "Append-only output effect: tell/tellAll with list-collecting handler.";
-  value = {
-    inherit tell tellAll handler;
+    handler = {
+      description = "writer.handler: collects tell/tellAll output as a list in handler state, starting at `[]`; pair with `trampoline.handle`.";
+      doc = ''
+        Standard writer handler. Collects tell output in state as a list.
+        Initial state: `[]`
+
+        ```nix
+        handle { handlers = writer.handler; state = []; } comp
+        ```
+      '';
+      tests = {
+        "tell-appends" = {
+          expr = (handler.tell { param = "hi"; state = [ "a" ]; }).state;
+          expected = [ "a" "hi" ];
+        };
+        "tellAll-appends-list" = {
+          expr = (handler.tellAll { param = [ 1 2 ]; state = [ 0 ]; }).state;
+          expected = [ 0 1 2 ];
+        };
+      };
+    };
+
   };
 }

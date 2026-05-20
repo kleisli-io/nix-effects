@@ -5,66 +5,65 @@
 { fx, api, ... }:
 
 let
-  inherit (api) mk;
   inherit (fx.pipeline) mkStage run pure bind asks raiseWith warn;
   BuildStep = fx.build.types.BuildStep;
 
-  plan = mk {
-    doc = ''
-      Validate and process build steps into a BuildPlan.
-
-      Runs an eval-time pipeline that validates each step against
-      BuildStep, filters steps by `when` predicates using reader context,
-      and collects all errors without throwing.
-
-      ```
-      plan : { name, steps, sources?, context? } -> { plan, errors, warnings, typeErrors }
-      ```
-    '';
-    value = { name, steps, sources ? {}, context ? {} }:
-      let
-        validate = mkStage {
-          name = "validate-steps";
-          transform = _:
-            let
-              n = builtins.length steps;
-              check = i:
-                let step = builtins.elemAt steps i;
-                in { inherit step i; valid = BuildStep.check step; };
-              checked = builtins.genList check n;
-              valid = map (x: x.step) (builtins.filter (x: x.valid) checked);
-              invalid = builtins.filter (x: !x.valid) checked;
-              raiseAll = builtins.foldl'
-                (comp: x: bind comp (_:
-                  raiseWith "validate-steps"
-                    "step ${toString x.i}: invalid (requires name: non-empty string, run: string)"))
-                (pure null)
-                invalid;
-            in bind raiseAll (_: pure { steps = valid; });
-        };
-
-        filterConditions = mkStage {
-          name = "evaluate-conditions";
-          transform = data:
-            bind (asks (env: env)) (ctx:
-              let
-                keeps = s: !(s ? when) || s.when ctx;
-                kept = builtins.filter keeps data.steps;
-                skipped = builtins.filter (s: !keeps s) data.steps;
-                warnAll = builtins.foldl'
-                  (comp: s: bind comp (_:
-                    warn "step '${s.name}' skipped: condition not met"))
-                  (pure null)
-                  skipped;
-              in bind warnAll (_: pure { steps = kept; }));
-        };
-
-        result = run context [ validate filterConditions ];
-      in {
-        plan = { inherit name sources; steps = result.value.steps or []; };
-        inherit (result) errors warnings typeErrors;
+  plan = { name, steps, sources ? {}, context ? {} }:
+    let
+      validate = mkStage {
+        name = "validate-steps";
+        transform = _:
+          let
+            n = builtins.length steps;
+            check = i:
+              let step = builtins.elemAt steps i;
+              in { inherit step i; valid = BuildStep.check step; };
+            checked = builtins.genList check n;
+            valid = map (x: x.step) (builtins.filter (x: x.valid) checked);
+            invalid = builtins.filter (x: !x.valid) checked;
+            raiseAll = builtins.foldl'
+              (comp: x: bind comp (_:
+                raiseWith "validate-steps"
+                  "step ${toString x.i}: invalid (requires name: non-empty string, run: string)"))
+              (pure null)
+              invalid;
+          in bind raiseAll (_: pure { steps = valid; });
       };
 
+      filterConditions = mkStage {
+        name = "evaluate-conditions";
+        transform = data:
+          bind (asks (env: env)) (ctx:
+            let
+              keeps = s: !(s ? when) || s.when ctx;
+              kept = builtins.filter keeps data.steps;
+              skipped = builtins.filter (s: !keeps s) data.steps;
+              warnAll = builtins.foldl'
+                (comp: s: bind comp (_:
+                  warn "step '${s.name}' skipped: condition not met"))
+                (pure null)
+                skipped;
+            in bind warnAll (_: pure { steps = kept; }));
+      };
+
+      result = run context [ validate filterConditions ];
+    in {
+      plan = { inherit name sources; steps = result.value.steps or []; };
+      inherit (result) errors warnings typeErrors;
+    };
+
+in {
+  inherit plan;
+  __docs._self = {
+    description = "plan: validate build steps against `BuildStep`, filter by `when` predicates against reader context, and collect errors/warnings without throwing.";
+    signature = "plan : { name, steps, sources ? {}, context ? {} } -> { plan : BuildPlan, errors : [Err], warnings : [Warn], typeErrors : [Err] }";
+    doc = ''
+      Validate and process build steps into a `BuildPlan`.
+
+      Runs an eval-time pipeline that validates each step against
+      `BuildStep`, filters steps by `when` predicates using reader
+      context, and collects all errors without throwing.
+    '';
     tests = {
       "all-valid-steps" = {
         expr =
@@ -138,5 +137,4 @@ let
       };
     };
   };
-
-in plan
+}

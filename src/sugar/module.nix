@@ -1,7 +1,8 @@
 # Opt-in syntax-livability layer. Nothing in the kernel imports this.
-{ self, partTests, api, ... }:
+{ self, partTests, partDocs, api, ... }:
 
-api.mk {
+api.mkModule {
+  inherit partDocs;
   doc = ''
     Opt-in syntax-livability layer for nix-effects.
 

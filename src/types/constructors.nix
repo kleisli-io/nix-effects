@@ -5,105 +5,57 @@
 # (kernel faithfully represents structure) drives the approximate flag,
 # _kernelSufficient (kernel alone decides membership) drives guard presence.
 # Kernel building always uses children's _kernel regardless of flags.
-{ fx, api, ... }:
-
+{ fx, ... }:
 let
-  inherit (api) mk;
   inherit (fx.types.foundation) mkType check;
   inherit (fx.kernel) pure bind send;
   H = fx.tc.hoas;
-  D = fx.diag.error;
   P = fx.diag.positions;
 
-  # Wrap a Generic leaf Error in a Position chain, outermost first:
-  #   chainErr [p0, p1, ..., pk-1] leaf
-  #     = nestUnder p0 (nestUnder p1 (... (nestUnder pk-1 leaf)))
-  # so `chainPositions` (children[0] walk) reproduces the input order.
-  chainErr = positions: leafErr:
-    let n = builtins.length positions; in
-    builtins.foldl'
-      (err: i: D.nestUnder (builtins.elemAt positions (n - 1 - i)) err)
-      leafErr
-      (builtins.genList (x: x) n);
+  # Shared Record/RecordOpen builder. `open` toggles whether undeclared
+  # fields are silently ignored (true) or kernel-rejected (false). Verify
+  # walks declared fields only either way — extras emit no blame.
+  mkRecordType = { open }: schema:
+    let
+      sortedNames = builtins.sort builtins.lessThan (builtins.attrNames schema);
+      allPrecise = builtins.all (f: schema.${f}._kernelPrecise) sortedNames;
+      allSufficient = builtins.all (f: schema.${f}._kernelSufficient) sortedNames;
+      typeName =
+        let prefix = if open then "RecordOpen" else "Record"; in
+        "${prefix}{${builtins.concatStringsSep ", " sortedNames}}";
+      datatypeFields = map (f: H.field f schema.${f}._kernel) sortedNames;
+      baseKernel = (H.datatype typeName [ (H.con "mk" datatypeFields) ]).T;
+      kernelType =
+        if open
+        then baseKernel // {
+          _dtypeMeta = baseKernel._dtypeMeta // { openExtras = true; };
+        }
+        else baseKernel;
+      guard = if allSufficient
+        then null
+        else v:
+          builtins.isAttrs v
+          && builtins.all (field:
+            v ? ${field} && (schema.${field}).check v.${field}
+          ) sortedNames;
+    in mkType {
+      name = typeName;
+      inherit kernelType guard;
+      approximate = !allPrecise;
+      # Delegate field-by-field blame to the canonical walker over the
+      # record kernel (a `mu`/`app` of a single-constructor datatype).
+      # `walkDatatype` resolves the constructor by cardinality-1 η when
+      # `_con` is absent and threads `Pos.Field lbl` paths per field —
+      # exact match to the previous bespoke recursion. Missing-field
+      # blame and the shape-mismatch leaf both fall out of the walker.
+      verify = self: path: v:
+        fx.tc.generic.check.deriveCheck self._kernel path v;
+    };
 
-  Record = mk {
-    doc = ''
-      Record type constructor. Takes a schema { field = Type; ... } and checks
-      that a value has all required fields with correct types.
-      Extra fields are permitted (open record semantics).
-    '';
-    value = schema:
-      let
-        sortedNames = builtins.sort builtins.lessThan (builtins.attrNames schema);
-        allPrecise = builtins.all (f: schema.${f}._kernelPrecise) sortedNames;
-        allSufficient = builtins.all (f: schema.${f}._kernelSufficient) sortedNames;
-        hoasFields = map (f: { name = f; type = schema.${f}._kernel; }) sortedNames;
-        kernelType = if sortedNames != []
-          then H.record hoasFields
-          else H.any;
-        guard = if allSufficient && sortedNames != []
-          then null
-          else v:
-            builtins.isAttrs v
-            && builtins.all (field:
-              v ? ${field} && (schema.${field}).check v.${field}
-            ) sortedNames;
-      in mkType {
-        name = "Record{${builtins.concatStringsSep ", " sortedNames}}";
-        inherit kernelType guard;
-        approximate = !(allPrecise && sortedNames != []);
-        # Per-field effectful verify for blame tracking. Delegates to each
-        # field type's .validateAt for recursive decomposition — a nested
-        # Record or ListOf field produces deep per-component effects with
-        # the field name appended to the structural path AND a `Field`
-        # Position appended to the positions chain. The two lists move in
-        # lockstep; handlers may consume either.
-        verify = self: path: positions: v:
-          if !(builtins.isAttrs v) then
-            send "typeCheck" {
-              type = self; context = self.name; value = v;
-              inherit path positions;
-              diagError = chainErr positions (D.mkGenericError {
-                type = self.name; context = self.name; value = v;
-                msg = "expected attrset";
-              });
-            }
-          else
-            let
-              n = builtins.length sortedNames;
-              # Build chain right-to-left so effects fire in field-name order
-              checkAll = builtins.foldl'
-                (acc: i:
-                  let
-                    field = builtins.elemAt sortedNames i;
-                    childPath = path ++ [ field ];
-                    childPositions = positions ++ [ (P.Field field) ];
-                  in
-                  if !(v ? ${field}) then
-                    bind (send "typeCheck" {
-                      type = schema.${field};
-                      context = "${self.name}.${field}";
-                      value = null;
-                      path = childPath;
-                      positions = childPositions;
-                      diagError = chainErr childPositions (D.mkGenericError {
-                        type = schema.${field}.name;
-                        context = "${self.name}.${field}";
-                        value = null;
-                        msg = "missing field";
-                      });
-                    }) (_: acc)
-                  else
-                    bind (schema.${field}.validateAt
-                           childPath childPositions v.${field})
-                      (_: acc))
-                (pure v)
-                (builtins.genList (i: n - 1 - i) n);
-            in if n == 0 then pure v else checkAll;
-      };
-    tests = let
-      FP = fx.types.primitives;
-    in {
+  Record = mkRecordType { open = false; };
+  RecordTests = let
+    FP = fx.types.primitives;
+  in {
       "accepts-matching-record" = {
         expr =
           let
@@ -134,14 +86,14 @@ let
           in check PersonT { name = "Alice"; age = "thirty"; };
         expected = false;
       };
-      "allows-extra-fields" = {
+      "rejects-extra-fields" = {
         expr =
           let
             PersonT = Record {
               name = FP.String;
             };
           in check PersonT { name = "Alice"; age = 30; };
-        expected = true;
+        expected = false;
       };
       "has-kernelCheck" = {
         expr = (Record { n = FP.Int; b = FP.Bool; }) ? kernelCheck;
@@ -254,7 +206,7 @@ let
               state = [];
             } (Outer.validate { a = { b = { c = "wrong"; }; }; });
           in (builtins.head result.state).path;
-        expected = [ "a" "b" "c" ];
+        expected = [ (P.Field "a") (P.Field "b") (P.Field "c") ];
       };
       "verify-per-field-blame-paths" = {
         expr =
@@ -266,7 +218,7 @@ let
             } (PersonT.validate { n = "wrong"; s = 42; });
           in map (e: e.path) result.state;
         # Field order is sorted (n, s)
-        expected = [ [ "n" ] [ "s" ] ];
+        expected = [ [ (P.Field "n") ] [ (P.Field "s") ] ];
       };
       "verify-missing-field-has-path" = {
         expr =
@@ -277,23 +229,15 @@ let
               state = [];
             } (PersonT.validate {});
           in (builtins.head result.state).path;
-        expected = [ "n" ];
+        expected = [ (P.Field "n") ];
       };
-      # -- Position threading and diagError emission --
-      "verify-wrong-shape-diagError-is-Generic" = {
+      # -- Position threading --
+      "verify-wrong-shape-path-is-empty-at-root" = {
         expr =
           let
             PersonT = Record { n = FP.Int; };
             comp = PersonT.validate 42;
-          in comp.effect.param.diagError.layer.tag;
-        expected = "Generic";
-      };
-      "verify-wrong-shape-positions-are-empty-at-root" = {
-        expr =
-          let
-            PersonT = Record { n = FP.Int; };
-            comp = PersonT.validate 42;
-          in comp.effect.param.positions;
+          in comp.effect.param.path;
         expected = [];
       };
       "verify-missing-field-has-Field-position" = {
@@ -301,7 +245,7 @@ let
           let
             PersonT = Record { n = FP.Int; };
             comp = PersonT.validate {};
-          in map (p: p.tag) comp.effect.param.positions;
+          in map (p: p.tag) comp.effect.param.path;
         expected = [ "Field" ];
       };
       "verify-missing-field-position-carries-field-name" = {
@@ -309,24 +253,15 @@ let
           let
             PersonT = Record { n = FP.Int; };
             comp = PersonT.validate {};
-          in (builtins.elemAt comp.effect.param.positions 0).name;
+          in (builtins.elemAt comp.effect.param.path 0).name;
         expected = "n";
       };
-      "verify-missing-field-diagError-chain-is-Field" = {
-        expr =
-          let
-            PersonT = Record { n = FP.Int; };
-            comp = PersonT.validate {};
-            err = comp.effect.param.diagError;
-          in (builtins.elemAt err.children 0).position.tag;
-        expected = "Field";
-      };
-      "verify-bad-field-delegates-positions-through-primitive" = {
+      "verify-bad-field-threads-path-through-primitive" = {
         expr =
           let
             PersonT = Record { n = FP.Int; };
             comp = PersonT.validate { n = "wrong"; };
-            pos = comp.effect.param.positions;
+            pos = comp.effect.param.path;
           in { length = builtins.length pos;
                tag = (builtins.elemAt pos 0).tag;
                name = (builtins.elemAt pos 0).name; };
@@ -338,7 +273,7 @@ let
             Inner = Record { x = FP.Int; };
             Outer = Record { y = Inner; };
             comp = Outer.validate { y = { x = "wrong"; }; };
-          in map (p: p.name) comp.effect.param.positions;
+          in map (p: p.name) comp.effect.param.path;
         expected = [ "y" "x" ];
       };
       # -- Adequacy: kernel-exact types have check == kernelCheck --
@@ -354,63 +289,81 @@ let
           in T.check { n = "x"; b = true; } == T.kernelCheck { n = "x"; b = true; };
         expected = true;
       };
-    };
-  };
-
-  ListOf = mk {
-    doc = ''
-      Homogeneous list type. `ListOf Type` checks that all elements have the given type.
-
-      Custom verifier sends per-element `typeCheck` effects with indexed context
-      strings (e.g. `List[Int][2]`) for blame tracking. Unlike Sigma, elements
-      are independent — no short-circuit. All elements are checked; the handler
-      decides error policy (strict aborts on first, collecting gathers all).
-    '';
-    value = elemType:
-      let
-        isPrecise = elemType._kernelPrecise;
-        isSufficient = elemType._kernelSufficient;
-        kernelType = H.listOf elemType._kernel;
-        guard = if isSufficient then null
-          else v: builtins.isList v && builtins.all elemType.check v;
-      in mkType {
-        name = "List[${elemType.name}]";
-        inherit kernelType guard;
-        approximate = !isPrecise;
-        # Per-element effectful verify for blame tracking. Delegates to
-        # elemType.validateAt so record elements decompose into
-        # per-field effects (not just a coarse "element invalid" blame).
-        # Thread both `path` (strings like `"[3]"`) and `positions`
-        # (`P.Elem 3`) so downstream consumers can pick their descent
-        # representation.
-        verify = self: path: positions: v:
-          if !(builtins.isList v) then
-            send "typeCheck" {
-              type = self; context = self.name; value = v;
-              inherit path positions;
-              diagError = chainErr positions (D.mkGenericError {
-                type = self.name; context = self.name; value = v;
-                msg = "expected list";
-              });
-            }
-          else
-            let
-              n = builtins.length v;
-              # Build chain right-to-left so effects execute in index order (0, 1, 2, ...)
-              checkAll = builtins.foldl'
-                (acc: i:
-                  let
-                    childPath = path ++ [ "[${toString i}]" ];
-                    childPositions = positions ++ [ (P.Elem i) ];
-                  in
-                  bind (elemType.validateAt
-                         childPath childPositions (builtins.elemAt v i))
-                    (_: acc))
-                (pure v)
-                (builtins.genList (i: n - 1 - i) n);
-            in if n == 0 then pure v else checkAll;
+      # -- Description-backed kernel: datatypeInfo surfaces the schema --
+      "datatypeInfo-on-record-surfaces-schema" = {
+        expr =
+          let
+            T = Record { a = FP.Int; b = FP.Bool; };
+            info = fx.tc.generic.datatype.datatypeInfo T._kernel;
+            con = builtins.head info.constructors;
+          in {
+            n = builtins.length info.constructors;
+            con = con.name;
+            fields = map (f: f.name) con.fields;
+          };
+        expected = {
+          n = 1;
+          con = "mk";
+          fields = [ "a" "b" ];
+        };
       };
-    tests = let FP = fx.types.primitives; in {
+    };
+
+  RecordOpen = mkRecordType { open = true; };
+  RecordOpenTests = let
+    FP = fx.types.primitives;
+  in {
+      "accepts-matching-record" = {
+        expr =
+          let PersonT = RecordOpen { name = FP.String; age = FP.Int; };
+          in check PersonT { name = "Alice"; age = 30; };
+        expected = true;
+      };
+      "accepts-extra-fields" = {
+        expr =
+          let PersonT = RecordOpen { name = FP.String; };
+          in check PersonT { name = "Alice"; age = 30; nickname = "Al"; };
+        expected = true;
+      };
+      "rejects-missing-field" = {
+        expr =
+          let PersonT = RecordOpen { name = FP.String; age = FP.Int; };
+          in check PersonT { name = "Alice"; };
+        expected = false;
+      };
+      "rejects-wrong-type" = {
+        expr =
+          let PersonT = RecordOpen { name = FP.String; age = FP.Int; };
+          in check PersonT { name = "Alice"; age = "thirty"; };
+        expected = false;
+      };
+      "rejects-non-attrs" = {
+        expr =
+          let PersonT = RecordOpen { name = FP.String; };
+          in check PersonT 42;
+        expected = false;
+      };
+    };
+
+  ListOf = elemType:
+    let
+      isPrecise = elemType._kernelPrecise;
+      isSufficient = elemType._kernelSufficient;
+      kernelType = H.listOf elemType._kernel;
+      guard = if isSufficient then null
+        else v: builtins.isList v && builtins.all elemType.check v;
+    in mkType {
+      name = "List[${elemType.name}]";
+      inherit kernelType guard;
+      approximate = !isPrecise;
+      # Delegate per-element blame to the canonical walker over the
+      # list kernel. `walkDatatype` detects list-shape (`isListShape`)
+      # and routes to `walkElems`, which threads `Pos.Elem i` per
+      # index — exact match to the previous bespoke recursion.
+      verify = self: path: v:
+        fx.tc.generic.check.deriveCheck self._kernel path v;
+    };
+  ListOfTests = let FP = fx.types.primitives; in {
       "accepts-matching-list" = {
         expr =
           let intList = ListOf FP.Int;
@@ -441,6 +394,25 @@ let
         expr = (ListOf FP.Bool).kernelCheck [42];
         expected = false;
       };
+      # -- Description-backed kernel: datatypeInfo surfaces nil/cons --
+      "datatypeInfo-on-listof-surfaces-list-constructors" = {
+        expr =
+          let
+            T = ListOf FP.Int;
+            info = fx.tc.generic.datatype.datatypeInfo T._kernel;
+          in {
+            name = info.name;
+            params = builtins.length info.params;
+            args = builtins.length info.paramArgs;
+            constructors = map (c: c.name) info.constructors;
+          };
+        expected = {
+          name = "List";
+          params = 1;
+          args = 1;
+          constructors = [ "nil" "cons" ];
+        };
+      };
       # -- Per-element blame with paths --
       "listof-primitive-blames-by-index" = {
         expr =
@@ -451,7 +423,7 @@ let
               state = [];
             } (intList.validate [ 1 "two" 3 "four" ]);
           in map (e: e.path) result.state;
-        expected = [ [ "[1]" ] [ "[3]" ] ];
+        expected = [ [ (P.Elem 1) ] [ (P.Elem 3) ] ];
       };
       "listof-record-decomposes-into-per-field-blame" = {
         expr =
@@ -469,23 +441,18 @@ let
         # Element 1 has two bad fields; they appear in sorted field order
         # (mtu, name). Element 0 passes cleanly. This is Gap 2 — previously
         # the failing element blamed as a whole, not per field.
-        expected = [ [ "[1]" "mtu" ] [ "[1]" "name" ] ];
+        expected = [
+          [ (P.Elem 1) (P.Field "mtu") ]
+          [ (P.Elem 1) (P.Field "name") ]
+        ];
       };
       # -- Elem-tagged Position threading --
-      "listof-not-a-list-diagError-is-Generic" = {
-        expr =
-          let
-            intList = ListOf FP.Int;
-            comp = intList.validate 42;
-          in comp.effect.param.diagError.layer.tag;
-        expected = "Generic";
-      };
       "listof-element-carries-Elem-position" = {
         expr =
           let
             intList = ListOf FP.Int;
             comp = intList.validate [ "bad" ];
-            pos = comp.effect.param.positions;
+            pos = comp.effect.param.path;
           in { length = builtins.length pos;
                tag = (builtins.elemAt pos 0).tag;
                idx = (builtins.elemAt pos 0).idx; };
@@ -497,27 +464,24 @@ let
             Iface = Record { name = FP.String; };
             ifaces = ListOf Iface;
             comp = ifaces.validate [ { name = 42; } ];
-          in map (p: p.tag) comp.effect.param.positions;
+          in map (p: p.tag) comp.effect.param.path;
         expected = [ "Elem" "Field" ];
       };
     };
-  };
 
-  Maybe = mk {
-    doc = "Option type. Maybe Type accepts null or a value of Type.";
-    value = innerType:
-      let
-        isPrecise = innerType._kernelPrecise;
-        isSufficient = innerType._kernelSufficient;
-        kernelType = H.maybe innerType._kernel;
-        guard = if isSufficient then null
-          else v: v == null || innerType.check v;
-      in mkType {
-        name = "Maybe[${innerType.name}]";
-        inherit kernelType guard;
-        approximate = !isPrecise;
-      };
-    tests = let FP = fx.types.primitives; in {
+  Maybe = innerType:
+    let
+      isPrecise = innerType._kernelPrecise;
+      isSufficient = innerType._kernelSufficient;
+      kernelType = H.maybe innerType._kernel;
+      guard = if isSufficient then null
+        else v: v == null || innerType.check v;
+    in mkType {
+      name = "Maybe[${innerType.name}]";
+      inherit kernelType guard;
+      approximate = !isPrecise;
+    };
+  MaybeTests = let FP = fx.types.primitives; in {
       "accepts-null" = {
         expr = check (Maybe FP.Int) null;
         expected = true;
@@ -560,30 +524,34 @@ let
         expected = false;
       };
     };
-  };
 
-  Either = mk {
-    doc = ''
-      Tagged union of two types. Accepts `{ _tag = "Left"; value = a; }`
-      or `{ _tag = "Right"; value = b; }`.
-    '';
-    value = leftType: rightType:
-      let
-        allPrecise = leftType._kernelPrecise && rightType._kernelPrecise;
-        allSufficient = leftType._kernelSufficient && rightType._kernelSufficient;
-        kernelType = H.sum leftType._kernel rightType._kernel;
-        guard = if allSufficient then null
-          else v:
-            builtins.isAttrs v
-            && v ? _tag && v ? value
-            && ((v._tag == "Left" && leftType.check v.value)
-                || (v._tag == "Right" && rightType.check v.value));
-      in mkType {
-        name = "Either[${leftType.name}, ${rightType.name}]";
-        inherit kernelType guard;
-        approximate = !allPrecise;
-      };
-    tests = let FP = fx.types.primitives; in {
+  Either = leftType: rightType:
+    let
+      allPrecise = leftType._kernelPrecise && rightType._kernelPrecise;
+      allSufficient = leftType._kernelSufficient && rightType._kernelSufficient;
+      # First-class kernel variant: `Pos.Tag "Left"`/`Pos.Tag "Right"`
+      # are the leaf branch coordinates; payload descent delegates to
+      # the branch type's walker. No synthetic `Pos.Field "value"`
+      # leaks into blame paths — the kernel knows about Either as a
+      # 2-tag variant rather than a μ-encoded SumDT.
+      kernelType = H.variant [
+        { tag = "Left";  type = leftType._kernel; }
+        { tag = "Right"; type = rightType._kernel; }
+      ];
+      guard = if allSufficient then null
+        else v:
+          builtins.isAttrs v
+          && v ? _tag && v ? value
+          && ((v._tag == "Left" && leftType.check v.value)
+              || (v._tag == "Right" && rightType.check v.value));
+    in mkType {
+      name = "Either[${leftType.name}, ${rightType.name}]";
+      inherit kernelType guard;
+      approximate = !allPrecise;
+      verify = self: path: v:
+        fx.tc.generic.check.deriveCheck self._kernel path v;
+    };
+  EitherTests = let FP = fx.types.primitives; in {
       "accepts-left" = {
         expr =
           let e = Either FP.String FP.Int;
@@ -615,54 +583,38 @@ let
         expected = false;
       };
     };
-  };
 
-  Variant = mk {
-    doc = ''
-      Discriminated union. Takes `{ tag = Type; ... }` schema.
-      Accepts `{ _tag = "tag"; value = ...; }` where value has the corresponding type.
-    '';
-    value = schema:
-      let
-        sortedTags = builtins.sort builtins.lessThan (builtins.attrNames schema);
-        allPrecise = builtins.all (t: schema.${t}._kernelPrecise) sortedTags;
-        allSufficient = builtins.all (t: schema.${t}._kernelSufficient) sortedTags;
-        hoasBranches = map (t: { tag = t; type = schema.${t}._kernel; }) sortedTags;
-        kernelType = if sortedTags != []
-          then H.variant hoasBranches
-          else H.any;
-        guard = if allSufficient && sortedTags != []
-          then null
-          else v:
-            builtins.isAttrs v
-            && v ? _tag && v ? value
-            && schema ? ${v._tag}
-            && (schema.${v._tag}).check v.value;
-      in mkType {
-        name = "Variant{${builtins.concatStringsSep " | " sortedTags}}";
-        inherit kernelType guard;
-        approximate = !(allPrecise && sortedTags != []);
-        # Per-branch verify: only the active branch needs validation.
-        # Delegates to the branch type's .validateAt for recursive
-        # decomposition, with the tag appended to the path AND a
-        # `Tag v._tag` Position appended to the positions chain.
-        verify = self: path: positions: v:
-          if !(builtins.isAttrs v && v ? _tag && v ? value && schema ? ${v._tag}) then
-            send "typeCheck" {
-              type = self; context = self.name; value = v;
-              inherit path positions;
-              diagError = chainErr positions (D.mkGenericError {
-                type = self.name; context = self.name; value = v;
-                msg = "unknown variant tag";
-              });
-            }
-          else
-            schema.${v._tag}.validateAt
-              (path ++ [ v._tag ])
-              (positions ++ [ (P.Tag v._tag) ])
-              v.value;
-      };
-    tests = let FP = fx.types.primitives; in {
+  Variant = schema:
+    let
+      sortedTags = builtins.sort builtins.lessThan (builtins.attrNames schema);
+      allPrecise = builtins.all (t: schema.${t}._kernelPrecise) sortedTags;
+      allSufficient = builtins.all (t: schema.${t}._kernelSufficient) sortedTags;
+      typeName = "Variant{${builtins.concatStringsSep " | " sortedTags}}";
+      # First-class kernel variant: `{_htag = "variant"; branches}`.
+      # Walker dispatches via `_tag`, emits `Pos.Tag t` as the leaf
+      # branch coordinate, delegates payload descent to the branch
+      # type's own walker. No synthetic `Pos.Field "value"` ever
+      # appears in the blame path — the kernel is honest about
+      # variants without going through a μ-encoding.
+      kernelType = if sortedTags != []
+        then H.variant
+          (map (t: { tag = t; type = schema.${t}._kernel; }) sortedTags)
+        else H.any;
+      guard = if allSufficient && sortedTags != []
+        then null
+        else v:
+          builtins.isAttrs v
+          && v ? _tag && v ? value
+          && schema ? ${v._tag}
+          && (schema.${v._tag}).check v.value;
+    in mkType {
+      name = typeName;
+      inherit kernelType guard;
+      approximate = !(allPrecise && sortedTags != []);
+      verify = self: path: v:
+        fx.tc.generic.check.deriveCheck self._kernel path v;
+    };
+  VariantTests = let FP = fx.types.primitives; in {
       "accepts-valid-variant" = {
         expr =
           let
@@ -707,23 +659,15 @@ let
               state = [];
             } (Shape.validate { _tag = "circle"; value = "not-float"; });
           in (builtins.head result.state).path;
-        expected = [ "circle" ];
+        expected = [ (P.Tag "circle") ];
       };
       # -- Tag-tagged Position threading --
-      "verify-variant-unknown-tag-diagError-is-Generic" = {
-        expr =
-          let
-            Shape = Variant { circle = FP.Float; };
-            comp = Shape.validate { _tag = "triangle"; value = null; };
-          in comp.effect.param.diagError.layer.tag;
-        expected = "Generic";
-      };
       "verify-variant-active-branch-carries-Tag-position" = {
         expr =
           let
             Shape = Variant { circle = FP.Float; };
             comp = Shape.validate { _tag = "circle"; value = "not-float"; };
-            pos = comp.effect.param.positions;
+            pos = comp.effect.param.path;
           in { length = builtins.length pos;
                tag = (builtins.elemAt pos 0).tag;
                name = (builtins.elemAt pos 0).name; };
@@ -735,15 +679,86 @@ let
             Inner = Record { x = FP.Int; };
             V = Variant { some = Inner; };
             comp = V.validate { _tag = "some"; value = { x = "bad"; }; };
-          in map (p: p.tag) comp.effect.param.positions;
+          in map (p: p.tag) comp.effect.param.path;
         expected = [ "Tag" "Field" ];
       };
     };
-  };
 
-in mk {
-  doc = "Type constructors: Record, ListOf, Maybe, Either, Variant.";
-  value = {
-    inherit Record ListOf Maybe Either Variant;
+in {
+  inherit Record RecordOpen ListOf Maybe Either Variant;
+
+
+  __docs = {
+    _self = {
+      description = "Type constructors: Record/RecordOpen/ListOf/Maybe/Either/Variant — higher-kinded builders that compose simpler types into structured ones with per-component blame.";
+      doc = "Type constructors: Record, RecordOpen, ListOf, Maybe, Either, Variant.";
+    };
+
+    Record = {
+      description = "Record: closed record type constructor; `Record { f = T; ... }` checks that values carry exactly the declared fields with matching types and rejects extras.";
+      signature = "Record : { <field> = Type; ... } -> Type";
+      doc = ''
+        Closed record type constructor. Takes a schema `{ field = Type; ... }`
+        and checks that a value has exactly the declared fields with correct
+        types. Unknown fields are rejected — for open semantics use `RecordOpen`.
+
+        Verify is per-field and emits one `typeCheck` effect per blamed field,
+        threading a `Field name` Position so handlers can recover the structural
+        path.
+      '';
+      tests = RecordTests;
+    };
+    RecordOpen = {
+      description = "RecordOpen: open-record type constructor; like `Record` but undeclared fields are accepted untouched, useful for records carrying optional metadata slots.";
+      signature = "RecordOpen : { <field> = Type; ... } -> Type";
+      doc = ''
+        Open record type constructor. Like `Record`, but undeclared fields are
+        permitted (and ignored by kernel and verify). Use for types whose
+        values carry intentional metadata slots beyond the declared schema —
+        e.g. build steps with optional `tools` / `env` / `when` annotations.
+
+        The kernel datatype tags `openExtras = true` in `_dtypeMeta` so
+        downstream type-directed walks know to allow them.
+      '';
+      tests = RecordOpenTests;
+    };
+    ListOf = {
+      description = "ListOf: homogeneous list type constructor; `ListOf T` checks every element has type `T`, blames per-index, never short-circuits — handler picks error policy.";
+      signature = "ListOf : Type -> Type";
+      doc = ''
+        Homogeneous list type. `ListOf Type` checks that all elements have the given type.
+
+        Custom verifier sends per-element `typeCheck` effects with indexed context
+        strings (e.g. `List[Int][2]`) for blame tracking. Unlike Sigma, elements
+        are independent — no short-circuit. All elements are checked; the handler
+        decides error policy (strict aborts on first, collecting gathers all).
+      '';
+      tests = ListOfTests;
+    };
+    Maybe = {
+      description = "Maybe: option type constructor; `Maybe T` accepts null or any value of type `T`; kernel precision and sufficiency inherit from the inner type.";
+      signature = "Maybe : Type -> Type";
+      doc = "Option type. Maybe Type accepts null or a value of Type.";
+      tests = MaybeTests;
+    };
+    Either = {
+      description = "Either: tagged sum type constructor; `Either L R` accepts `{ _tag = \"Left\"; value : L }` or `{ _tag = \"Right\"; value : R }`.";
+      signature = "Either : Type -> Type -> Type";
+      doc = ''
+        Tagged union of two types. Accepts `{ _tag = "Left"; value = a; }`
+        or `{ _tag = "Right"; value = b; }`.
+      '';
+      tests = EitherTests;
+    };
+    Variant = {
+      description = "Variant: discriminated-union type constructor; `Variant { tag = T; ... }` accepts `{ _tag = name; value }` checked against the named branch.";
+      signature = "Variant : { <tag> = Type; ... } -> Type";
+      doc = ''
+        Discriminated union. Takes `{ tag = Type; ... }` schema.
+        Accepts `{ _tag = "tag"; value = ...; }` where value has the corresponding type.
+      '';
+      tests = VariantTests;
+    };
+
   };
 }

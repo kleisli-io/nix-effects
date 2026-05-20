@@ -32,18 +32,19 @@ Define a type with `fx.types.refined`:
 
 ```nix
 let
-  inherit (fx.types) Int refined;
+  inherit (fx.types) String refined;
 
-  Port = refined "Port" Int (x: x >= 1 && x <= 65535);
+  TargetClass = refined "TargetClass" String
+    (x: builtins.elem x [ "module" "file" "package" "check" ]);
 in {
   # Kernel decision procedure — fast boolean check
-  ok  = Port.check 8080;   # true
-  bad = Port.check 99999;  # false
+  ok  = TargetClass.check "module";   # true
+  bad = TargetClass.check "fleet";    # false
 
   # Effectful validate — runs through the trampoline, produces blame context
-  result = fx.run (Port.validate 99999)
+  result = fx.run (TargetClass.validate "fleet")
     fx.effects.typecheck.collecting [];
-  # result.state = [ { context = "Port"; message = "Expected Port, got int"; ... } ]
+  # result.state = [ { context = "TargetClass"; ... } ]
 }
 
 ```
@@ -55,19 +56,29 @@ dependent type, checked by the MLTT proof-checking kernel:
 
 ```nix
 let
-  inherit (fx.types) Bool Int String ListOf DepRecord refined;
+  inherit (fx.types) Bool String ListOf DepRecord refined;
 
-  FIPSCipher = refined "FIPSCipher" String
-    (x: builtins.elem x [ "AES-256-GCM" "AES-192-GCM" "AES-128-GCM" "AES-256-CBC" "AES-128-CBC" ]);
+  TargetClass = refined "TargetClass" String
+    (x: builtins.elem x [ "module" "file" "package" "check" ]);
 
-  ServiceConfig = DepRecord [
-    { name = "fipsMode"; type = Bool; }
-    { name = "cipherSuites"; type = self:
-        if self.fipsMode then ListOf FIPSCipher else ListOf String; }
+  AspectDecl = DepRecord [
+    { name = "generated"; type = Bool; }
+    { name = "target"; type = self:
+        if self.generated then TargetClass else String; }
+    { name = "requires"; type = _: ListOf String; }
   ];
 in {
-  ok  = ServiceConfig.checkFlat { fipsMode = true;  cipherSuites = [ "AES-256-GCM" ]; };  # true
-  bad = ServiceConfig.checkFlat { fipsMode = true;  cipherSuites = [ "3DES" ]; };         # false
+  ok = AspectDecl.checkFlat {
+    generated = true;
+    target = "module";
+    requires = [ "toolchain" ];
+  };  # true
+
+  bad = AspectDecl.checkFlat {
+    generated = true;
+    target = "fleet";
+    requires = [ ];
+  };  # false
 }
 
 ```
@@ -91,21 +102,36 @@ in result
 
 ```
 
-## Running the showcase
+## A first generated datatype
 
-The repo includes a working end-to-end demo:
+Generated datatypes are the next step after validation. They give a DSL
+its constructors, its type, and reusable structural metadata:
+
+```nix
+let
+  H = fx.types.hoas;
+
+  Aspect = H.datatype "Aspect" [
+    (H.con "aspect" [
+      (H.field "name" H.string)
+      (H.field "target" H.string)
+      (H.field "requires" (H.listOf H.string))
+    ])
+  ];
+in Aspect
+```
+
+The generated `Aspect` shape can be checked, viewed, reviewed,
+documented, traversed for dependencies, interpreted by handlers, and
+ornamented with derived fields.
+
+## Running checks
+
+The repo includes runnable tests and examples:
 
 ```bash
 git clone https://github.com/kleisli-io/nix-effects
 cd nix-effects
-
-# Valid config — build succeeds
-nix build .#cryptoService
-
-# Invalid config (3DES in FIPS mode) — caught at eval time
-nix build .#buggyService
-# error: Type errors in ServiceConfig:
-#   - List[FIPSCipher][3]: "3DES" is not a valid FIPSCipher
 
 # Run all tests
 nix flake check
@@ -115,9 +141,9 @@ nix flake check
 ## The kernel behind every type
 
 Every `.check` call runs the MLTT type-checking kernel. When you write
-`Port.check 8080`, the kernel elaborates `8080` into a term,
-type-checks it, and returns a boolean. This is not a separate system —
-it is what `.check` does.
+`TargetClass.check "module"`, the kernel elaborates `"module"` into a
+term, type-checks it, and returns a boolean. This is not a separate
+system — it is what `.check` does.
 
 You can also write verified implementations using HOAS combinators:
 
@@ -135,8 +161,8 @@ in
 
 The kernel checks the implementation against its type at `nix eval` time.
 If the types don't match, you get an error before anything builds.
-See the [Kernel Architecture](kernel-architecture.md) chapter for the
-full pipeline.
+See the [Kernel Architecture](/nix-effects/internals/kernel-architecture)
+chapter for the full pipeline.
 
 ## What's in the box
 

@@ -1,7 +1,7 @@
 { lib, fx }:
 
 let
-  inherit (fx.types) Int String Bool Float Path Null Unit Any Record mkType;
+  inherit (fx.types) Int String Bool Float Path Null Unit Any Record mkType defEq;
   refined = fx.types.refined;
   H = fx.types.hoas;
   sug = fx.sugar.types;
@@ -157,12 +157,15 @@ let
     };
   };
 
+  # Sugar preserves type identity. Equality is definitional (conv),
+  # not Nix `==`: see types/foundation.nix:defEq and the analogous
+  # tests in sugar-compat-test.nix.
   recordStructuralIdentity = {
     expr =
       let
         r1 = Record { age = Int; };
         r2 = Record { age = sug.Int; };
-      in r1._kernel == r2._kernel;
+      in defEq r1 r2;
     expected = true;
   };
 
@@ -172,7 +175,7 @@ let
         p = x: x > 0;
         r1 = Record { age = refined "Int?" Int p; };
         r2 = Record { age = sug.Int p; };
-      in r1._kernel == r2._kernel;
+      in defEq r1 r2;
     expected = true;
   };
 

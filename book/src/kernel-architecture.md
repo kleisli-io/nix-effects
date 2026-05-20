@@ -15,8 +15,9 @@ nix-effects combines an effects kernel with a type-checking kernel:
   `send`, `bind`, `map`, `seq`, `pipe`, `kleisli`.
 - The **type-checking kernel** (`src/tc/`) implements Martin-Löf
   type theory with normalization by evaluation and bidirectional
-  checking. Six modules: `term`, `eval`, `value`, `quote`, `conv`,
-  `check` (with `check/` split into `check`, `infer`, `type`).
+  checking. Core modules define terms, values, evaluation, quotation,
+  conversion, and checking; adjacent HOAS, elaboration, generic, and
+  ornament modules provide the user-facing structure.
 
 The type-checking kernel's higher layers use the effects kernel for
 error reporting. When `check` or `infer` rejects a term, it does not
@@ -58,34 +59,35 @@ handling constraints the kernel cannot express.
 ## The kernel pipeline
 
 The kernel implements normalization by evaluation (NbE) with
-bidirectional type checking. Six modules, each with a single
-responsibility:
+bidirectional type checking. The core pipeline has one responsibility
+per module family:
 
 ```
-term.nix --> eval.nix --> value.nix
+term.nix --> eval/ --> value.nix
                               |
                           quote.nix --> term.nix
                               |
                           conv.nix
                               |
-                          check.nix
+                          check/
 ```
 
 | Module | Function | Signature |
 |--------|----------|-----------|
 | `term.nix` | Term constructors | `mkVar`, `mkPi`, `mkLam`, `mkApp`, ... |
-| `eval.nix` | Evaluation | `Env × Tm -> Val` |
+| `eval/` | Evaluation | `Env × Tm -> Val` |
 | `value.nix` | Value constructors | `VLam`, `VPi`, `VPair`, `VMu`, ... |
 | `quote.nix` | Quotation | `ℕ × Val -> Tm` |
 | `conv.nix` | Conversion checking | `ℕ × Val × Val -> Bool` |
-| `check.nix` | Type checking | `Ctx × Tm × Val -> Tm` / `Ctx × Tm -> Tm × Val` |
+| `check/` | Type checking | `Ctx × Tm × Val -> Tm` / `Ctx × Tm -> Tm × Val` |
 
 **Terms** (`Tm`) are the syntax — de Bruijn indexed expressions with
 explicit binding structure. **Values** (`Val`) are the semantics —
-fully normalized forms where lambdas are Nix closures (this is the NbE
-trick). **Evaluation** converts terms to values. **Quotation** reads
-values back to terms. **Conversion** checks whether two values are
-definitionally equal by comparing their quoted forms.
+fully normalized forms where lambdas carry defunctionalized closures.
+The TCB does not use Nix lambdas as semantic closures. **Evaluation**
+converts terms to values. **Quotation** reads values back to terms.
+**Conversion** checks whether two values are definitionally equal by
+comparing their semantic structure.
 
 The type checker is bidirectional:
 
@@ -105,13 +107,13 @@ here compromise soundness.
 the TCB and sends effects for error reporting. Bugs may produce wrong
 error messages or reject valid terms, but cannot cause unsoundness.
 
-**Layer 2 — Untrusted.** The elaborator (`hoas.nix`, `elaborate.nix`).
+**Layer 2 — Untrusted.** The elaborator (`hoas/`, `elaborate/`).
 Translates surface syntax to core terms. Can have arbitrary bugs
 without compromising safety — the kernel verifies the output.
 
 ## Axiomatized primitives
 
-The kernel understands seven Nix primitive types as axioms. Each has a
+The kernel understands eight Nix primitive types as axioms. Each has a
 type former, a literal constructor, and a typing rule. None have
 eliminators — the kernel says "String is a type at level 0" and "a
 string literal inhabits String" but cannot structurally decompose
@@ -124,15 +126,23 @@ these values.
 | `float` | `Float` | `FloatLit(f)` | 0 |
 | `set` | `Attrs` | `AttrsLit` | 0 |
 | `path` | `Path` | `PathLit` | 0 |
+| `derivation` | `Derivation` | `DerivationLit` | 0 |
 | `lambda` | `Function` | `FnLit` | 0 |
 | (any) | `Any` | `AnyLit` | 0 |
 
+`Path` is decided by `builtins.isPath`; `Derivation` is decided by
+`(v: builtins.isAttrs v && (v.type or null) == "derivation")`. The two
+share no values: `Path` rejects attrsets, `Derivation` rejects strings
+and non-derivation attrsets.
+
 The structural type formers with kernel introduction and elimination
 rules are `Unit`, `Sigma`, `Pi`, bootstrap identity/coproduct
-infrastructure, and the indexed-description family (`Desc I`, `μ`,
-`desc-ind`). Public `Nat`, `List`, `Sum`, `Bool`, `Eq`, `Fin`, `Vec`,
-and `W` are generated through descriptions and the datatype macro.
-Their eliminators are generated adapters over `desc-ind`.
+infrastructure, propositional truncation (`Squash`), universe lifting,
+function extensionality as an axiom, and the indexed-description family
+(`Desc I`, `μ`, `interpD`, `allD`, `everywhereD`, `desc-ind`). Public
+`Nat`, `List`, `Sum`, `Bool`, `Eq`, `Fin`, `Vec`, and `W` are generated
+through descriptions and the datatype macro. Their eliminators are
+generated adapters over `desc-ind`.
 
 This gives the kernel enough structure to compute with generated
 inductive families, pairs, and functions, while treating strings,
@@ -140,8 +150,8 @@ integers, and other Nix-native types as opaque tokens.
 
 Axiomatized primitives are critical for real-world use. Without them,
 verified modules can only work over `Nat`/`Bool`/`List`/`Sigma`/`Sum`.
-With them, modules can handle ports (`Int`), service names (`String`),
-configuration records (nested `Sigma`/`Attrs`), and so on.
+With them, modules can handle target classes (`String`), dependency
+counts (`Int`), declaration records (nested `Sigma`/`Attrs`), and so on.
 
 ## HOAS: the surface API
 
@@ -540,32 +550,32 @@ normal Nix code and let the type system validate data at boundaries.
 
 ```nix
 let
-  inherit (fx.types) Int String refined;
+  inherit (fx.types) String refined;
 
-  Port = refined "Port" Int (x: x >= 1 && x <= 65535);
+  TargetClass = refined "TargetClass" String
+    (x: builtins.elem x [ "module" "file" "package" "check" ]);
 
   # Refinement with string guard — kernel checks String, guard checks membership
   LogLevel = refined "LogLevel" String
     (x: builtins.elem x [ "debug" "info" "warn" "error" ]);
 in {
-  ok    = Port.check 8080;       # true — decide says Int, guard says in range
-  bad   = Port.check 99999;      # false — guard rejects (> 65535)
-  wrong = Port.check "http";     # false — decide rejects (not Int)
+  module = TargetClass.check "module"; # true
+  fleet = TargetClass.check "fleet"; # false
 
   info  = LogLevel.check "info";    # true
   trace = LogLevel.check "trace";   # false — not in the allowed set
 
   # Effectful validation with blame context
-  result = fx.run (Port.validate 99999)
+  result = fx.run (TargetClass.validate "fleet")
     fx.effects.typecheck.collecting [];
-  # result.state = [ { context = "Port"; message = "Expected Port, got int"; ... } ]
+  # result.state = [ { context = "TargetClass"; ... } ]
 }
 ```
 
 **Cost:** Zero — write normal Nix. The kernel runs behind the scenes.
-Refinement types compose: `ListOf Port` checks that every element is
-an integer in range. The kernel elaborates the list, the guard runs
-per element.
+Refinement types compose: `ListOf TargetClass` checks that every element
+is a known renderer class. The kernel elaborates the list, the guard
+runs per element.
 
 ### Level 2: Boundary
 
@@ -575,34 +585,38 @@ procedure. This is what every type does by default.
 
 ```nix
 let
-  inherit (fx.types) Bool Int String ListOf DepRecord refined;
+  inherit (fx.types) Bool String ListOf DepRecord refined;
 
-  FIPSCipher = refined "FIPSCipher" String
-    (x: builtins.elem x [ "AES-256-GCM" "AES-128-GCM" "AES-256-CBC" ]);
+  TargetClass = refined "TargetClass" String
+    (x: builtins.elem x [ "module" "file" "package" "check" ]);
 
-  # Dependent record: when fipsMode is true, cipherSuites must be FIPS-approved.
+  # Dependent record: generated aspects must target a known renderer class.
   # The kernel elaborates the record to a Sigma chain, checks each field's type
-  # against its kernelType, and the guard on FIPSCipher validates membership.
-  ServiceConfig = DepRecord [
-    { name = "fipsMode"; type = Bool; }
-    { name = "cipherSuites"; type = self:
-        if self.fipsMode then ListOf FIPSCipher else ListOf String; }
+  # against its kernelType, and the guard on TargetClass validates membership.
+  AspectDecl = DepRecord [
+    { name = "generated"; type = Bool; }
+    { name = "target"; type = self:
+        if self.generated then TargetClass else String; }
+    { name = "requires"; type = _: ListOf String; }
   ];
 in {
-  ok  = ServiceConfig.checkFlat {
-    fipsMode = true;
-    cipherSuites = [ "AES-256-GCM" ];
-  };   # true — kernel verifies each cipher is a valid FIPSCipher
+  ok = AspectDecl.checkFlat {
+    generated = true;
+    target = "module";
+    requires = [ "toolchain" ];
+  };   # true
 
-  bad = ServiceConfig.checkFlat {
-    fipsMode = true;
-    cipherSuites = [ "3DES" ];
-  };   # false — "3DES" fails the FIPSCipher guard
+  bad = AspectDecl.checkFlat {
+    generated = true;
+    target = "fleet";
+    requires = [ ];
+  };   # false
 
-  lax = ServiceConfig.checkFlat {
-    fipsMode = false;
-    cipherSuites = [ "ChaCha20" "RC4" ];
-  };   # true — non-FIPS mode accepts any string
+  external = AspectDecl.checkFlat {
+    generated = false;
+    target = "external-renderer";
+    requires = [ ];
+  };   # true
 }
 ```
 
@@ -676,18 +690,24 @@ let
   H = fx.types.hoas;
   v = fx.types.verified;
 
-  RecTy = H.record [
-    { name = "name";   type = H.string; }
-    { name = "target"; type = H.string; }
+  AspectDecl = H.record [
+    { name = "name";     type = H.string; }
+    { name = "target";   type = H.string; }
+    { name = "requires"; type = H.listOf H.string; }
   ];
 
-  # Verified record validator: checks if two string fields match.
-  # The kernel type-checks the implementation against its type
-  # (Record -> Bool), verifies that field projections are well-typed,
-  # and confirms strEq composes correctly. Then extracts a Nix function.
-  matchFn = v.verify (H.forall "r" RecTy (_: H.bool))
-    (v.fn "r" RecTy (r:
-      v.strEq (v.field RecTy "name" r) (v.field RecTy "target" r)));
+  targets =
+    H.cons H.string (v.str "module")
+      (H.cons H.string (v.str "file")
+        (H.cons H.string (v.str "package")
+          (H.cons H.string (v.str "check") (H.nil H.string))));
+
+  # Verified aspect validator: checks that the target class is supported.
+  # The kernel type-checks the implementation against AspectDecl -> Bool,
+  # verifies field projections, and confirms strElem composes correctly.
+  validateAspect = v.verify (H.forall "a" AspectDecl (_: H.bool))
+    (v.fn "a" AspectDecl (a:
+      v.strElem (v.field AspectDecl "target" a) targets));
 
   # Verified addition: structural recursion extracted as Nix function
   add = v.verify (H.forall "m" H.nat (_: H.forall "n" H.nat (_: H.nat)))
@@ -698,16 +718,24 @@ let
       })));
 in {
   sum   = add 2 3;    # -> 5, correct by construction
-  yes   = matchFn { name = "hello"; target = "hello"; };    # -> true
-  no    = matchFn { name = "hello"; target = "world"; };    # -> false
+  ok    = validateAspect {
+    name = "workspace-shell";
+    target = "module";
+    requires = [ "toolchain" ];
+  };   # -> true
+  bad   = validateAspect {
+    name = "workspace-aspect";
+    target = "fleet";
+    requires = [ ];
+  };   # -> false
 }
 ```
 
 **Cost:** High — write the implementation in HOAS. Best reserved for
 code where the cost is justified by the assurance. See the
-[Proof Guide](proof-guide.md) for a progressive tutorial from simple
-proofs through the J eliminator to verified extraction of plain Nix
-functions.
+[Proof Guide](/nix-effects/guide/proof-guide) for a progressive
+tutorial from simple proofs through the J eliminator to verified
+extraction of plain Nix functions.
 
 ## How mkType derives .check
 
@@ -749,10 +777,10 @@ Sigma requires a sentinel test to detect non-dependence. If the
 type family is truly dependent, extraction throws and requires
 explicit type annotation.
 
-**Opaque types cannot be extracted.** `Attrs`, `Path`, `Function`,
-and `Any` are axiomatized — the kernel knows they exist but discards
-their payloads. Extracting a value of these types throws. They work
-for type-checking (deciding membership) but not for the full
+**Opaque types cannot be extracted.** `Attrs`, `Path`, `Derivation`,
+`Function`, and `Any` are axiomatized — the kernel knows they exist
+but discards their payloads. Extracting a value of these types throws.
+They work for type-checking (deciding membership) but not for the full
 verify-and-extract pipeline.
 
 **Extraction has boundary cost.** Extracted functions elaborate their

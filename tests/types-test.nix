@@ -224,11 +224,13 @@ let
       && builtins.elemAt logResult.state 0 == true   # domain passes
       && builtins.elemAt logResult.state 1 == false;  # codomain fails
 
-  # -- Test 16: Sigma.validate is effectful --
+  # -- Test 16: Sigma.validate emits typeCheck on failure --
+  # Under fail-only emission, a well-typed pair walks through without
+  # emitting; a snd mismatch (Int ≠ String) drives the failure path.
   sigmaValidateIsEffectful =
     let
       sigT = types.Sigma { fst = types.Int; snd = _: types.Int; universe = 0; };
-      comp = sigT.validate { fst = 1; snd = 2; };
+      comp = sigT.validate { fst = 1; snd = "bad"; };
     in !(fx.isPure comp)
        && comp.effect.name == "typeCheck";
 
@@ -371,11 +373,13 @@ let
   # forms (guard/verifier), connected by the adequacy invariant.
 
   # -- Test 26: Pi.validate is the effectful guard (1 arg, auto-derived) --
+  # Under fail-only emission, the guard is observed by driving the
+  # failure path with a non-function value (42 against Π(Int)).
   piValidateIsGuard =
     let
       piT = types.Pi { domain = types.Int; codomain = _: types.Int; universe = 0; };
       # validate takes ONE arg (the value to check as introduction form)
-      comp = piT.validate (x: x);
+      comp = piT.validate 42;
     in !(fx.isPure comp)
        && comp.effect.name == "typeCheck"
        # The context is the type name, not "Π domain" — it's the guard,
@@ -383,23 +387,19 @@ let
        && comp.effect.param.context == "Π(Int)";
 
   # -- Test 27: Pi adequacy — check and validate agree --
+  # Adequacy uses the all-pass handler's state (bool) rather than
+  # `.value`: under fail-only emission, `pure v` keeps `.value = v`
+  # (the validated value) and never invokes the handler, so the
+  # bool channel must come from handler state.
   piAdequacy =
     let
       piT = types.Pi { domain = types.Int; codomain = _: types.Int; universe = 0; };
       f = x: x * 2;
       notF = 42;
-      # Trivial handler: resumes with check result
-      trivialHandle = comp: (fx.handle {
-        handlers.typeCheck = { param, state }: {
-          resume = param.type.check param.value;
-          inherit state;
-        };
-      } comp).value;
     in
-      # Adequacy: check f = true ⟺ validate f succeeds (returns true)
-      (types.check piT f) == (trivialHandle (piT.validate f))
-      # Adequacy: check notF = false ⟺ validate notF fails (returns false)
-      && (types.check piT notF) == (trivialHandle (piT.validate notF));
+      # Adequacy: check f ⟺ (allPassHandle (validate f)).state
+      (types.check piT f) == (allPassHandle (piT.validate f)).state
+      && (types.check piT notF) == (allPassHandle (piT.validate notF)).state;
 
   # -- Test 28: Sigma adequacy — check and validate agree --
   #
@@ -424,13 +424,9 @@ let
       piT = types.Pi { domain = types.Int; codomain = _: types.String; universe = 0; };
       # This IS a function (passes guard), but returns Int not String
       badF = x: x * 2;
-      # validate (guard): passes — it's a function
-      guardResult = fx.handle {
-        handlers.typeCheck = { param, state }: {
-          resume = param.type.check param.value;
-          inherit state;
-        };
-      } (piT.validate badF);
+      # validate (guard): passes — under fail-only emission, no typeCheck
+      # fires, so the computation is pure.
+      guardPasses = fx.isPure (piT.validate badF);
       # checkAt (deferred contract): fails at codomain
       checkAtResult = fx.handle {
         handlers.typeCheck = { param, state }:
@@ -441,7 +437,7 @@ let
       } (piT.checkAt badF 21);
     in
       # Guard passes (it IS a function)
-      guardResult.value == true
+      guardPasses
       # Deferred contract: domain passes (21 is Int), codomain fails (42 is not String)
       && builtins.length checkAtResult.state == 2
       && builtins.elemAt checkAtResult.state 0 == "pass"
@@ -658,6 +654,9 @@ let
       && result.value == 2;
 
   # -- Test 46: Handler diversity — Sigma through strict/collecting/logging --
+  # Under fail-only emission, only failing components emit. With
+  # bad = {fst=42; snd=99}, fst (Int) passes silently and snd (String)
+  # fails — exactly one typeCheck event reaches the handler.
   sigmaHandlerDiversity =
     let
       sigT = types.Sigma { fst = types.Int; snd = _: types.String; universe = 0; };
@@ -681,7 +680,8 @@ let
         state = [];
       } comp;
 
-      # Logging: records all checks, fst passes, snd fails
+      # Logging: records every emitted event. Under fail-only, that's
+      # exactly the snd failure.
       logResult = fx.handle {
         handlers.typeCheck = { param, state }: {
           resume = param.type.check param.value;
@@ -693,9 +693,8 @@ let
       strictFails
       && builtins.length collectResult.state == 1
       && builtins.head collectResult.state == "String"
-      && builtins.length logResult.state == 2
-      && (builtins.elemAt logResult.state 0).passed == true
-      && (builtins.elemAt logResult.state 1).passed == false;
+      && builtins.length logResult.state == 1
+      && (builtins.head logResult.state).passed == false;
 
   # -- Test 47: Sigma short-circuit guards crash path --
   # The snd type family crashes on non-int fst. Without short-circuit,
@@ -761,12 +760,15 @@ let
       # Well-formed fake type → accepted (kernel verifies level, guard verifies universe)
       && types.check types.Type_0 wellFormed;
 
-  # -- Test 51: ListOf validate is effectful (per-element) --
+  # -- Test 51: ListOf validate is effectful when an element fails --
+  # Walker contract: per-element checks are predicate-based; typeCheck
+  # effects emit only on failure. An all-pass list is therefore pure;
+  # any failing element makes the computation effectful at that index.
   listOfValidateIsEffectful =
     let
       IntT = types.mkType { name = "Int"; kernelType = H.int_; };
       listT = types.ListOf IntT;
-    in !(fx.isPure (listT.validate [1 2 3]));
+    in !(fx.isPure (listT.validate [1 "bad" 3]));
 
   # -- Test 52: ListOf collecting handler gets per-element errors with indices --
   listOfCollectingPerElement =
@@ -780,11 +782,18 @@ let
           else { resume = false; state = state ++ [{ inherit (param) path; }]; };
         state = [];
       } (listT.validate [1 "bad" 3 "worse"]);
+      # Inspect path segments via tag/idx instead of constructor equality.
+      # User-facing pattern: the typeCheck handler reads `param.path` and
+      # asserts shapes without depending on the internal `diag.positions`
+      # module that emits them.
+      seg0 = builtins.elemAt (builtins.elemAt result.state 0).path 0;
+      seg1 = builtins.elemAt (builtins.elemAt result.state 1).path 0;
     in
-      # Two errors: indices 1 and 3 — path carries the structural descent.
+      # Two errors: indices 1 and 3 — path carries the structural descent
+      # as a list of Position records.
       builtins.length result.state == 2
-      && (builtins.elemAt result.state 0).path == [ "[1]" ]
-      && (builtins.elemAt result.state 1).path == [ "[3]" ];
+      && seg0.tag == "Elem" && seg0.idx == 1
+      && seg1.tag == "Elem" && seg1.idx == 3;
 
   # -- Test 53: ListOf empty list validate returns pure --
   listOfEmptyValidatePure =
@@ -852,7 +861,7 @@ let
     in
       # Per-element blame: only index 1 fails, fst ListOf fails overall → snd short-circuited
       builtins.length result.state == 1
-      && builtins.head result.state == [ "fst" "[1]" ];
+      && fx.types.generic.path.renderAll (builtins.head result.state) == "Σ.fst[1]";
 
   # -- Test 57: DepRecord with dependent ListOf — per-element blame through nested Sigma --
   depRecordDeepBlame =
@@ -878,7 +887,7 @@ let
       # DepRecord is a Sigma-of-Sigma chain, so the path picks up a
       # structural tag for the nested position before entering the list.
       builtins.length result.state == 1
-      && lib.last (builtins.head result.state) == "[1]";
+      && (lib.last (builtins.head result.state)).segment == "[1]";
 
   # -- Test 58: Adequacy holds for Sigma with compound sub-types --
   sigmaDeepAdequacy =
@@ -921,10 +930,11 @@ let
       } (sigT.validate { fst = [1 "bad"]; snd = null; });
     in
       nonListResult.state == false
-      # Deep effects: both list elements checked, snd never reached
-      && builtins.length mixedResult.state == 2
-      && builtins.elemAt mixedResult.state 0 == [ "fst" "[0]" ]
-      && builtins.elemAt mixedResult.state 1 == [ "fst" "[1]" ];
+      # Walker contract: typeCheck emits per failing element only; the
+      # passing element at index 0 produces no event. Short-circuit
+      # still holds: snd is never reached (no `Σ.snd*` path in state).
+      && builtins.length mixedResult.state == 1
+      && fx.types.generic.path.renderAll (builtins.head mixedResult.state) == "Σ.fst[1]";
 
   # -- Test 60: pairE with compound types gets per-element blame --
   pairEDeepBlame =
@@ -947,7 +957,7 @@ let
       # pairE calls fst.validate (1-arg → empty path root), so the ListOf
       # element index is the full path.
       builtins.length badResult.state == 1
-      && builtins.head badResult.state == [ "[1]" ]
+      && fx.types.generic.path.renderAll (builtins.head badResult.state) == "[1]"
       # Good: all pass, adequacy holds
       && goodResult.state == true;
 
@@ -973,7 +983,7 @@ let
       # certifyE delegates to base.validate (1-arg), so the ListOf element
       # index is the full path.
       builtins.length result.state == 1
-      && builtins.head result.state == [ "[1]" ];
+      && fx.types.generic.path.renderAll (builtins.head result.state) == "[1]";
 
   # -- Test 62: Cross-type parametric adequacy --
   # check and allPassHandle agree across multiple type constructors and values

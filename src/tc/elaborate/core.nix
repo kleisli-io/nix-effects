@@ -3,18 +3,24 @@
 #
 # Bridges `fx.types` to the kernel term representation (de Bruijn `Tm`) via
 # the HOAS surface combinator layer. `elaborateType` maps an `fx.types`
-# descriptor to an HOAS type tree; `elaborateValue` maps a Nix value at a
-# given HOAS type to an HOAS value term; `validateValue` is the accumulating
-# Validation mirror of `elaborateValue`; `decide`/`decideType` package the
-# pipeline as a Bool; `extract`/`verifyAndExtract` close the reverse
-# direction through `self.extractInner`.
+# descriptor to an HOAS type tree; `elaborateValue` is the strict-handler
+# bridge over `fx.tc.generic.check.deriveElaborate`; `validateValue` is the
+# collecting-handler bridge over `fx.tc.generic.check.deriveCheck`;
+# `decide`/`decideType` package the pipeline as a Bool;
+# `extract`/`verifyAndExtract` close the reverse direction through
+# `self.extractInner`.
+#
+# `elaborateValue` and `validateValue` are not separate dispatchers — they are
+# the same polymorphic fold (`deriveGo` in `fx.tc.generic.check`) instantiated
+# at two carriers (Hoas and Unit respectively) and threaded through two
+# handler choices (strict and collecting). The canonical functor lives in
+# `tc/generic/check.nix`; the modules here are thin handler-bridges.
 #
 # elaborateType dispatches on:
 #   1. `_kernel` field (types built via `mkType` with `kernelType`)
 #   2. Structural fields (Pi: domain/codomain, Sigma: fstType/sndFamily)
 #   3. Name convention (Bool, Nat, Unit, Null, String, Int, Float, ...)
 #
-# elaborateValue uses HOAS substitution for dependent Sigma (`body(â)`).
 # extract threads the kernel type value through every recursion site,
 # computing dependent codomain/snd via closure instantiation rather than
 # sentinel tests.
@@ -53,491 +59,46 @@ let
     in r1.success && r2.success && r1.value.name == r2.value.name;
 in {
   scope = {
-    # -- Type elaboration --
-    #
-    # Dispatches on:
-    #   1. _kernel annotation (annotated types from this module)
-    #   2. Structural fields (Pi: domain/codomain, Sigma: fstType/sndFamily)
-    #   3. Name convention (Bool, Nat, Unit, Null)
     elaborateType = type:
-      if !(builtins.isAttrs type) then
-        throw "elaborateType: expected a type attrset"
-      else if type ? prove then type._kernel
-      else if isPi type then
-        if isConstantFamily type.codomain
-        then H.forall "x" (self.elaborateType type.domain) (_: self.elaborateType (type.codomain _s1))
-        else throw "elaborateType: dependent Pi requires _kernel annotation"
-      else if isSigma type then
-        if isConstantFamily type.sndFamily
-        then H.sigma "x" (self.elaborateType type.fstType) (_: self.elaborateType (type.sndFamily _s1))
-        else throw "elaborateType: dependent Sigma requires _kernel annotation"
-      else if type.name == "Bool" then H.bool
-      else if type.name == "Nat" then H.nat
-      else if type.name == "Unit" || type.name == "Null" then H.unit
-      else if type.name == "String" then H.string
-      else if type.name == "Int" then H.int_
-      else if type.name == "Float" then H.float_
-      else if type.name == "Attrs" then H.attrs
-      else if type.name == "Path" then H.path
-      else if type.name == "Function" then H.function_
-      else if type.name == "Any" then H.any
-      else throw "elaborateType: cannot elaborate '${type.name}' (add _kernel annotation)";
+        if !(builtins.isAttrs type) then
+          throw "elaborateType: expected a type attrset"
+        else if type ? prove then type._kernel
+        else if isPi type then
+          if isConstantFamily type.codomain
+          then H.forall "x" (self.elaborateType type.domain) (_: self.elaborateType (type.codomain _s1))
+          else throw "elaborateType: dependent Pi requires _kernel annotation"
+        else if isSigma type then
+          if isConstantFamily type.sndFamily
+          then H.sigma "x" (self.elaborateType type.fstType) (_: self.elaborateType (type.sndFamily _s1))
+          else throw "elaborateType: dependent Sigma requires _kernel annotation"
+        else if type.name == "Bool" then H.bool
+        else if type.name == "Nat" then H.nat
+        else if type.name == "Unit" || type.name == "Null" then H.unit
+        else if type.name == "String" then H.string
+        else if type.name == "Int" then H.int_
+        else if type.name == "Float" then H.float_
+        else if type.name == "Attrs" then H.attrs
+        else if type.name == "Path" then H.path
+        else if type.name == "Function" then H.function_
+        else if type.name == "Any" then H.any
+        else throw "elaborateType: cannot elaborate '${type.name}' (add _kernel annotation)";
 
-    # -- Value elaboration --
-    #
-    # Dispatches on HOAS type tag (_htag) to produce HOAS value tree.
-    # Guards ensure clean throws (catchable by tryEval) for invalid values.
     elaborateValue = hoasTy: value:
-      let t = hoasTy._htag or (throw "elaborateValue: not an HOAS type node"); in
+        (fx.trampoline.handle {
+          handlers = fx.effects.typecheck.strict;
+          state = null;
+        } (fx.tc.generic.check.deriveElaborate hoasTy fx.tc.generic.path.empty value)).value;
 
-      if t == "bool" then
-        if !(builtins.isBool value)
-        then throw "elaborateValue: Bool requires boolean, got ${builtins.typeOf value}"
-        else if value then H.true_ else H.false_
-
-      else if t == "nat" then
-        if !(builtins.isInt value) || value < 0
-        then throw "elaborateValue: Nat requires non-negative integer"
-        else H.natLit value
-
-      else if t == "unit" then
-        if value != null
-        then throw "elaborateValue: Unit requires null"
-        else H.tt
-
-      else if t == "string" then
-        if !(builtins.isString value)
-        then throw "elaborateValue: String requires string, got ${builtins.typeOf value}"
-        else H.stringLit value
-
-      else if t == "int" then
-        if !(builtins.isInt value)
-        then throw "elaborateValue: Int requires integer, got ${builtins.typeOf value}"
-        else H.intLit value
-
-      else if t == "float" then
-        if !(builtins.isFloat value)
-        then throw "elaborateValue: Float requires float, got ${builtins.typeOf value}"
-        else H.floatLit value
-
-      else if t == "attrs" then
-        if !(builtins.isAttrs value)
-        then throw "elaborateValue: Attrs requires attrset, got ${builtins.typeOf value}"
-        else H.attrsLit
-
-      else if t == "path" then
-        if !(builtins.isPath value)
-        then throw "elaborateValue: Path requires path, got ${builtins.typeOf value}"
-        else H.pathLit
-
-      else if t == "function" then
-        if !(builtins.isFunction value)
-        then throw "elaborateValue: Function requires function, got ${builtins.typeOf value}"
-        else H.fnLit
-
-      else if t == "any" then H.anyLit
-
-      else if t == "U" then
-        # Universe types: a type-as-value in U(n) elaborates to its kernel
-        # representation. The kernel's checkTypeLevel verifies the level.
-        if builtins.isAttrs value && value ? _kernel then value._kernel
-        else throw "elaborateValue: U requires a Type with _kernel"
-
-      else if t == "list" then
-        if !(builtins.isList value)
-        then throw "elaborateValue: List requires a list"
-        else
-          let
-            elemTy = hoasTy.elem;
-            len = builtins.length value;
-          in builtins.foldl' (acc: i:
-            let v = builtins.elemAt value (len - 1 - i); in
-            H.cons elemTy (self.elaborateValue elemTy v) acc
-          ) (H.nil elemTy) (builtins.genList (x: x) len)
-
-      else if t == "sum" then
-        if !(builtins.isAttrs value && value ? _tag && value ? value)
-        then throw "elaborateValue: Sum requires { _tag = \"Left\"|\"Right\"; value = ...; }"
-        else if value._tag == "Left"
-        then H.inl hoasTy.left hoasTy.right (self.elaborateValue hoasTy.left value.value)
-        else if value._tag == "Right"
-        then H.inr hoasTy.left hoasTy.right (self.elaborateValue hoasTy.right value.value)
-        else throw "elaborateValue: Sum _tag must be \"Left\" or \"Right\""
-
-      else if t == "sigma" then
-        if !(builtins.isAttrs value && value ? fst && value ? snd)
-        then throw "elaborateValue: Sigma requires { fst; snd; }"
-        else
-          let
-            # HOAS substitution: elaborate fst, pass to body for dependent snd type.
-            # For non-dependent bodies, body ignores its argument — identical result.
-            # For dependent bodies, body(â) computes the correct snd type via
-            # meta-level function application (HOAS-level substitution).
-            fstHoas = self.elaborateValue hoasTy.fst value.fst;
-            sndTy = hoasTy.body fstHoas;
-          in H.pair
-            fstHoas
-            (self.elaborateValue sndTy value.snd)
-
-      # -- Compound types (record, maybe, variant) --
-
-      else if t == "record" then
-        let
-          fields = hoasTy.fields;
-          n = builtins.length fields;
-          # Safe field access: converts uncatchable missing-attribute error
-          # to catchable throw so that decide remains total for records.
-          fieldOf = v: name:
-            if v ? ${name} then v.${name}
-            else throw "elaborateValue: Record missing required field '${name}'";
-        in
-          if !(builtins.isAttrs value)
-          then throw "elaborateValue: Record requires attrset, got ${builtins.typeOf value}"
-          else if n == 0 then H.tt
-          else if n == 1 then
-            let f = builtins.head fields; in
-            self.elaborateValue f.type (fieldOf value f.name)
-          else
-            # Build nested pairs right-to-left
-            let
-              buildPairs = remaining: v:
-                if builtins.length remaining == 1 then
-                  self.elaborateValue (builtins.head remaining).type (fieldOf v (builtins.head remaining).name)
-                else
-                  let
-                    f = builtins.head remaining;
-                    rest = builtins.tail remaining;
-                  in H.pair
-                    (self.elaborateValue f.type (fieldOf v f.name))
-                    (buildPairs rest v);
-            in buildPairs fields value
-
-      else if t == "maybe" then
-        # Maybe = Sum(inner, Unit). null → Right(tt), value → Left(value)
-        if value == null
-        then H.inr hoasTy.inner H.unit H.tt
-        else H.inl hoasTy.inner H.unit (self.elaborateValue hoasTy.inner value)
-
-      else if t == "variant" then
-        let branches = hoasTy.branches; in
-        if !(builtins.isAttrs value && value ? _tag && value ? value)
-        then throw "elaborateValue: Variant requires { _tag; value; }"
-        else
-          let
-            # Find the matching branch and build nested inl/inr injection
-            inject = bs: v:
-              let n = builtins.length bs; in
-              if n == 1 then
-                self.elaborateValue (builtins.head bs).type v.value
-              else
-                let
-                  b1 = builtins.head bs;
-                  rest = builtins.tail bs;
-                  restTy = { _htag = "variant"; branches = rest; };
-                in
-                  if v._tag == b1.tag
-                  then H.inl b1.type restTy (self.elaborateValue b1.type v.value)
-                  else H.inr b1.type restTy (inject rest v);
-          in inject branches value
-
-      else if t == "pi" then
-        # Verified-first dispatch: if value carries _hoasImpl (from verified
-        # combinators), use it for full kernel body verification. Otherwise,
-        # wrap the raw Nix function in an opaque lambda (trust boundary).
-        if builtins.isAttrs value && value ? _hoasImpl then value._hoasImpl
-        else if builtins.isFunction value then H.opaqueLam value hoasTy
-        else throw "elaborateValue: Pi type expects function, got ${builtins.typeOf value}"
-
-      # μ-form types — covers `H.nat` / `H.bool` (both `_htag = "mu"` μ-forms
-      # carrying `_dtypeMeta`). Surface dispatch reads constructor field-kind
-      # signatures from metadata, mirroring the "app" branch's pattern for
-      # parametric types. This keeps surface elaboration invariant under the
-      # kernel's encoded description representation; the elaborator never
-      # inspects kernel `D`.
-      # `H.unit` has `_htag = "unit"` and never reaches this branch.
-      else if t == "mu" then
-        let meta = hoasTy._dtypeMeta or null; in
-        if meta == null
-        then throw "elaborateValue: 'mu' HOAS node lacks _dtypeMeta; bare `muI` constructions are not value-elaboratable (use H.nat / H.bool, or build via H.datatype / H.datatypeP)"
-        else
-          let
-            fieldKinds = c: map (f: f.kind) c.fields;
-            sigs = map fieldKinds meta.cons;
-            isBoolSig = sigs == [ [] [] ];
-            isNatSig  = sigs == [ [] [ "recAt" ] ];
-          in
-          if isBoolSig then self.elaborateValue { _htag = "bool"; } value
-          else if isNatSig then self.elaborateValue { _htag = "nat"; } value
-          else throw "elaborateValue: μ-shape '${meta.name}' has no scalar value-walker (constructor signatures = ${builtins.toJSON sigs}); list/sum/parametric shapes flow through the 'app' branch"
-
-      # App-spine types — `app^k head A1 … Ak` where `head` is a polyField
-      # carrying `_dtypeMeta` (e.g. `ListDT.T`/`SumDT.T` from `H.listOf`/
-      # `H.sum`, or any user-defined `datatypeP`-produced `T`). The app
-      # spine keeps each parameter HOAS as a structural slot, so surface
-      # sugar (record, variant, maybe) survives the indirection through
-      # the macro. `_dtypeMeta.cons` classifies the datatype's shape and
-      # dispatches the value walker; the literal app args are reused as
-      # the element HOAS, never round-tripped through a kernel value.
-      else if t == "app" then
-        let
-          peelSpine = node: args:
-            if (builtins.isAttrs node) && (node._htag or null) == "app"
-            then peelSpine node.fn ([ node.arg ] ++ args)
-            else { head = node; inherit args; };
-          spine = peelSpine hoasTy [];
-          head = spine.head;
-          args = spine.args;
-          meta = head._dtypeMeta or null;
-          fieldKinds = c: map (f: f.kind) c.fields;
-          isListShape = m:
-            builtins.length m.cons == 2
-            && fieldKinds (builtins.elemAt m.cons 0) == []
-            && fieldKinds (builtins.elemAt m.cons 1) == [ "data" "recAt" ];
-          isSumShape = m:
-            builtins.length m.cons == 2
-            && fieldKinds (builtins.elemAt m.cons 0) == [ "data" ]
-            && fieldKinds (builtins.elemAt m.cons 1) == [ "data" ];
-          sumArgs =
-            if meta != null && isSumShape meta && builtins.length args == 2
-            then { left = builtins.elemAt args 0; right = builtins.elemAt args 1; }
-            else if meta != null && isSumShape meta && builtins.length args == 3
-            then { left = builtins.elemAt args 1; right = builtins.elemAt args 2; }
-            else null;
-        in
-        if meta == null
-        then throw "elaborateValue: app head carries no _dtypeMeta (non-datatype app has no value-walker)"
-        else if isListShape meta && builtins.length args == 1
-        then self.elaborateValue { _htag = "list"; elem = builtins.elemAt args 0; } value
-        else if sumArgs != null
-        then self.elaborateValue {
-          _htag = "sum";
-          inherit (sumArgs) left right;
-        } value
-        else throw "elaborateValue: app-form datatype '${meta.name}' has no dedicated walker (shape: ${builtins.toJSON (map fieldKinds meta.cons)})"
-
-      else throw "elaborateValue: unsupported type tag '${t}'";
-
-    # -- Structural validation --
-    #
-    # validateValue : String → HoasTree → NixVal → [{ path; msg; }]
-    #
-    # Mirrors elaborateValue's structural recursion over HOAS type tags but
-    # returns a list of errors instead of producing HOAS terms or throwing.
-    # Empty list means the value would elaborate successfully.
-    #
-    # Design:
-    #   elaborateValue is monadic (Either) — fails fast on the first error.
-    #   validateValue is applicative (Validation) — accumulates all errors.
-    #   These are different morphisms: one produces values, the other diagnostics.
-    #   The path accumulator is the Reader effect (inherited attribute in the fold).
-    #   The error list is the Writer effect (free monoid).
-    #
-    # Soundness: checks the same predicates as elaborateValue. If validateValue
-    # returns [] then elaborateValue will not throw (and vice versa). Both have
-    # catch-all branches for unknown tags, so they cannot silently diverge.
     validateValue = path: hoasTy: value:
-      let t = hoasTy._htag or "invalid"; in
+        (fx.trampoline.handle {
+          handlers = fx.effects.typecheck.collecting;
+          state = [];
+        } (fx.tc.generic.check.deriveCheck hoasTy path value)).state;
 
-      # -- Scalar types --
-
-      if t == "bool" then
-        if !(builtins.isBool value)
-        then [{ inherit path; msg = "expected bool, got ${builtins.typeOf value}"; }]
-        else []
-
-      else if t == "nat" then
-        if !(builtins.isInt value) || value < 0
-        then [{ inherit path; msg = "expected non-negative integer, got ${builtins.typeOf value}"; }]
-        else []
-
-      else if t == "unit" then
-        if value != null
-        then [{ inherit path; msg = "expected null (unit), got ${builtins.typeOf value}"; }]
-        else []
-
-      else if t == "string" then
-        if !(builtins.isString value)
-        then [{ inherit path; msg = "expected string, got ${builtins.typeOf value}"; }]
-        else []
-
-      else if t == "int" then
-        if !(builtins.isInt value)
-        then [{ inherit path; msg = "expected integer, got ${builtins.typeOf value}"; }]
-        else []
-
-      else if t == "float" then
-        if !(builtins.isFloat value)
-        then [{ inherit path; msg = "expected float, got ${builtins.typeOf value}"; }]
-        else []
-
-      else if t == "attrs" then
-        if !(builtins.isAttrs value)
-        then [{ inherit path; msg = "expected attrset, got ${builtins.typeOf value}"; }]
-        else []
-
-      else if t == "path" then
-        if !(builtins.isPath value)
-        then [{ inherit path; msg = "expected path, got ${builtins.typeOf value}"; }]
-        else []
-
-      else if t == "function" then
-        if !(builtins.isFunction value)
-        then [{ inherit path; msg = "expected function, got ${builtins.typeOf value}"; }]
-        else []
-
-      else if t == "any" then []
-
-      else if t == "U" then
-        if builtins.isAttrs value && value ? _kernel then []
-        else [{ inherit path; msg = "expected Type with _kernel"; }]
-
-      # -- List: validate every element with indexed path --
-
-      else if t == "list" then
-        if !(builtins.isList value)
-        then [{ inherit path; msg = "expected list, got ${builtins.typeOf value}"; }]
-        else
-          let
-            elemTy = hoasTy.elem;
-            len = builtins.length value;
-          in builtins.concatMap (i:
-            self.validateValue "${path}[${toString i}]" elemTy (builtins.elemAt value i)
-          ) (builtins.genList (x: x) len)
-
-      # -- Sum: validate tag structure then recurse into branch --
-
-      else if t == "sum" then
-        if !(builtins.isAttrs value && value ? _tag && value ? value)
-        then [{ inherit path; msg = "expected { _tag = \"Left\"|\"Right\"; value = ...; }"; }]
-        else if value._tag == "Left" then self.validateValue "${path}.Left" hoasTy.left value.value
-        else if value._tag == "Right" then self.validateValue "${path}.Right" hoasTy.right value.value
-        else [{ inherit path; msg = "_tag must be \"Left\" or \"Right\", got \"${value._tag}\""; }]
-
-      # -- Sigma: HOAS substitution for dependent snd type --
-
-      else if t == "sigma" then
-        if !(builtins.isAttrs value && value ? fst && value ? snd)
-        then [{ inherit path; msg = "expected { fst; snd; }"; }]
-        else
-          let
-            fstErrors = self.validateValue "${path}.fst" hoasTy.fst value.fst;
-            # Attempt fst elaboration for HOAS substitution into body.
-            # If fst elaboration fails, report fst errors only — computing
-            # snd type requires a valid fst HOAS term.
-            fstElab = builtins.tryEval (self.elaborateValue hoasTy.fst value.fst);
-          in
-          if !fstElab.success then fstErrors
-          else
-            let sndTy = hoasTy.body fstElab.value;
-            in fstErrors
-               ++ (self.validateValue "${path}.snd" sndTy value.snd)
-
-      # -- Compound types (record, maybe, variant) --
-
-      else if t == "record" then
-        if !(builtins.isAttrs value)
-        then [{ inherit path; msg = "expected record (attrset), got ${builtins.typeOf value}"; }]
-        else
-          builtins.concatMap (f:
-            if !(builtins.hasAttr f.name value)
-            then [{ path = "${path}.${f.name}"; msg = "missing required field"; }]
-            else self.validateValue "${path}.${f.name}" f.type value.${f.name}
-          ) (hoasTy.fields or [])
-
-      else if t == "maybe" then
-        if value == null then []
-        else self.validateValue path hoasTy.inner value
-
-      else if t == "variant" then
-        if !(builtins.isAttrs value && value ? _tag && value ? value)
-        then [{ inherit path; msg = "expected { _tag; value; }"; }]
-        else
-          let
-            branches = hoasTy.branches;
-            matching = builtins.filter (b: b.tag == value._tag) branches;
-          in
-          if matching == []
-          then [{ inherit path; msg = "unknown variant tag \"${value._tag}\"; expected one of: ${builtins.concatStringsSep ", " (map (b: "\"${b.tag}\"") branches)}"; }]
-          else self.validateValue "${path}.${value._tag}" (builtins.head matching).type value.value
-
-      else if t == "pi" then
-        if (builtins.isAttrs value && value ? _hoasImpl) || builtins.isFunction value then []
-        else [{ inherit path; msg = "expected function, got ${builtins.typeOf value}"; }]
-
-      # μ-form types — mirror the elaborateValue "mu" branch. Dispatch on
-      # `_dtypeMeta` constructor signatures so accept/reject parity holds
-      # under any kernel description representation.
-      else if t == "mu" then
-        let meta = hoasTy._dtypeMeta or null; in
-        if meta == null
-        then [{ inherit path; msg = "'mu' HOAS node lacks _dtypeMeta; bare `muI` constructions are not value-validatable"; }]
-        else
-          let
-            fieldKinds = c: map (f: f.kind) c.fields;
-            sigs = map fieldKinds meta.cons;
-            isBoolSig = sigs == [ [] [] ];
-            isNatSig  = sigs == [ [] [ "recAt" ] ];
-          in
-          if isBoolSig then self.validateValue path { _htag = "bool"; } value
-          else if isNatSig then self.validateValue path { _htag = "nat"; } value
-          else [{ inherit path; msg = "μ-shape '${meta.name}' has no scalar value-walker (constructor signatures = ${builtins.toJSON sigs})"; }]
-
-      # App-spine types — mirror of elaborateValue's "app" branch. Peel the
-      # spine to the polyField head, read `_dtypeMeta.cons` for shape
-      # classification, delegate to the list/sum branch with the literal
-      # parameter HOAS preserved.
-      else if t == "app" then
-        let
-          peelSpine = node: args:
-            if (builtins.isAttrs node) && (node._htag or null) == "app"
-            then peelSpine node.fn ([ node.arg ] ++ args)
-            else { head = node; inherit args; };
-          spine = peelSpine hoasTy [];
-          head = spine.head;
-          args = spine.args;
-          meta = head._dtypeMeta or null;
-          fieldKinds = c: map (f: f.kind) c.fields;
-          isListShape = m:
-            builtins.length m.cons == 2
-            && fieldKinds (builtins.elemAt m.cons 0) == []
-            && fieldKinds (builtins.elemAt m.cons 1) == [ "data" "recAt" ];
-          isSumShape = m:
-            builtins.length m.cons == 2
-            && fieldKinds (builtins.elemAt m.cons 0) == [ "data" ]
-            && fieldKinds (builtins.elemAt m.cons 1) == [ "data" ];
-          sumArgs =
-            if meta != null && isSumShape meta && builtins.length args == 2
-            then { left = builtins.elemAt args 0; right = builtins.elemAt args 1; }
-            else if meta != null && isSumShape meta && builtins.length args == 3
-            then { left = builtins.elemAt args 1; right = builtins.elemAt args 2; }
-            else null;
-        in
-        if meta == null
-        then [{ inherit path; msg = "app head carries no _dtypeMeta (non-datatype app has no value-walker)"; }]
-        else if isListShape meta && builtins.length args == 1
-        then self.validateValue path
-               { _htag = "list"; elem = builtins.elemAt args 0; }
-               value
-        else if sumArgs != null
-        then self.validateValue path {
-          _htag = "sum";
-          inherit (sumArgs) left right;
-        } value
-        else [{ inherit path; msg = "app-form datatype '${meta.name}' has no dedicated walker"; }]
-
-      else [{ inherit path; msg = "unsupported type tag '${t}'"; }];
-
-    # -- Value extraction (public API) --
-    #
-    # extract : HoasTree → Val → NixValue
-    # Computes kernel type value from HOAS type, then delegates to extractInner.
     extract = hoasTy: val:
       let tyVal = E.eval [] (H.elab hoasTy);
       in self.extractInner hoasTy tyVal val;
 
-    # -- verifyAndExtract : HoasTree → HoasTree → NixValue --
-    # Full pipeline: type-check HOAS term → eval → extract to Nix value.
-    # Computes kernel type value once and uses extractInner directly.
     verifyAndExtract = hoasTy: hoasImpl:
       let
         checked = H.checkHoas hoasTy hoasImpl;
@@ -550,11 +111,6 @@ in {
             tyVal = E.eval [] (H.elab hoasTy);
           in self.extractInner hoasTy tyVal val;
 
-    # -- Decision procedure --
-    #
-    # decide : HoasTree → NixValue → Bool
-    # Returns true iff both elaboration and kernel type-checking succeed.
-    # Uses tryEval to catch elaboration throws and checks for kernel errors.
     decide = hoasTy: value:
       let
         result = builtins.tryEval (
@@ -565,9 +121,107 @@ in {
         );
       in result.success && result.value;
 
-    # -- Convenience: elaborate type then decide --
     decideType = type: value:
       self.decide (self.elaborateType type) value;
+  };
+
+  __docs = {
+    elaborateType = {
+      description = "elaborateType: convert an `fx.types` type descriptor to an HOAS type tree — dispatches on `_kernel` annotation, structural fields (Pi: domain/codomain, Sigma: fstType/sndFamily), then name convention (Bool, Nat, Unit, ...). Dependent Pi/Sigma require explicit `_kernel`.";
+      signature = "elaborateType : FxType -> Hoas";
+      doc = ''
+        Three dispatch tiers, tried in order:
+
+        1. `_kernel` annotation: returned directly. This is the
+           authoritative path for types built via `mkType` with an
+           explicit `kernelType` (covers refinement, dependent, linear,
+           levitated descriptions).
+        2. Structural fields: `Pi { domain, codomain, checkAt }` →
+           `H.forall`; `Sigma { fstType, sndFamily, proj1 }` →
+           `H.sigma`. Only non-dependent families (constant-codomain /
+           constant-sndFamily) are accepted at this tier — dependent
+           families throw and demand the `_kernel` path.
+        3. Name convention: primitives (`Bool`, `Nat`, `Unit`, `Null`,
+           `String`, `Int`, `Float`, `Attrs`, `Path`, `Function`,
+           `Any`) map to their HOAS prelude entries.
+
+        Unknown types throw with a message directing the author to
+        add `_kernel`. Cross-ref: `elaborateValue` for the dual on
+        values, `decideType` for the boolean pipeline.
+      '';
+    };
+    elaborateValue = {
+      description = "elaborateValue: strict-handler bridge over `fx.tc.generic.check.deriveElaborate` — produces the HOAS term that witnesses the value's typing, throwing on the first shape mismatch (catchable by `tryEval`).";
+      signature = "elaborateValue : Hoas -> NixVal -> Hoas";
+      doc = ''
+        Composes the canonical structural walker
+        `fx.tc.generic.check.deriveElaborate` with the strict handler
+        from `fx.effects.typecheck.strict`. The walker is the same fold
+        as `validateValue` instantiated at carrier `Hoas`; the strict
+        handler throws on the first emitted typeCheck failure.
+
+        Per-tag construction is owned by the hoasAlg algebra inside
+        `tc/generic/check.nix`: `Bool` → `true_`/`false_`; `Nat` →
+        `natLit`; `String`/`Int`/`Float` → primitive literals; `List` →
+        cons chain via an O(1)-per-step continuation accumulator; `Sum`
+        → `inl`/`inr`; `Sigma` → `pair`; constructor records →
+        prev-threaded `H.app` chain via `D.fieldType` (typeFn-aware for
+        dependent fields).
+
+        Fails fast on the first shape mismatch via `builtins.throw`.
+        Soundness invariant: `validateValue [] hoasTy v` is `[]` iff
+        `elaborateValue hoasTy v` does not throw on the same input.
+      '';
+    };
+    validateValue = {
+      description = "validateValue: collecting-handler bridge over `fx.tc.generic.check.deriveCheck` — accumulates every `typeCheck` effect emission produced by the canonical structural validator.";
+      signature = "validateValue : Path -> Hoas -> NixVal -> [{ type; context; value; path; reason; }]";
+      doc = ''
+        Composes the canonical structural validator
+        `fx.tc.generic.check.deriveCheck` with the collecting handler
+        from `fx.effects.typecheck.collecting` to accumulate every typed
+        failure across the value tree.
+
+        The path argument is a structured Position list from
+        `fx.tc.generic.path` (alias of `fx.diag.positions`); each
+        emitted error record carries the descent path to its failure
+        site under `reason ∈ { shape-mismatch, missing-field,
+        predicate-failed, deferred-pi }`.
+
+        Returns `[]` iff `elaborateValue` would not throw on the same
+        input. Use for upfront validation in build-time gates and
+        structural diagnostics; use `elaborateValue` directly when only
+        the elaborated value is needed.
+      '';
+    };
+    extract = {
+      description = "extract: kernel-value to Nix-value extraction — reverse of `elaborateValue`; computes the kernel type from the HOAS type once, then delegates to `extractInner` for the recursive walk with kernel type-value threading.";
+      signature = "extract : Hoas -> Val -> NixValue";
+    };
+    verifyAndExtract = {
+      description = "verifyAndExtract: full type-check + evaluate + extract pipeline — given an HOAS type and an HOAS implementation, type-check the impl against the type, evaluate to a kernel value, and extract to a Nix value; throws on type error.";
+      signature = "verifyAndExtract : Hoas -> Hoas -> NixValue";
+      doc = ''
+        The canonical entry point for closing a verified-impl pipeline
+        back to ordinary Nix data. The kernel type value is computed
+        once and reused by `extractInner` so dependent codomain/snd
+        closures evaluate against the same type representation the
+        checker consumed.
+
+        On type-check failure throws `"verifyAndExtract: type check
+        failed"` — callers needing structured diagnostics should split
+        the pipeline: `H.checkHoas` for the error attrset, then
+        `extract`/`extractInner` only on success.
+      '';
+    };
+    decide = {
+      description = "decide: boolean decision procedure — returns `true` iff `elaborateValue` succeeds and the kernel type-checker accepts the resulting HOAS value; `tryEval` catches all elaboration throws.";
+      signature = "decide : Hoas -> NixVal -> Bool";
+    };
+    decideType = {
+      description = "decideType: `decide` lifted to `fx.types` descriptors — runs `elaborateType` then `decide`. Convenience for users working with `fx.types` rather than raw HOAS types.";
+      signature = "decideType : FxType -> NixVal -> Bool";
+    };
   };
 
   tests = let
@@ -618,8 +272,11 @@ in {
       expected = "app";
     };
     "elab-type-either" = {
+      # Either now uses H.variant first-class form (was H.sum μ-form
+      # which produced an `app`-spine SumDT). The kernel HOAS for
+      # Either L R is `{_htag = "variant"; branches = [Left; Right]}`.
       expr = (elaborateType (FC.Either IntT BoolT))._htag;
-      expected = "app";
+      expected = "variant";
     };
     "elab-type-arrow" = {
       expr = (elaborateType (Arrow IntT BoolT))._htag;
@@ -957,7 +614,7 @@ in {
           in if dt == "boot-inl" then H.nat
              else H.bool);
         val = { fst = true; snd = 42; };
-      in validateValue "$" ty val;
+      in validateValue [] ty val;
       expected = [];
     };
 
@@ -971,7 +628,7 @@ in {
              else H.bool);
         # fst=true → snd should be Nat, but we pass a string
         val = { fst = true; snd = "wrong"; };
-        errors = validateValue "$" ty val;
+        errors = validateValue [] ty val;
       in builtins.length errors > 0;
       expected = true;
     };
@@ -1051,13 +708,13 @@ in {
 
     # validateValue: Pi accepts function
     "validate-pi-accepts-function" = {
-      expr = validateValue "$" (H.forall "x" H.nat (_: H.nat)) (x: x + 1);
+      expr = validateValue [] (H.forall "x" H.nat (_: H.nat)) (x: x + 1);
       expected = [];
     };
 
     # validateValue: Pi rejects non-function
     "validate-pi-rejects-non-function" = {
-      expr = builtins.length (validateValue "$" (H.forall "x" H.nat (_: H.nat)) 42) > 0;
+      expr = builtins.length (validateValue [] (H.forall "x" H.nat (_: H.nat)) 42) > 0;
       expected = true;
     };
 
@@ -1250,6 +907,47 @@ in {
     "decide-fn-rejects-string" = {
       expr = decide H.function_ "hello";
       expected = false;
+    };
+
+    # -- Attrset value walker: tag dispatch, η-rule, _tag alias --
+
+    "walker-eta-mono-record" = {
+      # Single-constructor datatype accepts a raw attrset (η-rule).
+      expr = let
+        Box = H.datatype "Box" [
+          (H.con "mk" [ (H.field "x" H.nat) (H.field "y" H.bool) ])
+        ];
+      in decide Box.T { x = 5; y = true; };
+      expected = true;
+    };
+
+    "walker-multi-con-explicit-con-tag" = {
+      expr = let
+        MaybeNat = H.datatype "MaybeNat" [
+          (H.con "Some" [ (H.field "v" H.nat) ])
+          (H.con "None" [])
+        ];
+      in decide MaybeNat.T { _con = "Some"; v = 7; };
+      expected = true;
+    };
+
+    "walker-multi-con-no-tag-rejected" = {
+      # Multi-constructor datatype rejects ambiguous raw attrset (no
+      # `_con` or `_tag` to disambiguate the constructor).
+      expr = let
+        MaybeNat = H.datatype "MaybeNat" [
+          (H.con "Some" [ (H.field "v" H.nat) ])
+          (H.con "None" [])
+        ];
+      in decide MaybeNat.T { v = 7; };
+      expected = false;
+    };
+
+    "walker-sum-tag-alias" = {
+      # Sum surface `{_tag; value;}` resolves the constructor via the
+      # `_tag` alias for `_con`.
+      expr = decide (H.sum H.nat H.bool) { _tag = "Left"; value = 3; };
+      expected = true;
     };
 
     # -- Extraction: roundtrip tests --

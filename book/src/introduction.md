@@ -1,67 +1,73 @@
 # Introduction
 
-Nix configurations fail late. A misspelled option name, a string where an
-integer belongs, a firewall rule that references a port no service
-listens on — these surface at build time, at deploy time, or when
-a user files a ticket. The NixOS module system catches some of this
-with `mkOption` and `types.str`, but the checking is shallow: it
-validates individual fields, not relationships between them. "The build
-system must appear in the declared platforms list" is a constraint no
-existing Nix tool can express as a type.
+Nix libraries often grow into small languages. A user declares entities,
+reusable aspects, target classes, dependencies, and policies; a pipeline
+turns that declarative graph into concrete Nix modules, files, packages,
+or checks. Without a shared structure, every layer writes its own walker:
+one for validation, one for documentation, one for dependency ordering,
+one for rendering, one for diagnostics.
 
-nix-effects is a pure Nix toolkit for effectful programs, typed
-validation, verified boundaries, and description-backed DSLs. Validation
-is phrased as a `typeCheck` effect, and the same validator can run under
-different handlers that choose what happens on a failure. The handler is
-where the policy lives, not the validator. Everything runs at `nix eval`
-time, before anything builds or ships.
+nix-effects is a typed, description-backed programming substrate for
+pure Nix. Effects are the execution model; generated descriptions are
+the shared structure; the kernel checks boundaries; generic tools,
+diagnostics, proofs, and ornaments reuse the same shape. Everything runs
+at `nix eval` time, before anything builds or ships.
+
+The unusual part is that the kernel is hosted inside Nix evaluation
+itself. Nix normally gives libraries functions, attrsets, assertions,
+and module option types. nix-effects adds typed descriptions that generic
+programs can inspect. Validation is therefore not a hand-written walker:
+it is one interpretation of a type description, next to schemas,
+documentation, dependency extraction, and DSL interpretation.
 
 The type layer is backed by a Martin-Löf dependent type checker in
 `src/tc/` with Pi, Sigma, identity types with J, explicit universe
 levels, HOAS elaboration, generated datatypes, and verified extraction
 of plain Nix functions from proof terms. Descriptions provide reusable
 datatype shapes, so domain DSLs can be validated, interpreted,
-documented, or extracted by generic tools instead of one-off traversals.
+documented, transformed, or extracted by generic tools instead of
+one-off traversals.
 The bidirectional checker sends `typeCheck` effects carrying a
 field-path context, so type errors in deeply nested terms come back
 localized to the field that broke.
 
 ## What it looks like
 
-A port number is an integer between 1 and 65535. In nix-effects, that's
+A target class is one of a small set of strings. In nix-effects, that is
 a refinement type:
 
 ```nix
 let
-  inherit (fx.types) Int refined;
+  inherit (fx.types) String refined;
 
-  Port = refined "Port" Int (x: x >= 1 && x <= 65535);
+  TargetClass = refined "TargetClass" String
+    (x: builtins.elem x [ "module" "file" "package" "check" ]);
 in {
-  ok  = Port.check 8080;   # true
-  bad = Port.check 99999;  # false
+  ok  = TargetClass.check "module";   # true
+  bad = TargetClass.check "fleet";    # false
 }
 ```
 
-Behind the scenes, `.check` runs the MLTT kernel's decision procedure —
-the value is elaborated into a kernel term, type-checked, and the
-predicate is evaluated. For a refinement type like `Port`, this is fast:
-the kernel confirms the base type (`Int`), the guard confirms the range.
-You write normal Nix and the kernel runs behind the scenes.
+Behind the scenes, `.check` runs the MLTT kernel's decision procedure
+for the base type, then evaluates the refinement predicate. For a
+refinement type like `TargetClass`, this is fast: the kernel confirms a
+string, the guard confirms membership in the known target classes. You
+write normal Nix and the kernel runs behind the scenes.
 
-But checking individual values is only the starting point. The kernel
-can also verify entire functions — confirm that a validator you wrote
-is type-correct, then extract it as an ordinary Nix function.
+But checking individual values is only the starting point. The same
+kernel-backed structure supports derived validation for compound shapes
+and can also verify entire functions, then extract them as ordinary Nix
+functions.
 
 ## Verified functions over real data
 
 Write an implementation in HOAS (Higher-Order Abstract Syntax), the
 kernel type-checks it, and `v.verify` extracts a callable Nix function.
 
-Here's a derivation spec validator. The kernel verifies a function that
-takes a record with `license`, `platforms`, and `system` fields, then
-checks three constraints: the build system appears in the platforms
-list, the system is one of the supported architectures, and the license
-is approved. All three checks use string comparison inside the kernel
+Here is a small aspect declaration predicate. The kernel verifies a
+function that takes a record with `name`, `target`, and `requires`
+fields, then checks that the target is one of the classes this pipeline
+knows how to render. The check uses string comparison inside the kernel
 — `strEq` is a kernel primitive, not a Nix-level hack.
 
 ```nix
@@ -69,50 +75,42 @@ let
   H = fx.types.hoas;
   v = fx.types.verified;
 
-  Spec = H.record [
-    { name = "license";   type = H.string; }
-    { name = "platforms"; type = H.listOf H.string; }
-    { name = "system";    type = H.string; }
+  AspectDecl = H.record [
+    { name = "name";     type = H.string; }
+    { name = "target";   type = H.string; }
+    { name = "requires"; type = H.listOf H.string; }
   ];
 
-  licenses = mkStrList [ "MIT" "Apache-2.0" "BSD-3-Clause" ];
-  systems  = mkStrList [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" ];
+  targets =
+    H.cons H.string (v.str "module")
+      (H.cons H.string (v.str "file")
+        (H.cons H.string (v.str "package")
+          (H.cons H.string (v.str "check") (H.nil H.string))));
 
-  # Kernel-verified: system ∈ platforms AND system ∈ supported AND license ∈ approved
-  validateSpec = v.verify (H.forall "s" Spec (_: H.bool))
-    (v.fn "s" Spec (s:
-      v.if_ H.bool (v.strElem (v.field Spec "system" s)
-                               (v.field Spec "platforms" s)) {
-        then_ = v.if_ H.bool (v.strElem (v.field Spec "system" s) systems) {
-          then_ = v.strElem (v.field Spec "license" s) licenses;
-          else_ = v.false_;
-        };
-        else_ = v.false_;
-      }));
+  validateAspect = v.verify (H.forall "a" AspectDecl (_: H.bool))
+    (v.fn "a" AspectDecl (a:
+      v.strElem (v.field AspectDecl "target" a) targets));
 in {
-  ok   = validateSpec {
-    system = "x86_64-linux"; license = "MIT";
-    platforms = [ "x86_64-linux" "aarch64-linux" ];
+  ok = validateAspect {
+    name = "workspace-shell";
+    target = "module";
+    requires = [ "toolchain" ];
   };   # true
 
-  bad  = validateSpec {
-    system = "arm64"; license = "MIT";
-    platforms = [ "x86_64-linux" ];
-  };   # false — arm64 not in supported systems
-
-  mismatch = validateSpec {
-    system = "x86_64-linux"; license = "MIT";
-    platforms = [ "aarch64-linux" ];
-  };   # false — system not in its own platforms list
+  bad = validateAspect {
+    name = "workspace-aspect";
+    target = "fleet";
+    requires = [ ];
+  };   # false
 }
 ```
 
-`validateSpec` is a plain Nix function. You call it with a plain Nix
+`validateAspect` is a plain Nix function. You call it with a plain Nix
 attrset. But the implementation was verified by the MLTT kernel before
 extraction — the kernel confirmed that the function matches its type
-(`Spec → Bool`), that field projections are well-typed, and that the
-string membership checks compose correctly. If you made a type error in
-the implementation — say, compared a `Bool` where a `String` was
+(`AspectDecl → Bool`), that field projections are well-typed, and that
+the string membership check composes correctly. If you made a type error
+in the implementation — say, compared a `Bool` where a `String` was
 expected — the kernel would reject it at `nix eval` time.
 
 The record type (`H.record`) elaborates to nested Sigma in the kernel.
@@ -152,7 +150,7 @@ in {
 }
 ```
 
-The `add` function is extracted exactly like `validateSpec` — write in
+The `add` function is extracted exactly like `validateAspect` — write in
 HOAS, kernel checks, extract a Nix function. The equality proof goes
 one step further: the kernel normalizes `add(3, 5)` by running the
 structural recursion, arrives at `8`, and confirms `Refl` witnesses
@@ -200,8 +198,9 @@ assurance, and you pick the one that fits:
 `.check`. The kernel runs behind the scenes. Zero cost to adopt.
 
 ```nix
-Port = refined "Port" Int (x: x >= 1 && x <= 65535);
-Port.check 8080    # true
+TargetClass = refined "TargetClass" String
+  (x: builtins.elem x [ "module" "file" "package" "check" ]);
+TargetClass.check "module"    # true
 ```
 
 **Level 2 — Boundary.** Data is checked by the kernel at module
@@ -216,7 +215,7 @@ is the identity, or that `append([1,2], [3]) = [1,2,3]`.
 
 **Level 4 — Full.** The implementation IS the proof term. Write in
 HOAS, the kernel verifies, `extract` produces a Nix function correct by
-construction. The `validateSpec` example above is Level 4 — the kernel
+construction. The `validateAspect` example above is Level 4 — the kernel
 verified the validator before extracting it as a callable function.
 
 Most users will stay at levels 1 and 2. The kernel is there when you
@@ -228,26 +227,23 @@ numbers.
 
 The rest of the guide builds up from here:
 
-- **[Getting Started](getting-started.md)** walks through installation,
-  your first type, your first effect, and the end-to-end derivation demo.
-- **[Proof Guide](proof-guide.md)** builds proofs incrementally, from
-  computational equality through the J eliminator to verified
-  extraction of plain Nix functions from kernel-checked HOAS terms.
-- **[Theory](theory.md)** covers the papers that shaped the design,
-  algebraic effects and freer monads, FTCQueue for O(1) bind, dependent
-  type theory in the Martin-Löf and Mini-TT lineage, descriptions,
-  the handler pattern, refinement and graded types, and how they
-  compose into typed Nix DSLs with effectful interpreters.
-- **[Trampoline](trampoline.md)** explains how `builtins.genericClosure`
-  becomes a trampoline for stack-safe evaluation at scale.
-- **[Systems Architecture](systems-architecture.md)** describes the
-  kernel-first design: one notion of type, one checking mechanism, no
-  adequacy bridge.
-- **[Kernel Architecture](kernel-architecture.md)** details the MLTT
-  kernel internals — NbE, bidirectional checking, HOAS elaboration,
-  extraction, and the trust model.
-- **[Kernel Specification](kernel-spec.md)** gives the formal typing
-  rules.
+- **[Getting Started](getting-started.md)** sets up the library and
+  shows the first type, effect, and generated datatype.
+- **[Effects and Handlers](effects-and-handlers.md)** explains the
+  execution model: computations send operations, handlers choose policy.
+- **[Typed Validation](typed-validation.md)** covers primitive,
+  refined, structured, and dependent validation boundaries.
+- **[Generated Datatypes](generated-datatypes.md)** introduces
+  description-backed data as the shared structure.
+- **[Generic Programming](generic-programming.md)** shows how schemas,
+  dependency graphs, diagnostics, and views derive from that structure.
+- **[Ornaments and Description-Backed Data](ornaments.md)** refines
+  generated shapes while preserving forgetful maps.
+- **[Proof Guide](proof-guide.md)** builds proofs and verified
+  implementations from kernel-checked HOAS terms.
+- **[Theory](theory.md)** explains the ideas behind the model.
+- The internals chapters document the trampoline, architecture, kernel
+  implementation, and formal specification for contributors.
 
 ## References
 

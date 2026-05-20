@@ -5,14 +5,15 @@
 { lib, fx }:
 
 let
-  # -- Test 1: "Your first type" (Port example) --
-  portExample =
+  # -- Test 1: "Your first type" (TargetClass example) --
+  targetClassExample =
     let
-      inherit (fx.types) Int refined;
-      Port = refined "Port" Int (x: x >= 1 && x <= 65535);
-      ok = Port.check 8080;
-      bad = Port.check 99999;
-      result = fx.run (Port.validate 99999)
+      inherit (fx.types) String refined;
+      TargetClass = refined "TargetClass" String
+        (x: builtins.elem x [ "module" "file" "package" "check" ]);
+      ok = TargetClass.check "module";
+      bad = TargetClass.check "fleet";
+      result = fx.run (TargetClass.validate "fleet")
         fx.effects.typecheck.collecting [];
     in
       ok == true
@@ -20,19 +21,28 @@ let
       && builtins.isList result.state
       && builtins.length result.state > 0;
 
-  # -- Test 2: "Your first dependent contract" (DepRecord + FIPSCipher) --
-  depContractExample =
+  # -- Test 2: "Your first dependent type" (DepRecord + TargetClass) --
+  depRecordExample =
     let
-      inherit (fx.types) Bool Int String ListOf DepRecord refined;
-      FIPSCipher = refined "FIPSCipher" String
-        (x: builtins.elem x [ "AES-256-GCM" "AES-192-GCM" "AES-128-GCM" "AES-256-CBC" "AES-128-CBC" ]);
-      ServiceConfig = DepRecord [
-        { name = "fipsMode"; type = Bool; }
-        { name = "cipherSuites"; type = self:
-            if self.fipsMode then ListOf FIPSCipher else ListOf String; }
+      inherit (fx.types) Bool String ListOf DepRecord refined;
+      TargetClass = refined "TargetClass" String
+        (x: builtins.elem x [ "module" "file" "package" "check" ]);
+      AspectDecl = DepRecord [
+        { name = "generated"; type = Bool; }
+        { name = "target"; type = self:
+            if self.generated then TargetClass else String; }
+        { name = "requires"; type = _: ListOf String; }
       ];
-      ok  = ServiceConfig.checkFlat { fipsMode = true;  cipherSuites = [ "AES-256-GCM" ]; };
-      bad = ServiceConfig.checkFlat { fipsMode = true;  cipherSuites = [ "3DES" ]; };
+      ok = AspectDecl.checkFlat {
+        generated = true;
+        target = "module";
+        requires = [ "toolchain" ];
+      };
+      bad = AspectDecl.checkFlat {
+        generated = true;
+        target = "fleet";
+        requires = [ ];
+      };
     in
       ok == true && bad == false;
 
@@ -46,14 +56,64 @@ let
     in
       result.value == 21 && result.state == 42;
 
-  # -- Test 4: API surface sanity ("What's in the box") --
+  # -- Test 4: "A first generated datatype" --
+  generatedDatatypeExample =
+    let
+      H = fx.types.hoas;
+      Aspect = H.datatype "Aspect" [
+        (H.con "aspect" [
+          (H.field "name" H.string)
+          (H.field "target" H.string)
+          (H.field "requires" (H.listOf H.string))
+        ])
+      ];
+    in
+      Aspect ? D
+      && Aspect ? T
+      && Aspect ? aspect
+      && Aspect ? _dtypeMeta;
+
+  # -- Test 5: Verified aspect validator --
+  verifiedAspectExample =
+    let
+      H = fx.types.hoas;
+      v = fx.types.verified;
+
+      AspectDecl = H.record [
+        { name = "name";     type = H.string; }
+        { name = "target";   type = H.string; }
+        { name = "requires"; type = H.listOf H.string; }
+      ];
+
+      targets =
+        H.cons H.string (v.str "module")
+          (H.cons H.string (v.str "file")
+            (H.cons H.string (v.str "package")
+              (H.cons H.string (v.str "check") (H.nil H.string))));
+
+      validateAspect = v.verify (H.forall "a" AspectDecl (_: H.bool))
+        (v.fn "a" AspectDecl (a:
+          v.strElem (v.field AspectDecl "target" a) targets));
+    in
+      validateAspect {
+        name = "workspace-shell";
+        target = "module";
+        requires = [ "toolchain" ];
+      }
+      && !(validateAspect {
+        name = "workspace-aspect";
+        target = "fleet";
+        requires = [ ];
+      });
+
+  # -- Test 6: API surface sanity ("What's in the box") --
   apiSurfaceSanity =
     fx ? pure && fx ? bind && fx ? send && fx ? map && fx ? seq
     && fx ? run && fx ? handle
     && fx ? adapt && fx ? adaptHandlers
     && fx ? types && fx ? effects && fx ? stream;
 
-  # -- Test 5: API docs skip semantic data inside module wrappers --
+  # -- Test 7: API docs skip semantic data inside module wrappers --
   apiDocsSkipsPlainWrapperData =
     let
       raw = fx.api.mk {
@@ -73,9 +133,11 @@ let
       && !(docs ? data);
 
 in {
-  inherit portExample depContractExample stateEffectExample apiSurfaceSanity
+  inherit targetClassExample depRecordExample stateEffectExample
+          generatedDatatypeExample verifiedAspectExample apiSurfaceSanity
           apiDocsSkipsPlainWrapperData;
 
-  allPass = portExample && depContractExample && stateEffectExample
-            && apiSurfaceSanity && apiDocsSkipsPlainWrapperData;
+  allPass = targetClassExample && depRecordExample && stateEffectExample
+            && generatedDatatypeExample && verifiedAspectExample && apiSurfaceSanity
+            && apiDocsSkipsPlainWrapperData;
 }

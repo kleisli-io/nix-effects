@@ -3,7 +3,7 @@
 # Usage:
 #   let fx = import ./. { lib = nixpkgs.lib; };
 #   in fx.run (fx.send "get" null) { get = ...; } initialState
-{ pkgs ? import ./nixpkgs.nix { }, lib ? pkgs.lib, ... }:
+{ pkgs ? import ./nixpkgs.nix { }, lib ? pkgs.lib, exposeInternals ? false, ... }:
 
 let
   api = import ./src/api.nix { inherit lib; };
@@ -17,19 +17,61 @@ let
   #
   # For a directory with `module.nix`: treat as a split module. Build
   # `self` as the disjoint-union fixpoint of sibling parts' `scope`
-  # attrsets. Build `partTests` similarly from parts' `tests`. Pass both
-  # to `module.nix`, which returns an `api.mk`-wrapped module. The walker
-  # does not post-process `module.nix`'s result.
+  # attrsets. Build `partTests` similarly from parts' `tests`, and
+  # `partDocs` similarly from parts' `__docs`. Pass all three to
+  # `module.nix`, which is expected to call `api.mkModule` to produce
+  # the final `api.mk`-wrapped result. The walker does not
+  # post-process `module.nix`'s return — the invariant
+  # (`flat-leaf-key-set of value == attrNames partDocs`) and the
+  # `__docs` injection are performed inside `api.mkModule`.
   #
   # Each part receives `{ self, fx, api, lib, ... }:` and returns
-  # `{ scope; tests ? {} }`. `module.nix` receives `{ self, partTests,
-  # fx, api, lib, ... }:` and returns `api.mk { doc; value; tests }`.
-  # Cross-part references go through `self.<binding>`.
+  # `{ scope; tests ? {}; __docs ? {} }`. Cross-part references go through
+  # `self.<binding>`.
   #
-  # Collisions (duplicate scope keys, duplicate test names) are hard
-  # errors — never silent merges. There is no priority system, no
-  # `mkDefault`/`mkForce`, no `options`. Each binding has exactly one
-  # definition site.
+  # `__docs` is name-keyed per-binding metadata at the same key-level as
+  # `scope` (never inside `scope`); each entry is the standalone-file
+  # `__docs.<name>` shape `{ description? signature? doc? tests? }`. The
+  # name matches the value-tree convention: in a standalone file `__docs`
+  # is a sibling of the bindings; in a split-module part `__docs` is a
+  # sibling of `scope` (which holds the bindings).
+  #
+  # Standalone files may use the `__docs._self` convention instead of a
+  # file-level `api.mk` wrap. `__docs._self` carries the file's
+  # module-level metadata (description, doc, signature, tests). readSrc
+  # routes it to the parent dir's `__docs.<filename>` slot — the slot
+  # that holds the file's identity in the parent namespace's docs tree.
+  #
+  # Two shapes use the convention:
+  #
+  #   - Single-binding file whose one binding matches the filename:
+  #       { <name> = <bare>; __docs._self = { ... }; }
+  #     readSrc hoists `<name>` as the file's namespace identity, so
+  #     `fx.<dir>.<name>` is the bare value (function, attrset, etc.) —
+  #     no wrap. `__docs._self` becomes `parent.__docs.<name>`.
+  #
+  #   - Multi-binding file (or single-binding with non-matching name):
+  #       { <b1> = ...; <b2> = ...; ...; __docs = { _self = { ... };
+  #         <b1> = { ... }; ...; }; }
+  #     readSrc treats the file as a sub-namespace under `<filename>`;
+  #     `_self` is hoisted to `parent.__docs.<filename>` (module-level
+  #     metadata), per-binding `__docs.<n>` entries stay inside the
+  #     file as the namespace's own docs sibling.
+  #
+  # Shape guard (strict): every `__docs.<n>` entry other than `_self`
+  # must correspond to a top-level binding in the file — no orphan docs.
+  # Top-level bindings without docs are allowed (lenient at the
+  # standalone-file level; the strict bijection invariant applies only
+  # to split-module groups via `api.mkModule`).
+  #
+  # Files without `__docs._self` keep using a file-level `api.mk` wrap;
+  # the two conventions co-exist file-by-file during migration.
+  #
+  # Collisions (duplicate scope keys, duplicate test names, duplicate
+  # doc names) are hard errors — never silent merges. There is no
+  # priority system, no `mkDefault`/`mkForce`, no `options`. Each
+  # binding has exactly one definition site and exactly one
+  # documentation site (always the same part).
   readSrc = dir: ctx:
     let
       entries = builtins.readDir dir;
@@ -94,20 +136,102 @@ let
               then throw "readSrc: ${toString dir}: duplicate test name(s) ${toString collisions}"
               else acc // t
           ) {} partNames;
+
+          partDocs = builtins.foldl' (acc: n:
+            let
+              part = importPart n self;
+              d = part.__docs or {};
+              collisions = lib.intersectLists
+                             (builtins.attrNames acc)
+                             (builtins.attrNames d);
+            in
+              if collisions != []
+              then throw "readSrc: ${toString dir}: duplicate doc name(s) ${toString collisions}"
+              else acc // d
+          ) {} partNames;
+
         in
-          import (dir + "/module.nix") (ctx // { inherit self partTests; })
+          import (dir + "/module.nix") (ctx // { inherit self partTests partDocs; })
       else
         let
-          files = lib.foldlAttrs (acc: name: type:
+          rawFiles = lib.foldlAttrs (acc: name: type:
             if isNixFile name type
             then acc // { ${lib.removeSuffix ".nix" name} = import (dir + "/${name}") ctx; }
             else acc
           ) {} entries;
-        in api.mk {
-          doc = "";
-          value = files // subDirs;
-          tests = {};
-        };
+
+          # `__docs._self` convention. Predicate: file return is a
+          # plain (non-mk) attrset whose `__docs` carries a `_self` entry.
+          hasSelfDocs = r:
+            builtins.isAttrs r
+            && (r._type or null) != "nix-effects-api"
+            && r ? __docs
+            && builtins.isAttrs r.__docs
+            && r.__docs ? _self;
+
+          # Shape guard: every `__docs.<n>` entry other than `_self`
+          # must correspond to a top-level binding in the file.
+          # Top-level bindings without docs are allowed.
+          checkSelfDocsShape = name: r:
+            let
+              bindings = lib.subtractLists [ "__docs" ] (builtins.attrNames r);
+              allowed  = [ "_self" ] ++ bindings;
+              docKs    = builtins.attrNames r.__docs;
+              docExtra = lib.subtractLists allowed docKs;
+            in
+              if docExtra != []
+              then throw "readSrc: ${toString dir}/${name}.nix: __docs entries with no matching binding: ${toString docExtra}"
+              else true;
+
+          # Hoist iff the file has exactly one binding whose name
+          # matches the filename. Otherwise the file is a sub-namespace.
+          shouldHoist = name: r:
+            let bindings = lib.subtractLists [ "__docs" ] (builtins.attrNames r);
+            in bindings == [ name ];
+
+          # Per-file processing:
+          #  - Hoist single-binding-matching-filename to the parent slot.
+          #  - For sub-namespace files, strip `_self` from the file's
+          #    `__docs` (it's now routed to the parent's `__docs.<file>`)
+          #    and pass the rest through. If `__docs` becomes empty after
+          #    `_self` removal, drop it entirely.
+          #  - Files without `__docs._self` pass through unchanged.
+          files = lib.mapAttrs (name: r:
+            if hasSelfDocs r
+            then
+              assert checkSelfDocsShape name r;
+              if shouldHoist name r
+              then r.${name}
+              else
+                let
+                  restDocs = removeAttrs r.__docs [ "_self" ];
+                  rest     = removeAttrs r [ "__docs" ];
+                in
+                  rest //
+                  (lib.optionalAttrs (restDocs != {}) { __docs = restDocs; })
+            else r
+          ) rawFiles;
+
+          # Aggregate `__docs._self` entries into a single `__docs`
+          # sibling for the parent dir's plain-namespace wrap.
+          selfDocs = lib.foldlAttrs (acc: name: r:
+            if hasSelfDocs r
+            then acc // { ${name} = r.__docs._self; }
+            else acc
+          ) {} rawFiles;
+
+          docsConflict = (selfDocs != {})
+                         && ((files ? __docs) || (subDirs ? __docs));
+        in
+          if docsConflict
+          then throw "readSrc: ${toString dir}: __docs._self aggregation collides with existing `__docs` key in namespace (file named __docs.nix or subdir __docs/)"
+          else api.mk {
+            doc = "";
+            value = files // subDirs
+                    // (lib.optionalAttrs (selfDocs != {})
+                          { __docs = selfDocs; });
+            tests = {};
+          };
 
   # -- Library fixpoint via lib.fix --
   #
@@ -132,6 +256,8 @@ let
   stream = src.stream;
   pipeline = src.pipeline;
   build = src.build;
+  state = src.state;
+  experimentalDescInterp = src.experimental.desc-interp;
 
   # The public library interface
   fx = {
@@ -159,13 +285,14 @@ let
     # Type system
     types = {
       # Foundation
-      inherit (types.foundation) mkType check validate make refine;
+      inherit (types.foundation) mkType check validate make refine defEq;
 
       # HOAS type constructors (for mkType kernelType parameter)
       hoas = src.tc.hoas;
 
       # Primitives
-      inherit (types.primitives) String Int Bool Float Attrs Path Function Null Unit Any;
+      inherit (types.primitives) String Int Bool Float Attrs Path
+              Derivation Function Null Unit Any;
 
       # Constructors
       inherit (types.constructors) Record ListOf Maybe Either Variant;
@@ -186,6 +313,9 @@ let
       # Elaboration bridge (kernel ↔ Nix values)
       inherit (src.tc.elaborate) elaborateType elaborateValue validateValue extract extractInner reifyType verifyAndExtract decide decideType;
 
+      # Generic programming over levitated descriptions and generated datatypes
+      generic = src.tc.generic;
+
       # Verified combinators (natural syntax for writing type-checked implementations)
       verified = src.tc.verified;
     };
@@ -196,6 +326,7 @@ let
       state = effects.state;
       error = effects.error;
       typecheck = effects.typecheck;
+      policy = effects.typecheck.policy;
       conditions = effects.conditions;
       reader = effects.reader;
       writer = effects.writer;
@@ -229,8 +360,22 @@ let
       materialize = build.materialize;
     };
 
+    # State-shape helpers for handlers. Carriers that survive the trampoline's
+    # mandatory `builtins.deepSeq` on threaded state (see src/trampoline.nix:124).
+    state = {
+      inherit (state.thunk) mkThunk forceThunk isThunk;
+    };
+
     # Sugar (opt-in syntax-livability layer — see src/sugar/)
     sugar = src.sugar;
+
+    # Parallel-namespace prototypes. Opt-in, never aliased over the stable
+    # surface; consumers must reach for `fx.experimental.<name>` explicitly.
+    experimental = {
+      descInterp = experimentalDescInterp // {
+        "_opt-in-marker" = true;
+      };
+    };
 
     # API utilities
     inherit api;
@@ -284,19 +429,18 @@ let
 in fx // {
   inherit extractDocs bench;
 
-  # Raw internal-module namespace. Used by bench workloads and tests that
-  # isolate the cost of a specific module (e.g. `src.diag.pretty`,
-  # `src.tc.check.bindP`). Not part of the stable consumer API — modules under
-  # `src` may be reshaped without notice. Consumer code should use the flat
-  # `fx.<...>` exports declared above.
-  inherit src;
-
   # Content derivation for docs.kleisli.io.
   # Returns a directory of markdown files with front matter, structured as
   # nix-effects/{section}/{page}.md for the kleisli-docs multi-project hub.
   mkKleisliDocsContent = pkgs: import ./book/gen/kleisli-docs.nix {
     inherit pkgs lib;
     nix-effects = fx // { inherit extractDocs src; };
+  };
+
+  # Maintenance tool: regenerate the heading-anchor golden file consumed
+  # by `tests.anchors-golden`. See the script's header for usage.
+  regenerateAnchorsGolden = import ./tests/regenerate-anchors-golden.nix {
+    inherit pkgs;
   };
 
   tests =
@@ -321,5 +465,27 @@ in fx // {
       docs-resolves = import ./tests/docs-resolves.nix {
         inherit pkgs lib src;
       };
+      # Schema-driven anchor stability: every Hint key has a matching
+      # per-key page + in-page heading in the rendered kleisli-docs
+      # derivation (see file header).
+      anchors-schema = import ./tests/anchors-schema.nix {
+        inherit pkgs lib src;
+        kleisliDocs = import ./book/gen/kleisli-docs.nix {
+          inherit pkgs lib;
+          nix-effects = fx // { inherit extractDocs src; };
+        };
+      };
+      # Golden-file gate for hand-written book chapters: any H2/H3
+      # heading rename or addition fails the build until the golden
+      # file is regenerated and committed.
+      anchors-golden = import ./tests/anchors-golden.nix {
+        inherit pkgs lib;
+        bookSrc = ./book/src;
+        goldenFile = ./tests/anchors-golden.txt;
+      };
     };
+} // lib.optionalAttrs exposeInternals {
+  # Raw internal-module namespace. Used by benches and tests that isolate the
+  # cost or behavior of a specific module. Not part of the stable consumer API.
+  inherit src;
 }

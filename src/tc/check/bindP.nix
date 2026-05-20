@@ -98,7 +98,47 @@ let
       in runScoped wrap k m;
 
 in {
-  scope = { inherit bindP bindPChain; };
+  scope = {
+    inherit bindP bindPChain;
+  };
+
+  __docs = {
+    bindP = {
+      description = "bindP: position-tagged bind for kernel rule bodies — sequences two computations and wraps any typeError raised by the inner one under the given Position before re-raising.";
+      signature = "bindP : Position -> Computation a -> (a -> Computation b) -> Computation b";
+      doc = ''
+        Installs a local `typeError` handler around the inner
+        computation `m` that calls `D.nestUnder position` on every
+        emitted `diag.Error` before re-raising. The wrapping records
+        the descent coordinate at the caller site — precision that
+        downstream generic paths (the `check → infer` catch-all,
+        deep conv failures) cannot supply.
+
+        The continuation `k` runs unwrapped on success; errors raised
+        by `k` itself are not intercepted. Pure fast-path: when `m`
+        is `K.pure v`, no handler is installed and the combinator
+        reduces to `k v`.
+
+        Use over `K.bind` whenever the failing site has a definite
+        positional identity in the surface syntax. Pair with
+        `bindPChain` to thread N positions through a single shared
+        handler.
+      '';
+    };
+    bindPChain = {
+      description = "bindPChain: fused sequential variant of `bindP` — threads a list of positions through a single shared typeError handler so the emitted blame chain has `positions[0]` as the outermost edge.";
+      signature = "bindPChain : [Position] -> Computation a -> (a -> Computation b) -> Computation b";
+      doc = ''
+        Equivalent to nested `bindP p_1 (bindP p_2 (... (bindP p_n m)
+        k_pure) k_pure) k` when intermediate continuations are pure
+        passthroughs, but installs only one handler with a
+        pre-composed wrap function. Empty `positions` falls back to
+        `K.bind`; pure `m` short-circuits to `k m.value` as in
+        `bindP`.
+      '';
+    };
+  };
+
   tests =
     let
       P = fx.diag.positions;

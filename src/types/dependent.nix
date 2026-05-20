@@ -95,99 +95,16 @@
 # Known Nix constraint: builtins.tryEval only catches `throw` and `assert`.
 # Cross-type comparison (e.g. "str" > 0) is uncatchable — predicates must
 # guard input types before comparison operators.
-{ fx, api, ... }:
-
+{ fx, ... }:
 let
-  inherit (api) mk;
   inherit (fx.types.foundation) mkType check;
   inherit (fx.kernel) pure bind send;
   H = fx.tc.hoas;
-  D = fx.diag.error;
   P = fx.diag.positions;
-
-  # Wrap a Generic leaf Error in a Position chain, outermost first.
-  # Matches `constructors.nix`'s `chainErr`.
-  chainErr = positions: leafErr:
-    let n = builtins.length positions; in
-    builtins.foldl'
-      (err: i: D.nestUnder (builtins.elemAt positions (n - 1 - i)) err)
-      leafErr
-      (builtins.genList (x: x) n);
 
   # -- PI TYPES (DEPENDENT FUNCTIONS) --
 
-  Pi = mk {
-    doc = ''
-      Dependent function type `Π(x:A).B(x)`.
-
-      Arguments:
-
-      - `domain` — Type A
-      - `codomain` — A-value → Type (type family B indexed by domain values)
-      - `universe` — Universe level (explicit parameter — see below)
-      - `name` — optional display name
-
-      == Higher-order contract with algebraic effects ==
-
-      Pi is a HIGHER-ORDER CONTRACT (Findler & Felleisen 2002). Higher-order
-      contracts check function values differently from data values: a data
-      contract is verified immediately and completely, but a function contract
-      is verified incrementally at each application site. This is the
-      standard, correct strategy for function contracts — not a deficit.
-
-      The (Specification, Guard, Verifier) triple for Pi:
-
-      ```
-      Guard (check):       builtins.isFunction — the immediate first-order
-                           part of the contract. Soundly rejects non-functions.
-      Verifier (validate): effectful guard (auto-derived, 1 arg) — wraps
-                           the guard in a typeCheck effect for blame tracking.
-      Elimination (checkAt): deferred contract check (2 args) — verifies a
-                           specific application f(arg) by sending typeCheck
-                           effects for both domain (arg : A) and codomain
-                           (f(arg) : B(arg)).
-      ```
-
-      This is precisely the Findler-Felleisen decomposition: the immediate
-      part (`isFunction`) is checked at introduction; the deferred part
-      (domain + codomain) is checked at each elimination site via `checkAt`.
-
-      == Adequacy ==
-
-      ```
-      check f ⟺ all typeCheck effects in (validate f) pass
-      ```
-
-      Both `check` and `validate` verify the introduction form (is it a function?).
-      `checkAt` verifies individual applications — the deferred contract.
-
-      == Universe level ==
-
-      Universe level is an explicit parameter. In MLTT, the level is computed
-      as `max(i, sup_{a:A} level(B(a)))` by inspecting the syntax of B.
-      For types with explicit kernelType, the kernel computes and verifies
-      levels via checkTypeLevel. The explicit universe parameter provides
-      the level for the surface API's `.universe` field.
-
-      == MLTT rule mapping ==
-
-      ```
-      Formation:          Pi { domain, codomain, universe }
-      Introduction check: .check (guard: isFunction)
-      Introduction verify: .validate (effectful guard, auto-derived)
-      Elimination:        .apply (pure), .checkAt (effectful, deferred contract)
-      Computation:        β-reduction (Nix evaluation)
-      ```
-
-      Operations:
-
-      - `.checkAt f arg` — deferred contract check at elimination site
-      - `.apply arg` — pure elimination: compute codomain type B(arg)
-      - `.compose f other` — compose Pi types (requires witness function)
-      - `.domain` — the domain type A
-      - `.codomain` — the type family B
-    '';
-    value = { domain, codomain, universe, name ? "Π(${domain.name})", kernelType ? null }:
+  Pi = { domain, codomain, universe, name ? "Π(${domain.name})", kernelType ? null }:
       let
         piType = mkType {
         inherit name;
@@ -225,16 +142,25 @@ let
         # checkAt : (A → B(a)) → a → Computation result
         checkAt = f: arg:
           if !(builtins.isFunction f)
-          then send "typeCheck" { type = piType; context = "Π check (${name})"; value = f; }
+          then send "typeCheck" {
+            type = piType; context = "Π check (${name})"; value = f;
+            reason = "shape-mismatch";
+          }
           else
-            bind (send "typeCheck" { type = domain; context = "Π domain (${name})"; value = arg; }) (domPassed:
+            bind (send "typeCheck" {
+              type = domain; context = "Π domain (${name})"; value = arg;
+              reason = "deferred-pi";
+            }) (domPassed:
               if domPassed == false then pure null
               else
                 let
                   result = f arg;
                   codomainType = codomain arg;
                 in
-                bind (send "typeCheck" { type = codomainType; context = "Π codomain (${name})"; value = result; }) (_:
+                bind (send "typeCheck" {
+                  type = codomainType; context = "Π codomain (${name})"; value = result;
+                  reason = "deferred-pi";
+                }) (_:
                   pure result));
 
         # Compose Pi types: for this: Π(x:A)→B(x) and other: Π(y:C)→D(y),
@@ -249,7 +175,7 @@ let
           };
       };
       in piType;
-    tests = {
+  PiTests = {
       "pi-accepts-function" = {
         expr =
           let
@@ -317,14 +243,24 @@ let
           in comp.effect.param.context;
         expected = "Π domain (Π(Int))";
       };
-      "pi-validate-is-effectful-guard" = {
-        # The auto-derived .validate from mkType is the effectful introduction
-        # check — it wraps builtins.isFunction in a typeCheck effect.
+      "pi-validate-pure-on-valid-function" = {
+        # Fail-only emission: auto-derived .validate is pure when the
+        # introduction form (isFunction) succeeds.
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             piT = Pi { domain = IntT; codomain = _: IntT; universe = 0; };
           in fx.comp.isPure (piT.validate (x: x));
+        expected = true;
+      };
+      "pi-validate-emits-on-non-function" = {
+        # The auto-derived .validate wraps the isFunction check in a
+        # typeCheck effect, emitted on failure.
+        expr =
+          let
+            IntT = mkType { name = "Int"; kernelType = H.int_; };
+            piT = Pi { domain = IntT; codomain = _: IntT; universe = 0; };
+          in fx.comp.isPure (piT.validate 42);
         expected = false;
       };
       "pi-validate-is-one-arg" = {
@@ -334,7 +270,7 @@ let
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             piT = Pi { domain = IntT; codomain = _: IntT; universe = 0; };
-            comp = piT.validate (x: x);
+            comp = piT.validate 42;
           in comp.effect.param.context;
         expected = "Π(Int)";
       };
@@ -436,79 +372,10 @@ let
         expected = false;
       };
     };
-  };
 
   # -- SIGMA TYPES (DEPENDENT PAIRS) --
 
-  Sigma = mk {
-    doc = ''
-      Dependent pair type `Σ(x:A).B(x)`.
-
-      Arguments:
-
-      - `fst` — Type A (type of the first component)
-      - `snd` — A-value → Type (type family for the second component)
-      - `universe` — Universe level (explicit parameter)
-      - `name` — optional display name
-
-      Values are `{ fst; snd; }` where `fst : A` and `snd : B(fst)`.
-
-      == First-order contract — guard is exact ==
-
-      Sigma is a FIRST-ORDER CONTRACT: both components are concrete data,
-      so the contract is checked immediately and completely. The guard
-      (`check`) IS full membership — there is no over-approximation.
-
-      ```
-      Guard (check):    fst:A ∧ snd:B(fst) — exact. G = ⟦Σ(x:A).B(x)⟧.
-      Verifier (verify): decomposed effectful check — sends separate
-                        typeCheck effects for fst and snd for blame tracking.
-      ```
-
-      This contrasts with Pi where the guard over-approximates (`isFunction`)
-      because functions are higher-order. Sigma pairs are data — the
-      dependent relationship (snd's type depends on fst's value) can be
-      fully verified because both values are available.
-
-      Adequacy:
-
-      ```
-      T.check v ⟺ all typeCheck effects in T.validate v pass
-      ```
-
-      Under the all-pass handler. The guard is exact and the decomposed
-      verifier sends individual `typeCheck` effects per component — the all-pass
-      handler's boolean state tracks whether all passed. Totality: if the input
-      is structurally malformed (not an attrset, missing `fst`/`snd`), verify falls
-      back to a single `typeCheck` for the whole type — failure goes through the
-      effect system, never crashes Nix.
-
-      Universe level is an explicit parameter (computing
-      `sup_{a:A} snd(a).universe` requires evaluating the type family on
-      all domain values, same as Pi).
-
-      == MLTT rule mapping ==
-
-      ```
-      Formation:    Sigma { fst, snd, universe }
-      Introduction: .check (exact guard), .validate (effectful, decomposed)
-      Elimination:  .proj1 (π₁), .proj2 (π₂)
-      Computation:  π₁(a,b) ≡ a, π₂(a,b) ≡ b
-      ```
-
-      Operations:
-
-      - `.proj1 pair` — first projection π₁
-      - `.proj2 pair` — second projection π₂
-      - `.pair a b` — smart constructor (throws on invalid)
-      - `.validate v` — effectful: decomposed typeCheck effects for blame
-      - `.pairE a b` — effectful smart constructor
-      - `.pullback f g` — contravariant predicate pullback (see below)
-      - `.curry` / `.uncurry` — standard Sigma adjunction
-      - `.fstType` — the type A
-      - `.sndFamily` — the type family B
-    '';
-    value = { fst, snd, universe, name ? "Σ(${fst.name})", kernelType ? null }:
+  Sigma = { fst, snd, universe, name ? "Σ(${fst.name})", kernelType ? null }:
       mkType {
         inherit name;
         kernelType = if kernelType != null then kernelType else H.any;
@@ -524,44 +391,42 @@ let
           && fst.check v.fst
           && (snd v.fst).check v.snd;
         universe = universe;
-        # Custom verifier: recursively validates sub-components via their own
-        # .validate (not atomic .check) for deep blame tracking. A Sigma with
-        # ListOf fst produces per-element typeCheck effects — the handler sees
-        # the full recursive decomposition (Findler & Felleisen 2002) and can
-        # attribute blame at the leaf level.
+        # Σ-specific verify: bespoke decomposed checker.
         #
-        # Totality: structurally malformed inputs (not an attrset, missing
-        # fst/snd) fall back to a single typeCheck for the whole type.
-        # When fst fails (via pure .check after effectful .validate), we
-        # short-circuit: the snd type family (snd v.fst) is never evaluated,
-        # because it may crash on wrong-typed fst values.
+        # Conditional dispatch on `(self._kernel._htag or null) ==
+        # "sigma"` is tempting (walker for precise-kernel sigmas,
+        # bespoke for approximate) but loses soundness when sub-types
+        # carry guards the kernel cannot express. `Certified` is the
+        # paradigm case: snd is `v: mkType { kernelType = H.bool;
+        # guard = proof: proof == true && predicate v; }` — the
+        # predicate lives in the guard, not the kernel. Walker would
+        # walk `H.bool` against `true` and pass, missing the
+        # predicate failure that bespoke's `(snd v.fst).validateAt`
+        # catches via the guard. Walker dispatch is therefore deferred
+        # until either (a) sub-component kernel sufficiency is
+        # tracked at dispatch time, or (b) Certified-style guards are
+        # encoded into the kernel.
         #
-        # The .validate → .check pattern: validate produces deep effects
-        # (per-element errors for collecting handler), then .check (pure,
-        # memoized by Nix) gives the boolean for short-circuit.
-        verify = self: path: positions: v:
+        # The walker and bespoke alphabets match
+        # (`P.SigmaFst`/`P.SigmaSnd`), so when dispatch is eventually
+        # safe to enable, the path shape stays invariant.
+        #
+        # Recurse via the sub-components' own `validateAt`. Short-
+        # circuit on fst failure: `snd v.fst` may crash on wrong-typed
+        # fst values, so we consult `fst.check` (pure, memoised) after
+        # the effectful validateAt before descending into snd.
+        verify = self: path: v:
           if !(builtins.isAttrs v && v ? fst && v ? snd)
           then send "typeCheck" {
             type = self; context = "Σ (${name})"; value = v;
-            inherit path positions;
-            diagError = chainErr positions (D.mkGenericError {
-              type = self.name; context = "Σ (${name})"; value = v;
-              msg = "expected pair";
-            });
+            reason = "shape-mismatch";
+            inherit path;
           }
           else
-            bind (fst.validateAt
-                    (path ++ [ "fst" ])
-                    (positions ++ [ P.SigmaFst ])
-                    v.fst) (_:
-              if fst.check v.fst == false then pure v
-              else
-                let sndType = snd v.fst;
-                in bind (sndType.validateAt
-                          (path ++ [ "snd" ])
-                          (positions ++ [ P.SigmaSnd ])
-                          v.snd) (_:
-                  pure v));
+            bind (fst.validateAt (path ++ [ P.SigmaFst ]) v.fst) (_:
+              if !(fst.check v.fst) then pure v
+              else bind ((snd v.fst).validateAt (path ++ [ P.SigmaSnd ]) v.snd)
+                        (_: pure v));
       } // {
         fstType = fst;
         sndFamily = snd;
@@ -632,7 +497,7 @@ let
           inherit universe;
         };
       };
-    tests = {
+  SigmaTests = {
       "sigma-accepts-valid-pair" = {
         expr =
           let
@@ -693,20 +558,24 @@ let
           in sigT.proj2 { fst = 0; snd = 42; };
         expected = 42;
       };
-      "sigma-validate-returns-computation" = {
+      "sigma-validate-pure-on-valid-pair" = {
+        # Fail-only emission: a well-typed pair walks through the
+        # decomposed verifier without emitting any typeCheck.
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma { fst = IntT; snd = _: IntT; universe = 0; };
           in fx.comp.isPure (sigT.validate { fst = 1; snd = 2; });
-        expected = false;
+        expected = true;
       };
       "sigma-validate-effect-is-typeCheck" = {
+        # On failure (snd mismatched), the decomposed verifier emits
+        # typeCheck through the sub-component's validateAt.
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma { fst = IntT; snd = _: IntT; universe = 0; };
-          in (sigT.validate { fst = 1; snd = 2; }).effect.name;
+          in (sigT.validate { fst = 1; snd = "bad"; }).effect.name;
         expected = "typeCheck";
       };
       "sigma-validate-total-on-non-attrset" = {
@@ -728,11 +597,16 @@ let
         expected = false;
       };
       "sigma-pairE-returns-computation" = {
+        # pairE is an effectful smart constructor that recursively
+        # validates sub-components. Under fail-only emission, a
+        # well-typed pair walks through without emitting; we drive
+        # impurity via a snd that violates the snd type ("bad" : String
+        # against Int).
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
             sigT = Sigma { fst = IntT; snd = _: IntT; universe = 0; };
-          in fx.comp.isPure (sigT.pairE 1 2);
+          in fx.comp.isPure (sigT.pairE 1 "bad");
         expected = false;
       };
       "sigma-curry-uncurry" = {
@@ -819,7 +693,6 @@ let
         expected = false;
       };
     };
-  };
 
   # -- CERTIFIED VALUES (Σ WITH PROOF WITNESS) --
   #
@@ -827,38 +700,7 @@ let
   # A dependent pair of a value and a witness that a predicate holds.
   # The witness is `true` — the predicate is checked at construction time.
 
-  Certified = mk {
-    doc = ''
-      Certified value: `Σ(v:A).Proof(P(v))`.
-
-      A dependent pair where:
-
-      ```
-      fst : A              — the value
-      snd : true           — proof witness (must be true AND predicate must hold)
-      ```
-
-      The second component's type depends on the first: it checks both
-      that the proof is `true` and that `predicate(fst)` holds.
-
-      Certified is a first-order contract — both components are concrete
-      data, so the contract is checked immediately and completely (like
-      Sigma). The guard IS full membership.
-
-      Construction:
-
-      - `.certify v` — pure smart constructor (throws on invalid)
-      - `.certifyE v` — effectful smart constructor (sends `typeCheck` effects)
-      - `.check` — inherited from Sigma (full dependent pair check)
-      - `.validate` — inherited from Sigma (effectful introduction check)
-
-      The `.certifyE` constructor is NOT an introduction check — it's a
-      convenience that takes a raw value, evaluates the predicate, and
-      produces the Sigma pair `{ fst = v; snd = true; }`. The actual
-      introduction check (`.validate`) is inherited from Sigma and verifies
-      an already-formed pair.
-    '';
-    value = { base, predicate, name ? "Certified(${base.name})" }:
+  Certified = { base, predicate, name ? "Certified(${base.name})" }:
       Sigma {
         fst = base;
         snd = v: mkType {
@@ -868,6 +710,10 @@ let
         };
         inherit name;
         inherit (base) universe;
+        # Σ-shape visible to the kernel; predicate stays meta-level via the
+        # Sigma exact guard. `_kernelPrecise` is true (shape is faithful)
+        # but `_kernelSufficient` is false (predicate must still fire).
+        kernelType = H.sigma "x" base._kernel (_: H.bool);
       } // {
         # Pure smart constructor: evaluate predicate and build pair (throws on invalid)
         certify = v:
@@ -901,10 +747,13 @@ let
                 # proof check instead of a Nix-level crash.
                 predResult = builtins.tryEval (predicate v);
                 predValue = if predResult.success then predResult.value else false;
-              in bind (send "typeCheck" { type = proofType; context = "Certified predicate (${name})"; value = predValue; }) (_:
+              in bind (send "typeCheck" {
+                type = proofType; context = "Certified predicate (${name})"; value = predValue;
+                reason = "predicate-failed";
+              }) (_:
                 pure { fst = v; snd = true; }));
       };
-    tests = {
+  CertifiedTests = {
       "certified-accepts-valid-proof" = {
         expr =
           let
@@ -968,7 +817,9 @@ let
       "certified-inherits-sigma-validate" = {
         # Certified inherits .validate from Sigma — this is the introduction
         # check for the pair, NOT the smart constructor. It takes an
-        # already-formed pair and verifies it effectfully.
+        # already-formed pair and verifies it effectfully. Under fail-only
+        # emission, we drive the failure path with an fst that violates the
+        # predicate (-1 fails `x > 0`); the snd type's guard then emits.
         expr =
           let
             IntT = mkType { name = "Int"; kernelType = H.int_; };
@@ -977,7 +828,7 @@ let
               predicate = x: x > 0;
               name = "PosInt";
             };
-          in fx.comp.isPure (PosInt.validate { fst = 5; snd = true; });
+          in fx.comp.isPure (PosInt.validate { fst = -1; snd = true; });
         expected = false;
       };
       "certify-constructs-valid-pair" = {
@@ -994,47 +845,27 @@ let
         expected = true;
       };
     };
-  };
 
   # -- VECTOR (LENGTH-INDEXED LIST — CANONICAL DEPENDENT CONTRACT EXAMPLE) --
 
   # NatT — non-negative integer type used by Vector as domain
   NatT = mkType { name = "Nat"; kernelType = H.nat; };
 
-  Vector = mk {
-    doc = ''
-      Length-indexed list type family, built on Pi.
-
-      ```
-      Vector(A) = Π(n:Nat).{xs : List(A) | |xs| = n}
-      ```
-
-      This is the correct Martin-Löf encoding: Vector IS a Pi type.
-      It inherits `.validate` (effectful), `.compose`, `.apply`, `.domain`, `.codomain`
-      from Pi.
-
-      Usage:
-
-      ```nix
-      Vector elemType           # the Pi type family (Nat → SizedList)
-      (Vector elemType).apply 3 # specific type for length 3
-      ```
-    '';
-    value = elemType:
-      Pi {
-        domain = NatT;
-        codomain = n: mkType {
-          name = "Vector[${toString n}, ${elemType.name}]";
-          kernelType = H.any;
-          guard = v:
-            builtins.isList v
-            && builtins.length v == n
-            && builtins.all elemType.check v;
-        };
-        name = "Vector(${elemType.name})";
-        universe = 0;
+  Vector = elemType:
+    Pi {
+      domain = NatT;
+      codomain = n: mkType {
+        name = "Vector[${toString n}, ${elemType.name}]";
+        kernelType = H.any;
+        guard = v:
+          builtins.isList v
+          && builtins.length v == n
+          && builtins.all elemType.check v;
       };
-    tests = {
+      name = "Vector(${elemType.name})";
+      universe = 0;
+    };
+  VectorTests = {
       "vector-is-pi-type" = {
         expr =
           let IntT = mkType { name = "Int"; kernelType = H.int_; };
@@ -1088,7 +919,6 @@ let
         expected = true;
       };
     };
-  };
 
   # -- DEPENDENT RECORD (N-ARY SIGMA ENCODING) --
   #
@@ -1102,35 +932,7 @@ let
   # Unit type for the terminal case of nested Sigma
   UnitT = mkType { name = "Unit"; kernelType = H.unit; };
 
-  DepRecord = mk {
-    doc = ''
-      Dependent record type built on nested Sigma.
-
-      Schema is an ordered list of `{ name; type; }` where `type` can be:
-
-      - A Type (static field)
-      - A function (`partial-record → Type`) for dependent fields
-
-      Isomorphic to nested Sigma types:
-
-      ```
-      { a : A, b : B(a) }              ≅  Σ(a:A).B(a)
-      { a : A, b : B(a), c : C(a,b) }  ≅  Σ(a:A).Σ(b:B(a)).C(a,b)
-      ```
-
-      Values are nested Sigma pairs:
-
-      ```nix
-      { fst = a; snd = { fst = b; snd = c; }; }
-      ```
-
-      Inherits from Sigma: `.validate` (effectful), `.proj1`, `.proj2`,
-      `.pair`, `.pairE`, `.curry`, `.uncurry`.
-
-      Use `.pack` to convert flat attrset → nested Sigma value.
-      Use `.unpack` to convert nested Sigma value → flat attrset.
-    '';
-    value = fields:
+  DepRecord = fields:
       let
         fieldNames = map (f: f.name) fields;
         namesStr = builtins.concatStringsSep ", " fieldNames;
@@ -1212,7 +1014,7 @@ let
           && builtins.all (f: v ? ${f.name}) fields
           && sigmaType.check (packFields fields v);
       };
-    tests = {
+  DepRecordTests = {
       "deprec-sigma-accepts-nested-pair" = {
         expr =
           let
@@ -1360,14 +1162,286 @@ let
         expected = false;
       };
     };
-  };
 
-in mk {
-  doc = ''
+in {
+  inherit Pi Sigma Certified Vector DepRecord;
+
+
+  __docs = {
+    _self = {
+      doc = ''
     Dependent contracts: Pi (Π), Sigma (Σ), Certified, Vector, DepRecord.
     Grounded in Martin-Löf (1984) "Intuitionistic Type Theory".
   '';
-  value = {
-    inherit Pi Sigma Certified Vector DepRecord;
+    };
+
+    Pi = {
+      doc = ''
+        Dependent function type `Π(x:A).B(x)`.
+
+        Arguments:
+
+        - `domain` — Type A
+        - `codomain` — A-value → Type (type family B indexed by domain values)
+        - `universe` — Universe level (explicit parameter — see below)
+        - `name` — optional display name
+
+        == Higher-order contract with algebraic effects ==
+
+        Pi is a HIGHER-ORDER CONTRACT (Findler & Felleisen 2002). Higher-order
+        contracts check function values differently from data values: a data
+        contract is verified immediately and completely, but a function contract
+        is verified incrementally at each application site. This is the
+        standard, correct strategy for function contracts — not a deficit.
+
+        The (Specification, Guard, Verifier) triple for Pi:
+
+        ```
+        Guard (check):       builtins.isFunction — the immediate first-order
+                             part of the contract. Soundly rejects non-functions.
+        Verifier (validate): effectful guard (auto-derived, 1 arg) — wraps
+                             the guard in a typeCheck effect for blame tracking.
+        Elimination (checkAt): deferred contract check (2 args) — verifies a
+                             specific application f(arg) by sending typeCheck
+                             effects for both domain (arg : A) and codomain
+                             (f(arg) : B(arg)).
+        ```
+
+        This is precisely the Findler-Felleisen decomposition: the immediate
+        part (`isFunction`) is checked at introduction; the deferred part
+        (domain + codomain) is checked at each elimination site via `checkAt`.
+
+        == Adequacy ==
+
+        ```
+        check f ⟺ all typeCheck effects in (validate f) pass
+        ```
+
+        Both `check` and `validate` verify the introduction form (is it a function?).
+        `checkAt` verifies individual applications — the deferred contract.
+
+        == Universe level ==
+
+        Universe level is an explicit parameter. In MLTT, the level is computed
+        as `max(i, sup_{a:A} level(B(a)))` by inspecting the syntax of B.
+        For types with explicit kernelType, the kernel computes and verifies
+        levels via checkTypeLevel. The explicit universe parameter provides
+        the level for the surface API's `.universe` field.
+
+        == MLTT rule mapping ==
+
+        ```
+        Formation:          Pi { domain, codomain, universe }
+        Introduction check: .check (guard: isFunction)
+        Introduction verify: .validate (effectful guard, auto-derived)
+        Elimination:        .apply (pure), .checkAt (effectful, deferred contract)
+        Computation:        β-reduction (Nix evaluation)
+        ```
+
+        Operations:
+
+        - `.checkAt f arg` — deferred contract check at elimination site
+        - `.apply arg` — pure elimination: compute codomain type B(arg)
+        - `.compose f other` — compose Pi types (requires witness function)
+        - `.domain` — the domain type A
+        - `.codomain` — the type family B
+      '';
+      tests = PiTests;
+    };
+    Sigma = {
+      doc = ''
+        Dependent pair type `Σ(x:A).B(x)`.
+
+        Arguments:
+
+        - `fst` — Type A (type of the first component)
+        - `snd` — A-value → Type (type family for the second component)
+        - `universe` — Universe level (explicit parameter)
+        - `name` — optional display name
+        - `kernelType` — optional explicit HOAS kernel form (see below)
+
+        Values are `{ fst; snd; }` where `fst : A` and `snd : B(fst)`.
+
+        == Kernel form: explicit vs. approximate ==
+
+        `snd : A-value → Type` lives at the Nix-meta level — it operates on
+        Nix values. The kernel form `H.sigma name fst._kernel (a: ...)`
+        needs a closure operating on **HOAS variables**, not Nix values.
+        The two categories disagree:
+
+        ```
+        snd          : NixVal → Type        (surface, Nix-meta)
+        kernel snd   : HoasVar → HoasType   (kernel, HOAS-level)
+        ```
+
+        For genuinely-dependent `snd` (e.g., `x: if x > 0 then Int else String`),
+        `snd` cannot be applied to an HOAS variable — the test on the variable
+        would crash. So the library does not attempt automatic derivation;
+        omitting `kernelType` produces `_kernel = H.any` with `approximate =
+        true`. Downstream consumers that take Sigma through `elaborateType`
+        recover the structure at the surface→kernel boundary; consumers that
+        use `_kernel` directly (kernel walkers, the generic `deriveCheck`
+        dispatcher) see `H.any`.
+
+        Pass `kernelType` explicitly when you need the kernel form to **be** a
+        Sigma — for example when piping the Type into another datatype
+        constructor whose kernel walker dispatches on `_htag == "sigma"`:
+
+        ```nix
+        Prod = Sigma {
+          fst = Int;
+          snd = _: String;
+          universe = 0;
+          kernelType = H.sigma "x" Int._kernel (_: String._kernel);
+        };
+        ```
+
+        For the non-dependent case (snd ignores its argument) the explicit
+        form is mechanical and could in principle be derived; the library
+        treats both cases uniformly to keep the dependent/non-dependent
+        distinction out of the surface API.
+
+        == First-order contract — guard is exact ==
+
+        Sigma is a FIRST-ORDER CONTRACT: both components are concrete data,
+        so the contract is checked immediately and completely. The guard
+        (`check`) IS full membership — there is no over-approximation.
+
+        ```
+        Guard (check):    fst:A ∧ snd:B(fst) — exact. G = ⟦Σ(x:A).B(x)⟧.
+        Verifier (verify): decomposed effectful check — sends separate
+                          typeCheck effects for fst and snd for blame tracking.
+        ```
+
+        This contrasts with Pi where the guard over-approximates (`isFunction`)
+        because functions are higher-order. Sigma pairs are data — the
+        dependent relationship (snd's type depends on fst's value) can be
+        fully verified because both values are available.
+
+        Adequacy:
+
+        ```
+        T.check v ⟺ all typeCheck effects in T.validate v pass
+        ```
+
+        Under the all-pass handler. The guard is exact and the decomposed
+        verifier sends individual `typeCheck` effects per component — the all-pass
+        handler's boolean state tracks whether all passed. Totality: if the input
+        is structurally malformed (not an attrset, missing `fst`/`snd`), verify falls
+        back to a single `typeCheck` for the whole type — failure goes through the
+        effect system, never crashes Nix.
+
+        Universe level is an explicit parameter (computing
+        `sup_{a:A} snd(a).universe` requires evaluating the type family on
+        all domain values, same as Pi).
+
+        == MLTT rule mapping ==
+
+        ```
+        Formation:    Sigma { fst, snd, universe }
+        Introduction: .check (exact guard), .validate (effectful, decomposed)
+        Elimination:  .proj1 (π₁), .proj2 (π₂)
+        Computation:  π₁(a,b) ≡ a, π₂(a,b) ≡ b
+        ```
+
+        Operations:
+
+        - `.proj1 pair` — first projection π₁
+        - `.proj2 pair` — second projection π₂
+        - `.pair a b` — smart constructor (throws on invalid)
+        - `.validate v` — effectful: decomposed typeCheck effects for blame
+        - `.pairE a b` — effectful smart constructor
+        - `.pullback f g` — contravariant predicate pullback (see below)
+        - `.curry` / `.uncurry` — standard Sigma adjunction
+        - `.fstType` — the type A
+        - `.sndFamily` — the type family B
+      '';
+      tests = SigmaTests;
+    };
+    Certified = {
+      doc = ''
+        Certified value: `Σ(v:A).Proof(P(v))`.
+
+        A dependent pair where:
+
+        ```
+        fst : A              — the value
+        snd : true           — proof witness (must be true AND predicate must hold)
+        ```
+
+        The second component's type depends on the first: it checks both
+        that the proof is `true` and that `predicate(fst)` holds.
+
+        Certified is a first-order contract — both components are concrete
+        data, so the contract is checked immediately and completely (like
+        Sigma). The guard IS full membership.
+
+        Construction:
+
+        - `.certify v` — pure smart constructor (throws on invalid)
+        - `.certifyE v` — effectful smart constructor (sends `typeCheck` effects)
+        - `.check` — inherited from Sigma (full dependent pair check)
+        - `.validate` — inherited from Sigma (effectful introduction check)
+
+        The `.certifyE` constructor is NOT an introduction check — it's a
+        convenience that takes a raw value, evaluates the predicate, and
+        produces the Sigma pair `{ fst = v; snd = true; }`. The actual
+        introduction check (`.validate`) is inherited from Sigma and verifies
+        an already-formed pair.
+      '';
+      tests = CertifiedTests;
+    };
+    Vector = {
+      doc = ''
+        Length-indexed list type family, built on Pi.
+
+        ```
+        Vector(A) = Π(n:Nat).{xs : List(A) | |xs| = n}
+        ```
+
+        This is the correct Martin-Löf encoding: Vector IS a Pi type.
+        It inherits `.validate` (effectful), `.compose`, `.apply`, `.domain`, `.codomain`
+        from Pi.
+
+        Usage:
+
+        ```nix
+        Vector elemType           # the Pi type family (Nat → SizedList)
+        (Vector elemType).apply 3 # specific type for length 3
+        ```
+      '';
+      tests = VectorTests;
+    };
+    DepRecord = {
+      doc = ''
+        Dependent record type built on nested Sigma.
+
+        Schema is an ordered list of `{ name; type; }` where `type` can be:
+
+        - A Type (static field)
+        - A function (`partial-record → Type`) for dependent fields
+
+        Isomorphic to nested Sigma types:
+
+        ```
+        { a : A, b : B(a) }              ≅  Σ(a:A).B(a)
+        { a : A, b : B(a), c : C(a,b) }  ≅  Σ(a:A).Σ(b:B(a)).C(a,b)
+        ```
+
+        Values are nested Sigma pairs:
+
+        ```nix
+        { fst = a; snd = { fst = b; snd = c; }; }
+        ```
+
+        Inherits from Sigma: `.validate` (effectful), `.proj1`, `.proj2`,
+        `.pair`, `.pairE`, `.curry`, `.uncurry`.
+
+        Use `.pack` to convert flat attrset → nested Sigma value.
+        Use `.unpack` to convert nested Sigma value → flat attrset.
+      '';
+      tests = DepRecordTests;
+    };
+
   };
 }

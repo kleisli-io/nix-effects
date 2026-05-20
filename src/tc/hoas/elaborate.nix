@@ -502,14 +502,25 @@ let
     # `nat` → `natDescTm`; consumers emit a single `desc-desc` node
     # instead of the full descDesc HOAS tree.
     else if t == "desc-desc" then self.descDescTm
+    # Generic pre-elaborated opaque HOAS node. Carries a cached `Tm` for
+    # a closed surface program; the elaborator returns the Tm verbatim
+    # regardless of `depth` (sound because closed Tms contain no free de
+    # Bruijn indices that would shift across enclosing bindings). Mirrors
+    # the `nat` / `desc-desc` shortcut for arbitrary closed kernel terms
+    # that would otherwise be re-walked on every elaboration.
+    else if t == "pre-elab" then h.tm
     else if t == "desc-desc-app" then
       T.mkDescDescApp (elaborate depth h.I) (elaborateLevel depth h.L)
+    else if t == "canon-app" then
+      T.mkCanonApp h.id (map (elaborate depth) h.params) (elaborate depth h.body)
     else if t == "unit" then T.mkUnit
     else if t == "string" then T.mkString
     else if t == "int" then T.mkInt
     else if t == "float" then T.mkFloat
     else if t == "attrs" then T.mkAttrs
     else if t == "path" then T.mkPath
+    else if t == "derivation" then T.mkDerivation
+    else if t == "derivation-thunk" then T.mkDerivationThunk
     else if t == "function" then T.mkFunction
     else if t == "any" then T.mkAny
     else if t == "U" then T.mkU (elaborateLevel depth h.level)
@@ -622,6 +633,8 @@ let
     else if t == "float-lit" then T.mkFloatLit h.value
     else if t == "attrs-lit" then T.mkAttrsLit
     else if t == "path-lit" then T.mkPathLit
+    else if t == "derivation-lit" then T.mkDerivationLit
+    else if t == "derivation-thunk-lit" then T.mkDerivationThunkLit
     else if t == "fn-lit" then T.mkFnLit
     else if t == "any-lit" then T.mkAnyLit
     else if t == "pair" then
@@ -700,12 +713,26 @@ let
     # description. Homogeneous-l (no explicit `l`/`eq`) routes through
     # `encodeDescArgTm`/`encodeDescPiTm`; heterogeneous-l (caller
     # supplied `l` and `eq`) routes through `encodeDescArgAtTm`/
-    # `encodeDescPiAtTm`.
+    # `encodeDescPiAtTm`. Optional `_label` (per-node field name) and
+    # `_conLabel` (surrounding constructor name) on the HOAS node ride
+    # a `mkAnnTrustedWithLabels` wrapper around the encoder chain; eval
+    # propagates both onto the resulting VDescCon (see eval/core.nix
+    # `ann` clause), and `descViewF` surfaces them through `.label` and
+    # `.conLabel` for downstream renderers and generic walkers. The
+    # slots are orthogonal: a single VDescCon may carry both, either,
+    # or neither.
     else if t == "desc-ret-enc" then
       let iTm = elaborate depth h.I;
           kTm = elaborateLevel depth h.k;
           jTm = elaborate depth h.j;
-      in T.mkApp (T.mkApp (T.mkApp self.encodeDescRetTm iTm) kTm) jTm
+          chain = T.mkApp (T.mkApp (T.mkApp self.encodeDescRetTm iTm) kTm) jTm;
+          tyTm = T.mkMu T.mkUnit (T.mkDescDescApp iTm kTm) T.mkTt;
+      in if h ? _label || h ? _conLabel
+         then T.mkAnnTrustedWithLabels chain tyTm {
+                field = h._label    or null;
+                con   = h._conLabel or null;
+              }
+         else chain
     else if t == "desc-arg-enc" then
       let marker = self.mkMarker depth;
           iTm = elaborate depth h.I;
@@ -713,118 +740,146 @@ let
           sTm = elaborate depth h.S;
           bodyTm = elaborate (depth + 1) (h.body marker);
           tLam  = T.mkLam "_" sTm bodyTm;
-      in
-        if h ? l && h ? eq
-        then
-          let lTm  = elaborateLevel depth h.l;
-              eqTm = elaborate depth h.eq;
-          in T.mkApp
-               (T.mkApp
-                 (T.mkApp
+          chain =
+            if h ? l && h ? eq
+            then
+              let lTm  = elaborateLevel depth h.l;
+                  eqTm = elaborate depth h.eq;
+              in T.mkApp
                    (T.mkApp
                      (T.mkApp
-                       (T.mkApp self.encodeDescArgAtTm iTm)
-                       kTm)
-                     lTm)
-                   eqTm)
-                 sTm)
-               tLam
-        else if h ? l
-        then
-          let lTm = elaborateLevel depth h.l; in
-          T.mkApp
-            (T.mkApp
-              (T.mkApp
+                       (T.mkApp
+                         (T.mkApp
+                           (T.mkApp self.encodeDescArgAtTm iTm)
+                           kTm)
+                         lTm)
+                       eqTm)
+                     sTm)
+                   tLam
+            else if h ? l
+            then
+              let lTm = elaborateLevel depth h.l; in
+              T.mkApp
                 (T.mkApp
                   (T.mkApp
-                    (T.mkApp self.encodeDescArgAtTm iTm)
+                    (T.mkApp
+                      (T.mkApp
+                        (T.mkApp self.encodeDescArgAtTm iTm)
+                        kTm)
+                      lTm)
+                    T.mkBootRefl)
+                  sTm)
+                tLam
+            else
+              T.mkApp
+                (T.mkApp
+                  (T.mkApp
+                    (T.mkApp self.encodeDescArgTm iTm)
                     kTm)
-                  lTm)
-                T.mkBootRefl)
-              sTm)
-            tLam
-        else
-          T.mkApp
-            (T.mkApp
-              (T.mkApp
-                (T.mkApp self.encodeDescArgTm iTm)
-                kTm)
-              sTm)
-            tLam
+                  sTm)
+                tLam;
+          tyTm = T.mkMu T.mkUnit (T.mkDescDescApp iTm kTm) T.mkTt;
+      in if h ? _label || h ? _conLabel
+         then T.mkAnnTrustedWithLabels chain tyTm {
+                field = h._label    or null;
+                con   = h._conLabel or null;
+              }
+         else chain
     else if t == "desc-rec-enc" then
       let iTm = elaborate depth h.I;
           kTm = elaborateLevel depth h.k;
           jTm = elaborate depth h.j;
           dTm = elaborate depth h.D;
-      in T.mkApp
-           (T.mkApp
-             (T.mkApp
-               (T.mkApp self.encodeDescRecTm iTm)
-               kTm)
-             jTm)
-           dTm
+          chain = T.mkApp
+            (T.mkApp
+              (T.mkApp
+                (T.mkApp self.encodeDescRecTm iTm)
+                kTm)
+              jTm)
+            dTm;
+          tyTm = T.mkMu T.mkUnit (T.mkDescDescApp iTm kTm) T.mkTt;
+      in if h ? _label || h ? _conLabel
+         then T.mkAnnTrustedWithLabels chain tyTm {
+                field = h._label    or null;
+                con   = h._conLabel or null;
+              }
+         else chain
     else if t == "desc-pi-enc" then
       let iTm = elaborate depth h.I;
           kTm = elaborateLevel depth h.k;
           sTm = elaborate depth h.S;
           fTm = elaborate depth h.f;
           dTm = elaborate depth h.D;
-      in
-        if h ? l && h ? eq
-        then
-          let lTm  = elaborateLevel depth h.l;
-              eqTm = elaborate depth h.eq;
-          in T.mkApp
-               (T.mkApp
-                 (T.mkApp
+          chain =
+            if h ? l && h ? eq
+            then
+              let lTm  = elaborateLevel depth h.l;
+                  eqTm = elaborate depth h.eq;
+              in T.mkApp
                    (T.mkApp
                      (T.mkApp
                        (T.mkApp
-                         (T.mkApp self.encodeDescPiAtTm iTm)
-                         kTm)
-                       lTm)
-                     eqTm)
-                   sTm)
-                 fTm)
-               dTm
-        else if h ? l
-        then
-          let lTm = elaborateLevel depth h.l; in
-          T.mkApp
-            (T.mkApp
-              (T.mkApp
+                         (T.mkApp
+                           (T.mkApp
+                             (T.mkApp self.encodeDescPiAtTm iTm)
+                             kTm)
+                           lTm)
+                         eqTm)
+                       sTm)
+                     fTm)
+                   dTm
+            else if h ? l
+            then
+              let lTm = elaborateLevel depth h.l; in
+              T.mkApp
                 (T.mkApp
                   (T.mkApp
                     (T.mkApp
-                      (T.mkApp self.encodeDescPiAtTm iTm)
-                      kTm)
-                    lTm)
-                  T.mkBootRefl)
-                sTm)
-              fTm)
-            dTm
-        else
-          T.mkApp
-            (T.mkApp
-              (T.mkApp
+                      (T.mkApp
+                        (T.mkApp
+                          (T.mkApp self.encodeDescPiAtTm iTm)
+                          kTm)
+                        lTm)
+                      T.mkBootRefl)
+                    sTm)
+                  fTm)
+                dTm
+            else
+              T.mkApp
                 (T.mkApp
-                  (T.mkApp self.encodeDescPiTm iTm)
-                  kTm)
-                sTm)
-              fTm)
-            dTm
+                  (T.mkApp
+                    (T.mkApp
+                      (T.mkApp self.encodeDescPiTm iTm)
+                      kTm)
+                    sTm)
+                  fTm)
+                dTm;
+          tyTm = T.mkMu T.mkUnit (T.mkDescDescApp iTm kTm) T.mkTt;
+      in if h ? _label || h ? _conLabel
+         then T.mkAnnTrustedWithLabels chain tyTm {
+                field = h._label    or null;
+                con   = h._conLabel or null;
+              }
+         else chain
     else if t == "desc-plus-enc" then
       let iTm = elaborate depth h.I;
           kTm = elaborateLevel depth h.k;
           aTm = elaborate depth h.A;
           bTm = elaborate depth h.B;
-      in T.mkApp
-           (T.mkApp
-             (T.mkApp
-               (T.mkApp self.encodeDescPlusTm iTm)
-               kTm)
-             aTm)
-           bTm
+          chain = T.mkApp
+            (T.mkApp
+              (T.mkApp
+                (T.mkApp self.encodeDescPlusTm iTm)
+                kTm)
+              aTm)
+            bTm;
+          tyTm = T.mkMu T.mkUnit (T.mkDescDescApp iTm kTm) T.mkTt;
+      in if h ? _label || h ? _conLabel
+         then T.mkAnnTrustedWithLabels chain tyTm {
+                field = h._label    or null;
+                con   = h._conLabel or null;
+              }
+         else chain
     else if t == "desc-elim-enc" then
       let iTm = elaborate depth h.I;
           kTm = elaborateLevel depth h.k;
@@ -997,4 +1052,53 @@ in {
       builtins.foldl' (acc: _: self.succ acc) self.zero (builtins.genList (x: x) n);
   };
   tests = {};
+  __docs = {
+    checkHoas = {
+      description = "checkHoas: HOAS-driven type-checker — `checkHoas typeHoas termHoas` elaborates both, runs the kernel `check` rule, and returns the checked term or a structured Error.";
+      signature = "checkHoas : Hoas -> Hoas -> Tm | Error";
+      doc = ''
+        The principal entry for verifying a HOAS term against a HOAS
+        type. Elaborates type and term in tandem (so binders align),
+        then invokes the kernel `check` rule which produces a
+        verified `Tm` or a structured `Error` carrying the failing
+        rule and contextual `Detail`. Returns the Error directly
+        (does not throw); callers route through `?error` for fast
+        dispatch.
+      '';
+    };
+    elab = {
+      description = "elab: closed-term HOAS-to-Tm compiler — alias for `elaborate 0`; the canonical entry point for compiling top-level HOAS terms to kernel Tm.";
+      signature = "elab : Hoas -> Tm";
+    };
+    elaborate = {
+      description = "elaborate: depth-parameterised HOAS-to-Tm compiler — `elaborate depth h` converts a HOAS term to its de Bruijn `Tm` representation; `depth` is the binding level at the call site.";
+      signature = "elaborate : Int -> Hoas -> Tm";
+      doc = ''
+        The principal HOAS-side compilation entry. Binding chains are
+        elaborated iteratively via `genericClosure` for stack safety
+        to 8000+ depth. Use directly when controlling the binding
+        depth (e.g. when re-elaborating an open HOAS subterm). For
+        the closed-term case, prefer `elab` which fixes `depth = 0`.
+      '';
+    };
+    inferHoas = {
+      description = "inferHoas: HOAS-driven type inference — `inferHoas termHoas` elaborates and runs the kernel `infer` rule, returning `{ term, type }` or a structured Error.";
+      signature = "inferHoas : Hoas -> { term : Tm, type : Tm } | Error";
+      doc = ''
+        Complement to `checkHoas` for the synthesis direction. Many
+        HOAS forms are inference-friendly (annotated values,
+        applications with inferable heads); pure inference fails on
+        checking-only forms like bare lambdas or data constructors
+        without an enclosing annotation.
+      '';
+    };
+    natLit = {
+      description = "natLit: Nix integer to HOAS Nat — `natLit n` builds `succ^n zero` as a HOAS term; convenience wrapper around iterated `succ` application.";
+      signature = "natLit : Int -> Hoas";
+    };
+    reifyLevel = {
+      description = "reifyLevel: HOAS Level → kernel Level Tm — converts a HOAS-side level expression (Int, level term, or already-reified Tm) to the kernel's canonical Level representation.";
+      signature = "reifyLevel : Level -> Tm";
+    };
+  };
 }

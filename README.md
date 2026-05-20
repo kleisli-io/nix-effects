@@ -4,8 +4,14 @@
 [![CI](https://github.com/kleisli-io/nix-effects/actions/workflows/flake-check.yml/badge.svg)](https://github.com/kleisli-io/nix-effects/actions/workflows/flake-check.yml)
 [![Release](https://img.shields.io/github/v/release/kleisli-io/nix-effects)](https://github.com/kleisli-io/nix-effects/releases)
 
-A pure Nix toolkit for effectful programs, typed validation, verified
-boundaries, and description-backed DSLs.
+A pure Nix toolkit for effectful programs, auto-derived validation,
+verified boundaries, and description-backed DSLs.
+
+nix-effects hosts a small typed kernel inside Nix evaluation. That makes
+types and datatype descriptions inspectable Nix values, so validators,
+schemas, documentation, dependency extractors, and DSL interpreters can
+be derived from the same structure without an external schema language,
+compiler plugin, or macro system.
 
 Programs describe what they need. Handlers decide policy. Types,
 datatypes, and proofs describe the structure that generic tools can
@@ -17,9 +23,39 @@ Everything runs at `nix eval` time.
 
 ## Small example
 
-Validation is a `typeCheck` effect. A validator walks a nested record
-and sends `typeCheck` at every leaf; the handler decides what happens
-on failure:
+Validation is derived from type descriptions. You define the shape once;
+nix-effects derives the traversal, sends `typeCheck` at every field,
+branch, and list index, and leaves error policy to the handler:
+
+```nix
+let
+  inherit (fx.types) Record ListOf String refined;
+
+  TargetClass = refined "TargetClass" String
+    (x: builtins.elem x [ "module" "file" "package" "check" ]);
+
+  AspectDecl = Record {
+    name = String;
+    target = TargetClass;
+    requires = ListOf String;
+  };
+
+  bad = {
+    name = "workspace-aspect";
+    target = "fleet";
+    requires = [ "base" 1 ];
+  };
+in
+  fx.handle {
+    handlers = fx.effects.typecheck.collecting;
+    state = [];
+  } (AspectDecl.validate bad)
+```
+
+That single `AspectDecl` description produces checks for the record, the
+target refinement, and every element of `requires`. The user does not
+write a validator for the record. The handler only decides what to do
+with derived failures:
 
 ```nix
 # src/effects/typecheck.nix — three handlers for the same effect.
@@ -59,16 +95,16 @@ logging = {
 };
 ```
 
-The same validator runs under all three without a rewrite. `strict`
-throws on the first bad field. `collecting` visits every leaf and
-returns the failures with their `context` paths. `logging` records
-every check, pass or fail — how you debug a validator that rejects a
-value you thought it should accept.
+The same derived validation runs under all three without a rewrite.
+`strict` throws on the first bad field. `collecting` visits every
+reachable position and returns failures with their paths. `logging`
+records every check, pass or fail, which is how you debug a value that
+does not match the description you wrote.
 
 The dependent type checker in `src/tc/` is ordinary pure Nix — no
-`fx.*` calls — but `.validate` routes through `typeCheck`, so type
-errors in deeply nested terms come back with the field path that
-broke.
+`fx.*` calls — but the generated `.validate` route goes through
+`typeCheck`, so type errors in deeply nested terms come back with the
+field, branch, or index path that broke.
 
 Recursion in the kernel and the effect interpreter goes through a
 trampoline built on `builtins.genericClosure` (Nix's only iterative
@@ -98,8 +134,9 @@ primitive). Call stack stays O(1) for the interpreter loop. See
 
 ## What you can build
 
-- **Typed validators.** Validate nested Nix values with exact blame paths
-  and choose fail-fast, collecting, or logging policy with handlers.
+- **Auto-derived validators.** Every described type gets structural
+  validation with exact blame paths. Users define shapes and refinements,
+  not per-type traversals.
 - **Effectful pipelines.** Model eval-time workflows with state, errors,
   scoped context, accumulation, nondeterminism, restarts, and streams.
 - **Description-backed DSLs.** Define domain shapes once, then interpret
@@ -108,7 +145,8 @@ primitive). Call stack stays O(1) for the interpreter loop. See
 - **Verified boundaries.** Check proofs or implementations against kernel
   types before extracting ordinary Nix functions.
 - **Generic datatype tooling.** Write consumers over datatype descriptions
-  instead of repeating per-type traversal and validation code.
+  instead of repeating per-type traversal, schema, dependency, or
+  validation code.
 
 ## Core concepts
 
@@ -118,8 +156,9 @@ primitive). Call stack stays O(1) for the interpreter loop. See
   resume, collect errors, hide scoped state, or route unknown effects
   outward depending on the handler.
 - **Typed boundaries** connect runtime Nix values to the MLTT kernel.
-  Guards decide simple cases, validators emit `typeCheck` effects with
-  blame context, and verified HOAS terms can be extracted as plain Nix.
+  Generic validation is derived for every described type, refinements add
+  domain predicates, and verified HOAS terms can be extracted as plain
+  Nix.
 - **Descriptions** are reusable datatype shapes. The public inductive
   prelude and user datatypes share the same description-backed macro
   surface, so generic tools can inspect and consume datatype structure.
@@ -182,11 +221,14 @@ result = fx.run comp {
 
 ### Same computation, different handler
 
-Write the validation once. Swap the handler to change error policy.
+Define the type once. Swap the handler to change error policy.
 
 ```nix
-packed = ServiceConfig.pack config;
-validation = ServiceConfig.validate packed;
+validation = AspectDecl.validate {
+  name = "workspace-aspect";
+  target = "fleet";
+  requires = [ "base" 1 ];
+};
 
 # Strict — abort on first error
 strict = fx.run validation {
@@ -222,16 +264,17 @@ If both are present, `abort` takes priority.
 | `acc` | `emit`, `emitAll`, `collect` | Value accumulation |
 | `choice` | `choose`, `fail`, `guard` | Nondeterminism |
 | `conditions` | `signal`, `warn` | Common Lisp-style restarts |
-| `typecheck` | *sent by `type.validate`* | Type validation with blame |
+| `typecheck` | *sent by derived validation* | Type validation with blame |
 | `linear` | `acquire`, `consume`, `release` | Graded linear resource tracking |
 | `scope` | `run`, `runWith`, `stateful`, `provide`, `val` | Scoped handlers |
 | `hasHandler` | `hasHandler` | Runtime handler presence check |
 
 ## Typed boundaries
 
-Every type is grounded in an MLTT type-checking kernel. The guard (`check`)
-is derived from the kernel's `decide` procedure. The verifier (`validate`)
-sends `typeCheck` effects through the freer monad for blame tracking. You
+Every type is grounded in an MLTT type-checking kernel. The structural
+guard (`check`) is derived from the kernel's `decide` procedure. The
+verifier (`validate`) is generated from the type description and sends
+`typeCheck` effects through the freer monad for blame tracking. You
 choose the error policy by choosing the handler.
 
 ### First-order types
@@ -272,12 +315,10 @@ PersonT.check { name = "Alice"; age = 30; }  # true
 (Variant { circle = Float; rect = Attrs; }).check { _tag = "circle"; value = 5.0; }  # true
 ```
 
-`ListOf` sends per-element `typeCheck` effects with indexed context
-(`List[Int][0]`, `List[Int][1]`, ...) so handlers report exactly which
-element failed. `Record` sends per-field effects (`Record{age, name}.age`)
-and delegates to each field type's `.validate`, so nested Records and
-ListOf fields decompose recursively. `Variant` delegates to the active
-branch's `.validate`.
+The generic validator derives the descent for every constructor.
+`ListOf` emits indexed positions, `Record` emits field positions, and
+`Variant` emits branch positions. Nested records, lists, and variants
+compose without user-written validator code.
 
 ### Refinement types
 
@@ -285,7 +326,8 @@ Narrow any type with a predicate (Freeman & Pfenning 1991; cf. Rondon et al. 200
 
 ```nix
 Nat = refined "Nat" Int (x: x >= 0);
-Port = refined "Port" Int (x: x >= 1 && x <= 65535);
+TargetClass = refined "TargetClass" String
+  (x: builtins.elem x [ "module" "file" "package" "check" ]);
 NonEmpty = refined "NonEmptyString" String (s: builtins.stringLength s > 0);
 
 # Predicate combinators
@@ -294,6 +336,10 @@ refined "Either" Int (anyOf [ (x: x < 0) (x: x > 100) ])
 ```
 
 Built-in refinements: `positive`, `nonNegative`, `inRange`, `nonEmpty`, `matching`.
+
+Refinements do not require hand-written structural validation. The
+generic validator checks the underlying type first, then runs the domain
+predicate and reports a predicate failure at the same derived path.
 
 ### Dependent and proof terms
 
@@ -316,7 +362,7 @@ Type_0  # Type of value types (Int, String, ...)
 Type_1  # Type of Type_0
 Type_2  # Type of Type_1
 # typeAt n works for any n; Type_0 through Type_4 are convenience aliases.
-# 4 is arbitrary — for NixOS configuration you'll rarely need more than Type_1.
+# 4 is arbitrary; most description-backed DSLs stay near Type_0 or Type_1.
 
 (typeAt 0).check Int    # true — Int lives at universe 0
 level Int               # 0
@@ -344,6 +390,12 @@ directly in HOAS with `datatype`, `datatypeP`, `datatypeI`, `datatypePI`,
 `recFieldAt`. Dependent fields see prior fields by name (`prev.op`,
 `prev.comp`), parameters thread through a `paramPi` binder, and indexed
 families can compute their target index.
+
+Generic programs consume those descriptions. The same shape can derive a
+schema, documentation, dependencies, folds, value views, and validation.
+The validation derivation is the important boundary: every described type
+gets a checker from its structure, including user datatypes that did not
+exist when nix-effects was written.
 
 Chains of saturated or linear-recursive constructors flatten to flat
 `desc-con` terms at elaboration time, so deeply nested generated lists and
@@ -432,6 +484,9 @@ fx.types.hoas                           fx.types.verified
 fx.types.elaborateType                  fx.types.elaborateValue
 fx.types.extract                        fx.types.verifyAndExtract
 fx.types.decide                         fx.types.decideType
+fx.types.generic.check.deriveCheck      fx.types.generic.check.checkWithGuard
+fx.types.generic.derive.deriveSchema    fx.types.generic.derive.deriveDocs
+fx.types.generic.derive.deriveDeps      fx.types.generic.value.view
 
 fx.kernel.pure      fx.kernel.send      fx.kernel.bind
 fx.kernel.pipe      fx.kernel.kleisli
@@ -551,7 +606,7 @@ surfaces hints can deep-link directly to the relevant prose.
 Every doc page is also available as raw Markdown — useful for token-efficient
 agent consumption:
 
-- Append `.md` to any path: `…/nix-effects.md`, `…/nix-effects/core-api.md`, `…/nix-effects/core-api/diag.md`.
+- Append `.md` to any path: `…/nix-effects.md`, `…/nix-effects/core-api.md`, `…/nix-effects/diag/hints.md`.
 - Or send `Accept: text/markdown` on the original path; the server returns `Content-Type: text/markdown` instead of HTML.
 - Doc pages emit a `Link: <{path}.md>; rel="llms-txt-page"` response header pointing at the markdown alternate.
 

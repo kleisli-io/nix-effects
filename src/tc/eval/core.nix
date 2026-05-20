@@ -12,9 +12,11 @@
 # Description operations (`vDescIndF`, `linearProfileF`)
 # live in the sibling `desc.nix`; `evalF` dispatches to them through
 # `self`.
-{ self, fx, ... }:
+{ self, fx, api, ... }:
 
 let
+  inherit (api) mk;
+
   val = fx.tc.value;
   inherit (val) mkClosure
     vLam vPi vSigma vPair
@@ -23,8 +25,8 @@ let
     vLevel vLevelZero vLevelSuc vLevelMax
     vLift vLiftIntro
     vDesc vMu vDescCon
-    vString vInt vFloat vAttrs vPath vFunction vAny
-    vStringLit vIntLit vFloatLit vAttrsLit vPathLit vFnLit vAnyLit
+    vString vInt vFloat vAttrs vPath vDerivation vDerivationThunk vFunction vAny
+    vStringLit vIntLit vFloatLit vAttrsLit vPathLit vDerivationLit vDerivationThunkLit vFnLit vAnyLit
     eApp eFst eSnd eBootSumElim eBootJ eStrEq eLiftElim
     eSquashElim;
   H = fx.tc.hoas;
@@ -88,9 +90,6 @@ in {
         vNe scrut.level (scrut.spine ++ [ (eBootSumElim left right motive onLeft onRight) ])
       else throw "tc: vBootSumElim on non-bootstrap-sum (tag=${scrut.tag})";
 
-    # J computation: J(A, a, P, pr, b, refl) = pr.
-    # When eq=VBootRefl, the checker has verified b≡a, so `rhs` is unused.
-    # When eq is neutral, `rhs` is preserved in the EBootJ spine frame for quotation.
     vBootJ = type: lhs: motive: base: rhs: eq:
       if eq.tag == "VBootRefl" then base
       else if eq.tag == "VNe" then
@@ -107,24 +106,12 @@ in {
       then vNe x.level (x.spine ++ [ (eSquashElim A B f) ])
       else throw "tc: vSquashElim on non-Squash (tag=${x.tag})";
 
-    # Lift type-former. `Lift l m eq A : U(m)` is the type of values of
-    # `A : U(l)` transported up to `U(m)`. Conv collapses idempotently
-    # when `convLevel l m` (the load-bearing backward-compat rule for
-    # homogeneous code: `Lift l l _ A ≡ A`) and composes nested Lifts
-    # (`Lift l m _ (Lift l' l _ A') ≡ Lift l' m _ A'`). The witness slot
-    # is irrelevant — emit `vBootRefl` on collapse since both bound
-    # conditions hold by transitivity.
     vLiftF = l: m: eq: A:
       if fx.tc.conv.convLevel l m then A
       else if A.tag == "VLift"
       then vLift A.l m vBootRefl A.A
       else vLift l m eq A;
 
-    # Lift introducer. Idempotent at `convLevel l m` (returns `a`); η on
-    # a stuck `lower`-spine drops the trailing `ELiftElim` frame
-    # (`lift _ (lower _ x) ≡ x`). Witness-irrelevance is enforced by
-    # `convLevel`-comparing levels and structural equality on the
-    # carried `A` — the spine's `eq` is not consulted.
     vLiftIntroF = l: m: eq: A: a:
       if fx.tc.conv.convLevel l m then a
       else if a.tag == "VNe" && a.spine != []
@@ -137,10 +124,6 @@ in {
         vNe a.level (builtins.genList (i: builtins.elemAt a.spine i) (n - 1))
       else vLiftIntro l m eq A a;
 
-    # Lift eliminator (`lower`). Idempotent at `convLevel l m`;
-    # β-reduces `lower _ (lift _ a) → a`; appends `ELiftElim` to the
-    # spine of a stuck neutral. Throws on any other shape — the type
-    # checker rejects ill-typed `lower` before evaluation.
     vLiftElimF = l: m: eq: A: x:
       if fx.tc.conv.convLevel l m then x
       else if x.tag == "VLiftIntro" then x.a
@@ -148,17 +131,20 @@ in {
       then vNe x.level (x.spine ++ [ (eLiftElim l m eq A) ])
       else throw "tc: vLiftElim on non-Lift (tag=${x.tag})";
 
-    # Main evaluator with fuel (§9)
     evalF = fuel: env: tm:
       if fuel <= 0 then throw "normalization budget exceeded"
       else let t = tm.tag; f = fuel - 1; ev = self.evalF f env; in
       if t == "var" then builtins.elemAt env tm.idx
       else if t == "let" then self.evalF f ([ (ev tm.val) ] ++ env) tm.body
       else if t == "ann" then
-        let v = ev tm.term; in
-        if tm ? _descRef
-        then v // { _descRef = evalDescRef ev tm._descRef; }
-        else v
+        let
+          v = ev tm.term;
+          v1 = if tm ? _descRef
+               then v // { _descRef = evalDescRef ev tm._descRef; }
+               else v;
+          v2 = if tm ? _label then v1 // { _label = tm._label; } else v1;
+          v3 = if tm ? _conLabel then v2 // { _conLabel = tm._conLabel; } else v2;
+        in v3
 
       else if t == "pi" then vPi tm.name (ev tm.domain) (mkClosure env tm.codomain)
       else if t == "lam" then vLam tm.name (ev tm.domain) (mkClosure env tm.body)
@@ -322,6 +308,14 @@ in {
       else if t == "desc-desc-app" then
         self.mkDescDescAppVF f (ev tm.I) (ev tm.L)
 
+      # Generic canonical application. Evaluates the body and currying-
+      # applies it to each param; stamps the result `VDescCon` with
+      # `_canonRef = { id; params; }` so conv/quote short-circuit on the
+      # canonical identity. The smart-form's static contract requires the
+      # body to reduce to a curried chain of `VLam`s yielding a VDescCon.
+      else if t == "canon-app" then
+        self.mkCanonAppVF f tm.id (map ev tm.params) (ev tm.body)
+
       # Kernel-primitive `interpD` / `allD` / `everywhereD`. Level-zero
       # fast-path on `tm.level` (and `tm.K` where present) mirrors the
       # `desc-arg` shape — the prelude's homogeneous-at-zero call sites
@@ -381,6 +375,8 @@ in {
       else if t == "float" then vFloat
       else if t == "attrs" then vAttrs
       else if t == "path" then vPath
+      else if t == "derivation" then vDerivation
+      else if t == "derivation-thunk" then vDerivationThunk
       else if t == "function" then vFunction
       else if t == "any" then vAny
 
@@ -391,6 +387,8 @@ in {
       else if t == "float-lit" then vFloatLit tm.value
       else if t == "attrs-lit" then vAttrsLit
       else if t == "path-lit" then vPathLit
+      else if t == "derivation-lit" then vDerivationLit
+      else if t == "derivation-thunk-lit" then vDerivationThunkLit
       else if t == "fn-lit" then vFnLit
       else if t == "any-lit" then vAnyLit
 
@@ -399,18 +397,18 @@ in {
 
       else throw "tc: eval unknown tag '${t}'";
 
-    # Default-fuel wrappers for core-owned bindings.
-    eval = self.evalF self.defaultFuel;
-    instantiate = self.instantiateF self.defaultFuel;
-    vApp = self.vAppF self.defaultFuel;
+    eval         = self.evalF         self.defaultFuel;
+    instantiate  = self.instantiateF  self.defaultFuel;
+    vApp         = self.vAppF         self.defaultFuel;
     mkDescDescAppV = self.mkDescDescAppVF self.defaultFuel;
     vBootSumElim = self.vBootSumElimF self.defaultFuel;
-    vSquashElim = self.vSquashElimF self.defaultFuel;
+    vSquashElim  = self.vSquashElimF  self.defaultFuel;
   };
 
   tests = let
-    T = fx.tc.term;
-    H = fx.tc.hoas;
+    T  = fx.tc.term;
+    H  = fx.tc.hoas;
+    HI = fx.tc.hoas._internal._indexed;
     inherit (val) freshVar;
     inherit (self) eval evalF instantiate;
 
@@ -419,7 +417,7 @@ in {
     encRet = H.elab (H.retI H.unit 0 H.tt);
     encArg = H.elab (H.descArg H.unit 0 H.nat (_: H.retI H.unit 0 H.tt));
     encArg1 = H.elab (H.descArg H.unit 1 (H.u 0) (_: H.retI H.unit 1 H.tt));
-    encRec = H.elab (H.recI H.unit 0 H.tt (H.retI H.unit 0 H.tt));
+    encRec = H.elab (HI.recI H.unit 0 H.tt (H.retI H.unit 0 H.tt));
     encPi = H.elab (H.descPi 0 H.nat (H.retI H.unit 0 H.tt));
     descViewOf = tm: self.descView (eval [] tm);
   in {
@@ -555,6 +553,8 @@ in {
     "eval-float" = { expr = (eval [] T.mkFloat).tag; expected = "VFloat"; };
     "eval-attrs" = { expr = (eval [] T.mkAttrs).tag; expected = "VAttrs"; };
     "eval-path" = { expr = (eval [] T.mkPath).tag; expected = "VPath"; };
+    "eval-derivation" = { expr = (eval [] T.mkDerivation).tag; expected = "VDerivation"; };
+    "eval-derivation-thunk" = { expr = (eval [] T.mkDerivationThunk).tag; expected = "VDerivationThunk"; };
     "eval-function" = { expr = (eval [] T.mkFunction).tag; expected = "VFunction"; };
     "eval-any" = { expr = (eval [] T.mkAny).tag; expected = "VAny"; };
     "eval-string-lit" = { expr = (eval [] (T.mkStringLit "hello")).tag; expected = "VStringLit"; };
@@ -565,6 +565,8 @@ in {
     "eval-float-lit-value" = { expr = (eval [] (T.mkFloatLit 3.14)).value; expected = 3.14; };
     "eval-attrs-lit" = { expr = (eval [] T.mkAttrsLit).tag; expected = "VAttrsLit"; };
     "eval-path-lit" = { expr = (eval [] T.mkPathLit).tag; expected = "VPathLit"; };
+    "eval-derivation-lit" = { expr = (eval [] T.mkDerivationLit).tag; expected = "VDerivationLit"; };
+    "eval-derivation-thunk-lit" = { expr = (eval [] T.mkDerivationThunkLit).tag; expected = "VDerivationThunkLit"; };
     "eval-fn-lit" = { expr = (eval [] T.mkFnLit).tag; expected = "VFnLit"; };
     "eval-any-lit" = { expr = (eval [] T.mkAnyLit).tag; expected = "VAnyLit"; };
 
@@ -836,6 +838,111 @@ in {
     "eval-descDescApp-canonRef-L" = {
       expr = (eval [] (T.mkDescDescApp T.mkUnit (T.mkLevelSuc T.mkLevelZero)))._canonRef.L.tag;
       expected = "VLevelSuc";
+    };
+  };
+
+  __docs = {
+    vFst = {
+      description = "vFst: kernel pair-projection — return the first component of a `VPair`; extend the spine with `eFst` on a stuck `VNe`.";
+      signature = "vFst : Val -> Val";
+    };
+    vSnd = {
+      description = "vSnd: kernel pair-projection — return the second component of a `VPair`; extend the spine with `eSnd` on a stuck `VNe`.";
+      signature = "vSnd : Val -> Val";
+    };
+    vBootJ = {
+      description = "vBootJ: J-eliminator over `VBootEq` — on `VBootRefl` returns the base case (checker has already verified the sides match); on `VNe` extends the spine with an `eBootJ` frame.";
+      signature = "vBootJ : Val -> Val -> Val -> Val -> Val -> Val -> Val";
+      doc = ''
+        Arguments are `type lhs motive base rhs eq`. When `eq` is
+        `VBootRefl`, returns `base` directly — the checker has already
+        verified `lhs ≡ rhs`, so `rhs` is unused. When `eq` is `VNe`,
+        preserves `rhs` in the `EBootJ` spine frame so quotation can
+        reconstruct the stuck term. Any other shape is rejected with
+        an internal error.
+      '';
+    };
+    vLiftF = {
+      description = "vLiftF: kernel `Lift l m eq A` type-former value — the type of values of `A : U(l)` transported up to `U(m)`; collapses idempotently when `convLevel l m` and composes nested Lifts.";
+      signature = "vLiftF : Val -> Val -> Val -> Val -> Val";
+      doc = ''
+        Idempotence: `Lift l l _ A ≡ A` (the backward-compat rule for
+        homogeneous code) — returns `A` directly when `convLevel l m`.
+        Composition: `Lift l m _ (Lift l' l _ A') ≡ Lift l' m _ A'` —
+        flattens by lowering the inner level. The witness slot `eq`
+        is irrelevant on collapse since both bound conditions hold by
+        transitivity; emit `vBootRefl` for the composed form.
+      '';
+    };
+    vLiftIntroF = {
+      description = "vLiftIntroF: kernel `liftIntro` value former — wraps `a : A` as a `VLift l m _ A`-typed value; idempotent at `convLevel l m`, and η-reduces a stuck `lower`-spine via `lift _ (lower _ x) ≡ x`.";
+      signature = "vLiftIntroF : Val -> Val -> Val -> Val -> Val -> Val";
+      doc = ''
+        Witness-irrelevance is enforced structurally: levels are
+        compared via `convLevel` and the carried `A` via syntactic
+        equality. The spine's `eq` field is not consulted. The
+        η-reduction inspects the tail of a `VNe` spine for an
+        `ELiftElim` frame whose parameters match; on hit, drops the
+        frame to yield the inner stuck term.
+      '';
+    };
+    vLiftElimF = {
+      description = "vLiftElimF: kernel `lower` eliminator — idempotent at `convLevel l m`; β-reduces `lower _ (lift _ a) -> a` on `VLiftIntro`; appends `ELiftElim` to a stuck `VNe` spine.";
+      signature = "vLiftElimF : Val -> Val -> Val -> Val -> Val -> Val";
+    };
+    evalF = {
+      description = "evalF: core kernel-term evaluator — interpret a `Tm` in an environment of values to produce a `Val`, fuel-threaded so each step decrements until exhaustion throws `\"normalization budget exceeded\"`.";
+      signature = "evalF : Int -> Env -> Tm -> Val";
+      doc = ''
+        Dispatches per `tm.tag` over the kernel-term ADT (kernel-spec
+        §9): variables, `let`, `ann`, all type formers (`pi`, `sigma`,
+        `boot-sum`, `boot-eq`, `mu`, `squash`, primitives, universe),
+        introduction forms (`lam`, `pair`, `tt`, `boot-inl`/`boot-inr`,
+        `boot-refl`, `squash-intro`, literals, `desc-con`), and
+        elimination forms (`app`, `fst`/`snd`, `boot-sum-elim`,
+        `boot-j`, `squash-elim`, `desc-ind`, `lift-elim`).
+
+        Mutual recursion with `vAppF` / `instantiateF` (this file) and
+        the description walkers `vDescIndF` / `vInterpDF` / `vAllDF` /
+        `vEverywhereDF` (`desc.nix`) is closed by the kernel fixpoint
+        through `self`. `desc-con` chains are trampolined via
+        `builtins.genericClosure` so deep recursive data (5000+
+        layers) never blows the Nix evaluator stack.
+
+        Fuel is decremented once per recursive `self.evalF` call. The
+        budget threads through all sub-evaluations; partial spending
+        is bounded by the budget at the call site. Default budget
+        (`defaultFuel = 10000000`) covers all in-repo workloads; tune
+        only for experimental kernel-stress benchmarks.
+
+        Returns a `Val` with one of the kernel's value tags (`VLam`,
+        `VPi`, `VSigma`, `VPair`, `VTt`, `VBootSum`, `VBootInl`,
+        `VBootInr`, `VBootEq`, `VBootRefl`, `VFunext`, `VSquash`,
+        `VSquashIntro`, `VLift`, `VLiftIntro`, `VDesc`, `VMu`,
+        `VDescCon`, `VU`, primitive `VString`/`VInt`/..., `VStringLit`/...,
+        `VNe` for stuck applications, `VOpaqueLam` for axiomatized
+        lambdas). Unknown tags throw an internal error.
+      '';
+    };
+    eval = {
+      description = "eval: default-fuel wrapper around `evalF`; spends from the `defaultFuel` (10M-step) budget. The canonical evaluator entry for kernel consumers.";
+      signature = "eval : Env -> Tm -> Val";
+    };
+    instantiate = {
+      description = "instantiate: default-fuel closure application — given `Closure { env; body; }` and an argument `Val`, evaluate the body in the extended environment.";
+      signature = "instantiate : Closure -> Val -> Val";
+    };
+    vApp = {
+      description = "vApp: default-fuel kernel function-application value — beta-reduces `VLam`, extends the spine for `VNe`, threads through `VDescViewFn`.";
+      signature = "vApp : Val -> Val -> Val";
+    };
+    mkDescDescAppV = {
+      description = "mkDescDescAppV: default-fuel canonical `descDesc I L`-value constructor — produces the levitated description-of-descriptions value, cached and shared across the kernel for index `I` and level `L`.";
+      signature = "mkDescDescAppV : Val -> Val -> Val";
+    };
+    vBootSumElim = {
+      description = "vBootSumElim: default-fuel boot-sum eliminator — dispatches `VBootInl` to `onLeft` and `VBootInr` to `onRight`; extends the spine on `VNe`.";
+      signature = "vBootSumElim : Val -> Val -> Val -> Val -> Val -> Val -> Val";
     };
   };
 }

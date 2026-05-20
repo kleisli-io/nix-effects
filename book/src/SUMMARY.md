@@ -1,10 +1,23 @@
 # Summary
 
+## Guide
+
 - [Introduction](introduction.md)
 - [Getting Started](getting-started.md)
+- [Effects and Handlers](effects-and-handlers.md)
+- [Typed Validation](typed-validation.md)
+- [Generated Datatypes](generated-datatypes.md)
+- [Generic Programming](generic-programming.md)
 - [Sugar](sugar.md)
+- [Ornaments and Description-Backed Data](ornaments.md)
 - [Proof Guide](proof-guide.md)
+
+## Concepts
+
 - [Theory](theory.md)
+
+## Internals
+
 - [Trampoline](trampoline.md)
 - [Systems Architecture](systems-architecture.md)
 - [Kernel Architecture](kernel-architecture.md)

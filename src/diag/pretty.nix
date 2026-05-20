@@ -23,10 +23,8 @@
 # chain at force time. `deepSeq` is wrong here: the payload is a
 # recursive Error whose `children` holds the entire remaining chain,
 # and forcing it deeply cascades through every descendant.
-{ lib, fx, api, ... }:
-
+{ lib, fx, ... }:
 let
-  inherit (api) mk;
   inherit (fx.diag.positions) renderSegment;
 
   fastPathLimit = 500;
@@ -213,8 +211,14 @@ let
       fx.diag.error.nestUnder fx.diag.positions.DArgSort inner
     ) leafErr (lib.range 1 5000);
 
-in mk {
-  doc = ''
+in {
+  inherit pathSegments pathString oneLine multiLine renderValue;
+
+
+
+  __docs = {
+    _self = {
+      doc = ''
     Pretty-printing for diagnostic Errors.
 
     Exports:
@@ -229,10 +233,7 @@ in mk {
 
     Pure data -> string; no effects.
   '';
-  value = {
-    inherit pathSegments pathString oneLine multiLine renderValue;
-  };
-  tests = {
+      tests = {
     # -- pathSegments / pathString on leaves and chains --
     "pathSegments-leaf" = {
       expr = pathSegments leafErr;
@@ -420,5 +421,29 @@ in mk {
       expr = renderValue { tag = "VU"; level = 0; };
       expected = "VU(level=0)";
     };
+  };
+    };
+
+    pathSegments = {
+      description = "pathSegments: walk an `Error` from root to leaf collecting position tags as strings; stack-safe to kernel-descent depth via the same fast/slow split as the other chain walkers.";
+      signature = "pathSegments : Error -> [String]";
+    };
+    pathString = {
+      description = "pathString: render `Error`'s root-to-leaf positions as a dotted path (e.g. `\"DArgSort.PiCod.AppArg\"`); useful for log lines and one-line diagnostic summaries.";
+      signature = "pathString : Error -> String";
+    };
+    oneLine = {
+      description = "oneLine: render `Error` as a single-line diagnostic combining `pathString`, layer tag, msg, and (when present) hint text — suited for editor squigglies and terse log output.";
+      signature = "oneLine : Error -> String";
+    };
+    multiLine = {
+      description = "multiLine: render `Error` as a multi-line block — header line, blame path, detail fields rendered with `renderValue`, and the optional hint text indented under the leaf.";
+      signature = "multiLine : Error -> String";
+    };
+    renderValue = {
+      description = "renderValue: render an arbitrary detail value (term/type/payload) as a string suitable for inclusion in diagnostic output; centralises the formatting policy across `oneLine`/`multiLine`.";
+      signature = "renderValue : Any -> String";
+    };
+
   };
 }

@@ -14,7 +14,7 @@
 { lib ? (import <nixpkgs> { }).lib, pkgs ? null }:
 
 let
-  fx = import ../. { inherit lib pkgs; };
+  fx = import ../. { inherit lib pkgs; exposeInternals = true; };
 
   benchLib = import ./lib { inherit lib; };
   workloads = import ./workloads { inherit fx; };

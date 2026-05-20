@@ -7,8 +7,9 @@ let
   T = fx.tc.term;
   V = fx.tc.value;
   Q = fx.tc.quote;
-  H = fx.tc.hoas;
-  E = fx.tc.eval;
+  H  = fx.tc.hoas;
+  HI = fx.tc.hoas._internal._indexed;
+  E  = fx.tc.eval;
 
   inherit (self)
     checkType checkTypeLevel
@@ -53,12 +54,15 @@ let
   encRet = H.elab (H.retI H.unit 0 H.tt);
   encArg = H.elab (H.descArg H.unit 0 H.unit (_: H.retI H.unit 0 H.tt));
   encArg1 = H.elab (H.descArg H.unit 1 (H.u 0) (_: H.retI H.unit 1 H.tt));
-  encRec = H.elab (H.recI H.unit 0 H.tt (H.retI H.unit 0 H.tt));
-  encPi = H.elab (H.piI H.unit 0 H.unit (unitFn H.unit) (H.retI H.unit 0 H.tt));
-  encPi1 = H.elab (H.piI H.unit 1 (H.u 0) (unitFn (H.u 0)) (H.retI H.unit 1 H.tt));
+  encRec = H.elab (HI.recI H.unit 0 H.tt (H.retI H.unit 0 H.tt));
+  encPi = H.elab (HI.piI H.unit 0 H.unit (unitFn H.unit) (H.retI H.unit 0 H.tt));
+  encPi1 = H.elab (HI.piI H.unit 1 (H.u 0) (unitFn (H.u 0)) (H.retI H.unit 1 H.tt));
   encRetD = T.mkAnn encRet (T.mkDesc T.mkLevelZero T.mkUnit);
   encArgD = T.mkAnn encArg (T.mkDesc T.mkLevelZero T.mkUnit);
   encRecD = T.mkAnn encRec (T.mkDesc T.mkLevelZero T.mkUnit);
+  encPiD = T.mkAnn encPi (T.mkDesc T.mkLevelZero T.mkUnit);
+  encPlus  = H.elab (H.plus (H.retI H.unit 0 H.tt) (H.retI H.unit 0 H.tt));
+  encPlusD = T.mkAnn encPlus (T.mkDesc T.mkLevelZero T.mkUnit);
 in {
   scope = {};
   tests = {
@@ -832,6 +836,159 @@ in {
         T.mkTt
         T.mkBootRefl)).type.tag;
       expected = "VUnit";
+    };
+
+    # interpD on the non-`ret` summands. `interpD ℓ I D X i` always
+    # synthesises to `U(ℓ)` regardless of D's outer constructor, so
+    # `.type.tag == "VU"` is the acceptance bar. Rejection variants
+    # mirror `infer-interp-d-wrong-X-rejected` with a mistyped `X`.
+    "infer-interp-d-arg" = {
+      expr = (inferTm ctx0 (T.mkInterpD T.mkLevelZero T.mkUnit
+        encArgD
+        (T.mkLam "_" T.mkUnit T.mkUnit)
+        T.mkTt)).type.tag;
+      expected = "VU";
+    };
+    "infer-interp-d-arg-wrong-X-rejected" = {
+      expr = (inferTm ctx0 (T.mkInterpD T.mkLevelZero T.mkUnit
+        encArgD
+        (T.mkLam "_" T.mkUnit T.mkTt)
+        T.mkTt)) ? error;
+      expected = true;
+    };
+    "infer-interp-d-pi" = {
+      expr = (inferTm ctx0 (T.mkInterpD T.mkLevelZero T.mkUnit
+        encPiD
+        (T.mkLam "_" T.mkUnit T.mkUnit)
+        T.mkTt)).type.tag;
+      expected = "VU";
+    };
+    "infer-interp-d-pi-wrong-X-rejected" = {
+      expr = (inferTm ctx0 (T.mkInterpD T.mkLevelZero T.mkUnit
+        encPiD
+        (T.mkLam "_" T.mkUnit T.mkTt)
+        T.mkTt)) ? error;
+      expected = true;
+    };
+    "infer-interp-d-plus" = {
+      expr = (inferTm ctx0 (T.mkInterpD T.mkLevelZero T.mkUnit
+        encPlusD
+        (T.mkLam "_" T.mkUnit T.mkUnit)
+        T.mkTt)).type.tag;
+      expected = "VU";
+    };
+    "infer-interp-d-plus-wrong-X-rejected" = {
+      expr = (inferTm ctx0 (T.mkInterpD T.mkLevelZero T.mkUnit
+        encPlusD
+        (T.mkLam "_" T.mkUnit T.mkTt)
+        T.mkTt)) ? error;
+      expected = true;
+    };
+
+    # allD on the non-`ret` summands. `allD ℓ I D K X M i d` always
+    # synthesises to `U(K)` regardless of D's shape, so `.type.tag ==
+    # "VU"` is the acceptance bar.
+    #
+    # Payloads (computed via the kernel reduction rules in `term.nix`):
+    #   encArg (Σ s:Unit. Eq Unit tt tt)       → `pair tt refl`
+    #   encRec (Σ _:Unit. Eq Unit tt tt)       → `pair tt refl`
+    #   encPi  (Σ _:(Π s:Unit.Unit). Eq …)     → `pair (λ_:Unit. tt) refl`
+    #   encPlus (Eq … ⊎ Eq …)                  → `inl refl`
+    "infer-all-d-arg" = {
+      expr = (inferTm ctx0 (T.mkAllD T.mkLevelZero T.mkUnit
+        encArgD
+        T.mkLevelZero
+        (T.mkLam "_" T.mkUnit T.mkUnit)
+        (T.mkLam "i" T.mkUnit (T.mkLam "x" T.mkUnit T.mkUnit))
+        T.mkTt
+        (T.mkPair T.mkTt T.mkBootRefl))).type.tag;
+      expected = "VU";
+    };
+    "infer-all-d-rec" = {
+      expr = (inferTm ctx0 (T.mkAllD T.mkLevelZero T.mkUnit
+        encRecD
+        T.mkLevelZero
+        (T.mkLam "_" T.mkUnit T.mkUnit)
+        (T.mkLam "i" T.mkUnit (T.mkLam "x" T.mkUnit T.mkUnit))
+        T.mkTt
+        (T.mkPair T.mkTt T.mkBootRefl))).type.tag;
+      expected = "VU";
+    };
+    "infer-all-d-pi" = {
+      expr = (inferTm ctx0 (T.mkAllD T.mkLevelZero T.mkUnit
+        encPiD
+        T.mkLevelZero
+        (T.mkLam "_" T.mkUnit T.mkUnit)
+        (T.mkLam "i" T.mkUnit (T.mkLam "x" T.mkUnit T.mkUnit))
+        T.mkTt
+        (T.mkPair (T.mkLam "_" T.mkUnit T.mkTt) T.mkBootRefl))).type.tag;
+      expected = "VU";
+    };
+    "infer-all-d-plus" = {
+      expr = (inferTm ctx0 (T.mkAllD T.mkLevelZero T.mkUnit
+        encPlusD
+        T.mkLevelZero
+        (T.mkLam "_" T.mkUnit T.mkUnit)
+        (T.mkLam "i" T.mkUnit (T.mkLam "x" T.mkUnit T.mkUnit))
+        T.mkTt
+        (T.mkBootInl
+          (T.mkBootEq T.mkUnit T.mkTt T.mkTt)
+          (T.mkBootEq T.mkUnit T.mkTt T.mkTt)
+          T.mkBootRefl))).type.tag;
+      expected = "VU";
+    };
+
+    # everywhereD acceptance on the non-`ret` summands. The result
+    # type is `allD ℓ I D K X M i d`, which itself is `U(K)` after
+    # reduction; the exact reduced form depends on D's shape, so the
+    # acceptance bar here is structural: the synthesis produces a
+    # `.type` field (no `.error`).
+    "infer-everywhere-d-arg" = {
+      expr = (inferTm ctx0 (T.mkEverywhereD T.mkLevelZero T.mkUnit
+        encArgD
+        T.mkLevelZero
+        (T.mkLam "_" T.mkUnit T.mkUnit)
+        (T.mkLam "i" T.mkUnit (T.mkLam "x" T.mkUnit T.mkUnit))
+        (T.mkLam "j" T.mkUnit (T.mkLam "x" T.mkUnit T.mkTt))
+        T.mkTt
+        (T.mkPair T.mkTt T.mkBootRefl))) ? type;
+      expected = true;
+    };
+    "infer-everywhere-d-rec" = {
+      expr = (inferTm ctx0 (T.mkEverywhereD T.mkLevelZero T.mkUnit
+        encRecD
+        T.mkLevelZero
+        (T.mkLam "_" T.mkUnit T.mkUnit)
+        (T.mkLam "i" T.mkUnit (T.mkLam "x" T.mkUnit T.mkUnit))
+        (T.mkLam "j" T.mkUnit (T.mkLam "x" T.mkUnit T.mkTt))
+        T.mkTt
+        (T.mkPair T.mkTt T.mkBootRefl))) ? type;
+      expected = true;
+    };
+    "infer-everywhere-d-pi" = {
+      expr = (inferTm ctx0 (T.mkEverywhereD T.mkLevelZero T.mkUnit
+        encPiD
+        T.mkLevelZero
+        (T.mkLam "_" T.mkUnit T.mkUnit)
+        (T.mkLam "i" T.mkUnit (T.mkLam "x" T.mkUnit T.mkUnit))
+        (T.mkLam "j" T.mkUnit (T.mkLam "x" T.mkUnit T.mkTt))
+        T.mkTt
+        (T.mkPair (T.mkLam "_" T.mkUnit T.mkTt) T.mkBootRefl))) ? type;
+      expected = true;
+    };
+    "infer-everywhere-d-plus" = {
+      expr = (inferTm ctx0 (T.mkEverywhereD T.mkLevelZero T.mkUnit
+        encPlusD
+        T.mkLevelZero
+        (T.mkLam "_" T.mkUnit T.mkUnit)
+        (T.mkLam "i" T.mkUnit (T.mkLam "x" T.mkUnit T.mkUnit))
+        (T.mkLam "j" T.mkUnit (T.mkLam "x" T.mkUnit T.mkTt))
+        T.mkTt
+        (T.mkBootInl
+          (T.mkBootEq T.mkUnit T.mkTt T.mkTt)
+          (T.mkBootEq T.mkUnit T.mkTt T.mkTt)
+          T.mkBootRefl))) ? type;
+      expected = true;
     };
   };
 }

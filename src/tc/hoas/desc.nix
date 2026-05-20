@@ -92,6 +92,17 @@
     # decide equality on the tag rather than walk `.D`.
     descDescApp = I: L: { _htag = "desc-desc-app"; inherit I L; };
 
+    # Generic identity-tagged HOAS form. `canonApp id params body` is a
+    # stand-in for `app … (app body p_1) … p_n` at call sites that need
+    # conv/quote to decide equality on the `(id, params)` tag rather
+    # than walk `.D`. The eval rule applies `body` to each param in
+    # order and stamps the resulting `VDescCon` with
+    # `_canonRef = { id; params; }`. Use this to add cycle-safe outer
+    # references for user-defined recursive descriptions (freer monads,
+    # FTCQueues, ...) without coupling the kernel to each id.
+    canonApp = id: params: body:
+      { _htag = "canon-app"; inherit id params body; };
+
     # Per-(I, k) HOAS encoding context for descDesc-encoded μ-trees.
     # Single source of truth for the descDesc summand layout, the
     # plus-tree spine, the right-associated `encodeTag` pathing, and
@@ -596,5 +607,122 @@
     encodeDescElimTm = self.elab self.encodeDescElim;
 
     encodeDescElimVal = fx.tc.eval.eval [] self.encodeDescElimTm;
+  };
+  __docs = {
+    __descDesc = {
+      description = "__descDesc: private internal-use alias for `descDesc` — exposed for the encoder cascade; surface code should use `descDesc`.";
+      signature = "__descDesc : Hoas -> Level -> Hoas";
+    };
+    canonApp = {
+      description = "canonApp: generic identity-tagged HOAS application — `canonApp id params body` produces a `VDescCon` stamped with `_canonRef = { id; params; }` at eval time, so conv/quote short-circuit on the canonical identity instead of forcing the recursive `.D` slot. Use to add cycle-safe outer references for user-defined recursive descriptions (freer monads, FTCQueues, ...).";
+      signature = "canonApp : String -> [Hoas] -> Hoas -> Hoas";
+    };
+    descDesc = {
+      description = "descDesc: levitated description-of-descriptions — `descDesc I k` is the description whose μ-carrier is `Desc^k I`; foundational for description encoding.";
+      signature = "descDesc : Hoas -> Level -> Hoas  -- I, k";
+      doc = ''
+        The plus-tree of `descDesc` has five summands corresponding
+        to the description constructors (`retI`, `descArg`, `recI`,
+        `piI`, `plusI`). Every encoded HOAS description elaborates
+        through `descDesc` so each `VDescCon` value carries its
+        constructor tag explicitly. Universe-polymorphic over `k`.
+      '';
+    };
+    descDescApp = {
+      description = "descDescApp: applied `descDesc` form — `descDescApp I k` produces `descDesc I k` as a closed Tm; convenience for sites that need the pre-applied form.";
+      signature = "descDescApp : Hoas -> Level -> Hoas";
+    };
+    descDescTm = {
+      description = "descDescTm: pre-elaborated `descDesc` term — closed kernel `Tm` form usable directly by kernel rules that need the description-of-descriptions without re-elaborating.";
+      signature = "descDescTm : Tm";
+    };
+    descDescVal = {
+      description = "descDescVal: pre-evaluated `descDesc` value — the kernel `Val` form, ready for `interpD` / `descInd` consumption without re-evaluation.";
+      signature = "descDescVal : Val";
+    };
+    encodeDescArg = {
+      description = "encodeDescArg: HOAS encoder for `descArg` — `encodeDescArg I k S T` builds the structural encoding of a `descArg I k S T` description.";
+      signature = "encodeDescArg : Hoas -> Level -> Hoas -> Hoas -> Hoas";
+    };
+    encodeDescArgAt = {
+      description = "encodeDescArgAt: HOAS encoder for `descArgAt` — universe-polymorphic encoder for `descArgAt I l k S T`.";
+      signature = "encodeDescArgAt : Hoas -> Level -> Level -> Hoas -> Hoas -> Hoas";
+    };
+    encodeDescArgAtTm = {
+      description = "encodeDescArgAtTm: pre-elaborated `encodeDescArgAt` — closed kernel `Tm`.";
+      signature = "encodeDescArgAtTm : Tm";
+    };
+    encodeDescArgTm = {
+      description = "encodeDescArgTm: pre-elaborated `encodeDescArg` — closed kernel `Tm`.";
+      signature = "encodeDescArgTm : Tm";
+    };
+    encodeDescElim = {
+      description = "encodeDescElim: HOAS encoder for `descElim` — produces the cascade application that walks `descDesc`'s plus-tree to dispatch on a `VDescCon` value's constructor.";
+      signature = "encodeDescElim : Hoas -> Level -> Level -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas";
+    };
+    encodeDescElimTm = {
+      description = "encodeDescElimTm: pre-elaborated `encodeDescElim` — closed kernel `Tm` form of the eliminator cascade.";
+      signature = "encodeDescElimTm : Tm";
+    };
+    encodeDescElimVal = {
+      description = "encodeDescElimVal: pre-evaluated `encodeDescElim` — kernel `Val` form, ready for direct consumption without re-evaluation.";
+      signature = "encodeDescElimVal : Val";
+    };
+    encodeDescPi = {
+      description = "encodeDescPi: HOAS encoder for `piI` — `encodeDescPi I k S f D` builds the structural encoding of a `piI I k S f D` description.";
+      signature = "encodeDescPi : Hoas -> Level -> Hoas -> Hoas -> Hoas -> Hoas";
+    };
+    encodeDescPiAt = {
+      description = "encodeDescPiAt: HOAS encoder for `piIAt` — universe-polymorphic encoder for `piIAt I l k S f D`.";
+      signature = "encodeDescPiAt : Hoas -> Level -> Level -> Hoas -> Hoas -> Hoas -> Hoas";
+    };
+    encodeDescPiAtTm = {
+      description = "encodeDescPiAtTm: pre-elaborated `encodeDescPiAt` — closed kernel `Tm`.";
+      signature = "encodeDescPiAtTm : Tm";
+    };
+    encodeDescPiTm = {
+      description = "encodeDescPiTm: pre-elaborated `encodeDescPi` — closed kernel `Tm`.";
+      signature = "encodeDescPiTm : Tm";
+    };
+    encodeDescPlus = {
+      description = "encodeDescPlus: HOAS encoder for `plusI` — `encodeDescPlus I k A B` builds the structural encoding of a `plusI I k A B` description.";
+      signature = "encodeDescPlus : Hoas -> Level -> Hoas -> Hoas -> Hoas";
+    };
+    encodeDescPlusTm = {
+      description = "encodeDescPlusTm: pre-elaborated `encodeDescPlus` — closed kernel `Tm`.";
+      signature = "encodeDescPlusTm : Tm";
+    };
+    encodeDescRec = {
+      description = "encodeDescRec: HOAS encoder for `recI` — `encodeDescRec I k j D` builds the structural encoding of a `recI I k j D` description.";
+      signature = "encodeDescRec : Hoas -> Level -> Hoas -> Hoas -> Hoas";
+    };
+    encodeDescRecTm = {
+      description = "encodeDescRecTm: pre-elaborated `encodeDescRec` — closed kernel `Tm`.";
+      signature = "encodeDescRecTm : Tm";
+    };
+    encodeDescRet = {
+      description = "encodeDescRet: HOAS encoder for `retI` — `encodeDescRet I k j` builds the `μ ⊤ (descDesc I k) tt` value structurally encoding a `retI I k j` description.";
+      signature = "encodeDescRet : Hoas -> Level -> Hoas -> Hoas  -- I, k, targetIdx";
+    };
+    encodeDescRetTm = {
+      description = "encodeDescRetTm: pre-elaborated `encodeDescRet` — closed kernel `Tm` lambda; consumed by `interpD`'s encoded-desc view branch.";
+      signature = "encodeDescRetTm : Tm";
+    };
+    listDesc = {
+      description = "listDesc: prelude `List` description constructor — `listDesc A` produces the two-summand description `descRet + descArg A (_: descRec descRet)` of `List A`.";
+      signature = "listDesc : Hoas -> Hoas";
+    };
+    natDesc = {
+      description = "natDesc: prelude `Nat` description — `descRet + descRec descRet`; the canonical two-summand description of natural numbers as zero + succ(Nat).";
+      signature = "natDesc : Hoas";
+    };
+    natDescTm = {
+      description = "natDescTm: pre-elaborated `Nat` description term — closed kernel `Tm` encoding `natDesc`; used by the kernel where the HOAS form would re-elaborate.";
+      signature = "natDescTm : Tm";
+    };
+    sumDesc = {
+      description = "sumDesc: prelude `Sum` description constructor — `sumDesc A B` produces the two-summand description `descArg A (_: descRet) + descArg B (_: descRet)` of `Sum A B`.";
+      signature = "sumDesc : Hoas -> Hoas -> Hoas";
+    };
   };
 }

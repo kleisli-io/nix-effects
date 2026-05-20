@@ -47,6 +47,14 @@ in {
       { _fieldTag = _fieldMarker; kind = "pi"; inherit name level eq S; };
     piFieldDAtWithEq = level: eq: name: SFn:
       { _fieldTag = _fieldMarker; kind = "piD"; inherit name level eq; SFn = SFn; };
+    piFieldAtIndex = level: name: S: branchIdxFn:
+      { _fieldTag = _fieldMarker; kind = "piAt"; inherit name level S branchIdxFn; };
+    piFieldDAtIndex = level: name: SFn: branchIdxFn:
+      { _fieldTag = _fieldMarker; kind = "piDAt"; inherit name level SFn branchIdxFn; };
+    piFieldAtIndexWithEq = level: eq: name: S: branchIdxFn:
+      { _fieldTag = _fieldMarker; kind = "piAt"; inherit name level eq S branchIdxFn; };
+    piFieldDAtIndexWithEq = level: eq: name: SFn: branchIdxFn:
+      { _fieldTag = _fieldMarker; kind = "piDAt"; inherit name level eq SFn branchIdxFn; };
     piField  = name: S: self.piFieldAt 0 name S;
     piFieldD = name: SFn: self.piFieldDAt 0 name SFn;
 
@@ -61,43 +69,67 @@ in {
     # Compile a field list into a description spine over index type `I`.
     # `prev` threads HOAS markers for earlier `field` / `fieldD` bindings
     # (the only field kinds that bind a description-level variable via
-    # descArg); `recAt`, `pi`, `piD` do not extend `prev`. At the
-    # ret-leaf the target index is `targetIdx prev`. `pi` / `piD` emit
-    # the ⊤-slice `descPi` alias and are therefore only valid at I=⊤;
-    # at I≠⊤ an indexed pi-field sugar would be required and none
-    # exists yet.
+    # descArg); `recAt`, `pi`, `piD`, `piAt`, `piDAt` do not extend
+    # `prev`. At the ret-leaf the target index is `targetIdx prev`.
+    # `pi` / `piD` are the unit-slice constant-index aliases; `piAt` /
+    # `piDAt` carry the branch index function used by indexed families.
     conDesc = I: descLevel: prev: fields: targetIdx:
       let
         inherit (self)
-          retI recI descArgAt descArgWithEq
-          descPiAt descPiWithEq conDesc;
+          retI recI descArg descArgAt descArgWithEq
+          piI piIAt piIWithEq conDesc;
         isUnitI = (I._htag or null) == "unit";
+        sameLevel = a: b:
+          let r = builtins.tryEval (a == b); in
+          r.success && r.value;
+        checkedFieldType = f: S:
+          self.ann S (self.u f.level);
         descArgFor = f: S: body:
           if f ? eq
-          then descArgWithEq I f.level descLevel S f.eq body
-          else descArgAt I f.level descLevel S body;
-        descPiFor = f: S: body:
+          then descArgWithEq I f.level descLevel (checkedFieldType f S) f.eq body
+          else if sameLevel f.level descLevel
+          then descArg I descLevel (checkedFieldType f S) body
+          else descArgAt I f.level descLevel (checkedFieldType f S) body;
+        unitBranch = S:
+          self.ann
+            (self.lam "_" S (_: self.ttPrim))
+            (self.forall "_" S (_: self.unitPrim));
+        indexedBranch = f: S: prev:
+          self.ann
+            (self.lam "s" S (s: f.branchIdxFn prev s))
+            (self.forall "_" S (_: I));
+        branchFor = f: S: prev:
+          if f.kind == "pi" || f.kind == "piD" then
+            if isUnitI then unitBranch S
+            else throw "datatype: piField '${f.name}' not supported at indexed family (I != unit); use piFieldAtIndex"
+          else indexedBranch f S prev;
+        descPiFor = f: S: prev: body:
           if f ? eq
-          then descPiWithEq f.level descLevel S f.eq body
-          else descPiAt f.level descLevel S body;
+          then piIWithEq I f.level descLevel (checkedFieldType f S) (branchFor f S prev) f.eq body
+          else if sameLevel f.level descLevel
+          then piI I descLevel (checkedFieldType f S) (branchFor f S prev) body
+          else piIAt I f.level descLevel (checkedFieldType f S) (branchFor f S prev) body;
       in
       if fields == [] then retI I descLevel (targetIdx prev)
       else let
         f = builtins.head fields;
         rest = builtins.tail fields;
         k = f.kind;
+        # Each field's emitted description node carries `f.name` as its
+        # per-node presentation label (`_label`). Conv ignores labels so
+        # this preserves definitional equality. Orthogonal to the
+        # constructor-name slot (`_conLabel`) stamped by `_datatypeImpl`
+        # at the spine site below — both can coexist on the same node
+        # because they target distinct sidecars.
+        labeled = d: self.withDescLabel f.name d;
       in
-        if      k == "data"  then descArgFor f f.type          (v: conDesc I descLevel (prev // { ${f.name} = v; }) rest targetIdx)
-        else if k == "dataD" then descArgFor f (f.typeFn prev) (v: conDesc I descLevel (prev // { ${f.name} = v; }) rest targetIdx)
-        else if k == "recAt" then recI I descLevel (f.idxFn prev) (conDesc I descLevel prev rest targetIdx)
-        else if k == "pi"    then
-          if isUnitI
-          then descPiFor f f.S (conDesc I descLevel prev rest targetIdx)
-          else throw "datatype: piField '${f.name}' not supported at indexed family (I != unit)"
-        else if k == "piD"   then
-          if isUnitI
-          then descPiFor f (f.SFn prev) (conDesc I descLevel prev rest targetIdx)
-          else throw "datatype: piFieldD '${f.name}' not supported at indexed family (I != unit)"
+        if      k == "data"  then labeled (descArgFor f f.type          (v: conDesc I descLevel (prev // { ${f.name} = v; }) rest targetIdx))
+        else if k == "dataD" then labeled (descArgFor f (f.typeFn prev) (v: conDesc I descLevel (prev // { ${f.name} = v; }) rest targetIdx))
+        else if k == "recAt" then labeled (recI I descLevel (f.idxFn prev) (conDesc I descLevel prev rest targetIdx))
+        else if k == "pi" || k == "piAt" then
+          labeled (descPiFor f f.S prev (conDesc I descLevel prev rest targetIdx))
+        else if k == "piD" || k == "piDAt" then
+          labeled (descPiFor f (f.SFn prev) prev (conDesc I descLevel prev rest targetIdx))
         else throw "datatype: unknown field kind '${k}'";
 
     # spineDesc descs : Hoas Desc
@@ -137,6 +169,19 @@ in {
       then self.lowerAtWithEq f.level descLevel f.eq S v
       else self.lowerAt f.level descLevel S v;
 
+    isPiField = f:
+      f.kind == "pi" || f.kind == "piD"
+      || f.kind == "piAt" || f.kind == "piDAt";
+
+    piDomain = f: prev:
+      if f.kind == "pi" || f.kind == "piAt" then f.S
+      else if f.kind == "piD" || f.kind == "piDAt" then f.SFn prev
+      else null;
+
+    branchIndex = f: prev: s:
+      if f.kind == "piAt" || f.kind == "piDAt" then f.branchIdxFn prev s
+      else self.ttPrim;
+
     payloadLeafAt = I: descLevel: targetIdx:
       self.liftAt 0 descLevel (self.bootEq I targetIdx targetIdx) self.bootRefl;
 
@@ -154,16 +199,15 @@ in {
         S =
           if      f.kind == "data"  then f.type
           else if f.kind == "dataD" then f.typeFn prev
-          else if f.kind == "pi"    then f.S
-          else if f.kind == "piD"   then f.SFn prev
+          else if self.isPiField f then self.piDomain f prev
           else null;
       in
         if f.kind == "data" || f.kind == "dataD" then
           self.liftFieldValue f descLevel S v
-        else if f.kind == "pi" || f.kind == "piD" then
+        else if self.isPiField f then
           self.lam "x" (self.fieldLiftType f descLevel S) (x:
             self.app
-              (self.ann v (self.forall "_" S (_: self.muI I D self.ttPrim)))
+              (self.ann v (self.forall "_" S (s: self.muI I D (self.branchIndex f prev s))))
               (self.lowerFieldValue f descLevel S x))
         else v;
 
@@ -172,25 +216,21 @@ in {
         S =
           if      f.kind == "data"  then f.type
           else if f.kind == "dataD" then f.typeFn prev
-          else if f.kind == "pi"    then f.S
-          else if f.kind == "piD"   then f.SFn prev
+          else if self.isPiField f then self.piDomain f prev
           else null;
       in
         if f.kind == "data" || f.kind == "dataD" then
           self.lowerFieldValue f descLevel S v
-        else if f.kind == "pi" || f.kind == "piD" then
+        else if self.isPiField f then
           self.lam "s" S (s:
             self.app v (self.liftFieldValue f descLevel S s))
         else v;
 
     ihUserValue = descLevel: f: prev: ih:
       let
-        S =
-          if      f.kind == "pi"  then f.S
-          else if f.kind == "piD" then f.SFn prev
-          else null;
+        S = if self.isPiField f then self.piDomain f prev else null;
       in
-        if f.kind == "pi" || f.kind == "piD" then
+        if self.isPiField f then
           self.lam "s" S (s:
             self.app ih (self.liftFieldValue f descLevel S s))
         else ih;
@@ -259,7 +299,8 @@ in {
           levelMax natToLevel
           muI descIAt descCon descInd interpD allD
           conDesc spineDesc payloadTupleAt fieldPayloadValue
-          fieldUserValue ihUserValue encodeTagAt;
+          fieldUserValue ihUserValue encodeTagAt
+          isPiField piDomain branchIndex;
 
         n = builtins.length consList;
         conNames = map (c: c.name) consList;
@@ -274,13 +315,140 @@ in {
                  in if builtins.elem nm seen then nm else null;
           in builtins.foldl' step null idxs;
 
-        conDescs = map (c: conDesc I descLevel {} c.fields c.targetIdx) consList;
+        # Each constructor's full description carries `c.name` in the
+        # `_conLabel` slot (distinct from the per-field `_label` slot
+        # populated inside conDesc). Labeling per-summand rather than
+        # tagging plus nodes avoids the rightmost-summand asymmetry of
+        # the plan's `plus : (tag : Maybe String) → Desc → Desc → Desc`
+        # signature: in `plus c0 (plus c1 c2)`, c2 has no plus above it.
+        # `spineDesc` then plus-folds already-labeled descriptions and
+        # needs no change.
+        conDescs = map (c: self.withConLabel c.name (conDesc I descLevel {} c.fields c.targetIdx)) consList;
+        sameHoas = a: b:
+          let r = builtins.tryEval (a == b); in
+          r.success && r.value;
+        paramIndex = h:
+          let
+            idxs = builtins.genList (x: x) (builtins.length params);
+            step = acc: i:
+              if acc != null then acc
+              else if sameHoas h (builtins.elemAt params i) then i
+              else null;
+          in builtins.foldl' step null idxs;
+        typeKey = h:
+          let
+            pIdx = paramIndex h;
+            tag = h._htag or null;
+          in
+          if pIdx != null then { tag = "param"; index = pIdx; }
+          else if builtins.isAttrs h && h ? _dtypeMeta then {
+            tag = "datatype";
+            inherit (h._dtypeMeta) name indexed;
+            params = map typeKey (h._dtypeMeta.paramArgs or []);
+          }
+          else if tag == "unit" || tag == "string" || tag == "int"
+               || tag == "float" || tag == "attrs" || tag == "path"
+               || tag == "function" || tag == "any" || tag == "level"
+          then { inherit tag; }
+          else if tag == "U" && builtins.isInt h.level
+          then { tag = "U"; inherit (h) level; }
+          else { tag = "opaque"; };
+        completeTypeKey = key:
+          key.tag != "opaque"
+          && (!(key ? params) || builtins.all completeTypeKey key.params);
+        fieldMarker = f: i: { _signatureField = true; inherit (f) name; index = i; };
+        fieldIndex = markers: h:
+          let
+            idxs = builtins.genList (x: x) (builtins.length markers);
+            step = acc: i:
+              if acc != null then acc
+              else if sameHoas h (builtins.elemAt markers i) then i
+              else null;
+          in builtins.foldl' step null idxs;
+        completeTermKey = key:
+          key.tag != "opaque"
+          && (!(key ? arg) || completeTermKey key.arg);
+        termKey = markers: h:
+          let
+            pIdx = paramIndex h;
+            fIdx = fieldIndex markers h;
+            tag = h._htag or null;
+          in
+          if pIdx != null then { tag = "param"; index = pIdx; }
+          else if fIdx != null then {
+            tag = "field";
+            index = fIdx;
+            name = (builtins.elemAt markers fIdx).name;
+          }
+          else if tag == "tt" then { tag = "tt"; }
+          else if sameHoas h self.zero then { tag = "zero"; }
+          else if tag == "app"
+               && builtins.isAttrs h.fn
+               && sameHoas h.fn self.NatDT.succ
+          then {
+            tag = "succ";
+            arg = termKey markers h.arg;
+          }
+          else { tag = "opaque"; };
+        fieldSig = f:
+          if f.kind == "data" then
+            let key = typeKey f.type; in {
+              inherit (f) kind level;
+              type = key;
+              complete = completeTypeKey key;
+            }
+          else if f.kind == "pi" || f.kind == "piAt" then
+            let key = typeKey f.S; in {
+              inherit (f) kind level;
+              type = key;
+              complete = completeTypeKey key;
+            }
+          else if f.kind == "recAt" then {
+            inherit (f) kind;
+            complete = false;
+          }
+          else {
+            inherit (f) kind;
+            complete = false;
+          };
+        constructorSig = c:
+          let
+            markers = builtins.genList
+              (i: fieldMarker (builtins.elemAt c.fields i) i)
+              (builtins.length c.fields);
+            prev = builtins.foldl' (acc: i:
+              let f = builtins.elemAt c.fields i; in
+              if f.kind == "data" || f.kind == "dataD"
+              then acc // { ${f.name} = builtins.elemAt markers i; }
+              else acc)
+              {}
+              (builtins.genList (x: x) (builtins.length c.fields));
+            fieldSigAt = i:
+              let
+                f = builtins.elemAt c.fields i;
+                base = fieldSig f;
+              in if f.kind == "recAt" then
+                let idx = termKey markers (f.idxFn prev); in
+                base // { inherit idx; complete = completeTermKey idx; }
+              else base;
+            fields = builtins.genList fieldSigAt (builtins.length c.fields);
+            target = termKey markers (c.targetIdx prev);
+          in {
+            inherit fields;
+            inherit target;
+            complete = completeTermKey target && builtins.all (f: f.complete) fields;
+          };
+        signatureConstructors = map constructorSig consList;
         descRef = {
           kind = "datatype-desc";
           inherit name;
           level = descLevel;
           inherit I indexed params;
           arity = n;
+          signature = {
+            constructors = signatureConstructors;
+            complete = builtins.all (c: c.complete) signatureConstructors;
+          };
           constructors = map (c: {
             fieldKinds = map (f: f.kind) c.fields;
           }) consList;
@@ -338,18 +506,38 @@ in {
 
         # HOAS type of field `f` given `prev` markers for earlier
         # data/dataD fields. data/dataD bind a description-level
-        # variable visible to later dependent forms; recAt / pi / piD
-        # compile to recI / descPi which do not extend `prev`.
+        # variable visible to later dependent forms; recAt / pi fields
+        # compile to recI / descPi and do not extend `prev`.
         fieldTyOf = f: prev:
           if      f.kind == "data"  then f.type
           else if f.kind == "dataD" then f.typeFn prev
           else if f.kind == "recAt" then muI I D (f.idxFn prev)
-          else if f.kind == "pi"    then forall "_" f.S (_: muI I D ttPrim)
-          else if f.kind == "piD"   then forall "_" (f.SFn prev) (_: muI I D ttPrim)
+          else if isPiField f then
+            forall "_" (piDomain f prev) (s: muI I D (branchIndex f prev s))
           else throw "datatype '${name}': unknown field kind '${f.kind}'";
 
         extendsPrev = f: f.kind == "data" || f.kind == "dataD";
-        isIHField = f: f.kind == "recAt" || f.kind == "pi" || f.kind == "piD";
+        isIHField = f: f.kind == "recAt" || isPiField f;
+
+        fieldMeta = f: i: {
+          inherit (f) name kind;
+          index = i;
+          level = f.level or null;
+          eq = f.eq or null;
+          proof = f.proof or ((f.eq or null) != null);
+          type = f.type or null;
+          typeFn =
+            if f.kind == "data" then (_: f.type)
+            else if f.kind == "dataD" then f.typeFn
+            else if f.kind == "recAt" then (prev: muI I D (f.idxFn prev))
+            else if isPiField f then
+              (prev: forall "_" (piDomain f prev) (s: muI I D (branchIndex f prev s)))
+            else (_: throw "datatype '${name}': unknown field kind '${f.kind}'");
+          idxFn = f.idxFn or null;
+          branchIdxFn = f.branchIdxFn or null;
+          role = f.role or null;
+          source = f.source or null;
+        };
 
         # Π type of constructor `c`. Terminates in `muI I D (c.targetIdx
         # prev)` — the per-constructor μ-slice at its declared target
@@ -474,12 +662,11 @@ in {
                         ihTy =
                           if      f.kind == "recAt" then
                             applyMotive P (f.idxFn m.prev) m.marker
-                          else if f.kind == "pi"    then
-                            forall "s" f.S (s:
-                              applyMotive P ttPrim (app m.marker s))
+                          else if isPiField f then
+                            forall "s" (piDomain f m.prev) (s:
+                              applyMotive P (branchIndex f m.prev s) (app m.marker s))
                           else
-                            forall "s" (f.SFn m.prev) (s:
-                              applyMotive P ttPrim (app m.marker s));
+                            throw "datatype '${name}': unexpected IH field kind '${f.kind}'";
                     in forall ("ih_" + f.name) ihTy (_: ihGo rest markers);
 
               # Π over fields, collecting markers + each field's `prev`
@@ -760,18 +947,32 @@ in {
 
         elim = K: ann (elimBody K) (elimTy K);
 
+        constructorMeta = i: c: {
+          inherit (c) name;
+          index = i;
+          targetIdx = c.targetIdx;
+          ctor = mkCtor i c;
+          fields = builtins.genList
+            (j: fieldMeta (builtins.elemAt c.fields j) j)
+            (builtins.length c.fields);
+        };
+
+        constructors = builtins.genList
+          (i: constructorMeta i (builtins.elemAt consList i))
+          n;
+
         # Uniform metadata exposed alongside the DataSpec. `indexTy`
         # describes the index type of the family; at `indexed=false` it
         # is the unit type, at `indexed=true` it is the user-supplied
-        # `I`. Consumers that walk `cons[i].fields` see only `name` /
-        # `kind` — the full spec is available under `_cons`.
+        # `I`. `cons` remains as the compatibility spelling while
+        # `constructors` is the normalized generic-programming surface.
         _dtypeMeta = {
-          inherit name indexed;
+          inherit name indexed constructors;
+          params = params;
+          paramArgs = [];
           indexTy = I;
-          cons = map (c: {
-            name = c.name;
-            fields = map (f: { name = f.name; kind = f.kind; }) c.fields;
-          }) consList;
+          inherit D T elim;
+          cons = constructors;
         };
 
         # Per-field polymorphic types, consumed by datatypeP / datatypePI
@@ -958,16 +1159,52 @@ in {
           name = cName;
           value = mkPolyCtorNode cName;
         }) conNames);
-        # Polymorphic `_dtypeMeta`: `indexTy` depends on parameter
-        # markers so it is not resolved here — consumers that need it
-        # pass params through `indexFn` (stored alongside). Mono
-        # datatypes expose `indexTy` directly.
+
+        probeFieldMeta = f: i: {
+          inherit (f) name kind;
+          index = i;
+          level = f.level or null;
+          eq = f.eq or null;
+          proof = f.proof or ((f.eq or null) != null);
+          type = f.type or null;
+          typeFn = f.typeFn or null;
+          idxFn = f.idxFn or null;
+          branchIdxFn = f.branchIdxFn or null;
+          role = f.role or null;
+          source = f.source or null;
+        };
+        probeConstructorMeta = i: c: {
+          inherit (c) name;
+          index = i;
+          targetIdx = c.targetIdx;
+          ctor = builtins.getAttr c.name ctorRecord;
+          fields = builtins.genList
+            (j: probeFieldMeta (builtins.elemAt c.fields j) j)
+            (builtins.length c.fields);
+        };
+        probeConstructors = builtins.genList
+          (i: probeConstructorMeta i (builtins.elemAt probe i))
+          (builtins.length probe);
+
+        # Polymorphic `_dtypeMeta` is a head witness. Concrete generic
+        # consumers should call `instantiate`, which reruns the datatype
+        # macro with real parameter arguments and returns resolved metadata.
         _dtypeMeta = {
-          inherit name indexed;
-          cons = map (c: {
-            name = c.name;
-            fields = map (f: { name = f.name; kind = f.kind; }) c.fields;
-          }) probe;
+          inherit name indexed params;
+          paramArgs = [];
+          indexTy = null;
+          inherit indexFn levelFn;
+          D = polyField "D";
+          T = polyField "T";
+          elim = polyElim;
+          constructors = probeConstructors;
+          cons = probeConstructors;
+          instantiate = paramArgs:
+            let mono = monoOf paramArgs;
+            in mono._dtypeMeta // {
+              inherit params;
+              paramArgs = paramArgs;
+            };
         };
       in builtins.seq _validate (ctorRecord // {
         inherit name params;
@@ -1042,8 +1279,8 @@ in {
             A = builtins.elemAt ps 1;
             B = builtins.elemAt ps 2;
           in [
-            (con "inl" [ (fieldAt k "value" A) ])
-            (con "inr" [ (fieldAt k "value" B) ])
+            (con "Left"  [ (fieldAt k "value" A) ])
+            (con "Right" [ (fieldAt k "value" B) ])
         ]);
 
     # Fin — monomorphic indexed datatype over Nat. Two constructors,
@@ -1089,6 +1326,53 @@ in {
         (ps: let a = builtins.elemAt ps 1; in [
           (conI "refl" [] (_: a))
         ]);
+
+    # Le — monomorphic doubly-indexed inductive predicate
+    # `Le : Nat → Nat → U`, the Agda `Data.Nat.Base._≤_` form. Index
+    # carrier is `Σ Nat (_: Nat)` so a single `datatypeI` call captures
+    # both arguments; the surface forwarder `le m n` (in
+    # `combinators.nix`) curries by applying `LeDT.T` to `pair m n`.
+    # Two constructors mirror Agda exactly:
+    #   leZ  : ∀ n. Le 0 n           (z≤n)
+    #   leSS : ∀ m n. Le m n → Le (suc m) (suc n)   (s≤s)
+    # Chosen over the existential form `Σ k (m + k ≡ n)` because
+    # decidability proofs (Phase 3) recurse simultaneously on `m` and
+    # `n` matching the constructor shape — see Agda
+    # `Data.Nat.Properties._≤?_` for the textbook recipe.
+    LeDT =
+      let inherit (self) datatypeI conI field recFieldAt nat zero succ
+                         sigma pair; in
+      datatypeI "Le"
+        (sigma "_lem" nat (_: nat))
+        [ (conI "leZ"  [ (field "n" nat) ]
+            (p: pair zero p.n))
+          (conI "leSS" [ (field "m" nat)
+                         (field "n" nat)
+                         (recFieldAt "lemn" (p: pair p.m p.n)) ]
+            (p: pair (succ p.m) (succ p.n))) ];
+
+    # IntZ — the literature-canonical 2-constructor inductive Int. Agda
+    # `Data.Integer.Base`: `data ℤ : Set where +_ : ℕ → ℤ; -[1+_] : ℕ → ℤ`.
+    # Lean 4 `Init.Data.Int.Basic`: `inductive Int where | ofNat : Nat → Int
+    # | negSucc : Nat → Int`. Exact match.
+    #
+    # Unique representation — `pos 0` is the only encoding of zero; no
+    # two-zeros problem. `negSucc n` encodes `-(n+1)` so the negative
+    # range `[-∞, -1]` is covered without ambiguity. Carrier of choice
+    # for structurally decidable equality / ordering: case analysis on
+    # the sign discriminator reduces every `Eq IntZ` / `Le IntZ` query
+    # to a `Nat` sub-query plus a no-confusion lemma at the sign
+    # mismatch.
+    #
+    # Coexists with the primitive `int_` type. Existing refinement
+    # predicates over `int_` are unaffected; consumers that want
+    # structural induction over integers select `IntZ`.
+    IntZDT =
+      let inherit (self) datatype con field nat; in
+      datatype "IntZ" [
+        (con "pos"     [ (field "n" nat) ])
+        (con "negSucc" [ (field "n" nat) ])
+      ];
 
     WDT =
       let inherit (self) datatypePAt con fieldAt piFieldDAt level u forall app; in
@@ -1140,10 +1424,10 @@ in {
     cons = A: h: t: self.app (self.app (self.app self.ListDT.cons A) h) t;
     inlAt = k: A: B: v:
       let kTm = if builtins.isInt k then self.natToLevel k else k; in
-      self.app (self.app (self.app (self.app self.SumDT.inl kTm) A) B) v;
+      self.app (self.app (self.app (self.app self.SumDT.Left kTm) A) B) v;
     inrAt = k: A: B: v:
       let kTm = if builtins.isInt k then self.natToLevel k else k; in
-      self.app (self.app (self.app (self.app self.SumDT.inr kTm) A) B) v;
+      self.app (self.app (self.app (self.app self.SumDT.Right kTm) A) B) v;
     inl = A: B: v: self.inlAt self.levelZero A B v;
     inr = A: B: v: self.inrAt self.levelZero A B v;
     wDesc = k: S: P: self.app (self.app (self.app self.WDT.D k) S) P;
@@ -1152,5 +1436,262 @@ in {
     wElim = k: K: S: P: Q: step: x:
       self.app (self.app (self.app (self.app (self.app (self.app (self.WDT.elim K) k) S) P) Q) step) x;
   };
-  tests = {};
+  tests = {
+    "datatype-indexed-pi-field-constructor-checks" = {
+      expr = let
+        H = self;
+        IndexedPi = H.datatypeI "IndexedPiVoid" H.bool [
+          (H.conI "mk"
+            [ (H.piFieldAtIndex 0 "next" H.void (_prev: _x: H.true_)) ]
+            (_: H.true_))
+        ];
+        T = H.muI H.bool IndexedPi.D H.true_;
+        vacuous = H.lam "x" H.void (x: H.absurd T x);
+      in !((H.checkHoas T (H.app IndexedPi.mk vacuous)) ? error);
+      expected = true;
+    };
+
+    "datatype-indexed-pi-field-metadata" = {
+      expr = let
+        H = self;
+        IndexedPi = H.datatypeI "IndexedPiMeta" H.bool [
+          (H.conI "mk"
+            [ (H.piFieldDAtIndex 0 "next" (_: H.void) (_prev: _x: H.true_)) ]
+            (_: H.true_))
+        ];
+        field = builtins.head
+          ((builtins.head IndexedPi._dtypeMeta.constructors).fields);
+      in {
+        inherit (field) name kind;
+        hasBranch = field.branchIdxFn != null;
+      };
+      expected = {
+        name = "next";
+        kind = "piDAt";
+        hasBranch = true;
+      };
+    };
+
+    "datatype-unit-pi-rejects-indexed-family" = {
+      expr = let
+        H = self;
+      in (builtins.tryEval ((H.datatypeI "BadIndexedPi" H.bool [
+        (H.conI "mk" [ (H.piField "next" H.void) ] (_: H.true_))
+      ]).D.term.f._htag)).success;
+      expected = false;
+    };
+  };
+  __docs = {
+    WDT = {
+      description = "WDT: W-type description macro — packages shape sort + position family into a `DataSpec` for arbitrary-branching inductive trees outside the description layer.";
+      signature = "WDT : Hoas -> (Hoas -> Hoas) -> DataSpec";
+    };
+    con = {
+      description = "con: HOAS constructor declarator — `con name fields` packages an ordered list of field declarations into a constructor specification consumed by `datatype`.";
+      signature = "con : String -> [Field] -> Constructor";
+    };
+    conI = {
+      description = "conI: indexed-constructor declarator — `conI name fields targetIndex` declares a constructor whose carrier targets a specific index of the datatype's index family.";
+      signature = "conI : String -> [Field] -> (Hoas -> Hoas) -> Constructor";
+    };
+    cons = {
+      description = "cons: HOAS list-cons constructor — `cons A h t` prepends `h : A` to `t : listOf A`; generated by `ListDT`.";
+      signature = "cons : Hoas -> Hoas -> Hoas -> Hoas  -- elemTy, head, tail";
+    };
+    datatype = {
+      description = "datatype: HOAS datatype macro — `datatype name [con …]` declares a named ⊤-slice datatype, emitting `{ D, T, elim, <constructors> }` with `_dtypeMeta` for walker dispatch.";
+      signature = "datatype : String -> [Constructor] -> DataSpec";
+      doc = ''
+        The macro builds the description from constructor field lists,
+        synthesises the type former (`T = mu D tt`), generated
+        constructors that introduce values, and an eliminator
+        specialised for the description. The result attrset's
+        `_dtypeMeta` field carries the constructor list for walker
+        dispatch (used by `recoverConstructor` / `walkAttrsetDatatype`).
+        Surface entry point for declaring new datatypes — prefer over
+        manual `mu` + `descCon` construction.
+      '';
+    };
+    datatypeAt = {
+      description = "datatypeAt: universe-polymorphic ⊤-slice datatype — `datatypeAt name level [con …]` emits a datatype at sort level `level`.";
+      signature = "datatypeAt : String -> Level -> [Constructor] -> DataSpec";
+    };
+    datatypeI = {
+      description = "datatypeI: indexed-datatype macro — `datatypeI name indexSort [conI …]` declares a datatype indexed by `indexSort`; each constructor must declare its target index.";
+      signature = "datatypeI : String -> Hoas -> [ConI] -> DataSpec";
+      doc = ''
+        Indexed counterpart to `datatype`. The index sort `I` parametrises
+        the carrier family, and each constructor's `conI` declares the
+        index it produces. The resulting `T : I -> U` is the family
+        type former; `app T idx` is the carrier at a specific index.
+        Prelude `fin`, `vec` use this form.
+      '';
+    };
+    datatypeP = {
+      description = "datatypeP: parametric-datatype macro — `datatypeP name [param …] [con …]` declares a datatype parametric in zero or more sort parameters.";
+      signature = "datatypeP : String -> [Param] -> (Hoas -> [Constructor]) -> DataSpec";
+      doc = ''
+        Parameters are sorts external to the datatype; the
+        constructor list is a function of the parameter binders.
+        Resulting `T` takes parameters before producing the carrier
+        type. Prelude `listOf`, `sum` would be expressed via this
+        macro (in practice they're macro-generated via `ListDT`,
+        `SumDT` at fixed parameter shapes).
+      '';
+    };
+    datatypePAt = {
+      description = "datatypePAt: universe-polymorphic parametric datatype — `datatypePAt` extends `datatypeP` with explicit sort levels for parameters.";
+      signature = "datatypePAt : String -> Level -> [Param] -> (Hoas -> [Constructor]) -> DataSpec";
+    };
+    datatypePI = {
+      description = "datatypePI: parametric + indexed datatype — `datatypePI name [param …] indexSortFn [conI …]` combines parameters and indices in one macro.";
+      signature = "datatypePI : String -> [Param] -> (Hoas -> Hoas) -> (Hoas -> [ConI]) -> DataSpec";
+      doc = ''
+        The most general datatype declarator: takes external
+        parameters AND an index sort that can depend on those
+        parameters, AND constructors whose index decisions depend on
+        both. Used by `vec` (parameter A, index n : nat) and similar
+        prelude families.
+      '';
+    };
+    field = {
+      description = "field: HOAS datatype field declarator — `field name type` declares a non-recursive constructor field; the macro routes through `descArg`.";
+      signature = "field : String -> Hoas -> { name; type; }";
+    };
+    fieldAt = {
+      description = "fieldAt: universe-polymorphic field declarator — `fieldAt name level type` declares a field at an explicit sort level.";
+      signature = "fieldAt : String -> Level -> Hoas -> { name; type; level; }";
+    };
+    fieldAtWithEq = {
+      description = "fieldAtWithEq: fieldAt variant carrying an explicit bound-witness — supplies the `eq : Eq Level (max l k) k` proof for level-polymorphic positions.";
+      signature = "fieldAtWithEq : String -> Level -> Hoas -> Hoas -> { name; type; level; eq; }";
+    };
+    fieldD = {
+      description = "fieldD: dependent-field declarator — `fieldD name type indexFn` declares a field whose type can depend on prior fields via the index function.";
+      signature = "fieldD : String -> Hoas -> (Hoas -> Hoas) -> { name; type; indexFn; }";
+    };
+    fieldDAt = {
+      description = "fieldDAt: universe-polymorphic dependent-field declarator — combines `fieldAt`'s explicit level with `fieldD`'s index dependence.";
+      signature = "fieldDAt : String -> Level -> Hoas -> (Hoas -> Hoas) -> { name; type; level; indexFn; }";
+    };
+    fieldDAtWithEq = {
+      description = "fieldDAtWithEq: universe-polymorphic dependent-field with explicit bound-witness — combines fieldDAt with explicit eq.";
+      signature = "fieldDAtWithEq : String -> Level -> Hoas -> Hoas -> (Hoas -> Hoas) -> { name; type; level; eq; indexFn; }";
+    };
+    inl = {
+      description = "inl: HOAS sum left-injection — `inl A B v` builds `Left v : Sum A B`; generated by `SumDT` at the base universe level.";
+      signature = "inl : Hoas -> Hoas -> Hoas -> Hoas  -- leftTy, rightTy, value";
+    };
+    inlAt = {
+      description = "inlAt: universe-polymorphic left-injection — `inlAt level A B v` builds `Left v : Sum A B` at the given universe level; used when `inl` cannot decide the bound witness.";
+      signature = "inlAt : Hoas -> Hoas -> Hoas -> Hoas -> Hoas  -- level, leftTy, rightTy, value";
+    };
+    inr = {
+      description = "inr: HOAS sum right-injection — `inr A B v` builds `Right v : Sum A B`; generated by `SumDT` at the base universe level.";
+      signature = "inr : Hoas -> Hoas -> Hoas -> Hoas  -- leftTy, rightTy, value";
+    };
+    inrAt = {
+      description = "inrAt: universe-polymorphic right-injection — `inrAt level A B v` builds `Right v : Sum A B` at the given universe level; used when `inr` cannot decide the bound witness.";
+      signature = "inrAt : Hoas -> Hoas -> Hoas -> Hoas -> Hoas  -- level, leftTy, rightTy, value";
+    };
+    listOf = {
+      description = "listOf: HOAS list type former — `listOf elemTy` is `μ Unit listDesc tt` at element type `elemTy`; the description-derived counterpart to Nix-native lists.";
+      signature = "listOf : Hoas -> Hoas";
+    };
+    nat = {
+      description = "nat: HOAS `Nat` type former — generated by `NatDT.T` from the macro-derived natural-number datatype; serves as the index sort for vector / list-length families.";
+      signature = "nat : Hoas";
+    };
+    nil = {
+      description = "nil: HOAS empty-list constructor — `nil A` builds `[] : listOf A`; generated by `ListDT`.";
+      signature = "nil : Hoas -> Hoas";
+    };
+    piField = {
+      description = "piField: Π-typed field declarator — `piField name sort body` declares a function-typed field where every element of `sort` indexes into the body description.";
+      signature = "piField : String -> Hoas -> (Hoas -> Hoas) -> { name; sort; body; pi; }";
+    };
+    piFieldAt = {
+      description = "piFieldAt: universe-polymorphic Π-typed field — `piFieldAt name level sort body` with explicit level.";
+      signature = "piFieldAt : String -> Level -> Hoas -> (Hoas -> Hoas) -> { ... }";
+    };
+    piFieldAtIndex = {
+      description = "piFieldAtIndex: piFieldAt variant emitting an explicit-target-index — used when the recursive Π must specify the index of the resulting recursive child.";
+      signature = "piFieldAtIndex : String -> Level -> Hoas -> (Hoas -> Hoas) -> (Hoas -> Hoas) -> { ... }";
+    };
+    piFieldAtIndexWithEq = {
+      description = "piFieldAtIndexWithEq: piFieldAtIndex with explicit bound-witness.";
+      signature = "piFieldAtIndexWithEq : String -> Level -> Hoas -> Hoas -> (Hoas -> Hoas) -> (Hoas -> Hoas) -> { ... }";
+    };
+    piFieldAtWithEq = {
+      description = "piFieldAtWithEq: piFieldAt with explicit bound-witness — supplies the `eq` proof for level-polymorphic positions.";
+      signature = "piFieldAtWithEq : String -> Level -> Hoas -> Hoas -> (Hoas -> Hoas) -> { ... }";
+    };
+    piFieldD = {
+      description = "piFieldD: dependent Π-typed field — `piFieldD` extends `piField` with the ability for the body to depend on prior constructor fields.";
+      signature = "piFieldD : String -> Hoas -> (Hoas -> Hoas -> Hoas) -> { name; sort; body; pi; indexFn; }";
+    };
+    piFieldDAt = {
+      description = "piFieldDAt: universe-polymorphic dependent Π-typed field — combines piFieldAt with piFieldD's dependence on prior fields.";
+      signature = "piFieldDAt : String -> Level -> Hoas -> (Hoas -> Hoas -> Hoas) -> { ... }";
+    };
+    piFieldDAtIndex = {
+      description = "piFieldDAtIndex: piFieldDAt variant emitting an explicit-target-index.";
+      signature = "piFieldDAtIndex : String -> Level -> Hoas -> (Hoas -> Hoas -> Hoas) -> (Hoas -> Hoas -> Hoas) -> { ... }";
+    };
+    piFieldDAtIndexWithEq = {
+      description = "piFieldDAtIndexWithEq: piFieldDAtIndex with explicit bound-witness.";
+      signature = "piFieldDAtIndexWithEq : String -> Level -> Hoas -> Hoas -> (Hoas -> Hoas -> Hoas) -> (Hoas -> Hoas -> Hoas) -> { ... }";
+    };
+    piFieldDAtWithEq = {
+      description = "piFieldDAtWithEq: universe-polymorphic dependent Π-typed field with explicit bound-witness.";
+      signature = "piFieldDAtWithEq : String -> Level -> Hoas -> Hoas -> (Hoas -> Hoas -> Hoas) -> { ... }";
+    };
+    recField = {
+      description = "recField: recursive-field declarator — `recField name indexFn` declares a recursive position whose target index is computed from prior fields.";
+      signature = "recField : String -> (Hoas -> Hoas) -> { name; indexFn; recursive; }";
+      doc = ''
+        Marks the field as a recursive child via `_recursive = true`,
+        routing through `descRec` rather than `descArg` in the
+        description-emission step. The `indexFn` extracts the target
+        index from prior fields, supporting indexed datatypes whose
+        recursive children reference different indices.
+      '';
+    };
+    recFieldAt = {
+      description = "recFieldAt: universe-polymorphic recursive-field declarator — `recFieldAt name level indexFn` with explicit level for the recursive position.";
+      signature = "recFieldAt : String -> Level -> (Hoas -> Hoas) -> { name; indexFn; recursive; level; }";
+    };
+    succ = {
+      description = "succ: HOAS `Nat` successor — `succ n` builds `n + 1`; introduces `nat` at the `descRec descRet` summand.";
+      signature = "succ : Hoas -> Hoas";
+    };
+    sum = {
+      description = "sum: HOAS coproduct type former — `sum A B` builds `A + B` via `SumDT.T` at the implicit base level; inhabitants enter via `inl` / `inr`.";
+      signature = "sum : Hoas -> Hoas -> Hoas";
+    };
+    sumAt = {
+      description = "sumAt: universe-polymorphic coproduct — `sumAt level A B` builds `A + B` at the given universe level, used when the homogeneous-level `sum` cannot decide the bound witness.";
+      signature = "sumAt : Hoas -> Hoas -> Hoas -> Hoas  -- level, A, B";
+    };
+    sup = {
+      description = "sup: HOAS W-type constructor `sup s t` — supplies the node-shape `s` and the recursive-children family `t : pos s → W`.";
+      signature = "sup : Hoas -> Hoas -> Hoas";
+    };
+    w = {
+      description = "w: W-type former — generalised inductive type for trees with arbitrary branching; foundational for encoding finitely-branching datatypes outside the description layer.";
+      signature = "w : Hoas -> Hoas -> Hoas  -- shapeTy, posFn";
+    };
+    wDesc = {
+      description = "wDesc: W-type description forwarder — alias for `WDT.D`, the description of W-type trees over shape S and position family pos.";
+      signature = "wDesc : Hoas -> (Hoas -> Hoas) -> Hoas";
+    };
+    wElim = {
+      description = "wElim: W-type eliminator forwarder — alias for `WDT.elim`, the dependent recursor for W-type trees.";
+      signature = "wElim : Level -> Hoas -> (Hoas -> Hoas) -> Hoas -> Hoas -> Hoas -> Hoas";
+    };
+    zero = {
+      description = "zero: HOAS `Nat` constructor — the natural-number zero; introduces `nat` at the `descRet` summand of `natDesc`.";
+      signature = "zero : Hoas";
+    };
+  };
 }

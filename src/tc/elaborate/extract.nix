@@ -61,13 +61,13 @@ let
     let view = E.sumPayloadValView v; in
     if view == null then throw "extract: ${ctx} expected sum payload, got ${v.tag}"
     else view;
+  datatypeMetaOf = hoasTy:
+    let r = builtins.tryEval (fx.tc.generic.datatype.datatypeInfo hoasTy);
+    in if r.success then r.value else null;
+  constructorsOf = meta:
+    meta.constructors or [];
 in {
   scope = {
-    # reifyDesc : Val → HoasTree
-    # Rebuild a kernel description value as an HOAS description term.
-    # Anonymous — the kernel D alone carries no constructor/field names;
-    # callers attach `_dtypeMeta` externally when named decomposition is
-    # wanted.
     reifyDesc = dVal:
       let
         view = descViewOf dVal;
@@ -88,18 +88,6 @@ in {
         H.plus (self.reifyDesc view.A) (self.reifyDesc view.B)
       else throw "reifyDesc: unsupported desc view idx ${toString view.idx}";
 
-    # reifyType : Val → HoasTree
-    # Convert a kernel type value back to an HOAS type for extract dispatch.
-    # Used as fallback when the HOAS body cannot be applied (dependent types)
-    # and as the polymorphic-instantiation reducer for extractInner's "app"
-    # branch. Loses sugar (VSigma → H.sigma, not H.record) — HOAS body is
-    # preferred when available since it preserves record/variant/maybe
-    # structure.
-    #
-    # Generated nat/list/sum shapes reify to raw-tag HOAS attrsets rather
-    # than the module-level `H.nat`/`H.listOf`/`H.sum` combinators. Those
-    # public combinators carry app-spines or `_dtypeMeta`; raw tags dispatch
-    # directly to `extractInner`'s decoders and avoid re-entering type reify.
     reifyType = tyVal:
       let
         t = tyVal.tag;
@@ -113,6 +101,7 @@ in {
       else if t == "VFloat" then H.float_
       else if t == "VAttrs" then H.attrs
       else if t == "VPath" then H.path
+      else if t == "VDerivation" then H.derivation
       else if t == "VFunction" then H.function_
       else if t == "VAny" then H.any
       else if t == "VBootSum" then rawSum (self.reifyType tyVal.left) (self.reifyType tyVal.right)
@@ -167,10 +156,6 @@ in {
             else fallback
       else throw "reifyType: unsupported value tag '${t}'";
 
-    # extractInner : HoasTree → Val → Val → NixValue
-    # Three-argument extraction: HOAS type (for dispatch and sugar), kernel type
-    # value (for dependent codomain/snd computation), and kernel value to extract.
-    # Uses closure instantiation instead of sentinel tests for dependent types.
     extractInner = hoasTy: tyVal: val:
       let t = hoasTy._htag or (throw "extract: not an HOAS type"); in
 
@@ -232,6 +217,9 @@ in {
 
       else if t == "path" then
         throw "extract: Path is opaque — kernel does not store path value"
+
+      else if t == "derivation" then
+        throw "extract: Derivation is opaque — kernel does not store derivation attrs"
 
       else if t == "function" then
         throw "extract: Function is opaque — kernel does not store closure"
@@ -404,7 +392,7 @@ in {
       # the same Nix output for shape-equivalent values. Bool-shape and
       # Unit-shape values (no dedicated "bool"/"unit" branch handles their
       # VDescCon wrapping) decode inline to Nix bool / null. Other shapes
-      # decompose generically into a constructor record using `_dtypeMeta`
+      # decompose generically into a constructor record using datatype metadata
       # for naming; without metadata, names are positional ("con0" /
       # "_field0").
       else if t == "mu" then
@@ -412,7 +400,8 @@ in {
           # Shape dispatch reads descriptions through `descView`, so the
           # same code handles primitive, encoded, and private-view nodes.
           descTyVal = tyVal.D;
-          meta = hoasTy._dtypeMeta or null;
+          meta = datatypeMetaOf hoasTy;
+          constructors = if meta != null then constructorsOf meta else [];
 
           # Description-shape predicates under the plus-coproduct encoding.
           # All accept either primitive `VDescX` or encoded `VDescCon` shapes
@@ -518,11 +507,11 @@ in {
             fieldVals = extractFields arm.armDesc arm.armPayload;
             conName =
               if meta != null
-              then (builtins.elemAt meta.cons arm.ctorIdx).name
+              then (builtins.elemAt constructors arm.ctorIdx).name
               else "con${toString arm.ctorIdx}";
             fieldNames =
               if meta != null
-              then map (f: f.name) (builtins.elemAt meta.cons arm.ctorIdx).fields
+              then map (f: f.name) (builtins.elemAt constructors arm.ctorIdx).fields
               else builtins.genList (i: "_field${toString i}") (builtins.length fieldVals);
           in
             { _con = conName; }
@@ -536,24 +525,75 @@ in {
       # tyVal is the kernel value computed by extract (`E.eval [] (H.elab
       # hoasTy)`), already β-reduced past the application — typically a VMu.
       # Reify the type to obtain a tag-dispatchable HOAS form, propagate
-      # `_dtypeMeta` from the head if present (so the mu-branch generic
+      # normalized datatype metadata from the head if present (so the mu-branch generic
       # decomposition can name constructors), and recurse.
       else if t == "app" then
         let
-          peelHead = node:
-            if (builtins.isAttrs node) && (node._htag or null) == "app"
-            then peelHead node.fn
-            else node;
-          head = peelHead hoasTy;
-          headMeta = head._dtypeMeta or null;
+          meta = datatypeMetaOf hoasTy;
           base = self.reifyType tyVal;
           hoasTy' =
-            if headMeta != null && (base._htag or null) == "mu"
-            then base // { _dtypeMeta = headMeta; }
+            if meta != null && (base._htag or null) == "mu"
+            then base // { _dtypeMeta = meta; }
             else base;
         in self.extractInner hoasTy' tyVal val
 
       else throw "extract: unsupported type '${t}'";
+  };
+
+  __docs = {
+    reifyDesc = {
+      description = "reifyDesc: kernel-to-HOAS description rebuild — converts a description `Val` back to an HOAS description; counterpart to `reifyType` used internally by `extractInner` for `mu` decoding fallbacks.";
+      signature = "reifyDesc : Val -> Hoas";
+      doc = ''
+        Reverses `evalDesc`: walks a description Val via `descView` and
+        rebuilds the corresponding HOAS form (`H.descRet`, `H.descArg`,
+        `H.descRec`, `H.descPi`, `H.plus`). Recursion is in `self` so
+        descRec / plus sub-descriptions traverse uniformly.
+
+        Used by `reifyType`'s `VMu` fallback when no sugared shape
+        (Bool / Nat / List / Sum) matches the description: the result
+        is an anonymous `H.mu (reifyDesc D) H.tt` that `extractInner`'s
+        mu branch can then decode against an optional `_dtypeMeta`.
+      '';
+    };
+    reifyType = {
+      description = "reifyType: kernel-to-HOAS type rebuild — converts a kernel type `Val` back to an HOAS type for extract dispatch; loses sugar (VSigma → H.sigma rather than H.record).";
+      signature = "reifyType : Val -> Hoas";
+      doc = ''
+        Used as a fallback when the HOAS body cannot be applied
+        (dependent-type instantiation, polymorphic app-spine
+        reduction). The HOAS body is preferred when available since
+        it preserves record/variant/maybe structure.
+
+        Generated `nat` / `list` / `sum` shapes reify to raw-tag
+        HOAS attrsets rather than the module-level `H.nat` /
+        `H.listOf` / `H.sum` combinators — the public combinators
+        carry app-spines or `_dtypeMeta`, while raw tags dispatch
+        directly to `extractInner`'s decoders and avoid re-entering
+        type reify.
+      '';
+    };
+    extractInner = {
+      description = "extractInner: three-argument kernel value extraction — takes an HOAS type (for dispatch and sugar), a kernel type value (for dependent codomain/snd computation), and the kernel value to extract.";
+      signature = "extractInner : Hoas -> Val -> Val -> NixValue";
+      doc = ''
+        Inner workhorse for `fx.tc.elaborate.extract`. Threads the
+        kernel type value alongside the HOAS form so dependent
+        Pi / Sigma codomains can be instantiated through closure
+        application rather than sentinel-test heuristics. The Pi
+        branch wraps Nix arguments via `self.elaborateValue` before
+        feeding them back into the kernel; the mutual recursion
+        closes through `self`.
+
+        Decoding strategy varies by type tag: Nat / List / Sum
+        generated shapes are walked via `VDescCon`-chain
+        decomposition (trampolined via `genericClosure` for stack
+        safety on deep values); Pi extraction wraps a `VLam` as a
+        Nix function with boundary conversion; opaque types
+        (Attrs, Path, Function, Any) throw because the kernel
+        discards their payloads.
+      '';
+    };
   };
 
   tests = let

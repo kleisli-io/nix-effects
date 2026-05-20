@@ -16,158 +16,165 @@
 #   Pitman (1990) "Condition Handling in the Lisp Language Family"
 #   Kent (2001) "Common Lisp HyperSpec" §9 Conditions
 #   Plotkin & Pretnar (2009) "Handlers of Algebraic Effects"
-{ fx, api, ... }:
-
+{ fx, ... }:
 let
   inherit (fx.kernel) pure bind send;
-  inherit (api) mk;
+  signal = name: data: restarts:
+    send "condition" { inherit name data restarts; };
 
-  signal = mk {
-    doc = ''
-      Signal a condition. The handler chooses a restart strategy.
-
-      ```
-      signal : string -> any -> [string] -> Computation any
-      ```
-
-      **Arguments:**
-      - `name` — condition name (e.g. `"division-by-zero"`, `"file-not-found"`)
-      - `data` — condition data (error details, context)
-      - `restarts` — list of available restart names
-
-      The handler receives `{ name, data, restarts }` and returns a
-      `{ restart, value }` attrset. The continuation receives this choice.
-    '';
-    value = name: data: restarts:
-      send "condition" { inherit name data restarts; };
-    tests = {
-      "signal-is-impure" = {
-        expr = fx.comp.isPure (signal "test" {} ["use-value" "abort"]);
-        expected = false;
-      };
-      "signal-carries-name" = {
-        expr = (signal "division-by-zero" { divisor = 0; } ["use-value" "abort"]).effect.param.name;
-        expected = "division-by-zero";
-      };
-      "signal-carries-restarts" = {
-        expr = builtins.length (signal "test" {} ["a" "b" "c"]).effect.param.restarts;
-        expected = 3;
-      };
-    };
-  };
-
-  warn = mk {
-    doc = ''
-      Signal a warning condition. Like signal but with a conventional
-      `"muffle-warning"` restart. If the handler doesn't muffle, the
-      computation continues normally.
-
-      ```
-      warn : string -> any -> Computation null
-      ```
-    '';
-    value = name: data:
-      bind (send "condition" { inherit name data; restarts = ["muffle-warning"]; }) (response:
-        if builtins.isAttrs response && response.restart or "" == "muffle-warning"
-        then pure null
-        else pure null);
-    tests = {
-      "warn-is-impure" = {
-        expr = fx.comp.isPure (warn "deprecation" { feature = "old-api"; });
-        expected = false;
-      };
-    };
-  };
+  warn = name: data:
+    bind (send "condition" { inherit name data; restarts = ["muffle-warning"]; }) (response:
+      if builtins.isAttrs response && response.restart or "" == "muffle-warning"
+      then pure null
+      else pure null);
 
   # Handler strategies
 
-  fail = mk {
-    doc = ''
-      Fail handler: throws on any condition. Ignores available restarts.
-      Use as a last-resort handler.
-    '';
-    value = {
-      condition = { param, ... }:
-        builtins.throw "Unhandled condition '${param.name}': ${builtins.toJSON param.data}";
+  fail = {
+    condition = { param, ... }:
+      builtins.throw "Unhandled condition '${param.name}': ${builtins.toJSON param.data}";
+  };
+
+  ignore = {
+    condition = { state, ... }: {
+      resume = { restart = "continue"; value = null; };
+      inherit state;
     };
   };
 
-  ignore = mk {
-    doc = ''
-      Ignore handler: resumes with null for any condition.
-      All conditions are silently discarded.
-    '';
-    value = {
-      condition = { state, ... }: {
-        resume = { restart = "continue"; value = null; };
+  collectConditions = {
+    condition = { param, state }: {
+      resume = { restart = "continue"; value = null; };
+      state = state ++ [{ inherit (param) name data; }];
+    };
+  };
+
+  withRestart = condName: restartName: restartVal: {
+    condition = { param, state }:
+      if param.name == condName
+      then {
+        resume = { restart = restartName; value = restartVal; };
         inherit state;
-      };
-    };
+      }
+      else builtins.throw "Unhandled condition '${param.name}'";
   };
 
-  collectConditions = mk {
-    doc = ''
-      Collecting handler: accumulates conditions in state, resumes with continue.
-      State shape: list of { name, data }
-      Initial state: []
-    '';
-    value = {
-      condition = { param, state }: {
-        resume = { restart = "continue"; value = null; };
-        state = state ++ [{ inherit (param) name data; }];
+in {
+  inherit signal warn fail ignore collectConditions withRestart;
+
+
+
+  __docs = {
+    _self = {
+      description = "conditions effect: Common-Lisp-style signal/warn with restart-based recovery; handler IS the algebra choosing among offered restarts.";
+      doc = "CL-style condition system: signal/warn with restart-based recovery.";
+    };
+
+    signal = {
+      description = "signal: raise a CL-style condition with name, data, and available restart names; the handler returns `{ restart, value }` to choose recovery.";
+      signature = "signal : string -> any -> [string] -> Computation any";
+      doc = ''
+        Signal a condition. The handler chooses a restart strategy.
+
+        **Arguments:**
+        - `name` — condition name (e.g. `"division-by-zero"`, `"file-not-found"`)
+        - `data` — condition data (error details, context)
+        - `restarts` — list of available restart names
+
+        The handler receives `{ name, data, restarts }` and returns a
+        `{ restart, value }` attrset. The continuation receives this choice.
+      '';
+      tests = {
+        "signal-is-impure" = {
+          expr = fx.comp.isPure (signal "test" {} ["use-value" "abort"]);
+          expected = false;
+        };
+        "signal-carries-name" = {
+          expr = (signal "division-by-zero" { divisor = 0; } ["use-value" "abort"]).effect.param.name;
+          expected = "division-by-zero";
+        };
+        "signal-carries-restarts" = {
+          expr = builtins.length (signal "test" {} ["a" "b" "c"]).effect.param.restarts;
+          expected = 3;
+        };
       };
     };
-    tests = {
-      "collects-condition" = {
-        expr =
-          let r = collectConditions.value.condition {
-            param = { name = "test"; data = { x = 1; }; restarts = []; };
-            state = [];
-          };
-          in builtins.length r.state;
-        expected = 1;
+
+    warn = {
+      description = "warn: raise a warning condition with the conventional `muffle-warning` restart; if the handler doesn't muffle, computation continues.";
+      signature = "warn : string -> any -> Computation null";
+      doc = ''
+        Signal a warning condition. Like signal but with a conventional
+        `"muffle-warning"` restart. If the handler doesn't muffle, the
+        computation continues normally.
+      '';
+      tests = {
+        "warn-is-impure" = {
+          expr = fx.comp.isPure (warn "deprecation" { feature = "old-api"; });
+          expected = false;
+        };
       };
     };
-  };
 
-  withRestart = mk {
-    doc = ''
-      Create a handler that invokes a specific restart for a named condition.
-      For all other conditions, falls through (throws).
-
-      ```
-      withRestart : string -> string -> any -> handler
-      ```
-
-      **Arguments:**
-      - `condName` — condition name to match
-      - `restartName` — restart to invoke
-      - `restartVal` — value to pass via the restart
-    '';
-    value = condName: restartName: restartVal: {
-      condition = { param, state }:
-        if param.name == condName
-        then {
-          resume = { restart = restartName; value = restartVal; };
-          inherit state;
-        }
-        else builtins.throw "Unhandled condition '${param.name}'";
+    fail = {
+      description = "conditions.fail: last-resort handler that throws on any condition (via `builtins.throw`); ignores available restarts.";
+      doc = ''
+        Fail handler: throws on any condition. Ignores available restarts.
+        Use as a last-resort handler.
+      '';
     };
-    tests = {
-      "matches-condition" = {
-        expr =
-          let
-            h = withRestart "division-by-zero" "use-value" 0;
-            r = h.condition { param = { name = "division-by-zero"; data = {}; restarts = ["use-value"]; }; state = null; };
-          in r.resume.restart;
-        expected = "use-value";
+
+    ignore = {
+      description = "conditions.ignore: handler that silently discards every condition by resuming with `{ restart = \"continue\"; value = null; }`.";
+      doc = ''
+        Ignore handler: resumes with null for any condition.
+        All conditions are silently discarded.
+      '';
+    };
+
+    collectConditions = {
+      description = "conditions.collectConditions: handler that accumulates each condition into state as `{ name, data }` and resumes with `continue`.";
+      doc = ''
+        Collecting handler: accumulates conditions in state, resumes with continue.
+        State shape: list of { name, data }
+        Initial state: []
+      '';
+      tests = {
+        "collects-condition" = {
+          expr =
+            let r = collectConditions.condition {
+              param = { name = "test"; data = { x = 1; }; restarts = []; };
+              state = [];
+            };
+            in builtins.length r.state;
+          expected = 1;
+        };
       };
     };
-  };
 
-in mk {
-  doc = "CL-style condition system: signal/warn with restart-based recovery.";
-  value = {
-    inherit signal warn fail ignore collectConditions withRestart;
+    withRestart = {
+      description = "withRestart: handler factory invoking a named restart with a given value for one matched condition; throws on every other condition.";
+      signature = "withRestart : string -> string -> any -> handler";
+      doc = ''
+        Create a handler that invokes a specific restart for a named condition.
+        For all other conditions, falls through (throws).
+
+        **Arguments:**
+        - `condName` — condition name to match
+        - `restartName` — restart to invoke
+        - `restartVal` — value to pass via the restart
+      '';
+      tests = {
+        "matches-condition" = {
+          expr =
+            let
+              h = withRestart "division-by-zero" "use-value" 0;
+              r = h.condition { param = { name = "division-by-zero"; data = {}; restarts = ["use-value"]; }; state = null; };
+            in r.resume.restart;
+          expected = "use-value";
+        };
+      };
+    };
+
   };
 }

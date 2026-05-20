@@ -3,6 +3,7 @@
 # `tc.conv.identical-deep`, ...).
 { fx }:
 {
-  effects = import ./effects { inherit fx; };
-  tc      = import ./tc      { inherit fx; };
+  effects      = import ./effects      { inherit fx; };
+  tc           = import ./tc           { inherit fx; };
+  experimental = import ./experimental { inherit fx; };
 }

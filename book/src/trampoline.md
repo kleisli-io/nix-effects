@@ -19,8 +19,8 @@ run (bind (bind (bind ... (send "get" null) ...) ...) ...)
 
 ```
 
-For validation of a large config — say, a NixOS module with hundreds of
-fields — this would blow the stack.
+For validation of a large DSL value — say, an aspect graph with hundreds
+of declarations — this would blow the stack.
 
 ## The solution: `builtins.genericClosure`
 
@@ -86,6 +86,33 @@ which eagerly evaluates the state at each step. No thunk chain builds up.
 
 The test suite validates deep effect chains and pure bind chains so the
 stack-safety contract stays covered by automated checks.
+
+### State-shape contract
+
+`builtins.deepSeq newState` imposes a contract on handler-state shape: every
+value reachable through state must be deepSeq-tolerant. Scalars, finite
+records, and lists of scalars satisfy this trivially. Functions are also
+safe — `deepSeq` on a closure forces it to WHNF and stops, never recursing
+into the captured environment.
+
+The contract breaks on values with cyclic structure. Nix derivations are the
+canonical example: `drv.passthru.foo.drv` cycles back through the same drv,
+and `deepSeq` has no cycle detection. A raw drv in handler state hangs the
+evaluator, and `tryEval` cannot recover — only `throw` and `assert false`
+are catchable.
+
+For this case the library ships `fx.state.mkDerivationThunk` / `forceDerivationThunk`
+(`src/state/derivation-thunk.nix`). The carrier wraps a drv as
+`{ _tag = "DerivationThunk"; _force = _: drv; }` — a closure shields the drv
+from deepSeq. The companion user type `fx.types.DerivationThunk` is decided
+structurally at the kernel level (`kernelType = H.derivationThunk`, no guard):
+the kernel's native predicate accepts attrsets with `_tag = "DerivationThunk"`
+and a `_force` field, and rejects everything else — including raw drvs.
+Effect descriptions that carry derivations through state type their payload
+fields as `H.derivationThunk`, not `H.derivation`, so `fx.send`-time validation
+rejects unwrapped drvs before they reach the trampoline. Because the
+discrimination is kernel-primitive, descriptor-field typing is a one-line
+change — no guard combinator, no refined-attrs scaffolding.
 
 ## Defunctionalization
 

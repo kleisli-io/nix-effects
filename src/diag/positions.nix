@@ -13,11 +13,8 @@
 # value, or a contract validator descending into a record field.
 #
 # No dependency on the type-checker or the types layer.
-{ api, ... }:
-
+{ ... }:
 let
-  inherit (api) mk;
-
   # Tagged-attrset constructor. `_tag = "Position"` is a nominal
   # marker used by `isPosition`; `tag` is the variant discriminator;
   # `segment` is the rendered path label. Keeping the segment on the
@@ -56,6 +53,17 @@ let
   AppHead  = mkPos "AppHead"  "app.head" {};
   AppArg   = mkPos "AppArg"   "app.arg"  {};
 
+  # Term-side positions for binding-form bodies and the universal
+  # CHECK→INFER sub-rule fallthrough. `LamBody` and `LetBody` name
+  # the body slots of `lam` and `let` at the term level — distinct
+  # from `PiCod` (the type-level codomain position) so blame chains
+  # can carry both term-shape and type-shape information without
+  # collapse. `Sub` names the catch-all subsumption bridge where
+  # CHECK falls through to INFER + structural conv.
+  LamBody = mkPos "LamBody" "lam.body" {};
+  LetBody = mkPos "LetBody" "let.body" {};
+  Sub     = mkPos "Sub"     "sub"      {};
+
   # Positions naming sub-locations inside eliminator rules — shared
   # across generated datatype eliminators, sum-elim, desc-elim, desc-ind, j.
   Scrut  = mkPos "Scrut"  "scrut"  {};
@@ -91,6 +99,21 @@ let
   Field = name: mkPos "Field" ("." + name)               { inherit name; };
   Elem  = idx:  mkPos "Elem"  ("[" + toString idx + "]") { inherit idx; };
   Tag   = name: mkPos "Tag"   ("#" + name)               { inherit name; };
+  # Tuple component (statically-indexed product). Renders identically to
+  # Elem ("[i]") but stays distinct at the position level so consumers can
+  # tell n-ary tuple descent from list-element descent.
+  Tuple = idx:  mkPos "Tuple" ("[" + toString idx + "]") { inherit idx; };
+
+  # Layer coordinate for the homogeneous `desc-con` trampoline. Names
+  # the k-th step in a peeled linear-recursive desc-con chain
+  # (k = 0 outermost, k = n base). One segment compresses the
+  # otherwise O(k × nFields) structural path
+  # `(MuPayload → DPlusL|R → SigmaSnd^{nFields})^k`; the homogeneity
+  # of the trampoline (same D, same plus-side, same nFields per layer)
+  # makes layer depth the only varying coordinate. Mirrors `Elem`'s
+  # shape (ℕ → Position) because the underlying object is the same:
+  # a Nat-indexed coordinate into a sequence-like structure.
+  DConLayer = layer: mkPos "DConLayer" ("con[" + toString layer + "]") { inherit layer; };
 
   # Parameterised position naming a case-handler inside an eliminator:
   # generated constructor names, "inl"/"inr" (sum-elim), "base" (j),
@@ -114,8 +137,33 @@ let
   # is a single attribute read, independent of the alphabet's size.
   renderSegment = pos: pos.segment;
 
-in mk {
-  doc = ''
+in {
+  inherit
+    DArgLevel DArgSort DArgEq DArgBody
+    DPiLevel DPiSort DPiEq DPiFn DPiBody
+    DElimLevel
+    DRetIndex
+    DRecIndex DRecTail
+    DPlusL DPlusR
+    PiDom PiCod
+    SigmaFst SigmaSnd
+    AnnTerm AnnType
+    MuUnroll
+    AppHead AppArg
+    LamBody LetBody Sub
+    Scrut Motive
+    MuDesc MuIndex MuPayload
+    JType JLhs JRhs JEq
+    OpaqueType
+    LevelSucPred LevelMaxLhs LevelMaxRhs ULevel;
+
+  inherit Field Elem Tag Tuple DConLayer Case eq renderSegment isPosition;
+
+
+
+  __docs = {
+    _self = {
+      doc = ''
     Shared diagnostic alphabet. Pure data.
 
     A Position names the blame location in a structural descent through
@@ -137,28 +185,7 @@ in mk {
     `Position`, allowing errors from either source to compose into one
     tree.
   '';
-  value = {
-    inherit
-      DArgLevel DArgSort DArgEq DArgBody
-      DPiLevel DPiSort DPiEq DPiFn DPiBody
-      DElimLevel
-      DRetIndex
-      DRecIndex DRecTail
-      DPlusL DPlusR
-      PiDom PiCod
-      SigmaFst SigmaSnd
-      AnnTerm AnnType
-      MuUnroll
-      AppHead AppArg
-      Scrut Motive
-      MuDesc MuIndex MuPayload
-      JType JLhs JRhs JEq
-      OpaqueType
-      LevelSucPred LevelMaxLhs LevelMaxRhs ULevel
-      Field Elem Tag Case
-      eq renderSegment isPosition;
-  };
-  tests = {
+      tests = {
     "DArgSort-is-position" = {
       expr = isPosition DArgSort;
       expected = true;
@@ -317,9 +344,83 @@ in mk {
       expr = renderSegment ULevel;
       expected = "U.k";
     };
+    "render-LamBody" = {
+      expr = renderSegment LamBody;
+      expected = "lam.body";
+    };
+    "render-LetBody" = {
+      expr = renderSegment LetBody;
+      expected = "let.body";
+    };
+    "render-Sub" = {
+      expr = renderSegment Sub;
+      expected = "sub";
+    };
+    "LamBody-is-position" = {
+      expr = isPosition LamBody;
+      expected = true;
+    };
+    "LetBody-distinct-from-LamBody" = {
+      expr = LetBody == LamBody;
+      expected = false;
+    };
+    "Sub-is-singleton" = {
+      expr = Sub == Sub;
+      expected = true;
+    };
+    "render-DConLayer-zero" = {
+      expr = renderSegment (DConLayer 0);
+      expected = "con[0]";
+    };
+    "render-DConLayer-deep" = {
+      expr = renderSegment (DConLayer 4000);
+      expected = "con[4000]";
+    };
+    "DConLayer-is-position" = {
+      expr = isPosition (DConLayer 4000);
+      expected = true;
+    };
+    "DConLayer-has-layer" = {
+      expr = (DConLayer 4000).layer;
+      expected = 4000;
+    };
+    "DConLayer-eq-same" = {
+      expr = DConLayer 17 == DConLayer 17;
+      expected = true;
+    };
+    "DConLayer-distinct-by-layer" = {
+      expr = DConLayer 0 == DConLayer 1;
+      expected = false;
+    };
+    "DConLayer-distinct-from-Elem" = {
+      # Same numeric coordinate; the quotient position must stay distinct
+      # from list-element descent even when the underlying index agrees.
+      expr = DConLayer 3 == Elem 3;
+      expected = false;
+    };
     "render-Case" = {
       expr = renderSegment (Case "zero");
       expected = "@zero";
+    };
+    "Tuple-has-idx" = {
+      expr = (Tuple 2).idx;
+      expected = 2;
+    };
+    "Tuple-has-tag" = {
+      expr = (Tuple 2).tag;
+      expected = "Tuple";
+    };
+    "render-Tuple" = {
+      expr = renderSegment (Tuple 0);
+      expected = "[0]";
+    };
+    "Tuple-distinct-from-Elem" = {
+      expr = Tuple 3 == Elem 3;
+      expected = false;
+    };
+    "native-eq-Tuple-same" = {
+      expr = Tuple 1 == Tuple 1;
+      expected = true;
     };
     "Case-parameterised" = {
       expr = (Case "onRet").name;
@@ -333,5 +434,45 @@ in mk {
       expr = Case "zero" == Case "succ";
       expected = false;
     };
+  };
+    };
+
+    Field = {
+      description = "Field: parameterised position naming a record field by `name`; renders as `.<name>` in blame paths and carries `name` for downstream lookup by field-key.";
+      signature = "Field : String -> Position";
+    };
+    Elem = {
+      description = "Elem: parameterised position naming a list element by `idx`; renders as `[<idx>]` in blame paths and carries `idx` for downstream lookup by integer index.";
+      signature = "Elem : Int -> Position";
+    };
+    Tag = {
+      description = "Tag: parameterised position naming a tagged-union arm by `name`; renders as `#<name>` in blame paths and carries `name` for downstream lookup by variant tag.";
+      signature = "Tag : String -> Position";
+    };
+    Tuple = {
+      description = "Tuple: parameterised position naming a tuple component by static `idx`; renders identically to `Elem` (`[<idx>]`) but stays distinct so consumers tell n-ary tuple from list descent.";
+      signature = "Tuple : Int -> Position";
+    };
+    DConLayer = {
+      description = "DConLayer: parameterised position naming the `layer`-th step in a peeled linear-recursive `desc-con` trampoline chain (0 = outermost, n = base); renders as `con[<layer>]`; quotient representative of homogeneous μ-unfolding paths so per-blame chain depth stays constant regardless of trampoline depth.";
+      signature = "DConLayer : Int -> Position";
+    };
+    Case = {
+      description = "Case: parameterised position naming an eliminator's case handler by `name` — generated constructor names, `\"inl\"`/`\"inr\"`, `\"base\"`, `\"onRet\"`/`\"onArg\"`/`\"onRec\"`/`\"onPi\"`/`\"onPlus\"`, `\"step\"`.";
+      signature = "Case : String -> Position";
+    };
+    eq = {
+      description = "eq: structural equality on `Position` values; relies on Nix's attrset-by-content comparison so equal positions compare equal regardless of construction path.";
+      signature = "eq : Position -> Position -> Bool";
+    };
+    renderSegment = {
+      description = "renderSegment: render a `Position` as its short human-readable segment (`\"arg.S\"`, `\"plus.L\"`, `\".age\"`); single field read since the segment is carried on the Position itself.";
+      signature = "renderSegment : Position -> String";
+    };
+    isPosition = {
+      description = "isPosition: predicate recognising the `Position` ADT — checks `_tag == \"Position\"`; complements the `Layer`/`Error` predicates from `fx.diag.error`.";
+      signature = "isPosition : Any -> Bool";
+    };
+
   };
 }

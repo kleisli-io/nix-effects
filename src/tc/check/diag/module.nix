@@ -14,9 +14,10 @@
 # attaching a resolved hint (via `fx.diag.hints.resolve`) and a surface
 # back-map (via `sourceMap.hoasAtError`) on the failure branch. The set
 # of accepted terms is unchanged; diagnostic data is additive.
-{ self, partTests, api, ... }:
+{ self, partTests, partDocs, api, ... }:
 
-api.mk {
+api.mkModule {
+  inherit partDocs;
   doc = ''
     # fx.tc.check.diag — Kernel Diagnostic Shell
 

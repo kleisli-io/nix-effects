@@ -9,10 +9,8 @@
 # Pure function — zero effect system imports.
 #
 # Spec reference: kernel-spec.md §6
-{ fx, api, ... }:
-
+{ fx, ... }:
 let
-  inherit (api) mk;
   V = fx.tc.value;
   E = fx.tc.eval;
 
@@ -121,13 +119,25 @@ let
       (builtins.genList (i: i) (builtins.length xs));
 
   descRefConv = d: r1: r2:
-    (r1.kind or null) == (r2.kind or null)
-    && (r1.arity or null) == (r2.arity or null)
-    && (r1.indexed or null) == (r2.indexed or null)
-    && (r1.constructors or []) == (r2.constructors or [])
-    && conv d r1.I r2.I
-    && convLevel r1.level r2.level
-    && listConv d (r1.params or []) (r2.params or []);
+    let
+      kind = r1.kind or null;
+      signatureConv =
+        if kind == "datatype-desc"
+        then (r1 ? signature) && (r2 ? signature)
+          && (r1.signature.complete or false)
+          && (r2.signature.complete or false)
+          && r1.signature == r2.signature
+        else true;
+    in
+      kind == (r2.kind or null)
+      && (r1.name or null) == (r2.name or null)
+      && (r1.arity or null) == (r2.arity or null)
+      && (r1.indexed or null) == (r2.indexed or null)
+      && (r1.constructors or []) == (r2.constructors or [])
+      && conv d r1.I r2.I
+      && convLevel r1.level r2.level
+      && listConv d (r1.params or []) (r2.params or [])
+      && signatureConv;
 
   # Pi-eta η-reduction detector. Recognises closures of shape `λx. f x`
   # where `f` does not reference the bound `x` — i.e., body is
@@ -193,6 +203,7 @@ let
     else if t1 == "VFloat" && t2 == "VFloat" then true
     else if t1 == "VAttrs" && t2 == "VAttrs" then true
     else if t1 == "VPath" && t2 == "VPath" then true
+    else if t1 == "VDerivation" && t2 == "VDerivation" then true
     else if t1 == "VFunction" && t2 == "VFunction" then true
     else if t1 == "VAny" && t2 == "VAny" then true
     else if t1 == "VStringLit" && t2 == "VStringLit" then v1.value == v2.value
@@ -200,6 +211,7 @@ let
     else if t1 == "VFloatLit" && t2 == "VFloatLit" then v1.value == v2.value
     else if t1 == "VAttrsLit" && t2 == "VAttrsLit" then true
     else if t1 == "VPathLit" && t2 == "VPathLit" then true
+    else if t1 == "VDerivationLit" && t2 == "VDerivationLit" then true
     else if t1 == "VFnLit" && t2 == "VFnLit" then true
     else if t1 == "VAnyLit" && t2 == "VAnyLit" then true
     # §6.2 Binding forms — compare under binders with fresh var
@@ -305,16 +317,27 @@ let
          && conv d v1.D expectedD
     else if t1 == "VDescCon" && t2 == "VDescCon" then
       # Canonical-identity short-circuit. When both sides carry a
-      # `_canonRef = { id; I; L; }` stamp, equality reduces to conv on
-      # the stamp itself. Forcing `.D` here would descend through
-      # `descDesc ⊤ (suc L)` recursively with no termination at any
-      # universe level: Nix structural `==` loops on cyclic VDescCon
-      # values, and `tryEval` cannot recover.
+      # `_canonRef = { id; params; }` stamp, equality reduces to conv on
+      # the stamp itself. Forcing `.D` here would descend through the
+      # referenced description's body recursively with no termination at
+      # any universe level: Nix structural `==` loops on cyclic VDescCon
+      # values, and `tryEval` cannot recover. Legacy `descDesc` stamps
+      # written as `{ id; I; L; }` are normalised to `params = [I, L]`
+      # so the comparison shape is uniform across canonical references.
       if (v1 ? _canonRef) && (v2 ? _canonRef)
       then
-        v1._canonRef.id == v2._canonRef.id
-        && conv d v1._canonRef.I v2._canonRef.I
-        && conv d v1._canonRef.L v2._canonRef.L
+        let
+          canonParams = ref:
+            if ref ? params then ref.params else [ ref.I ref.L ];
+          p1 = canonParams v1._canonRef;
+          p2 = canonParams v2._canonRef;
+          n  = builtins.length p1;
+          convParam = i:
+            conv d (builtins.elemAt p1 i) (builtins.elemAt p2 i);
+        in
+          v1._canonRef.id == v2._canonRef.id
+          && builtins.length p2 == n
+          && builtins.all convParam (builtins.genList (x: x) n)
       else if (v1 ? _descRef) && (v2 ? _descRef)
               && descRefConv d v1._descRef v2._descRef
       then true
@@ -358,6 +381,47 @@ let
               let inner = collectPairs node.d.val; in
               if inner == null then null
               else inner;
+          indexConv = a: b:
+            if a.tag == "VTt" && b.tag == "VTt"
+            then true
+            else conv d a b;
+          itemDConv = item:
+            if (item.a.D ? _descRef) && (item.b.D ? _descRef)
+               && descRefConv d item.a.D._descRef item.b.D._descRef
+            then true
+            else conv d item.a.D item.b.D;
+          ctorPayloadConv = a: b:
+            if a.tag == "VBootInl" && b.tag == "VBootInl"
+            then ctorPayloadConv a.val b.val
+            else if a.tag == "VBootInr" && b.tag == "VBootInr"
+            then ctorPayloadConv a.val b.val
+            else conv d a b;
+          baseStructuralConv = item:
+            itemDConv item
+            && indexConv item.a.i item.b.i
+            && conv d item.a.d item.b.d;
+          baseCtorConv = item:
+            let
+              nonRecursiveSide =
+                if classify.side == "VBootInl"
+                then "VBootInr"
+                else "VBootInl";
+              injectionVals =
+                if classify == null then
+                  if item.a.d.tag == item.b.d.tag
+                     && (item.a.d.tag == "VBootInl" || item.a.d.tag == "VBootInr")
+                  then { a = item.a.d.val; b = item.b.d.val; }
+                  else null
+                else if item.a.d.tag == nonRecursiveSide
+                     && item.b.d.tag == nonRecursiveSide
+                then { a = item.a.d.val; b = item.b.d.val; }
+                else null;
+            in
+              injectionVals != null
+              && itemDConv item
+              && indexConv item.a.i item.b.i
+              && ctorPayloadConv injectionVals.a injectionVals.b;
+          baseConv = item: baseCtorConv item || baseStructuralConv item;
           chain = builtins.genericClosure {
             startSet = [{ key = 0; a = v1; b = v2; pa = peel v1; pb = peel v2; }];
             operator = item:
@@ -378,10 +442,6 @@ let
               # same outer D; transitivity gives the per-layer D match.
               # The boot-sum arm types are determined by that D.
               let
-                indexOk =
-                  if item.a.i.tag == "VTt" && item.b.i.tag == "VTt"
-                  then true
-                  else conv d item.a.i item.b.i;
                 leafOk =
                   if pa.leaf.tag == "VBootRefl" && pb.leaf.tag == "VBootRefl"
                   then true
@@ -390,18 +450,16 @@ let
                   if builtins.length pa.heads == 0 && builtins.length pb.heads == 0
                   then true
                   else listConv d pa.heads pb.heads;
-              in indexOk && leafOk && headsOk;
+              in indexConv item.a.i item.b.i && leafOk && headsOk;
         in
           if classify == null || n == 0 then
-            conv d v1.D v2.D && conv d v1.i v2.i && conv d v1.d v2.d
+            baseConv base
           else if (basePeelA == null) != (basePeelB == null) then false
           else
             builtins.foldl' (ok: i:
               ok && layerConv (builtins.elemAt chain i)
             ) true (builtins.genList (i: i) n)
-            && conv d base.a.D base.b.D
-            && conv d base.a.i base.b.i
-            && conv d base.a.d base.b.d
+            && baseConv base
 
     # Lift type-former — structural with witness-irrelevance. The `eq`
     # slot is not compared: two `VLift`s with matching levels and
@@ -505,8 +563,13 @@ let
       conv d e1.A e2.A && conv d e1.B e2.B && conv d e1.f e2.f
     else false;
 
-in mk {
-  doc = ''
+in {
+  inherit conv convSp convElim normLevel convLevel;
+
+
+  __docs = {
+    _self = {
+      doc = ''
     # fx.tc.conv — Conversion (Definitional Equality)
 
     Checks whether two values are definitionally equal at a given
@@ -545,14 +608,14 @@ in mk {
     `λx. f(x)` are **not** definitionally equal. Cumulativity
     (`U(i) ≤ U(j)`) is handled in check.nix, not here.
   '';
-  value = { inherit conv convSp convElim normLevel convLevel; };
-  tests = let
+      tests = let
     inherit (V) vPi vLam vSigma vPair
       vUnit vTt vBootSum vBootInl vBootInr vBootEq vBootRefl vU vNe
       vSquash vSquashIntro eSquashElim
       mkClosure eApp eFst eSnd eBootSumElim eBootJ;
-    T = fx.tc.term;
-    H = fx.tc.hoas;
+    T  = fx.tc.term;
+    H  = fx.tc.hoas;
+    HI = fx.tc.hoas._internal._indexed;
     elabVal = h: E.eval [] (H.elab h);
     natTyVal = elabVal H.nat;
     zeroVal = elabVal H.zero;
@@ -564,14 +627,14 @@ in mk {
     argNatVal = elabVal (H.descArg H.unit 0 H.nat (_: H.retI H.unit 0 H.tt));
     argUnitVal = elabVal (H.descArg H.unit 0 H.unit (_: H.retI H.unit 0 H.tt));
     argUOneVal = elabVal (H.descArg H.unit 1 (H.u 0) (_: H.retI H.unit 1 H.tt));
-    recRetVal = elabVal (H.recI H.unit 0 H.tt (H.retI H.unit 0 H.tt));
-    recNatZeroVal = elabVal (H.recI H.nat 0 H.zero (H.retI H.nat 0 H.zero));
-    recNatSuccVal = elabVal (H.recI H.nat 0 (H.succ H.zero) (H.retI H.nat 0 H.zero));
-    piNatVal = elabVal (H.piI H.unit 0 H.nat (unitFn H.nat) (H.retI H.unit 0 H.tt));
-    piUnitVal = elabVal (H.piI H.unit 0 H.unit (unitFn H.unit) (H.retI H.unit 0 H.tt));
-    piNatRecVal = elabVal (H.piI H.unit 0 H.nat (unitFn H.nat)
-      (H.recI H.unit 0 H.tt (H.retI H.unit 0 H.tt)));
-    piUOneVal = elabVal (H.piI H.unit 1 (H.u 0) (unitFn (H.u 0)) (H.retI H.unit 1 H.tt));
+    recRetVal = elabVal (HI.recI H.unit 0 H.tt (H.retI H.unit 0 H.tt));
+    recNatZeroVal = elabVal (HI.recI H.nat 0 H.zero (H.retI H.nat 0 H.zero));
+    recNatSuccVal = elabVal (HI.recI H.nat 0 (H.succ H.zero) (H.retI H.nat 0 H.zero));
+    piNatVal = elabVal (HI.piI H.unit 0 H.nat (unitFn H.nat) (H.retI H.unit 0 H.tt));
+    piUnitVal = elabVal (HI.piI H.unit 0 H.unit (unitFn H.unit) (H.retI H.unit 0 H.tt));
+    piNatRecVal = elabVal (HI.piI H.unit 0 H.nat (unitFn H.nat)
+      (HI.recI H.unit 0 H.tt (H.retI H.unit 0 H.tt)));
+    piUOneVal = elabVal (HI.piI H.unit 1 (H.u 0) (unitFn (H.u 0)) (H.retI H.unit 1 H.tt));
   in {
     # §6.1 Structural rules — reflexivity
     "conv-unit" = { expr = conv 0 vUnit vUnit; expected = true; };
@@ -588,6 +651,8 @@ in mk {
     "conv-float" = { expr = conv 0 V.vFloat V.vFloat; expected = true; };
     "conv-attrs" = { expr = conv 0 V.vAttrs V.vAttrs; expected = true; };
     "conv-path" = { expr = conv 0 V.vPath V.vPath; expected = true; };
+    "conv-derivation" = { expr = conv 0 V.vDerivation V.vDerivation; expected = true; };
+    "conv-derivation-not-path" = { expr = conv 0 V.vDerivation V.vPath; expected = false; };
     "conv-function" = { expr = conv 0 V.vFunction V.vFunction; expected = true; };
     "conv-any" = { expr = conv 0 V.vAny V.vAny; expected = true; };
     "conv-string-int" = { expr = conv 0 V.vString V.vInt; expected = false; };
@@ -599,6 +664,7 @@ in mk {
     "conv-floatlit-neq" = { expr = conv 0 (V.vFloatLit 1.0) (V.vFloatLit 2.0); expected = false; };
     "conv-attrslit" = { expr = conv 0 V.vAttrsLit V.vAttrsLit; expected = true; };
     "conv-pathlit" = { expr = conv 0 V.vPathLit V.vPathLit; expected = true; };
+    "conv-derivationlit" = { expr = conv 0 V.vDerivationLit V.vDerivationLit; expected = true; };
     "conv-fnlit" = { expr = conv 0 V.vFnLit V.vFnLit; expected = true; };
     "conv-anylit" = { expr = conv 0 V.vAnyLit V.vAnyLit; expected = true; };
     "conv-stringlit-intlit" = { expr = conv 0 (V.vStringLit "1") (V.vIntLit 1); expected = false; };
@@ -1393,5 +1459,101 @@ in mk {
         in conv 0 (mk "alpha") (mk "beta");
       expected = false;
     };
+
+    # `params`-shape `_canonRef` stamps. Generalised from the
+    # legacy `(I, L)` 2-param shape to a variadic params list so
+    # canonical references with arity ≠ 2 (freer monad, kontQueue,
+    # ...) can use the same short-circuit. Conv normalises legacy
+    # stamps to `params = [I, L]` so descDesc tests above keep
+    # passing under the same comparison code path.
+    "conv-canonRef-params-self" = {
+      expr =
+        let v = V.vDescConTagged vTt vTt V.vBootRefl
+                  { id = "freeFx"; params = [ V.vUnit V.vUnit V.vUnit ]; };
+        in conv 0 v v;
+      expected = true;
+    };
+    "conv-canonRef-params-distinct-id-rejects" = {
+      expr =
+        let v1 = V.vDescConTagged vTt vTt V.vBootRefl
+                   { id = "freeFx";    params = [ V.vUnit V.vUnit V.vUnit ]; };
+            v2 = V.vDescConTagged vTt vTt V.vBootRefl
+                   { id = "kontQueue"; params = [ V.vUnit V.vUnit V.vUnit ]; };
+        in conv 0 v1 v2;
+      expected = false;
+    };
+    "conv-canonRef-params-distinct-param-rejects" = {
+      expr =
+        let v1 = V.vDescConTagged vTt vTt V.vBootRefl
+                   { id = "freeFx"; params = [ V.vUnit  V.vUnit V.vUnit ]; };
+            v2 = V.vDescConTagged vTt vTt V.vBootRefl
+                   { id = "freeFx"; params = [ natTyVal V.vUnit V.vUnit ]; };
+        in conv 0 v1 v2;
+      expected = false;
+    };
+    "conv-canonRef-params-arity-mismatch-rejects" = {
+      expr =
+        let v1 = V.vDescConTagged vTt vTt V.vBootRefl
+                   { id = "freeFx"; params = [ V.vUnit V.vUnit V.vUnit ]; };
+            v2 = V.vDescConTagged vTt vTt V.vBootRefl
+                   { id = "freeFx"; params = [ V.vUnit V.vUnit ]; };
+        in conv 0 v1 v2;
+      expected = false;
+    };
+    "conv-canonRef-params-cyclic-D-self" = {
+      # 4-param canon-stamped value with its `.D` slot referencing
+      # itself. Tag-based comparison decides equality without
+      # descending into `.D`; a no-tag value with the same shape would
+      # loop on the structural fall-through.
+      expr =
+        let cyclic = let v = {
+              tag = "VDescCon";
+              D = v;
+              i = vTt;
+              d = vTt;
+              _canonRef = {
+                id = "kontQueue";
+                params = [ V.vUnit V.vUnit V.vUnit V.vUnit ];
+              };
+            }; in v;
+        in conv 0 cyclic cyclic;
+      expected = true;
+    };
+    "conv-canonRef-params-legacy-IL-interop" = {
+      # Legacy `{ id; I; L; }` stamp on one side, new `{ id; params; }`
+      # on the other. Comparison normalises legacy to `params = [I, L]`
+      # so both shapes are interchangeable at the conv layer.
+      expr =
+        let legacy = V.vDescConTagged vTt vTt V.vBootRefl
+                       { id = "descDesc"; I = V.vUnit; L = V.vLevelZero; };
+            generic = V.vDescConTagged vTt vTt V.vBootRefl
+                       { id = "descDesc"; params = [ V.vUnit V.vLevelZero ]; };
+        in conv 0 legacy generic;
+      expected = true;
+    };
+  };
+    };
+
+    conv = {
+      description = "conv: definitional equality on values at binding `depth` — purely structural with Σ/Unit/Π-eta; foundation of `Sub` in `check` and the kernel TCB.";
+      signature = "conv : Depth -> Val -> Val -> Bool";
+    };
+    convSp = {
+      description = "convSp: spine equality at binding `depth` — same length plus pairwise `convElim` on each frame; used to compare two neutral-value spines.";
+      signature = "convSp : Depth -> Spine -> Spine -> Bool";
+    };
+    convElim = {
+      description = "convElim: elimination-frame equality at binding `depth` — same tag and recursively `conv` on every carried value; building block of `convSp`.";
+      signature = "convElim : Depth -> Elim -> Elim -> Bool";
+    };
+    normLevel = {
+      description = "normLevel: normalise a Level expression to canonical form — `levelMax`/`levelSuc` collapsed via the algebraic laws so two equivalent forms compare equal under `convLevel`.";
+      signature = "normLevel : Val -> Val";
+    };
+    convLevel = {
+      description = "convLevel: definitional equality on Level expressions — `normLevel` both sides, then structural compare; required because `convLevel` is non-trivial under `levelMax` associativity.";
+      signature = "convLevel : Val -> Val -> Bool";
+    };
+
   };
 }

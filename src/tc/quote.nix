@@ -5,10 +5,8 @@
 # Pure function — zero effect system imports.
 #
 # Spec reference: kernel-spec.md §5
-{ fx, api, ... }:
-
+{ fx, ... }:
 let
-  inherit (api) mk;
   T = fx.tc.term;
   V = fx.tc.value;
   E = fx.tc.eval;
@@ -62,11 +60,24 @@ let
     # fall through to the single-layer recursive quote at baseTm below.
     else if t == "VDescCon" then
       # Canonical-identity short-circuit. A VDescCon carrying
-      # `_canonRef = { id = "descDesc"; I; L; }` round-trips through
-      # `mkDescDescApp` Tm; walking `.d`/`.D` would descend through
-      # `descDesc ⊤ (suc L)` and loop.
-      if v ? _canonRef && v._canonRef.id == "descDesc"
-      then T.mkDescDescApp (quote d v._canonRef.I) (quote d v._canonRef.L)
+      # `_canonRef = { id; params; }` round-trips through the canonical
+      # constructor Tm that produced it; walking `.d`/`.D` would descend
+      # through the referenced description's body and loop. Legacy
+      # `descDesc` stamps written as `{ id; I; L; }` normalise to
+      # `params = [I, L]` and round-trip via `mkDescDescApp`; all other
+      # ids round-trip via the generic `mkCanonApp` Tm.
+      if v ? _canonRef
+      then
+        let
+          ref = v._canonRef;
+          params =
+            if ref ? params then ref.params else [ ref.I ref.L ];
+        in
+          if ref.id == "descDesc"
+          then T.mkDescDescApp
+                 (quote d (builtins.elemAt params 0))
+                 (quote d (builtins.elemAt params 1))
+          else T.mkCanonApp ref.id (map (quote d) params)
       else
       let
         peel = node:
@@ -148,6 +159,7 @@ let
     else if t == "VFloat" then T.mkFloat
     else if t == "VAttrs" then T.mkAttrs
     else if t == "VPath" then T.mkPath
+    else if t == "VDerivation" then T.mkDerivation
     else if t == "VFunction" then T.mkFunction
     else if t == "VAny" then T.mkAny
     else if t == "VStringLit" then T.mkStringLit v.value
@@ -155,6 +167,7 @@ let
     else if t == "VFloatLit" then T.mkFloatLit v.value
     else if t == "VAttrsLit" then T.mkAttrsLit
     else if t == "VPathLit" then T.mkPathLit
+    else if t == "VDerivationLit" then T.mkDerivationLit
     else if t == "VFnLit" then T.mkFnLit
     else if t == "VAnyLit" then T.mkAnyLit
     else if t == "VOpaqueLam" then T.mkOpaqueLam v._fnBox (quote d v.piTy)
@@ -216,8 +229,13 @@ let
   # Normalize: eval then quote
   nf = env: tm: quote (builtins.length env) (E.eval env tm);
 
-in mk {
-  doc = ''
+in {
+  inherit quote quoteSp quoteElim nf lvl2Ix;
+
+
+  __docs = {
+    _self = {
+      doc = ''
     # fx.tc.quote — Quotation (Read-back)
 
     Converts values back to terms, translating de Bruijn levels to
@@ -247,15 +265,15 @@ in mk {
     For VPi, VLam, VSigma: instantiates the closure with a fresh
     variable at the current depth, then quotes the body at `depth + 1`.
   '';
-  value = { inherit quote quoteSp quoteElim nf lvl2Ix; };
-  tests = let
+      tests = let
     inherit (V) vPi vLam vSigma vPair
       vUnit vTt vBootSum vBootInl vBootInr vBootEq vBootRefl vU vNe
       mkClosure eApp eFst eSnd eBootSumElim eBootJ;
-    H = fx.tc.hoas;
+    H  = fx.tc.hoas;
+    HI = fx.tc.hoas._internal._indexed;
     encRet = H.elab (H.retI H.unit 0 H.tt);
     encArg = H.elab (H.descArg H.unit 0 H.nat (_: H.retI H.unit 0 H.tt));
-    encRec = H.elab (H.recI H.unit 0 H.tt (H.retI H.unit 0 H.tt));
+    encRec = H.elab (HI.recI H.unit 0 H.tt (H.retI H.unit 0 H.tt));
     encPi = H.elab (H.descPi 0 H.nat (H.retI H.unit 0 H.tt));
     encRetVal = E.eval [] encRet;
   in {
@@ -323,6 +341,7 @@ in mk {
     "quote-float" = { expr = (quote 0 V.vFloat).tag; expected = "float"; };
     "quote-attrs" = { expr = (quote 0 V.vAttrs).tag; expected = "attrs"; };
     "quote-path" = { expr = (quote 0 V.vPath).tag; expected = "path"; };
+    "quote-derivation" = { expr = (quote 0 V.vDerivation).tag; expected = "derivation"; };
     "quote-function" = { expr = (quote 0 V.vFunction).tag; expected = "function"; };
     "quote-any" = { expr = (quote 0 V.vAny).tag; expected = "any"; };
     "quote-string-lit" = { expr = (quote 0 (V.vStringLit "hi")).tag; expected = "string-lit"; };
@@ -332,6 +351,7 @@ in mk {
     "quote-float-lit" = { expr = (quote 0 (V.vFloatLit 1.5)).tag; expected = "float-lit"; };
     "quote-attrs-lit" = { expr = (quote 0 V.vAttrsLit).tag; expected = "attrs-lit"; };
     "quote-path-lit" = { expr = (quote 0 V.vPathLit).tag; expected = "path-lit"; };
+    "quote-derivation-lit" = { expr = (quote 0 V.vDerivationLit).tag; expected = "derivation-lit"; };
     "quote-fn-lit" = { expr = (quote 0 V.vFnLit).tag; expected = "fn-lit"; };
     "quote-any-lit" = { expr = (quote 0 V.vAnyLit).tag; expected = "any-lit"; };
 
@@ -710,5 +730,29 @@ in mk {
         in (quote 0 cyclic).tag;
       expected = "desc-desc-app";
     };
+  };
+    };
+
+    quote = {
+      description = "quote: read-back a value `Val` to a term `Tm` at binding `depth` — translates de Bruijn levels to indices via `index = depth - level - 1`. Pure TCB function.";
+      signature = "quote : Depth -> Val -> Tm";
+    };
+    quoteSp = {
+      description = "quoteSp: quote a spine of elimination frames applied to a head term — folds left over the spine, calling `quoteElim` at each step.";
+      signature = "quoteSp : Depth -> Tm -> Spine -> Tm";
+    };
+    quoteElim = {
+      description = "quoteElim: quote a single elimination frame applied to a head term — dispatches on frame tag, recursively quoting each carried argument.";
+      signature = "quoteElim : Depth -> Tm -> Elim -> Tm";
+    };
+    nf = {
+      description = "nf: normalise a term to its canonical form by `eval` then `quote` — useful for testing round-trip idempotency (`nf env (nf env tm) == nf env tm`).";
+      signature = "nf : Env -> Tm -> Tm";
+    };
+    lvl2Ix = {
+      description = "lvl2Ix: convert a de Bruijn level to an index at binding `depth` — `index = depth - level - 1`; helper exposed for downstream tooling that interleaves with quotation.";
+      signature = "lvl2Ix : Depth -> Level -> Index";
+    };
+
   };
 }

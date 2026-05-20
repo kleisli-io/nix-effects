@@ -12,4 +12,8 @@
   e2e       = import ./e2e.nix       { inherit fx; };
   diag      = import ./diag.nix      { inherit fx; };
   bindP     = import ./bindP.nix     { inherit fx; };
+  ornaments = import ./ornaments.nix { inherit fx; };
+  generic   = import ./generic.nix   { inherit fx; };
+  generic-fold = import ./generic-fold.nix { inherit fx; };
+  decidable = import ./decidable.nix { inherit fx; };
 }

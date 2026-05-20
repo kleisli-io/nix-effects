@@ -1,12 +1,12 @@
 # Proof Guide
 
-Nix configurations are concrete at eval time. Every field, every value,
-every list element is known before anything builds. The nix-effects
+Nix DSL values are concrete at eval time. Every declaration, field, and
+dependency edge is known before anything builds. The nix-effects
 dependent type checker exploits this: it normalizes both sides of an
 equation via NbE, and if they reduce to the same value, `Refl` proves
 them equal. No symbolic reasoning, no induction over unknowns — just
 computation on concrete data, checked through the freer-monad effect
-layer in 1,300 lines of pure Nix.
+layer in pure Nix.
 
 This chapter builds proofs incrementally, from `0 + 0 = 0` through
 the J eliminator to verified extraction of plain Nix functions from
@@ -497,36 +497,52 @@ combinator (`Nat → Nat → Nat`), and their composition before extracting
 the result. A type error in any component — say, returning a `Nat`
 where the filter expects a `Bool` — fails at `nix eval`, not at runtime.
 
-### Records and string operations
+### Aspect declarations and string operations
 
 The kernel supports record types (elaborated as nested Sigma) and
-string equality (`strEq` is a kernel primitive). Together they handle
-verified functions over structured data with string fields:
+string equality (`strEq` is a kernel primitive). Together they verify
+functions over the same aspect declarations introduced earlier:
 
 ```nix
 let
   H = fx.types.hoas;
   v = fx.types.verified;
 
-  RecTy = H.record [
-    { name = "name";   type = H.string; }
-    { name = "target"; type = H.string; }
+  AspectDecl = H.record [
+    { name = "name";     type = H.string; }
+    { name = "target";   type = H.string; }
+    { name = "requires"; type = H.listOf H.string; }
   ];
 
-  # Verified: does the name match the target?
-  matchFn = v.verify (H.forall "r" RecTy (_: H.bool))
-    (v.fn "r" RecTy (r:
-      v.strEq (v.field RecTy "name" r) (v.field RecTy "target" r)));
+  targets =
+    H.cons H.string (v.str "module")
+      (H.cons H.string (v.str "file")
+        (H.cons H.string (v.str "package")
+          (H.cons H.string (v.str "check") (H.nil H.string))));
+
+  validateAspect = v.verify (H.forall "a" AspectDecl (_: H.bool))
+    (v.fn "a" AspectDecl (a:
+      v.strElem (v.field AspectDecl "target" a) targets));
 in {
-  yes = matchFn { name = "hello"; target = "hello"; };    # → true
-  no  = matchFn { name = "hello"; target = "world"; };    # → false
+  ok = validateAspect {
+    name = "workspace-shell";
+    target = "module";
+    requires = [ "toolchain" ];
+  };   # → true
+
+  bad = validateAspect {
+    name = "workspace-aspect";
+    target = "fleet";
+    requires = [ ];
+  };   # → false
 }
 ```
 
 `v.field` desugars to the right chain of `fst`/`snd` projections for
 the field's position in the Sigma chain. `v.strEq` reduces in the
 kernel via the `StrEq` primitive — it compares string literals during
-normalization, producing `true` or `false` as kernel values.
+normalization, producing `true` or `false` as kernel values. `v.strElem`
+folds that primitive over a generated list of allowed target classes.
 
 ## What the kernel can and cannot prove
 
@@ -545,8 +561,8 @@ normal forms.
 
 - Equalities between computed values: `add(3, 5) = 8`,
   `length([1,2,3]) = 3`, `append([1,2], [3]) = [1,2,3]`
-- Properties of concrete data: "this config field is in the allowed
-  set," "this port number is valid," "these two strings match"
+- Properties of concrete data: "this declaration field is in the
+  allowed set," "this target class is valid," "these two strings match"
 - Generic combinators: `cong`, `sym`, `trans`, and `transport`
   type-check with abstract variables
 - Verified function extraction: any function expressible with the
@@ -601,13 +617,13 @@ normal forms.
   bindings as thin forwarders.
 
 For Nix, the "concrete data" restriction is less of a limitation than
-it sounds. Nix evaluates configurations completely before building —
-every module option, every service config, every package attribute is a
-concrete value at eval time. The kernel verifies all computable
+it sounds. Nix evaluates declarations completely before building —
+every aspect, generated module, dependency edge, and package attribute
+is a concrete value at eval time. The kernel verifies all computable
 properties of that concrete data. What it gives up is proving things
-about *all possible* configurations generically. In practice, you prove
-properties of the specific configuration being built, which is the one
-that matters.
+about *all possible* declarations generically. In practice, you prove
+properties of the specific graph being built, which is the one that
+matters.
 
 ## Quick reference
 

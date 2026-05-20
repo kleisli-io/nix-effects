@@ -6,11 +6,9 @@
 #
 # Shell generation is pure and tested inline. The derivation itself
 # is validated by consumers that actually build it.
-{ api, lib, ... }:
+{ lib, ... }:
 
 let
-  inherit (api) mk;
-
   # -- Shell generation helpers (pure, testable without pkgs) --
 
   # Generate shell for a single build step
@@ -65,24 +63,7 @@ let
       fi
     '';
 
-in mk {
-  doc = ''
-    Materialize a validated BuildPlan into a derivation.
-
-    Converts the eval-time plan (validated by fx.build.plan) into a
-    pkgs.runCommand derivation. Sources are copied into a working
-    directory, per-step environment variables are scoped, and steps
-    execute sequentially under set -euo pipefail.
-
-    ```
-    materialize : { pkgs, plan, native? } -> derivation
-    ```
-
-    The plan argument is the `.plan` field from fx.build.plan output.
-    Shell generation helpers (mkStepScript, mkSourceSetup, mkBuildScript)
-    are pure functions tested inline.
-  '';
-  value = { pkgs, plan, native ? [] }:
+  materialize = { pkgs, plan, native ? [] }:
     let
       steps = plan.steps or [];
       sources = plan.sources or {};
@@ -93,7 +74,24 @@ in mk {
       inherit steps sources native;
     });
 
-  tests = {
+in {
+  inherit materialize;
+  __docs._self = {
+    description = "materialize: convert a validated `BuildPlan` into a `pkgs.runCommand` derivation; copies sources, scopes per-step env vars, runs steps under `set -euo pipefail`.";
+    signature = "materialize : { pkgs, plan, native ? [] } -> Derivation";
+    doc = ''
+      Materialize a validated `BuildPlan` into a derivation.
+
+      Converts the eval-time plan (validated by `fx.build.plan`) into a
+      `pkgs.runCommand` derivation. Sources are copied into a working
+      directory, per-step environment variables are scoped, and steps
+      execute sequentially under `set -euo pipefail`.
+
+      The `plan` argument is the `.plan` field from `fx.build.plan`'s output.
+      Shell generation helpers (`mkStepScript`, `mkSourceSetup`,
+      `mkBuildScript`) are pure functions tested inline.
+    '';
+    tests = {
     "step-script-includes-name" = {
       expr = builtins.match ".*Step: compile.*" (mkStepScript { name = "compile"; run = "gcc -o out main.c"; }) != null;
       expected = true;
@@ -130,6 +128,7 @@ in mk {
         ];
       }) != null;
       expected = true;
+    };
     };
   };
 }

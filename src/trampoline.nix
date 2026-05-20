@@ -20,12 +20,11 @@
 # accessed. We break this chain by making `key` depend on `builtins.deepSeq`
 # of the new state — since genericClosure forces `key`, this eagerly evaluates
 # the state at each step. Validated: 1,000,000 operations in ~3 seconds.
-{ lib, fx, api, ... }:
+{ lib, fx, ... }:
 
 let
   queue = fx.queue;
   inherit (fx.comp) pure impure isPure isComp;
-  inherit (api) mk;
 
   # -- Queue application --
   #
@@ -107,9 +106,9 @@ let
             let
               eff = step._comp.effect;
               handler = localHandler handlers eff;
-              result = 
-                if handler == null 
-                then 
+              result =
+                if handler == null
+                then
                   if eff.name == "has-handler"
                   then { resume = false; state = step._state; }
                   else throw "nix-effects: unhandled effect '${eff.name}'"
@@ -241,290 +240,289 @@ let
             inherit handlers state done;
           } 0)) // { __rawResume = true; });
 
-  run = mk {
-    doc = ''
-      Run a computation through the genericClosure trampoline.
+  run = comp: handlers: initialState:
+    assert (isComp comp)
+      || throw "nix-effects: run expects a computation (Pure or Impure), got ${builtins.typeOf comp}";
+    interpret { inherit comp handlers initialState; };
 
-      ```
-      run : Computation a -> Handlers -> State -> { value : a, state : State }
-      ```
+  handle = {
+    return ? (value: state: { inherit value state; }),
+    handlers,
+    state ? null,
+  }: comp:
+    assert (isComp comp)
+      || throw "nix-effects: handle expects a computation (Pure or Impure), got ${builtins.typeOf comp}";
+    let r = interpret { inherit comp handlers; initialState = state; };
+    in return r.value r.state;
 
-      **Arguments:**
-      - `comp` — the freer monad computation to interpret
-      - `handlers` — `{ effectName = { param, state }: { resume | abort, state }; ... }`
-      - `initialState` — starting state passed to handlers
+  rotate = {
+    return ? (value: state: { inherit value state; }),
+    handlers,
+    state ? null,
+  }: comp:
+    assert (isComp comp)
+      || throw "nix-effects: rotate expects a computation (Pure or Impure), got ${builtins.typeOf comp}";
+    effectRotate {
+      inherit comp handlers state;
+      done = return;
+    } 0;
 
-      Handlers must return one of:
+in {
+  inherit run handle rotate;
 
-      ```
-      { resume = value; state = newState; }  -- invoke continuation with value
-      { abort  = value; state = newState; }  -- discard continuation, halt
-      ```
+  __docs = {
+    _self = {
+      description = "Trampolined interpreter: `run`/`handle`/`rotate` drive computations via `builtins.genericClosure` for O(1) stack depth and Kyo-style rotation of unhandled effects.";
+      doc = "Trampolined interpreter using `builtins.genericClosure` for O(1) stack depth.";
+    };
 
-      This is the defunctionalized encoding of Plotkin & Pretnar (2009):
-      `resume` ≡ invoke continuation k(v), `abort` ≡ discard k.
+    run = {
+      description = "run: drive a computation through the `genericClosure` trampoline with a handler attrset and initial state; returns `{ value, state }` at O(1) stack depth.";
+      signature = "run : Computation a -> Handlers -> State -> { value : a, state : State }";
+      doc = ''
+        Run a computation through the `genericClosure` trampoline.
 
-      Stack depth: O(1) — constant regardless of computation length.
-      Time: O(n) where n = number of effects in the computation.
-    '';
-    value = comp: handlers: initialState:
-      assert (isComp comp)
-        || throw "nix-effects: run expects a computation (Pure or Impure), got ${builtins.typeOf comp}";
-      interpret { inherit comp handlers initialState; };
-  };
+        **Arguments:**
+        - `comp` — the freer monad computation to interpret
+        - `handlers` — `{ effectName = { param, state }: { resume | abort, state }; ... }`
+        - `initialState` — starting state passed to handlers
 
-  # -- Handler combinator --
+        Handlers must return one of:
 
-  handle = mk {
-    doc = ''
-      Trampolined handler combinator with return clause.
+        ```
+        { resume = value; state = newState; }  -- invoke continuation with value
+        { abort  = value; state = newState; }  -- discard continuation, halt
+        ```
 
-      ```
-      handle : { return?, handlers, state? } -> Computation a -> { value, state }
-      ```
+        This is the defunctionalized encoding of Plotkin & Pretnar (2009):
+        `resume` ≡ invoke continuation k(v), `abort` ≡ discard k.
 
-      Follows Kiselyov & Ishii's `handle_relay` pattern but trampolined
-      via genericClosure for O(1) stack depth.
+        Stack depth: O(1) — constant regardless of computation length.
+        Time: O(n) where n = number of effects in the computation.
+      '';
+    };
 
-      **Arguments** (attrset):
-      - `return` — `value -> state -> { value, state }`. How to transform the final Pure value. Default: identity.
-      - `handlers` — `{ effectName = { param, state }: { resume | abort, state }; }`. Each must return `{ resume; state; }` or `{ abort; state; }`.
-      - `state` — initial handler state. Default: null.
-    '';
-    value = {
-      return ? (value: state: { inherit value state; }),
-      handlers,
-      state ? null,
-    }: comp:
-      assert (isComp comp)
-        || throw "nix-effects: handle expects a computation (Pure or Impure), got ${builtins.typeOf comp}";
-      let r = interpret { inherit comp handlers; initialState = state; };
-      in return r.value r.state;
-    tests = {
-      "handle-with-default-return" = {
-        expr =
-          let
-            send' = name: param:
-              fx.comp.impure { inherit name param; } (fx.queue.singleton pure);
-            comp = send' "double" 21;
-            result = handle {
-              handlers.double = { param, state }: { resume = param * 2; inherit state; };
-            } comp;
-          in result.value;
-        expected = 42;
-      };
-      "handle-with-custom-return" = {
-        expr =
-          let
-            comp = pure 21;
-            result = handle {
-              return = v: s: { value = v * 2; state = s; };
-              handlers = {};
-            } comp;
-          in result.value;
-        expected = 42;
-      };
-      "handle-abort-discards-continuation" = {
-        expr =
-          let
-            send' = name: param:
-              fx.comp.impure { inherit name param; } (fx.queue.singleton pure);
-            kernelBind = comp: f:
-              if isPure comp then f comp.value
-              else fx.comp.impure comp.effect (fx.queue.snoc comp.queue f);
-            comp = kernelBind (send' "fail" "boom") (_: send' "get" null);
-            result = handle {
-              handlers = {
-                fail = { param, state }: { abort = { error = param; }; inherit state; };
-                get = { param, state }: { resume = state; inherit state; };
-              };
-            } comp;
-          in result.value;
-        expected = { error = "boom"; };
-      };
-      "effectful-resume-runs-sub-computation" = {
-        expr =
-          let
-            send' = fx.kernel.send;
-            bind' = fx.kernel.bind;
-            comp = send' "outer" null;
-            result = handle {
-              handlers = {
-                "outer" = { param, state }: {
-                  resume = bind' (send' "inner" 10) (x: pure (x * 2));
-                  inherit state;
+    handle = {
+      description = "handle: trampolined handler combinator with a custom `return` clause; interprets the computation through `handlers` from initial `state` then folds the pair via `return`.";
+      signature = "handle : { return ? Identity, handlers, state ? null } -> Computation a -> { value, state }";
+      doc = ''
+        Trampolined handler combinator with `return` clause.
+
+        Follows Kiselyov & Ishii's `handle_relay` pattern but trampolined
+        via `genericClosure` for O(1) stack depth.
+
+        **Arguments** (attrset):
+        - `return` — `value -> state -> { value, state }`. How to transform the final Pure value. Default: identity.
+        - `handlers` — `{ effectName = { param, state }: { resume | abort, state }; }`. Each must return `{ resume; state; }` or `{ abort; state; }`.
+        - `state` — initial handler state. Default: null.
+      '';
+      tests = {
+        "handle-with-default-return" = {
+          expr =
+            let
+              send' = name: param:
+                fx.comp.impure { inherit name param; } (fx.queue.singleton pure);
+              comp = send' "double" 21;
+              result = handle {
+                handlers.double = { param, state }: { resume = param * 2; inherit state; };
+              } comp;
+            in result.value;
+          expected = 42;
+        };
+        "handle-with-custom-return" = {
+          expr =
+            let
+              comp = pure 21;
+              result = handle {
+                return = v: s: { value = v * 2; state = s; };
+                handlers = {};
+              } comp;
+            in result.value;
+          expected = 42;
+        };
+        "handle-abort-discards-continuation" = {
+          expr =
+            let
+              send' = name: param:
+                fx.comp.impure { inherit name param; } (fx.queue.singleton pure);
+              kernelBind = comp: f:
+                if isPure comp then f comp.value
+                else fx.comp.impure comp.effect (fx.queue.snoc comp.queue f);
+              comp = kernelBind (send' "fail" "boom") (_: send' "get" null);
+              result = handle {
+                handlers = {
+                  fail = { param, state }: { abort = { error = param; }; inherit state; };
+                  get = { param, state }: { resume = state; inherit state; };
                 };
-                "inner" = { param, state }: {
-                  resume = param + 1;
-                  inherit state;
+              } comp;
+            in result.value;
+          expected = { error = "boom"; };
+        };
+        "effectful-resume-runs-sub-computation" = {
+          expr =
+            let
+              send' = fx.kernel.send;
+              bind' = fx.kernel.bind;
+              comp = send' "outer" null;
+              result = handle {
+                handlers = {
+                  "outer" = { param, state }: {
+                    resume = bind' (send' "inner" 10) (x: pure (x * 2));
+                    inherit state;
+                  };
+                  "inner" = { param, state }: {
+                    resume = param + 1;
+                    inherit state;
+                  };
                 };
-              };
-            } comp;
-          in result.value;
-        expected = 22;
-      };
-      "effectful-resume-threads-state" = {
-        expr =
-          let
-            send' = fx.kernel.send;
-            bind' = fx.kernel.bind;
-            comp = send' "resolve" null;
-            result = handle {
-              handlers = {
-                "resolve" = { param, state }: {
-                  resume = bind' (send' "count" null) (_: send' "count" null);
-                  state = state // { resolved = true; };
+              } comp;
+            in result.value;
+          expected = 22;
+        };
+        "effectful-resume-threads-state" = {
+          expr =
+            let
+              send' = fx.kernel.send;
+              bind' = fx.kernel.bind;
+              comp = send' "resolve" null;
+              result = handle {
+                handlers = {
+                  "resolve" = { param, state }: {
+                    resume = bind' (send' "count" null) (_: send' "count" null);
+                    state = state // { resolved = true; };
+                  };
+                  "count" = { param, state }: {
+                    resume = null;
+                    state = state // { n = (state.n or 0) + 1; };
+                  };
                 };
-                "count" = { param, state }: {
-                  resume = null;
-                  state = state // { n = (state.n or 0) + 1; };
+                state = {};
+              } comp;
+            in { n = result.state.n; resolved = result.state.resolved; };
+          expected = { n = 2; resolved = true; };
+        };
+        "effectful-resume-with-continuation" = {
+          expr =
+            let
+              send' = fx.kernel.send;
+              bind' = fx.kernel.bind;
+              comp = bind' (send' "fetch" null) (x: pure (x + 100));
+              result = handle {
+                handlers = {
+                  "fetch" = { param, state }: {
+                    resume = bind' (send' "db" null) (row: pure row.value);
+                    inherit state;
+                  };
+                  "db" = { param, state }: {
+                    resume = { value = 42; };
+                    inherit state;
+                  };
                 };
-              };
-              state = {};
-            } comp;
-          in { n = result.state.n; resolved = result.state.resolved; };
-        expected = { n = 2; resolved = true; };
-      };
-      "effectful-resume-with-continuation" = {
-        expr =
-          let
-            send' = fx.kernel.send;
-            bind' = fx.kernel.bind;
-            comp = bind' (send' "fetch" null) (x: pure (x + 100));
-            result = handle {
-              handlers = {
-                "fetch" = { param, state }: {
-                  resume = bind' (send' "db" null) (row: pure row.value);
-                  inherit state;
-                };
-                "db" = { param, state }: {
-                  resume = { value = 42; };
-                  inherit state;
-                };
-              };
-            } comp;
-          in result.value;
-        expected = 142;
-      };
-      "plain-resume-unchanged" = {
-        expr =
-          let
-            comp = fx.kernel.send "x" 5;
-            result = handle {
-              handlers.x = { param, state }: { resume = param + 1; inherit state; };
-            } comp;
-          in result.value;
-        expected = 6;
+              } comp;
+            in result.value;
+          expected = 142;
+        };
+        "plain-resume-unchanged" = {
+          expr =
+            let
+              comp = fx.kernel.send "x" 5;
+              result = handle {
+                handlers.x = { param, state }: { resume = param + 1; inherit state; };
+              } comp;
+            in result.value;
+          expected = 6;
+        };
       };
     };
-  };
 
-  rotate = mk {
-    doc = ''
-      Selectively handle known effects and rotate unknown effects outward.
+    rotate = {
+      description = "rotate: selectively handle known effects and rotate unknown ones outward; matches the Kyo-style handler-rotation law for nested scopes.";
+      signature = "rotate : { return ? Identity, handlers, state ? null } -> Computation a -> Computation b";
+      doc = ''
+        Selectively handle known effects and rotate unknown effects outward.
 
-      ```
-      rotate : { return?, handlers, state? } -> Computation a -> Computation b
-      ```
+        If the current effect has a matching handler, the handler is applied.
+        If it does not match, the effect is re-suspended and its continuation
+        is wrapped so handling resumes after that effect is interpreted by an
+        outer handler.
 
-      If the current effect has a matching handler, the handler is applied.
-      If it does not match, the effect is re-suspended and its continuation
-      is wrapped so handling resumes after that effect is interpreted by an
-      outer handler.
+        This corresponds to the Kyo-style handler rotation law
+        from https://gist.github.com/vic/3a7f52974a28675dbaf40b34bec74787:
 
-      This corresponds to the Kyo-style handler rotation law
-      from https://gist.github.com/vic/3a7f52974a28675dbaf40b34bec74787:
-
-      ```
-      handle(tag1, suspend(tag2, i, k), f) = suspend(tag2, i, x => handle(tag1, k(x), f))` for `tag1 != tag2
-      ```
-    '';
-    value = {
-      return ? (value: state: { inherit value state; }),
-      handlers,
-      state ? null,
-    }: comp:
-      assert (isComp comp)
-        || throw "nix-effects: rotate expects a computation (Pure or Impure), got ${builtins.typeOf comp}";
-      effectRotate {
-        inherit comp handlers state;
-        done = return;
-      } 0;
-    tests = {
-      "rotate-matches-handled-effect" = {
-        expr =
-          let
-            comp = fx.kernel.send "inc" 1;
-            rotated = rotate {
-              handlers = {
-                inc = { param, state }: { resume = null; state = state + param; };
-              };
-              state = 0;
-            } comp;
-            result = handle { handlers = {}; } rotated;
-          in result.value.state;
-        expected = 1;
-      };
-      "rotate-preserves-unhandled-effect" = {
-        expr =
-          let
-            comp = fx.kernel.send "outer" 7;
-            rotated = rotate {
-              handlers = {
-                inc = { param, state }: { resume = null; state = state + param; };
-              };
-              state = 0;
-            } comp;
-          in rotated.effect.name;
-        expected = "outer";
-      };
-      "rotate-handles-after-outer-resume" = {
-        expr =
-          let
-            comp = fx.kernel.bind (fx.kernel.send "outer" 7) (_:
-              fx.kernel.send "inc" 1);
-            rotated = rotate {
-              handlers = {
-                inc = { param, state }: { resume = null; state = state + param; };
-              };
-              state = 0;
-            } comp;
-            result = handle {
-              handlers = {
-                outer = { param, state }: { resume = param * 2; inherit state; };
-              };
-            } rotated;
-          in result.value.state;
-        expected = 1;
-      };
-      "effectful-resume-in-rotate" = {
-        expr =
-          let
-            send' = fx.kernel.send;
-            bind' = fx.kernel.bind;
-            comp = send' "a" null;
-            rotated = rotate {
-              handlers = {
-                "a" = { param, state }: {
-                  resume = bind' (send' "b" 5) (x: pure (x + 1));
-                  inherit state;
+        ```
+        handle(tag1, suspend(tag2, i, k), f) = suspend(tag2, i, x => handle(tag1, k(x), f))` for `tag1 != tag2
+        ```
+      '';
+      tests = {
+        "rotate-matches-handled-effect" = {
+          expr =
+            let
+              comp = fx.kernel.send "inc" 1;
+              rotated = rotate {
+                handlers = {
+                  inc = { param, state }: { resume = null; state = state + param; };
                 };
-                "b" = { param, state }: {
-                  resume = param * 2;
-                  inherit state;
+                state = 0;
+              } comp;
+              result = handle { handlers = {}; } rotated;
+            in result.value.state;
+          expected = 1;
+        };
+        "rotate-preserves-unhandled-effect" = {
+          expr =
+            let
+              comp = fx.kernel.send "outer" 7;
+              rotated = rotate {
+                handlers = {
+                  inc = { param, state }: { resume = null; state = state + param; };
                 };
-              };
-            } comp;
-            result = handle { handlers = {}; } rotated;
-          in result.value.value;
-        expected = 11;
+                state = 0;
+              } comp;
+            in rotated.effect.name;
+          expected = "outer";
+        };
+        "rotate-handles-after-outer-resume" = {
+          expr =
+            let
+              comp = fx.kernel.bind (fx.kernel.send "outer" 7) (_:
+                fx.kernel.send "inc" 1);
+              rotated = rotate {
+                handlers = {
+                  inc = { param, state }: { resume = null; state = state + param; };
+                };
+                state = 0;
+              } comp;
+              result = handle {
+                handlers = {
+                  outer = { param, state }: { resume = param * 2; inherit state; };
+                };
+              } rotated;
+            in result.value.state;
+          expected = 1;
+        };
+        "effectful-resume-in-rotate" = {
+          expr =
+            let
+              send' = fx.kernel.send;
+              bind' = fx.kernel.bind;
+              comp = send' "a" null;
+              rotated = rotate {
+                handlers = {
+                  "a" = { param, state }: {
+                    resume = bind' (send' "b" 5) (x: pure (x + 1));
+                    inherit state;
+                  };
+                  "b" = { param, state }: {
+                    resume = param * 2;
+                    inherit state;
+                  };
+                };
+              } comp;
+              result = handle { handlers = {}; } rotated;
+            in result.value.value;
+          expected = 11;
+        };
       };
     };
-  };
-
-in mk {
-  doc = "Trampolined interpreter using builtins.genericClosure for O(1) stack depth.";
-  value = {
-    inherit run handle rotate;
   };
 }

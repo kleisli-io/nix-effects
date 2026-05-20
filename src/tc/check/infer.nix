@@ -68,15 +68,40 @@ in {
         # encoder cascade ~20ms per layer (~100× regression vs pre-γ
         # bare canonical bodies).
         bindP P.AnnType (self.checkType ctx tm.type) (aTm:
-          let aVal = E.eval ctx.env aTm; in
+          let
+            aVal = E.eval ctx.env aTm;
+            inferParamTerms = params:
+              if params == [] then pure []
+              else bind (self.infer ctx (builtins.head params)) (pResult:
+                bind (inferParamTerms (builtins.tail params)) (rest:
+                  pure ([ pResult.term ] ++ rest)));
+            canonicalDescRef = params:
+              let ref = tm._descRef // { inherit params; }; in
+              if aTm.tag == "desc"
+              then ref // { I = aTm.I; level = aTm.k; }
+              else ref;
+          in
 	          if tm.trusted or false
-	          then pure {
-	            term =
-	              if tm ? _descRef
-	              then T.mkAnnTrustedWithDescRef tm.term aTm tm._descRef
-	              else T.mkAnnTrusted tm.term aTm;
-	            type = aVal;
-	          }
+	          then
+              if tm ? _descRef
+              then bind (inferParamTerms (tm._descRef.params or [])) (params:
+                pure {
+                  term = T.mkAnnTrustedWithDescRef tm.term aTm
+                    (canonicalDescRef params);
+                  type = aVal;
+                })
+              else if tm ? _label || tm ? _conLabel
+              then pure {
+                term = T.mkAnnTrustedWithLabels tm.term aTm {
+                  field = tm._label    or null;
+                  con   = tm._conLabel or null;
+                };
+                type = aVal;
+              }
+              else pure {
+                term = T.mkAnnTrusted tm.term aTm;
+                type = aVal;
+              }
 	          else bindP P.AnnTerm (self.check ctx tm.term aVal) (tTm:
 	            pure { term = T.mkAnn tTm aTm; type = aVal; }))
 
@@ -252,6 +277,8 @@ in {
       else if t == "float" then pure { term = T.mkFloat; type = vU0; }
       else if t == "attrs" then pure { term = T.mkAttrs; type = vU0; }
       else if t == "path" then pure { term = T.mkPath; type = vU0; }
+      else if t == "derivation" then pure { term = T.mkDerivation; type = vU0; }
+      else if t == "derivation-thunk" then pure { term = T.mkDerivationThunk; type = vU0; }
       else if t == "function" then pure { term = T.mkFunction; type = vU0; }
       else if t == "any" then pure { term = T.mkAny; type = vU0; }
       # Lift l m eq A — `Lift l m eq A : U(m)`. The bound witness
@@ -264,20 +291,20 @@ in {
       else if t == "lift" then
         let
           atLevels = lVal: mVal:
-            bind (self.check ctx tm.A (V.vU lVal)) (aTm:
-              bind (self.check ctx tm.eq
+            bindP P.AnnType (self.check ctx tm.A (V.vU lVal)) (aTm:
+              bindP P.JEq (self.check ctx tm.eq
                 (V.vBootEq V.vLevel (V.vLevelMax lVal mVal) mVal)) (eqTm:
                 pure { term = T.mkLift tm.l tm.m eqTm aTm;
                        type = V.vU mVal; }));
           withM = lVal:
             if tm.m.tag == "level-zero"
             then atLevels lVal V.vLevelZero
-            else bind (self.check ctx tm.m V.vLevel) (mTm:
+            else bindP P.LevelMaxRhs (self.check ctx tm.m V.vLevel) (mTm:
               atLevels lVal (E.eval ctx.env mTm));
         in
           if tm.l.tag == "level-zero"
           then withM V.vLevelZero
-          else bind (self.check ctx tm.l V.vLevel) (lTm:
+          else bindP P.LevelMaxLhs (self.check ctx tm.l V.vLevel) (lTm:
             withM (E.eval ctx.env lTm))
 
       # lift-intro l m eq A a — `lift l m eq A a : Lift l m eq A`.
@@ -288,23 +315,23 @@ in {
       else if t == "lift-intro" then
         let
           atLevels = lVal: mVal:
-            bind (self.check ctx tm.A (V.vU lVal)) (aTm:
+            bindP P.AnnType (self.check ctx tm.A (V.vU lVal)) (aTm:
               let aVal = E.eval ctx.env aTm; in
-              bind (self.check ctx tm.eq
+              bindP P.JEq (self.check ctx tm.eq
                 (V.vBootEq V.vLevel (V.vLevelMax lVal mVal) mVal)) (eqTm:
                 let eqVal = E.eval ctx.env eqTm; in
-                bind (self.check ctx tm.a aVal) (innerTm:
+                bindP P.AnnTerm (self.check ctx tm.a aVal) (innerTm:
                   pure { term = T.mkLiftIntro tm.l tm.m eqTm aTm innerTm;
                          type = E.vLiftF lVal mVal eqVal aVal; })));
           withM = lVal:
             if tm.m.tag == "level-zero"
             then atLevels lVal V.vLevelZero
-            else bind (self.check ctx tm.m V.vLevel) (mTm:
+            else bindP P.LevelMaxRhs (self.check ctx tm.m V.vLevel) (mTm:
               atLevels lVal (E.eval ctx.env mTm));
         in
           if tm.l.tag == "level-zero"
           then withM V.vLevelZero
-          else bind (self.check ctx tm.l V.vLevel) (lTm:
+          else bindP P.LevelMaxLhs (self.check ctx tm.l V.vLevel) (lTm:
             withM (E.eval ctx.env lTm))
 
       # lift-elim l m eq A x — `lower l m eq A x : A`. Synthesises the
@@ -314,23 +341,23 @@ in {
       else if t == "lift-elim" then
         let
           atLevels = lVal: mVal:
-            bind (self.check ctx tm.A (V.vU lVal)) (aTm:
+            bindP P.AnnType (self.check ctx tm.A (V.vU lVal)) (aTm:
               let aVal = E.eval ctx.env aTm; in
-              bind (self.check ctx tm.eq
+              bindP P.JEq (self.check ctx tm.eq
                 (V.vBootEq V.vLevel (V.vLevelMax lVal mVal) mVal)) (eqTm:
                 let eqVal = E.eval ctx.env eqTm; in
-                bind (self.check ctx tm.x (V.vLift lVal mVal eqVal aVal)) (xTm:
+                bindP P.Scrut (self.check ctx tm.x (V.vLift lVal mVal eqVal aVal)) (xTm:
                   pure { term = T.mkLiftElim tm.l tm.m eqTm aTm xTm;
                          type = aVal; })));
           withM = lVal:
             if tm.m.tag == "level-zero"
             then atLevels lVal V.vLevelZero
-            else bind (self.check ctx tm.m V.vLevel) (mTm:
+            else bindP P.LevelMaxRhs (self.check ctx tm.m V.vLevel) (mTm:
               atLevels lVal (E.eval ctx.env mTm));
         in
           if tm.l.tag == "level-zero"
           then withM V.vLevelZero
-          else bind (self.check ctx tm.l V.vLevel) (lTm:
+          else bindP P.LevelMaxLhs (self.check ctx tm.l V.vLevel) (lTm:
             withM (E.eval ctx.env lTm))
 
       # desc^k I — takes a level k and index type I. `desc^k I : U(suc k)`.
@@ -340,7 +367,7 @@ in {
       else if t == "desc" then
         let
           atLevel = kVal:
-            bind (self.check ctx tm.I vU0) (iTm:
+            bindP P.AnnType (self.check ctx tm.I vU0) (iTm:
               pure { term = T.mkDesc tm.k iTm;
                      type = if tm.k.tag == "level-zero"
                             then vU1
@@ -348,7 +375,7 @@ in {
         in
           if tm.k.tag == "level-zero"
           then atLevel V.vLevelZero
-          else bind (self.check ctx tm.k V.vLevel) (kTm:
+          else bindP P.DElimLevel (self.check ctx tm.k V.vLevel) (kTm:
             atLevel (E.eval ctx.env kTm))
 
       # desc-con D i d — `con : μ D i` packing payload d at index i.
@@ -397,60 +424,63 @@ in {
           else
             let
               iTyVal = dTy.I;
-              dTm = dResult.term;
-              dVal = E.eval ctx.env dTm;
-              # motive : (i:I) → μ I D i → U(k)
-              # 2-layer dependent chain: the inner domain `μ D i` depends
-              # on the outer binder `i : I`. `checkMotive` walks both
-              # lam layers and checks the innermost codomain as a type
-              # at any universe level, matching the large-elim treatment
-              # of the other eliminator rules.
-              chain = {
-                head = iTyVal;
-                tail = iVal: {
-                  head = V.vMu iTyVal dVal iVal;
-                  tail = _xVal: null;
-                };
-              };
-            in bindP P.Motive (self.checkMotive ctx tm.motive chain) (pR:
+            in bindP P.MuDesc (self.checkDescAtAnyLevel ctx tm.D iTyVal) (dInfo:
               let
-                pTm = pR.term;
-                pVal = E.eval ctx.env pTm;
-                # The motive's return universe rides through allTy as a
-                # Level *value* — `mkAllMotive` and `allOnPlus` reference
-                # it via the closure env, so polymorphic motive levels
-                # (e.g. `λk. λA. λx. u k`, where `k` is a bound Level
-                # variable) flow through verbatim without a Val→Int
-                # coercion that would reject non-concrete levels.
-                # The All-type for a `descArg L S T` summand inhabits
-                # `U(max(L, K))` (the inner Π over S:U(L) lifts the
-                # codomain universe). Using `pR.level` alone would
-                # promise too low when `L > pR.level`. Threading
-                # `max(dVal.level, pR.level)` keeps allTy's claimed
-                # universe in step with what the case bodies actually
-                # inhabit in iso-style assemblies. For prelude (`dVal.level`
-                # is `VLevelZero`) the max collapses to `pR.level`,
-                # so existing call sites are byte-identical.
-                kEff =
-                  if dTy.level.tag == "VLevelZero" then pR.level
-                  else if pR.level.tag == "VLevelZero" then dTy.level
-                  else V.vLevelMax dTy.level pR.level;
-                # step : Π(i:I). Π(d : ⟦D⟧(μ D) i). All D P i d → P i (con i d)
-                #
-                # Uniform construction via kernel-primitive `mkInterpD` /
-                # `mkAllD` Tms. The `vInterpDF` / `vAllDF` dispatchers
-                # handle encoded VDescCon, stuck VNe, and primitive VDescX
-                # shapes uniformly, so D's representation no longer drives
-                # the build strategy.
-                #
-                # extEnv layout (innermost-first): 0:pVal, 1:dVal,
-                # 2:iTyVal, 3:kEff, 4:dTy.level. ctx.env follows from 5.
-                # Inside i-binder body: shift +1 → 0:i, 1:pVal, 2:dVal,
-                # 3:iTyVal, 4:kEff, 5:dLev. Inside i+d body: shift +2.
-                # Inside i+d+_ body: shift +3.
-                stepTy =
-                  let
-                    extEnv = [ pVal dVal iTyVal kEff dTy.level ] ++ ctx.env;
+                dTm = dInfo.term;
+                dVal = E.eval ctx.env dTm;
+                dLevel = dInfo.level;
+                # motive : (i:I) → μ I D i → U(k)
+                # 2-layer dependent chain: the inner domain `μ D i` depends
+                # on the outer binder `i : I`. `checkMotive` walks both
+                # lam layers and checks the innermost codomain as a type
+                # at any universe level, matching the large-elim treatment
+                # of the other eliminator rules.
+                chain = {
+                  head = iTyVal;
+                  tail = iVal: {
+                    head = V.vMu iTyVal dVal iVal;
+                    tail = _xVal: null;
+                  };
+                };
+              in bindP P.Motive (self.checkMotive ctx tm.motive chain) (pR:
+                let
+                  pTm = pR.term;
+                  pVal = E.eval ctx.env pTm;
+                  # The motive's return universe rides through allTy as a
+                  # Level *value* — `mkAllMotive` and `allOnPlus` reference
+                  # it via the closure env, so polymorphic motive levels
+                  # (e.g. `λk. λA. λx. u k`, where `k` is a bound Level
+                  # variable) flow through verbatim without a Val→Int
+                  # coercion that would reject non-concrete levels.
+                  # The All-type for a `descArg L S T` summand inhabits
+                  # `U(max(L, K))` (the inner Π over S:U(L) lifts the
+                  # codomain universe). Using `pR.level` alone would
+                  # promise too low when `L > pR.level`. Threading
+                  # `max(dLevel, pR.level)` keeps allTy's claimed
+                  # universe in step with what the case bodies actually
+                  # inhabit in iso-style assemblies. For prelude (`dLevel`
+                  # is `VLevelZero`) the max collapses to `pR.level`,
+                  # so existing call sites are byte-identical.
+                  kEff =
+                    if dLevel.tag == "VLevelZero" then pR.level
+                    else if pR.level.tag == "VLevelZero" then dLevel
+                    else V.vLevelMax dLevel pR.level;
+                  # step : Π(i:I). Π(d : ⟦D⟧(μ D) i). All D P i d → P i (con i d)
+                  #
+                  # Uniform construction via kernel-primitive `mkInterpD` /
+                  # `mkAllD` Tms. The `vInterpDF` / `vAllDF` dispatchers
+                  # handle encoded VDescCon, stuck VNe, and primitive VDescX
+                  # shapes uniformly, so D's representation no longer drives
+                  # the build strategy.
+                  #
+                  # extEnv layout (innermost-first): 0:pVal, 1:dVal,
+                  # 2:iTyVal, 3:kEff, 4:dLevel. ctx.env follows from 5.
+                  # Inside i-binder body: shift +1 → 0:i, 1:pVal, 2:dVal,
+                  # 3:iTyVal, 4:kEff, 5:dLev. Inside i+d body: shift +2.
+                  # Inside i+d+_ body: shift +3.
+                  stepTy =
+                    let
+                      extEnv = [ pVal dVal iTyVal kEff dLevel ] ++ ctx.env;
                     # `λj:I. μ I D j` under the i-binder: j adds +1 to
                     # all extEnv refs, so iTyVal is at 4 and dVal at 3.
                     muFamForInterp = T.mkLam "_j"
@@ -478,17 +508,17 @@ in {
                     retTyAtTm = T.mkApp
                       (T.mkApp (T.mkVar 3) (T.mkVar 2))
                       (T.mkDescCon (T.mkVar 4) (T.mkVar 2) (T.mkVar 1));
-                  in V.vPi "i" iTyVal (V.mkClosure extEnv
-                    (T.mkPi "d" interpTyAtTm
-                      (T.mkPi "_" allTyAtTm retTyAtTm)));
-              in bindP (P.Case "step") (self.check ctx tm.step stepTy) (stepTm:
-                bindP P.MuIndex (self.check ctx tm.i iTyVal) (iTm:
-                  let iVal = E.eval ctx.env iTm; in
-                  bindP P.Scrut (self.check ctx tm.scrut (V.vMu iTyVal dVal iVal)) (xTm:
-                    let retTy = E.vApp (E.vApp pVal iVal)
-                                  (E.eval ctx.env xTm); in
-                    pure { term = T.mkDescInd dTm pTm stepTm iTm xTm;
-                           type = retTy; })))))
+                    in V.vPi "i" iTyVal (V.mkClosure extEnv
+                      (T.mkPi "d" interpTyAtTm
+                        (T.mkPi "_" allTyAtTm retTyAtTm)));
+                in bindP (P.Case "step") (self.check ctx tm.step stepTy) (stepTm:
+                  bindP P.MuIndex (self.check ctx tm.i iTyVal) (iTm:
+                    let iVal = E.eval ctx.env iTm; in
+                    bindP P.Scrut (self.check ctx tm.scrut (V.vMu iTyVal dVal iVal)) (xTm:
+                      let retTy = E.vApp (E.vApp pVal iVal)
+                                    (E.eval ctx.env xTm); in
+                      pure { term = T.mkDescInd dTm pTm stepTm iTm xTm;
+                             type = retTy; }))))))
 
       # interpD ℓ I D X i : U(ℓ) — kernel-primitive interpretation of a
       # description (CDMM §4.2.3, Table 6.2). The Tm carries explicit
@@ -638,12 +668,51 @@ in {
               type = ty;
             }))
 
+      # canon-app id params body : T — generic counterpart of
+      # desc-desc-app. Synthesises the body's type, then walks the param
+      # list threading the result through Π-elimination: each param is
+      # checked against the current domain and the closure is
+      # instantiated with the evaluated param. The result type is the
+      # residual Val after all params are consumed.
+      else if t == "canon-app" then
+        bindP P.AppHead (self.infer ctx tm.body) (bodyResult:
+          let
+            nParams = builtins.length tm.params;
+            walk = idx: paramTms: tyVal:
+              if idx == nParams then
+                pure {
+                  term = T.mkCanonApp tm.id paramTms bodyResult.term;
+                  type = tyVal;
+                }
+              else if tyVal.tag != "VPi"
+              then send "typeError" {
+                error = D.mkKernelError {
+                  position = P.AppHead;
+                  rule     = "canon-app";
+                  msg      = "canon-app: expected Π type at param index "
+                            + toString idx + " (id=" + tm.id + ")";
+                  expected = { tag = "pi"; };
+                  got      = Q.quote ctx.depth tyVal;
+                };
+              }
+              else
+                bindP P.AppArg
+                  (self.check ctx (builtins.elemAt tm.params idx) tyVal.domain)
+                  (pTm:
+                    let
+                      pVal = E.eval ctx.env pTm;
+                      retTy = E.instantiate tyVal.closure pVal;
+                    in walk (idx + 1) (paramTms ++ [ pTm ]) retTy);
+          in walk 0 [] bodyResult.type)
+
       # Primitive literals infer their types
       else if t == "string-lit" then pure { term = T.mkStringLit tm.value; type = V.vString; }
       else if t == "int-lit" then pure { term = T.mkIntLit tm.value; type = V.vInt; }
       else if t == "float-lit" then pure { term = T.mkFloatLit tm.value; type = V.vFloat; }
       else if t == "attrs-lit" then pure { term = T.mkAttrsLit; type = V.vAttrs; }
       else if t == "path-lit" then pure { term = T.mkPathLit; type = V.vPath; }
+      else if t == "derivation-lit" then pure { term = T.mkDerivationLit; type = V.vDerivation; }
+      else if t == "derivation-thunk-lit" then pure { term = T.mkDerivationThunkLit; type = V.vDerivationThunk; }
       else if t == "fn-lit" then pure { term = T.mkFnLit; type = V.vFunction; }
       else if t == "any-lit" then pure { term = T.mkAnyLit; type = V.vAny; }
 
@@ -675,8 +744,12 @@ in {
       # `bVal` is captured at extEnv index 0 so the closure body
       # references it via `Var 1` (post-arg-push).
       else if t == "squash-elim" then
-        bind (self.checkType ctx tm.A) (aTm:
-          bind (self.checkType ctx tm.B) (bTm:
+        # Position alphabet reuse: A → JType (ambient type of the
+        # scrutinee, analogous to J's `A : U`); B → Motive (the
+        # result type the eliminator produces); f → AppHead (the
+        # function being applied at the inhabitant); x → Scrut.
+        bindP P.JType (self.checkType ctx tm.A) (aTm:
+          bindP P.Motive (self.checkType ctx tm.B) (bTm:
             let
               aVal = E.eval ctx.env aTm;
               bVal = E.eval ctx.env bTm;
@@ -685,13 +758,13 @@ in {
                       (V.mkClosure extEnv (T.mkSquash (T.mkVar 1)));
               xTy = V.vSquash aVal;
             in
-            bind (self.check ctx tm.f fTy) (fTm:
-              bind (self.check ctx tm.x xTy) (xTm:
+            bindP P.AppHead (self.check ctx tm.f fTy) (fTm:
+              bindP P.Scrut (self.check ctx tm.x xTy) (xTm:
                 pure { term = T.mkSquashElim aTm bTm fTm xTm;
                        type = V.vSquash bVal; }))))
 
       else if t == "pi" || t == "sigma" || t == "list" || t == "boot-sum" || t == "boot-eq" || t == "mu" || t == "squash" then
-        bind (self.checkTypeLevel ctx tm) (r:
+        bindP P.AnnType (self.checkTypeLevel ctx tm) (r:
           pure { term = r.term; type = V.vU r.level; })
 
       else send "typeError" {
@@ -703,5 +776,41 @@ in {
         };
       };
   };
+
   tests = {};
+
+  __docs = {
+    infer = {
+      description = "infer: bidirectional synthesis-mode entry — given a term, return both the elaborated kernel term and a `Val` representing its inferred type; covers variables, annotations, application, projections, eliminators, the universe hierarchy, primitive type formers, and Desc/Mu operations.";
+      signature = "infer : Ctx -> Tm -> Comp { term : Tm; type : Val; }";
+      doc = ''
+        Dispatches on `tm.tag` to one rule per term shape. Type formers
+        (`pi`, `sigma`, `list`, `boot-sum`, `boot-eq`, `mu`, `squash`)
+        delegate to `checkTypeLevel` and lift the returned level into a
+        `VU` type. Eliminators (`bool-elim`, `list-elim`, `sum-elim`,
+        `desc-ind`, `j`, `squash-elim`, ...) are the most intricate
+        dispatches: each builds expected motive/step types by quoting
+        the motive at the appropriate de Bruijn depth, accounting for
+        the fresh binders introduced by each step lambda.
+
+        Variables look up their type in `ctx.types` by index. `ann`
+        elaborates the type annotation first, then checks the body
+        against the resulting `Val` — with one optimisation: when
+        `_descRef` is present and the body is `trusted` (emitted only
+        by `T.mkAnnTrusted` inside the kernel itself), the body is
+        accepted without re-checking. This avoids quadratic blowup on
+        deep recursive-data CHECK where every layer carries the same
+        encoded element description. `app` infers the function side,
+        validates the argument against the domain, and instantiates the
+        codomain closure with the argument's value.
+
+        Failure to find an applicable rule emits a `typeError` with
+        rule `"infer"` and message `"cannot infer type"`. Per-rule
+        positions and rules identify the specific failure for the
+        diagnostic renderer. Cross-ref: `check` for the checking-mode
+        side, `checkTypeLevel` for type-former level extraction,
+        `checkMotive` for motive validation in eliminator rules.
+      '';
+    };
+  };
 }

@@ -35,10 +35,11 @@ every A-value to a B-value. Decision procedures are decidable and total,
 which makes them practical, but they can only state properties about the
 values in front of them.
 
-"For ALL services in this configuration, if they listen on a port, a
-firewall rule exists" — that's a universally quantified statement. No
-decision procedure can check it. You need structural verification of a
-proof term, not evaluation of a predicate.
+"For every generated aspect, all declared dependencies appear earlier in
+the resolved dependency graph" — that's a universally quantified
+statement over a whole DSL value. No decision procedure can check it by
+looking at one field. You need structural verification of a proof term,
+not evaluation of a predicate.
 
 ## Kernel integration
 
@@ -61,7 +62,7 @@ Pure Nix
 ```
 
 Types in `fx.types.*` compile to kernel HOAS trees via
-`elaborate.nix`. `Record`, `ListOf`, `DepRecord`, and `refined` all
+`src/tc/elaborate/`. `Record`, `ListOf`, `DepRecord`, and `refined` all
 resolve to Σ/Π/μ constructions the kernel can check. `.check` runs
 `decide(_kernel, v)`; `.validate v` wraps the same pipeline in a
 `typeCheck` effect request so handlers in `src/effects/typecheck.nix`
@@ -237,8 +238,8 @@ interactiveChecker = {
 
 ```
 
-Same handler-swap pattern that the current `ServiceConfig.validate`
-uses. Same trampoline running the computation. The kernel is just
+Same handler-swap pattern that `AspectDecl.validate` uses. Same
+trampoline running the computation. The kernel is just
 another effectful program running on the effects infrastructure.
 
 ## Types grounded in the kernel
@@ -549,30 +550,35 @@ The type system layer in `src/types/` is grounded in the kernel:
 - `refinement.nix` — `refined`, predicate combinators
 - `universe.nix` — `typeAt`, `Type_0` through `Type_4`, `level`
 
-All types have kernel backing via `kernelType`. The architecture is:
+All types have kernel backing via `kernelType`. The current architecture
+has these layers above the trusted kernel:
 
-1. **Kernel module** (`src/tc/`, ~2200 lines) — term/value
-   representations, NbE evaluator, quotation, conversion, bidirectional
-   checking. Uses environments and closures, not explicit substitution.
+1. **Kernel core** (`src/tc/term.nix`, `value.nix`, `eval/`,
+   `quote.nix`, `conv.nix`, `check/`) — term/value representations,
+   NbE evaluator, quotation, conversion, bidirectional checking,
+   description interpretation, Lift, Squash, Funext, and fuel-threaded
+   normalization. Uses environments and defunctionalized closures, not
+   explicit substitution or Nix lambdas in the TCB.
 
-2. **Elaboration module** (`src/tc/elaborate.nix`, `hoas.nix`) —
-   translates the surface API into kernel types and translates Nix
-   values into kernel terms. HOAS combinators for readable proof terms.
+2. **Surface and elaboration** (`src/tc/hoas/`, `src/tc/elaborate/`,
+   `src/tc/verified.nix`) — translates HOAS terms and `fx.types`
+   values into kernel terms, translates Nix values into kernel
+   introductions, and extracts verified kernel values back to usable
+   Nix functions.
 
-3. **Extraction layer** (`extract` in `elaborate.nix`) — reverses
-   elaboration: kernel values back to Nix values. Enables verified
-   functions: write in HOAS, kernel-check, extract usable Nix code.
+3. **Description-backed tools** (`src/tc/generic/`,
+   `src/tc/hoas/datatype.nix`, `src/tc/hoas/ornament.nix`) — generated
+   datatypes, metadata views, view/review, derived schemas, derived
+   dependencies, generic checks, plain ornaments, functional ornaments,
+   and algebraic ornaments. These tools read the same descriptions the
+   kernel checks.
 
-4. **Convenience combinators** (`src/tc/verified.nix`) — higher-level
-   interface for writing verified implementations with automatic motive
-   construction and annotation insertion.
-
-5. **Decision procedures** — `.check` on every type is the kernel's
+4. **Decision procedures** — `.check` on every type is the kernel's
    `decide` procedure: elaborate the value to HOAS, run bidirectional
    kernel checking, return a boolean. Refinement types extend this
    with a guard predicate conjoined at the leaf.
 
-6. **Surface API** — the public-facing `fx.types.*` attrset. Same
+5. **Surface API** — the public-facing `fx.types.*` attrset. Same
    names, same usage patterns. `Record`, `ListOf`,
    `DepRecord`, `refined`, `Pi`, `Sigma` all work. `T.check v` runs
    the kernel's decide procedure. `T.prove prop` checks a proof term.
@@ -594,7 +600,7 @@ in {
   validated = fx.run (Nat.validate 42) handlers [];
 
   # Checking a proof term
-  proofOk = (H.checkHoas (H.eq H.nat H.zero H.zero) H.refl).tag == "Tm";
+  proofOk = (H.checkHoas (H.eq H.nat H.zero H.zero) H.refl).tag == "refl";
 
   # Verified function extraction
   succ = v.verify (H.forall "x" H.nat (_: H.nat)) (v.fn "x" H.nat (x: H.succ x));
@@ -603,23 +609,24 @@ in {
 
 ## What exists
 
-1. **Type-checking kernel** (`src/tc/eval.nix`, `check.nix`,
-   `quote.nix`, `conv.nix`, `term.nix`, `value.nix`). Pi, Sigma,
-   Unit, bootstrap identity/coproduct infrastructure, indexed
-   descriptions (`Desc I`, `μ`, `desc-ind`), explicit universe levels,
-   and 7 axiomatized primitive types (String, Int, Float, Attrs, Path,
+1. **Type-checking kernel** (`src/tc/term.nix`, `value.nix`,
+   `eval/`, `quote.nix`, `conv.nix`, `check/`). Pi, Sigma, Unit,
+   Squash, Lift, Funext, bootstrap identity/coproduct infrastructure,
+   indexed descriptions (`Desc I`, `μ`, `interpD`, `allD`,
+   `everywhereD`, `desc-ind`), explicit universe levels, and seven
+   axiomatized primitive types (String, Int, Float, Attrs, Path,
    Function, Any). Public `Nat`, `List`, `Sum`, `Bool`, `Eq`, `Fin`,
    `Vec`, and `W` are generated through descriptions and the datatype
-   macro.
-   Bidirectional checking with NbE. Fuel-bounded evaluation with
+   macro. Bidirectional checking with NbE. Fuel-bounded evaluation with
    `genericClosure` trampolining for stack safety.
 
-2. **HOAS surface combinators** (`src/tc/hoas.nix`). `forall`, `lam`,
-   `sigma`, `pair`, `natLit`, `natElim`, `boolElim`, `listElim`,
-   `sumElim`, `j`, `refl`, `eq`, and more. Variable binding via Nix
-   lambdas. Automatic elaboration from HOAS to de Bruijn core terms.
+2. **HOAS surface combinators** (`src/tc/hoas/`). `forall`, `lam`,
+   `sigma`, `pair`, `natLit`, `boolElim`, `listElim`, `sumElim`, `j`,
+   `refl`, `eq`, generated datatype constructors, and ornament
+   constructors. Variable binding via Nix lambdas at the surface.
+   Automatic elaboration from HOAS to de Bruijn core terms.
 
-3. **Elaboration and extraction** (`src/tc/elaborate.nix`). Maps all
+3. **Elaboration and extraction** (`src/tc/elaborate/`). Maps all
    type values to kernel terms via `elaborateValue`. `decide` function
    provides `.check` for all types. `extract` reverses elaboration,
    converting kernel values back to Nix values. Sentinel-based
@@ -634,6 +641,11 @@ in {
    interface: `v.verify type impl` writes in HOAS, kernel-checks,
    and extracts a usable Nix function. Includes `if_`, `match`,
    `matchList`, `matchSum`, `map`, `fold`, `filter`.
+
+6. **Generic description tools** (`src/tc/generic/`). Metadata
+   inspection, value `view`/`review`, structural checks, schema and
+   dependency derivation, and generic ornament APIs over generated
+   datatype descriptions.
 
 ## Future work
 

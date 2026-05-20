@@ -4,9 +4,11 @@
 # `ctx.nix` (contexts + helpers), `check.nix` (check + checkMotive),
 # `infer.nix` (infer), `type.nix` (checkType/checkTypeLevel); `partTests`
 # is the aggregated test map.
-{ self, partTests, api, ... }:
+{ self, partTests, partDocs, api, ... }:
 
-api.mk {
+api.mkModule {
+  inherit partDocs;
+  description = "fx.tc.check: bidirectional type checker (kernel-spec §7–§9) — check/infer/checkType/checkTypeLevel with cumulativity, large elimination, and trampolined succ/cons chains.";
   doc = ''
     # fx.tc.check — Bidirectional Type Checker
 
@@ -55,6 +57,11 @@ api.mk {
       runCheck checkTm inferTm
       bindP bindPChain
       diag;
+
+    _internal = api.mk {
+      description = "fx.tc.check._internal: cross-part checker helpers reachable from sibling parts via the self-fixpoint; not part of the stable consumer surface.";
+      value = { inherit (self) checkMotive checkDescAtAnyLevel singleton; };
+    };
   };
   tests = partTests;
 }

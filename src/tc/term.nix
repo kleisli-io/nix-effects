@@ -30,6 +30,32 @@ let
   mkAnnTrusted = term: type: { tag = "ann"; inherit term type; trusted = true; };
   mkAnnTrustedWithDescRef = term: type: descRef:
     { tag = "ann"; inherit term type; _descRef = descRef; trusted = true; };
+  # `mkAnnTrustedWithLabels` — vehicle for erasable presentation labels
+  # that ride on a description-encoding term. Two orthogonal slots:
+  #   - `field` : Maybe String — the per-node binding name. Propagates
+  #     to `_label`. Set by `H.field`/`H.recField`/`H.piField`/
+  #     `H.withDescLabel`.
+  #   - `con`   : Maybe String — the surrounding constructor's name.
+  #     Propagates to `_conLabel`. Set by `H.con` (via `H.withConLabel`).
+  # The two are orthogonal because nesting a single `_label` slot would
+  # cause the outer wrap (constructor) to overwrite the inner (first
+  # field's name) when conDesc's first emission already carries a label.
+  # Both are sidecar metadata: eval copies them onto the resulting value,
+  # conv ignores them (operates structurally on `.D/.i/.d`), so
+  # definitional equality stays label-irrelevant on both axes. The
+  # elaborator emits this around `desc-{ret,arg,rec,pi,plus}-enc`
+  # encoder application chains when the HOAS form carries `_label` or
+  # `_conLabel` or both. The body is type-correct by construction
+  # (closed encoder application), so `trusted = true` skips body re-check.
+  mkAnnTrustedWithLabels = term: type: labels:
+    let
+      field = labels.field or null;
+      con   = labels.con   or null;
+      base  = { tag = "ann"; inherit term type; trusted = true; };
+    in
+      base
+      // (if field != null then { _label    = field; } else {})
+      // (if con   != null then { _conLabel = con;   } else {});
 
   # -- Functions --
   mkPi = name: domain: codomain: { tag = "pi"; inherit name domain codomain; };
@@ -172,6 +198,17 @@ let
   # VDescCon so conv and quote can short-circuit on the tag.
   mkDescDescApp = I: L: { tag = "desc-desc-app"; inherit I L; };
 
+  # `canonApp id params body : T`, where `T` is the type of
+  # `body` applied to every param — generic counterpart of
+  # `descDescApp` for user-registered canonical descriptions. The eval
+  # rule applies `body` to each param in left-to-right order and stamps
+  # the resulting `VDescCon` with `_canonRef = { id; params; }`, so conv
+  # and quote short-circuit on the canonical identity instead of forcing
+  # `.D`. `body` must reduce to a curried chain of `VLam`s that, after
+  # consuming `params`, yields a `VDescCon`.
+  mkCanonApp = id: params: body:
+    { tag = "canon-app"; inherit id params body; };
+
   # -- Lift primitive --
   # Tarski + non-cumulative cross-level transport. `Lift l m eq A : U(m)`
   # is the type of values transported from `A : U(l)` up to `U(m)`,
@@ -213,6 +250,8 @@ let
   mkFloat = { tag = "float"; };
   mkAttrs = { tag = "attrs"; };
   mkPath = { tag = "path"; };
+  mkDerivation = { tag = "derivation"; };
+  mkDerivationThunk = { tag = "derivation-thunk"; };
   mkFunction = { tag = "function"; };
   mkAny = { tag = "any"; };
 
@@ -225,6 +264,8 @@ let
   mkFloatLit = f: { tag = "float-lit"; value = f; };
   mkAttrsLit = { tag = "attrs-lit"; };
   mkPathLit = { tag = "path-lit"; };
+  mkDerivationLit = { tag = "derivation-lit"; };
+  mkDerivationThunkLit = { tag = "derivation-thunk-lit"; };
   mkFnLit = { tag = "fn-lit"; };
   mkAnyLit = { tag = "any-lit"; };
 
@@ -281,27 +322,296 @@ in mk {
     - `mkLevelLit : Int → Tm` — builds `suc^n zero` as a Level term.
 
     ### Axiomatized Primitives (§2.1)
-    - `mkString`, `mkInt`, `mkFloat`, `mkAttrs`, `mkPath`, `mkFunction`, `mkAny` — type formers
-    - `mkStringLit`, `mkIntLit`, `mkFloatLit`, `mkAttrsLit`, `mkPathLit`, `mkFnLit`, `mkAnyLit` — literal values
+    - `mkString`, `mkInt`, `mkFloat`, `mkAttrs`, `mkPath`, `mkDerivation`, `mkDerivationThunk`, `mkFunction`, `mkAny` — type formers
+    - `mkStringLit`, `mkIntLit`, `mkFloatLit`, `mkAttrsLit`, `mkPathLit`, `mkDerivationLit`, `mkDerivationThunkLit`, `mkFnLit`, `mkAnyLit` — literal values
   '';
   value = {
-    inherit mkVar mkLet mkAnn mkAnnTrusted mkAnnTrustedWithDescRef;
-    inherit mkPi mkLam mkApp;
-    inherit mkSigma mkPair mkFst mkSnd;
-    inherit mkUnit mkTt;
-    inherit mkBootSum mkBootInl mkBootInr mkBootSumElim;
-    inherit mkBootEq mkBootRefl mkBootJ;
-    inherit mkSquash mkSquashIntro mkSquashElim;
-    inherit mkFunext funextTypeTm;
-    inherit mkDesc mkMu mkDescCon mkDescConWithCert mkDescInd;
-    inherit mkInterpD mkAllD mkEverywhereD mkDescDescApp;
-    inherit mkU;
-    inherit mkLift mkLiftIntro mkLiftElim;
-    inherit mkLevel mkLevelZero mkLevelSuc mkLevelMax mkLevelLit;
-    inherit mkString mkInt mkFloat mkAttrs mkPath mkFunction mkAny;
-    inherit mkStrEq;
-    inherit mkStringLit mkIntLit mkFloatLit mkAttrsLit mkPathLit mkFnLit mkAnyLit;
-    inherit mkOpaqueLam;
+    inherit
+      mkVar mkLet mkAnn mkAnnTrusted mkAnnTrustedWithDescRef mkAnnTrustedWithLabels
+      mkPi mkLam mkApp
+      mkSigma mkPair mkFst mkSnd
+      mkUnit mkTt
+      mkBootSum mkBootInl mkBootInr mkBootSumElim
+      mkBootEq mkBootRefl mkBootJ
+      mkSquash mkSquashIntro mkSquashElim
+      mkFunext funextTypeTm
+      mkDesc mkMu mkDescCon mkDescConWithCert mkDescInd
+      mkInterpD mkAllD mkEverywhereD mkDescDescApp mkCanonApp
+      mkU
+      mkLift mkLiftIntro mkLiftElim
+      mkLevel mkLevelZero mkLevelSuc mkLevelMax mkLevelLit
+      mkString mkInt mkFloat mkAttrs mkPath mkDerivation mkDerivationThunk mkFunction mkAny
+      mkStrEq
+      mkStringLit mkIntLit mkFloatLit mkAttrsLit mkPathLit mkDerivationLit mkDerivationThunkLit mkFnLit mkAnyLit
+      mkOpaqueLam
+    ;
+    __docs = {
+      mkVar = {
+        description = "mkVar: variable reference by de Bruijn index — `0` is the innermost binder; higher indices reach outer binders.";
+        signature = "mkVar : Int -> Tm";
+      };
+      mkLet = {
+        description = "mkLet: let-binding `let name : type = val in body` — `name` is cosmetic, the binder is introduced into body's de Bruijn context as index `0`.";
+        signature = "mkLet : String -> Tm -> Tm -> Tm -> Tm  -- name, type, val, body";
+      };
+      mkAnn = {
+        description = "mkAnn: type annotation `(term : type)` — fixes the checking direction at the kernel level; consumed by `Sub` and elaboration.";
+        signature = "mkAnn : Tm -> Tm -> Tm  -- term, type";
+      };
+      mkAnnTrusted = {
+        description = "mkAnnTrusted: type annotation marked as elaborator-trusted — `check` skips re-validation of `term` against `type` since elaboration has already proved well-typedness.";
+        signature = "mkAnnTrusted : Tm -> Tm -> Tm  -- term, type";
+      };
+      mkAnnTrustedWithDescRef = {
+        description = "mkAnnTrustedWithDescRef: trusted annotation carrying a `_descRef` sidecar — used by the HOAS elaborator to retain levitated description provenance across eval/quote round-trips.";
+        signature = "mkAnnTrustedWithDescRef : Tm -> Tm -> Any -> Tm  -- term, type, descRef";
+      };
+      mkAnnTrustedWithLabels = {
+        description = "mkAnnTrustedWithLabels: trusted annotation carrying `_label` / `_conLabel` sidecars — used by `H.withDescLabel` / `H.withConLabel` to surface presentation labels on `descView`.";
+        signature = "mkAnnTrustedWithLabels : Tm -> Tm -> { label?, conLabel? } -> Tm";
+      };
+
+      mkPi = {
+        description = "mkPi: dependent function type `Π(name : domain). codomain` — `name` is cosmetic, the binder is introduced into codomain's de Bruijn context as index `0`.";
+        signature = "mkPi : String -> Tm -> Tm -> Tm  -- name, domain, codomain";
+      };
+      mkLam = {
+        description = "mkLam: lambda abstraction `λ(name : domain). body` — domain annotation is optional at check time (overridden by expected Π's domain).";
+        signature = "mkLam : String -> Tm -> Tm -> Tm  -- name, domain, body";
+      };
+      mkApp = {
+        description = "mkApp: function application `fn arg` — head `fn` is checked first to infer Π type, then `arg` is checked against the domain.";
+        signature = "mkApp : Tm -> Tm -> Tm  -- fn, arg";
+      };
+
+      mkSigma = {
+        description = "mkSigma: dependent pair type `Σ(name : fst). snd` — `name` is cosmetic, the binder is introduced into snd's de Bruijn context as index `0`.";
+        signature = "mkSigma : String -> Tm -> Tm -> Tm  -- name, fst, snd";
+      };
+      mkPair = {
+        description = "mkPair: pair constructor `(fst, snd)` — both components are checked against the corresponding Σ slots at the expected type.";
+        signature = "mkPair : Tm -> Tm -> Tm  -- fst, snd";
+      };
+      mkFst = {
+        description = "mkFst: first-projection eliminator on a Σ-typed term — yields the dependent `fst` component; Σ-eta is exercised in `conv`.";
+        signature = "mkFst : Tm -> Tm";
+      };
+      mkSnd = {
+        description = "mkSnd: second-projection eliminator on a Σ-typed term — yields the `snd` component with `fst` substituted; Σ-eta is exercised in `conv`.";
+        signature = "mkSnd : Tm -> Tm";
+      };
+
+      mkUnit = {
+        description = "mkUnit: unit type `Unit` — terminal type with single inhabitant `tt`; backs `fx.types.Unit` at universe level 0.";
+      };
+      mkTt = {
+        description = "mkTt: unit value `tt` — sole inhabitant of `mkUnit`; eta-converts every term of type `Unit` to itself.";
+      };
+
+      mkBootSum = {
+        description = "mkBootSum: bootstrap coproduct type `A + B` — used by `descPlus` to encode sum-of-descriptions before generic sums become available.";
+        signature = "mkBootSum : Tm -> Tm -> Tm  -- left, right";
+      };
+      mkBootInl = {
+        description = "mkBootInl: left-injection of `mkBootSum` — `inl(a) : A + B`; carries both `A` and `B` for elaboration shape recovery.";
+        signature = "mkBootInl : Tm -> Tm -> Tm -> Tm  -- leftTy, rightTy, value";
+      };
+      mkBootInr = {
+        description = "mkBootInr: right-injection of `mkBootSum` — `inr(b) : A + B`; carries both `A` and `B` for elaboration shape recovery.";
+        signature = "mkBootInr : Tm -> Tm -> Tm -> Tm  -- leftTy, rightTy, value";
+      };
+      mkBootSumElim = {
+        description = "mkBootSumElim: bootstrap sum eliminator — case-splits a `A + B` scrutinee through `onLeft`/`onRight` arms at motive `(_:A+B) -> Q _`.";
+        signature = "mkBootSumElim : Tm -> Tm -> Tm -> Tm -> Tm -> Tm -> Tm  -- leftTy, rightTy, motive, onLeft, onRight, scrut";
+      };
+
+      mkBootEq = {
+        description = "mkBootEq: bootstrap identity type `Eq(A, a, b)` — propositional equality used by `descRet`'s level transport and by the J eliminator.";
+        signature = "mkBootEq : Tm -> Tm -> Tm -> Tm  -- A, a, b";
+      };
+      mkBootRefl = {
+        description = "mkBootRefl: bootstrap reflexivity `refl : Eq(A, a, a)` — the canonical inhabitant of every reflexive identity type; check-mode only at elaboration.";
+      };
+      mkBootJ = {
+        description = "mkBootJ: J eliminator on `mkBootEq` — transports a property `motive` along a proof of equality, yielding a term at the other endpoint.";
+        signature = "mkBootJ : Tm -> Tm -> Tm -> Tm -> Tm -> Tm -> Tm  -- A, a, motive, identity, b, eq";
+      };
+
+      mkSquash = {
+        description = "mkSquash: propositional truncation `Squash A` — quotient of `A` collapsing all inhabitants to one, used for proof-irrelevant fields.";
+        signature = "mkSquash : Tm -> Tm";
+      };
+      mkSquashIntro = {
+        description = "mkSquashIntro: introduction of `Squash A` — lifts any `a : A` to a single inhabitant of `Squash A`.";
+        signature = "mkSquashIntro : Tm -> Tm";
+      };
+      mkSquashElim = {
+        description = "mkSquashElim: eliminator for `Squash` restricted to `Squash`-typed motives — preserves proof irrelevance by forbidding motives that distinguish inhabitants.";
+        signature = "mkSquashElim : Tm -> Tm -> Tm -> Tm -> Tm  -- A, motive, fn, scrut";
+      };
+
+      mkFunext = {
+        description = "mkFunext: function-extensionality axiom — given pointwise-equal `f`, `g` at every argument, produces an equality proof `Eq (Π a:A. B a) f g`.";
+        signature = "mkFunext : Tm -> Tm -> Tm -> Tm -> Tm -> Tm  -- A, B, f, g, hypothesis";
+      };
+      funextTypeTm = {
+        description = "funextTypeTm: pre-elaborated kernel term for the funext axiom's type `∀(j,k,A,B,f,g). (∀a. Eq (B a) (f a) (g a)) -> Eq (Π a:A. B a) f g`.";
+      };
+
+      mkDesc = {
+        description = "mkDesc: description type `Desc I k` at index sort `I` and universe level `k` — the levitated algebra of constructors for datatypes.";
+        signature = "mkDesc : Tm -> Tm -> Tm  -- I, k";
+      };
+      mkMu = {
+        description = "mkMu: levitated fixpoint `μ I D i` — carrier type of values whose constructors are described by `D : Desc I k` at index `i`.";
+        signature = "mkMu : Tm -> Tm -> Tm -> Tm  -- I, D, i";
+      };
+      mkDescCon = {
+        description = "mkDescCon: constructor introduction for `μ I D i` — takes a payload typed by `interpD D (μ I D) i` and returns the corresponding `μ` value.";
+        signature = "mkDescCon : Tm -> Tm -> Tm -> Tm  -- D, i, payload";
+      };
+      mkDescConWithCert = {
+        description = "mkDescConWithCert: `mkDescCon` carrying a `Squash`-truncated guard certificate — used by `fx.types.Certified` to thread refinement proofs through the kernel.";
+        signature = "mkDescConWithCert : Tm -> Tm -> Tm -> Tm -> Tm  -- D, i, payload, cert";
+      };
+      mkDescInd = {
+        description = "mkDescInd: levitated induction principle on `μ I D` — given a motive and step function, produces a generic recursor over the data described by `D`.";
+        signature = "mkDescInd : Tm -> Tm -> Tm -> Tm -> Tm -> Tm  -- I, D, motive, step, scrut";
+      };
+
+      mkInterpD = {
+        description = "mkInterpD: interpret a description `D : Desc I k` against a recursive carrier `X : I -> U(k)` at index `i`, yielding the payload type `interpD D X i`.";
+        signature = "mkInterpD : Tm -> Tm -> Tm -> Tm -> Tm  -- k, I, D, X, i";
+      };
+      mkAllD = {
+        description = "mkAllD: induction-hypothesis collector `All D X P i payload` — given motive `P : (i:I) -> X i -> U(k)`, threads `P` through every recursive child in the payload.";
+        signature = "mkAllD : Tm -> Tm -> Tm -> Tm -> Tm -> Tm -> Tm -> Tm  -- k, I, D, level, X, P, i, payload";
+      };
+      mkEverywhereD = {
+        description = "mkEverywhereD: payload-traversal combinator over a description — applies a per-node `f` at every recursive position, producing a derived payload of the same shape.";
+        signature = "mkEverywhereD : Tm -> Tm -> Tm -> Tm -> Tm -> Tm -> Tm -> Tm -> Tm";
+      };
+      mkDescDescApp = {
+        description = "mkDescDescApp: applied form of `descDesc` — `Desc I (suc k)` whose mu-fixpoint is `Desc I k`; bootstraps generic programming over descriptions themselves.";
+        signature = "mkDescDescApp : Tm -> Tm -> Tm  -- I, k";
+      };
+      mkCanonApp = {
+        description = "mkCanonApp: generic identity-tagged application — `canon-app id params body` evaluates by currying-applying `body` to `params` and stamps the result `VDescCon` with `_canonRef = { id; params; }`; conv/quote short-circuit on the canonical identity instead of forcing `.D`.";
+        signature = "mkCanonApp : String -> [Tm] -> Tm -> Tm  -- id, params, body";
+      };
+
+      mkU = {
+        description = "mkU: universe type `U(level)` at the given level expression — accepts either a concrete `Int` (wrapped via `mkLevelLit`) or a Level-typed `Tm`.";
+        signature = "mkU : (Int | Tm) -> Tm";
+      };
+
+      mkLift = {
+        description = "mkLift: Tarski lift `LiftAt l m A : U(m)` with `l ≤ m` — non-cumulative cross-level transport of a type at level `l` into level `m`.";
+        signature = "mkLift : Tm -> Tm -> Tm -> Tm  -- l, m, A";
+      };
+      mkLiftIntro = {
+        description = "mkLiftIntro: introduction of `Lift l m A` — lifts a term `a : A` at level `l` to a term at level `m`; eq witness is auto-emitted via `mkBootRefl`.";
+        signature = "mkLiftIntro : Tm -> Tm -> Tm -> Tm -> Tm  -- l, m, A, a";
+      };
+      mkLiftElim = {
+        description = "mkLiftElim: elimination of `Lift l m A` — lowers a lifted term back to its original level; the inverse pairing with `mkLiftIntro`.";
+        signature = "mkLiftElim : Tm -> Tm -> Tm -> Tm -> Tm  -- l, m, A, x";
+      };
+
+      mkLevel = {
+        description = "mkLevel: universe-level sort `Level : U(0)` — the type former whose inhabitants are level expressions used in `mkU`.";
+      };
+      mkLevelZero = {
+        description = "mkLevelZero: level-zero literal `0 : Level` — base case of `Level`'s inductive structure.";
+      };
+      mkLevelSuc = {
+        description = "mkLevelSuc: successor `suc(level) : Level` — increment a Level expression by one.";
+        signature = "mkLevelSuc : Tm -> Tm";
+      };
+      mkLevelMax = {
+        description = "mkLevelMax: pointwise max of two levels `max(l, r) : Level` — used to compute the universe of `Σ` / `Π` types whose components inhabit distinct universes.";
+        signature = "mkLevelMax : Tm -> Tm -> Tm  -- l, r";
+      };
+      mkLevelLit = {
+        description = "mkLevelLit: concrete Level literal from an `Int` — builds `suc^n zero` as a Level term; entry point for level-polymorphism-free code.";
+        signature = "mkLevelLit : Int -> Tm";
+      };
+
+      mkString = {
+        description = "mkString: axiomatised primitive type `String` — type former at U(0) inhabited by Nix string values.";
+      };
+      mkInt = {
+        description = "mkInt: axiomatised primitive type `Int` — type former at U(0) inhabited by Nix integers (excludes floats).";
+      };
+      mkFloat = {
+        description = "mkFloat: axiomatised primitive type `Float` — type former at U(0) inhabited by Nix floats (excludes integers).";
+      };
+      mkAttrs = {
+        description = "mkAttrs: axiomatised primitive type `Attrs` — type former at U(0) inhabited by any Nix attribute set, including `{}`.";
+      };
+      mkPath = {
+        description = "mkPath: axiomatised primitive type `Path` — type former at U(0) inhabited by Nix path values.";
+      };
+      mkDerivation = {
+        description = "mkDerivation: axiomatised primitive type `Derivation` — type former at U(0) inhabited by Nix derivation values (attrsets with `type = \"derivation\"`); the irreducible Nix-store-producing value category.";
+      };
+      mkDerivationThunk = {
+        description = "mkDerivationThunk: axiomatised primitive type `DerivationThunk` — type former at U(0) inhabited by deepSeq-safe derivation carriers `{ _tag = \"DerivationThunk\"; _force = _: drv; }` produced by `fx.state.mkDerivationThunk`. Distinct from `mkDerivation`: disjoint value sets, no implicit subtyping.";
+      };
+      mkFunction = {
+        description = "mkFunction: axiomatised primitive type `Function` — type former at U(0) inhabited by opaque Nix-level functions wrapped via `mkOpaqueLam`.";
+      };
+      mkAny = {
+        description = "mkAny: axiomatised top primitive type `Any` — accepts every Nix value; used as the lossy-fallback kernel for approximate types.";
+      };
+
+      mkStrEq = {
+        description = "mkStrEq: decidable equality on `String` literals `strEq a b : Bool` — used by indexed datatypes whose constructor selection branches on string keys.";
+        signature = "mkStrEq : Tm -> Tm -> Tm  -- a, b";
+      };
+
+      mkStringLit = {
+        description = "mkStringLit: kernel literal for a Nix string `s : String`.";
+        signature = "mkStringLit : String -> Tm";
+      };
+      mkIntLit = {
+        description = "mkIntLit: kernel literal for a Nix integer `n : Int`.";
+        signature = "mkIntLit : Int -> Tm";
+      };
+      mkFloatLit = {
+        description = "mkFloatLit: kernel literal for a Nix float `x : Float`.";
+        signature = "mkFloatLit : Float -> Tm";
+      };
+      mkAttrsLit = {
+        description = "mkAttrsLit: kernel literal for a Nix attribute set `a : Attrs`; the attrs are carried opaquely (no per-field validation at the kernel level).";
+        signature = "mkAttrsLit : Attrs -> Tm";
+      };
+      mkPathLit = {
+        description = "mkPathLit: kernel literal for a Nix path `p : Path`.";
+        signature = "mkPathLit : Path -> Tm";
+      };
+      mkDerivationLit = {
+        description = "mkDerivationLit: kernel literal for a Nix derivation `d : Derivation`; the value is carried opaquely (kernel never inspects derivation attrs).";
+        signature = "mkDerivationLit : Derivation -> Tm";
+      };
+      mkDerivationThunkLit = {
+        description = "mkDerivationThunkLit: kernel literal for a DerivationThunk carrier `t : DerivationThunk`; the carrier is carried opaquely (kernel never forces `_force`).";
+        signature = "mkDerivationThunkLit : DerivationThunk -> Tm";
+      };
+      mkFnLit = {
+        description = "mkFnLit: kernel literal for an opaque Nix function `f : Function` — wraps the function in an `fnBox` for thunk-identity-preserving conversion.";
+        signature = "mkFnLit : Function -> Tm";
+      };
+      mkAnyLit = {
+        description = "mkAnyLit: kernel literal for an arbitrary Nix value `v : Any` — used by approximate types whose kernel slot is `mkAny`.";
+        signature = "mkAnyLit : Any -> Tm";
+      };
+
+      mkOpaqueLam = {
+        description = "mkOpaqueLam: lambda over an opaque Nix function — kernel never inspects or applies it; `fnBox` thunk identity preserves conv reflexivity across eval/quote rounds.";
+        signature = "mkOpaqueLam : FnBox -> Tm -> Tm  -- fnBox, piType";
+      };
+    };
   };
   tests = {
     "var-tag" = { expr = (mkVar 0).tag; expected = "var"; };
@@ -374,6 +684,8 @@ in mk {
     "float-tag" = { expr = mkFloat.tag; expected = "float"; };
     "attrs-tag" = { expr = mkAttrs.tag; expected = "attrs"; };
     "path-tag" = { expr = mkPath.tag; expected = "path"; };
+    "derivation-tag" = { expr = mkDerivation.tag; expected = "derivation"; };
+    "derivation-thunk-tag" = { expr = mkDerivationThunk.tag; expected = "derivation-thunk"; };
     "function-tag" = { expr = mkFunction.tag; expected = "function"; };
     "any-tag" = { expr = mkAny.tag; expected = "any"; };
     "string-lit-tag" = { expr = (mkStringLit "hello").tag; expected = "string-lit"; };
@@ -384,6 +696,8 @@ in mk {
     "float-lit-value" = { expr = (mkFloatLit 3.14).value; expected = 3.14; };
     "attrs-lit-tag" = { expr = mkAttrsLit.tag; expected = "attrs-lit"; };
     "path-lit-tag" = { expr = mkPathLit.tag; expected = "path-lit"; };
+    "derivation-lit-tag" = { expr = mkDerivationLit.tag; expected = "derivation-lit"; };
+    "derivation-thunk-lit-tag" = { expr = mkDerivationThunkLit.tag; expected = "derivation-thunk-lit"; };
     "fn-lit-tag" = { expr = mkFnLit.tag; expected = "fn-lit"; };
     "any-lit-tag" = { expr = mkAnyLit.tag; expected = "any-lit"; };
     "opaque-lam-tag" = { expr = (mkOpaqueLam { _fn = (x: x); } mkUnit).tag; expected = "opaque-lam"; };

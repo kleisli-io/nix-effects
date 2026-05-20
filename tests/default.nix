@@ -21,6 +21,8 @@ let
   sugarEffectsTests = import ./sugar-effects-test.nix { inherit lib fx; };
   sugarTypesTests = import ./sugar-types-test.nix { inherit lib fx; };
   sugarCompatTests = import ./sugar-compat-test.nix { inherit lib fx; };
+  thunkTests = import ./thunk-test.nix { inherit lib fx; };
+  descInterpParityTests = import ./experimental/desc-interp-parity { inherit lib fx; };
 
 in {
   inherit (trampolineTests) pureComputation singleEffect simpleCounter
@@ -176,8 +178,7 @@ in {
           strElemFound strElemMissing strElemEmptyList
           recordStrEqMatch recordStrEqNoMatch;
 
-  inherit (docsTests) portExample depContractExample stateEffectExample
-          apiSurfaceSanity apiDocsSkipsPlainWrapperData;
+  inherit (docsTests) stateEffectExample apiSurfaceSanity apiDocsSkipsPlainWrapperData;
 
   inherit (pipelineTests) fullPipelineTest pureOnlyTest;
 
@@ -185,7 +186,8 @@ in {
           statePatternEquivState
           errorPatternDesugared errorPatternDo
           readerPatternDesugared readerPatternLetM
-          doEmpty doSingleton
+          doEmpty doSingleton doAutoLift doMixed doComposable doPointFree
+          stepsSequences
           divAssociativityTest
           divNotTopLevel divUnderOperators
           reexportsPresent
@@ -214,6 +216,14 @@ in {
           validationFailureEmits
           stabilityAudit;
 
+  inherit (thunkTests) trampolineSurvivesCyclicDrv
+          threePackagesInState allEntriesAreCarriers
+          recoveryReturnsOriginalDrv roundTripIdentity
+          rawDrvRejectedByThunkType carrierAcceptedByThunkType
+          carrierRejectedByDerivationType;
+
+  experimental.descInterp.parity = descInterpParityTests;
+
   allPass = trampolineTests.allPass && typesTests.allPass && effectsTests.allPass
             && lawTests.allPass && errorPathTests.allPass
             && newEffectsTests.allPass && streamTests.allPass
@@ -226,5 +236,7 @@ in {
             && scopeTests.allPass
             && sugarEffectsTests.allPass
             && sugarTypesTests.allPass
-            && sugarCompatTests.allPass;
+            && sugarCompatTests.allPass
+            && thunkTests.allPass
+            && descInterpParityTests.allPass;
 }

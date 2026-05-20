@@ -8,10 +8,8 @@
 #   v.verify (H.forall "x" H.nat (_: H.nat))
 #            (v.fn "x" H.nat (x: H.succ x))
 #   → 1-argument Nix function, correct by construction
-{ fx, api, ... }:
-
+{ fx, ... }:
 let
-  inherit (api) mk;
   H = fx.tc.hoas;
   Elab = fx.tc.elaborate;
 
@@ -138,29 +136,112 @@ let
       list;
 
   # -- Record field access --
-  # v.field recordTy fieldName record — project a named field from a record.
-  # Desugars to nested fst/snd chains based on field position in the record type.
-  # recordTy must be an H.record [...] type. The field name must exist in it.
+  # v.field recordTy fieldName record — project a named field from a
+  # mono-constructor record by universal-property eliminator projection.
+  #
+  # For `R := μ(mk : A₀ → … → Aₙ₋₁ → R)`, the i-th field projector is
+  #   πᵢ := λr:R. elim K (λ_:R. Aᵢ) (λa₀ … λaᵢ … λaₙ₋₁. aᵢ) r
+  # where `K = level(Aᵢ)` is the motive's codomain universe. The selector
+  # method binds n field variables in declaration order and returns the
+  # idx-th one. Uniform over arity and field position; the `n == 1` case
+  # is handled by ι-reduction (`elim P (λa.a) (mk a) ≡ a`), not a special
+  # case in the surface.
+  #
+  # `recordTy` must carry `_dtypeMeta` with exactly one constructor.
   field = recordTy: fieldName: record:
     let
-      fields = recordTy.fields;
+      meta = fx.tc.generic.datatype.datatypeInfo recordTy;
+      cs = meta.constructors;
+      nCons = builtins.length cs;
+      _conCheck =
+        if nCons != 1
+        then throw "v.field: expected mono-constructor datatype '${meta.name}', got ${toString nCons}"
+        else null;
+      con = builtins.head cs;
+      fields = con.fields;
       n = builtins.length fields;
-      found = builtins.filter (i: (builtins.elemAt fields i).name == fieldName)
-                (builtins.genList (i: i) n);
-      idx = if found == []
-            then throw "v.field: field '${fieldName}' not found in record"
-            else builtins.head found;
-      # Navigate: apply snd idx times, then fst (unless last field).
-      # For n==1, there's no sigma nesting — the record IS the field value.
-      navigate = depth: expr:
-        if depth == 0 then
-          if idx < n - 1 then H.fst_ expr else expr
+      _empty = if n == 0
+               then throw "v.field: record '${meta.name}' has no fields"
+               else null;
+
+      idxs = builtins.genList (i: i) n;
+      matches = builtins.filter
+                  (i: (builtins.elemAt fields i).name == fieldName) idxs;
+      idx = if matches == []
+            then throw "v.field: field '${fieldName}' not found in '${meta.name}'"
+            else builtins.head matches;
+
+      selectedField = builtins.elemAt fields idx;
+      fieldTy = selectedField.type;
+      # Forced to 0 by `H.field` (`datatype.nix:32`); read from fieldMeta
+      # so the construction generalises if a higher-level field DSL appears.
+      motiveK = if selectedField.level != null then selectedField.level else 0;
+
+      motive = H.lam "_" recordTy (_: fieldTy);
+      # Curried selector: λa₀ … λaᵢ … λaₙ₋₁. aᵢ. Uniform over arity; the
+      # idx-th binder is returned at the leaf.
+      buildSelector = remaining: priorBinders:
+        if remaining == []
+        then builtins.elemAt priorBinders idx
         else
-          navigate (depth - 1) (H.snd_ expr);
+          let f = builtins.head remaining;
+              rest = builtins.tail remaining;
+          in H.lam f.name f.type (v: buildSelector rest (priorBinders ++ [v]));
+      step = buildSelector fields [];
     in
-      if n == 0 then throw "v.field: empty record"
-      else if n == 1 then record
-      else navigate idx record;
+      builtins.seq _conCheck (builtins.seq _empty
+        (H.app
+          (H.app
+            (H.app (meta.elim motiveK) motive)
+            step)
+          record));
+
+  # -- Record construction by name --
+  # v.makeRecord recordTy { fieldName = hoasValue; ... } — construct a
+  # mono-constructor record by applying its kernel constructor to the
+  # field values, ordered by declaration. Dual to `v.field`: named
+  # projection meets named construction, hiding the μ-encoding from
+  # callers (no positional `foldl' H.app DT.mk [...]` at consumer sites).
+  #
+  # For `R := μ(mk : A₀ → … → Aₙ₋₁ → R)`, this is `mk a₀ … aₙ₋₁` where
+  # `aᵢ = argsAttrs.${fieldᵢ.name}`. Field order is read from
+  # `meta.constructors[0].fields`; for `H.record` this coincides with
+  # alphabetical name order, but the implementation defers to whatever
+  # order the description carries.
+  #
+  # Throws at build time on a multi-constructor datatype, on a missing
+  # field, or on an unknown field. The constructor term is
+  # `meta.constructors[0].ctor` (the HOAS constructor exposed under
+  # `_dtypeMeta.cons[i].ctor` by `_datatypeImpl`).
+  makeRecord = recordTy: argsAttrs:
+    let
+      meta = fx.tc.generic.datatype.datatypeInfo recordTy;
+      cs = meta.constructors;
+      nCons = builtins.length cs;
+      _conCheck =
+        if nCons != 1
+        then throw "v.makeRecord: expected mono-constructor datatype '${meta.name}', got ${toString nCons}"
+        else null;
+      con = builtins.head cs;
+      fields = con.fields;
+      # `map` is shadowed by the local v.map HOAS combinator at the top
+      # of this file; reach for the builtin explicitly here and below.
+      fieldNames = builtins.map (f: f.name) fields;
+      argNames = builtins.attrNames argsAttrs;
+      missing = builtins.filter (n: !(argsAttrs ? ${n})) fieldNames;
+      extras = builtins.filter (n: !(builtins.elem n fieldNames)) argNames;
+      _missingCheck =
+        if missing != []
+        then throw "v.makeRecord: '${meta.name}' missing fields: ${builtins.concatStringsSep ", " missing}"
+        else null;
+      _extrasCheck =
+        if extras != []
+        then throw "v.makeRecord: '${meta.name}' has unknown fields: ${builtins.concatStringsSep ", " extras}"
+        else null;
+      orderedArgs = builtins.map (n: argsAttrs.${n}) fieldNames;
+    in
+      builtins.seq _conCheck (builtins.seq _missingCheck (builtins.seq _extrasCheck
+        (builtins.foldl' H.app con.ctor orderedArgs)));
 
   # -- Full pipeline wrapper --
   # v.verify type impl → Nix value (type-checked and extracted)
@@ -178,8 +259,16 @@ let
       _hoasImpl = bodyHoas;
     };
 
-in mk {
-  doc = ''
+in {
+  inherit nat str int_ float_ true_ false_ null_ fn pair fst snd
+          field makeRecord inl inr app if_ match matchList matchSum
+          map fold filter strEq strElem verify verifiedFn;
+  let_ = let__;
+
+
+  __docs = {
+    _self = {
+      doc = ''
     # fx.tc.verified — Verified Implementation Combinators
 
     High-level combinators for writing kernel-checked implementations.
@@ -238,28 +327,7 @@ in mk {
     - `verifiedFn : Hoas → Hoas → VerifiedValue` — callable value with
       `_hoasImpl` for full kernel body verification in parent types
   '';
-  value = {
-    # Literals
-    inherit nat str int_ float_ true_ false_ null_;
-    # Binding
-    inherit fn;
-    let_ = let__;
-    # Pairs / Records
-    inherit pair fst snd field;
-    # Sums
-    inherit inl inr;
-    # Application
-    inherit app;
-    # Eliminators
-    inherit if_ match matchList matchSum;
-    # Derived
-    inherit map fold filter;
-    # String
-    inherit strEq strElem;
-    # Pipeline
-    inherit verify verifiedFn;
-  };
-  tests = let
+      tests = let
     # Type shorthands
     NatT = H.nat;
     BoolT = H.bool;
@@ -576,6 +644,97 @@ in mk {
       expected = 42;
     };
 
+    # ===== v.makeRecord: named record construction =====
+
+    # 2-field construction: build {x; y} and extract.
+    "v-makeRecord-2field-construct" = {
+      expr = let
+        recTy = H.record [ { name = "x"; type = NatT; } { name = "y"; type = BoolT; } ];
+        builder = verify (H.forall "_" UnitT (_: recTy))
+          (fn "_" UnitT (_: makeRecord recTy { x = nat 7; y = true_; }));
+        r = builder null;
+      in { x = r.x; y = r.y; };
+      expected = { x = 7; y = true; };
+    };
+
+    # 3 fields: attrset is name-keyed, so declaration order in `H.record`
+    # versus call-site order in the attrset don't need to match.
+    "v-makeRecord-3field-construct" = {
+      expr = let
+        recTy = H.record [
+          { name = "a"; type = NatT; }
+          { name = "b"; type = StringT; }
+          { name = "c"; type = BoolT; }
+        ];
+        builder = verify (H.forall "_" UnitT (_: recTy))
+          (fn "_" UnitT (_: makeRecord recTy {
+            c = false_; a = nat 5; b = str "ok";
+          }));
+        r = builder null;
+      in { a = r.a; b = r.b; c = r.c; };
+      expected = { a = 5; b = "ok"; c = false; };
+    };
+
+    # Roundtrip: construct then project each field returns the input value.
+    "v-makeRecord-roundtrip" = {
+      expr = let
+        recTy = H.record [ { name = "x"; type = NatT; } { name = "y"; type = BoolT; } ];
+        round = verify (H.forall "_" UnitT (_: recTy))
+          (fn "_" UnitT (_: makeRecord recTy { x = nat 9; y = true_; }));
+        getX = verify (H.forall "r" recTy (_: NatT))
+          (fn "r" recTy (r: field recTy "x" r));
+        getY = verify (H.forall "r" recTy (_: BoolT))
+          (fn "r" recTy (r: field recTy "y" r));
+        r = round null;
+      in { x = getX r; y = getY r; };
+      expected = { x = 9; y = true; };
+    };
+
+    # Missing field throws at build time.
+    "v-makeRecord-missing-fields-throws" = {
+      expr = let
+        recTy = H.record [ { name = "x"; type = NatT; } { name = "y"; type = BoolT; } ];
+        attempt = builtins.tryEval (makeRecord recTy { x = nat 1; });
+      in attempt.success;
+      expected = false;
+    };
+
+    # Extra field throws at build time.
+    "v-makeRecord-extra-fields-throws" = {
+      expr = let
+        recTy = H.record [ { name = "x"; type = NatT; } { name = "y"; type = BoolT; } ];
+        attempt = builtins.tryEval
+          (makeRecord recTy { x = nat 1; y = true_; z = null_; });
+      in attempt.success;
+      expected = false;
+    };
+
+    # Multi-constructor datatype (Variant) is rejected: makeRecord is for
+    # mono-constructor records only. Caller would use a tag-aware builder.
+    "v-makeRecord-non-record-throws" = {
+      expr = let
+        varTy = H.variant [
+          { tag = "Left"; type = NatT; }
+          { tag = "Right"; type = BoolT; }
+        ];
+        attempt = builtins.tryEval (makeRecord varTy { Left = nat 1; });
+      in attempt.success;
+      expected = false;
+    };
+
+    # 1-field record: builder produces the wrapped value, projector
+    # recovers it.
+    "v-makeRecord-1field" = {
+      expr = let
+        recTy = H.record [ { name = "x"; type = NatT; } ];
+        round = verify (H.forall "_" UnitT (_: recTy))
+          (fn "_" UnitT (_: makeRecord recTy { x = nat 42; }));
+        getX = verify (H.forall "r" recTy (_: NatT))
+          (fn "r" recTy (r: field recTy "x" r));
+      in getX (round null);
+      expected = 42;
+    };
+
     # ===== verifiedFn: callable with _hoasImpl protocol =====
 
     "verified-fn-is-callable" = {
@@ -627,5 +786,225 @@ in mk {
       in Elab.decide boolToNat f;
       expected = false;
     };
+  };
+    };
+
+    nat = {
+      description = "nat: HOAS literal — wrap a Nix `Int` as a `succ^n zero` natural-number HOAS term checkable against `H.nat`.";
+      signature = "nat : Int -> Hoas";
+    };
+    str = {
+      description = "str: HOAS literal — lift a Nix `String` to a `stringLit` HOAS term checkable against `H.string`.";
+      signature = "str : String -> Hoas";
+    };
+    int_ = {
+      description = "int_: HOAS literal — lift a Nix integer to an `intLit` HOAS term checkable against `H.int_` (the kernel `Int` axiom, distinct from `nat`).";
+      signature = "int_ : Int -> Hoas";
+    };
+    float_ = {
+      description = "float_: HOAS literal — lift a Nix float to a `floatLit` HOAS term checkable against `H.float_`.";
+      signature = "float_ : Float -> Hoas";
+    };
+    true_ = {
+      description = "true_: HOAS literal — the `True` constructor of `H.bool` as `inr tt`; reflects the bool-as-sum levitation discipline.";
+      signature = "true_ : Hoas";
+    };
+    false_ = {
+      description = "false_: HOAS literal — the `False` constructor of `H.bool` as `inl tt`; reflects the bool-as-sum levitation discipline.";
+      signature = "false_ : Hoas";
+    };
+    null_ = {
+      description = "null_: HOAS literal — the unique inhabitant `tt` of `H.unit`; the conventional empty / placeholder value in verified code.";
+      signature = "null_ : Hoas";
+    };
+    fn = {
+      description = "fn: HOAS lambda — `fn name domTy body` builds `λ(name:domTy). body`, with `body` a Nix function receiving the bound variable as a HOAS term.";
+      signature = "fn : String -> Hoas -> (Hoas -> Hoas) -> Hoas";
+    };
+    let_ = {
+      description = "let_: HOAS let binding — `let_ name ty val body` builds `let name : ty = val in body`; `body` is a Nix function receiving the bound variable.";
+      signature = "let_ : String -> Hoas -> Hoas -> (Hoas -> Hoas) -> Hoas";
+    };
+    pair = {
+      description = "pair: HOAS Σ-pair constructor — `pair fst snd` packages two HOAS values; the surrounding annotation fixes which Σ-type the pair inhabits.";
+      signature = "pair : Hoas -> Hoas -> Hoas";
+    };
+    fst = {
+      description = "fst: first projection on a HOAS Σ-pair; reduces by π₁ during normalisation.";
+      signature = "fst : Hoas -> Hoas";
+    };
+    snd = {
+      description = "snd: second projection on a HOAS Σ-pair; reduces by π₂ during normalisation.";
+      signature = "snd : Hoas -> Hoas";
+    };
+    field = {
+      description = "field: HOAS record field-projection by name — derives the universal-property eliminator for a mono-constructor datatype and applies it to extract the named field.";
+      signature = "field : Hoas -> String -> Hoas -> Hoas";
+      doc = ''
+        Requires `recordTy` to carry `_dtypeMeta` with exactly one
+        constructor (records are mono-constructor datatypes via
+        `H.record`). Throws at build time if the type is
+        multi-constructor, has no fields, or the requested field name
+        is absent. The 1-field special case reduces via ι
+        (`elim P (λa.a) (mk a) ≡ a`); no surface branching is needed.
+        Field positions are read from `meta.constructors[0].fields` in
+        declaration order, so renaming a field in source is a
+        breaking change.
+      '';
+    };
+    makeRecord = {
+      description = "makeRecord: HOAS record construction by name — applies the mono-constructor of a μ-encoded record type to the field values in declaration order, dual to `field`'s named projection.";
+      signature = "makeRecord : Hoas -> { <field> = Hoas; ... } -> Hoas";
+      doc = ''
+        Dual to `field`. Given a record type built by `H.record` (or
+        any mono-constructor datatype carrying `_dtypeMeta`) and an
+        attrset keyed by field name, produces the HOAS term
+        `mk a₀ … aₙ₋₁` where each `aᵢ` is read from `argsAttrs`
+        by field name, and
+        field order follows `meta.constructors[0].fields` (for
+        `H.record`, alphabetical by name).
+
+        Throws at build time on a multi-constructor datatype, a
+        missing required field, or an unknown extra field. The
+        constructor term used is `meta.constructors[0].ctor`, exposed
+        on the kernel datatype attrset by `_datatypeImpl`.
+
+        Use this in verified implementations that return records, so
+        consumer code never needs to reach for `builtins.foldl' H.app
+        DT.mk [...]` or know the μ-encoding.
+      '';
+    };
+    inl = {
+      description = "inl: HOAS sum left-injection — `inl leftTy rightTy term` builds an `A + B` term carrying `term : A` in the left branch.";
+      signature = "inl : Hoas -> Hoas -> Hoas -> Hoas";
+    };
+    inr = {
+      description = "inr: HOAS sum right-injection — `inr leftTy rightTy term` builds an `A + B` term carrying `term : B` in the right branch.";
+      signature = "inr : Hoas -> Hoas -> Hoas -> Hoas";
+    };
+    app = {
+      description = "app: HOAS function application — `app f arg` builds the redex; β-reduces during normalisation when `f` is a lambda.";
+      signature = "app : Hoas -> Hoas -> Hoas";
+    };
+    if_ = {
+      description = "if_: bool-elimination wrapper — supplies a constant motive `λ_.resultTy` so callers write only the result type and the two branches.";
+      signature = "if_ : Hoas -> Hoas -> { then_ : Hoas; else_ : Hoas; } -> Hoas";
+      doc = ''
+        Use when the branch result type does not depend on the
+        scrutinee. For a dependent motive (different result type per
+        branch), drop to `H.boolElim` directly. The synthesised motive
+        is `λ_:bool.resultTy`; `boolElim`'s level argument is fixed at
+        0 here, so cross-universe branching also needs `H.boolElim`.
+      '';
+    };
+    match = {
+      description = "match: nat-elimination wrapper — supplies a constant motive `λ_.resultTy`; the `succ` callback receives both predecessor `k` and inductive hypothesis `ih`.";
+      signature = "match : Hoas -> Hoas -> { zero : Hoas; succ : Hoas -> Hoas -> Hoas; } -> Hoas";
+      doc = ''
+        The succ callback receives two HOAS values: `k` (the
+        predecessor binder, of type `nat`) and `ih` (the inductive
+        hypothesis, of type `resultTy`). Use when result type is
+        non-dependent on the scrutinee; drop to `H.ind` for dependent
+        motives. Level is fixed at 0 by the synthesised motive.
+      '';
+    };
+    matchList = {
+      description = "matchList: list-elimination wrapper — constant motive `λ_.resultTy`; the `cons` callback binds head, tail, and inductive hypothesis.";
+      signature = "matchList : Hoas -> Hoas -> Hoas -> { nil : Hoas; cons : Hoas -> Hoas -> Hoas -> Hoas; } -> Hoas";
+      doc = ''
+        The cons callback receives three HOAS values: `h` (the head
+        element of type `elemTy`), `t` (the tail list of type
+        `listOf elemTy`), and `ih` (the inductive hypothesis of type
+        `resultTy`). For dependent motives, drop to `H.listElim`.
+        Level fixed at 0.
+      '';
+    };
+    matchSum = {
+      description = "matchSum: sum-elimination wrapper — constant motive `λ_.resultTy`; the left and right callbacks receive their respective payloads.";
+      signature = "matchSum : Hoas -> Hoas -> Hoas -> Hoas -> { left : Hoas -> Hoas; right : Hoas -> Hoas; } -> Hoas";
+      doc = ''
+        Each callback receives one HOAS value: the left payload for
+        `left`, the right payload for `right`. Use when the result
+        type doesn't depend on which case fires; drop to `H.sumElim`
+        for dependent motives. Level fixed at 0.
+      '';
+    };
+    map = {
+      description = "map: HOAS list-map combinator built on `listElim` — applies `f : elemTy -> resultTy` to every element, threading the inductive hypothesis to accumulate the output list.";
+      signature = "map : Hoas -> Hoas -> Hoas -> Hoas -> Hoas";
+      doc = ''
+        Annotates `f` with `H.forall "_" elemTy (_: resultTy)` so the
+        kernel can infer the application type. `f` must be a HOAS
+        function term (build one with `fn`), not a Nix function. For
+        element transformations that aren't expressible as a uniform
+        HOAS function (e.g. type-dependent on element shape), drop to
+        `H.listElim` directly.
+      '';
+    };
+    fold = {
+      description = "fold: HOAS list-fold combinator — combines elements right-to-left using `f : elemTy -> resultTy -> resultTy` starting from `init`.";
+      signature = "fold : Hoas -> Hoas -> Hoas -> Hoas -> Hoas -> Hoas";
+      doc = ''
+        Annotates `f` with `H.forall "_" elemTy (_: H.forall "_" resultTy (_: resultTy))`
+        so the applications `f h ih` infer correctly. `f` must be a
+        HOAS function term built with `fn` (or nested `fn` for the
+        curried two-argument case). The accumulator threads through
+        `ih`; the empty-list case returns `init`.
+      '';
+    };
+    filter = {
+      description = "filter: HOAS list-filter combinator — keeps elements where `pred : elemTy -> Bool` returns `true_`; built on `listElim` plus per-element `boolElim`.";
+      signature = "filter : Hoas -> Hoas -> Hoas -> Hoas";
+      doc = ''
+        Annotates `pred` with `H.forall "_" elemTy (_: H.bool)` so
+        the application infers. `pred` must be a HOAS function term
+        producing a `bool` HOAS value (e.g. via `if_`, `match`, or a
+        direct `true_`/`false_`). Element order is preserved; the
+        accumulator threads via the inductive hypothesis.
+      '';
+    };
+    strEq = {
+      description = "strEq: kernel string equality returning a `Bool` HOAS term; reflects the `mkStrEq` primitive of the kernel.";
+      signature = "strEq : Hoas -> Hoas -> Hoas";
+    };
+    strElem = {
+      description = "strElem: HOAS membership check on a `List String` — folds `strEq target` across the list, accumulating `true_` if any element matches.";
+      signature = "strElem : Hoas -> Hoas -> Hoas";
+      doc = ''
+        Built on `fold` plus `strEq`: each list element is compared
+        to `target`; the accumulator starts at `false_` and stays
+        `true_` once a match is seen. Use when verified code needs a
+        membership predicate over strings; for raw kernel-level
+        equality on a single pair, use `strEq`.
+      '';
+    };
+    verify = {
+      description = "verify: full pipeline — kernel-check a HOAS implementation against a HOAS type, then evaluate and extract a Nix value witnessing the body.";
+      signature = "verify : Hoas -> Hoas -> NixValue";
+      doc = ''
+        Calls `fx.tc.elaborate.verifyAndExtract` internally. Returns
+        the Nix value (typically a function or data structure) that
+        the type-checked HOAS body denotes; consume via normal Nix
+        call or attribute access. Use as the final step of a
+        verified-implementation pipeline. For a callable wrapper that
+        retains the HOAS implementation so parent-type elaboration can
+        re-check the body, use `verifiedFn` instead.
+      '';
+    };
+    verifiedFn = {
+      description = "verifiedFn: extract a kernel-verified callable carrying `_hoasImpl` — `elaborateValue`'s Pi case uses the HOAS body for full re-verification instead of falling back to an opaque trust boundary.";
+      signature = "verifiedFn : Hoas -> Hoas -> { __functor; _hoasImpl }";
+      doc = ''
+        Returns an attrset callable via `__functor` (so
+        `(verifiedFn piTy body) arg` works) and carrying
+        `_hoasImpl = body` so parent elaboration can re-check the body
+        against a more general type instead of treating it as an
+        opaque lambda. Use when the verified function will be
+        embedded inside another verified type-check (e.g. as a field
+        of a verified record); for standalone use, `verify` is
+        simpler.
+      '';
+    };
+
   };
 }

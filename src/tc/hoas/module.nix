@@ -7,9 +7,11 @@
 # prelude instances + surface forwarders), and `elaborate.nix` (HOAS → Tm
 # elaborator + kernel-checker convenience wrappers); `partTests` is the
 # aggregated test map.
-{ self, partTests, api, ... }:
+{ self, partTests, partDocs, api, ... }:
 
-api.mk {
+api.mkModule {
+  inherit partDocs;
+  description = "fx.tc.hoas: HOAS surface combinators for kernel terms — types, binders, descriptions, datatypes, ornaments, and the elaborator that compiles to de Bruijn `Tm`.";
   doc = ''
     # fx.types.hoas — HOAS Surface Combinators
 
@@ -29,7 +31,7 @@ api.mk {
     ## Type Combinators
 
     - `nat`, `bool`, `unit`, `void` — base types
-    - `string`, `int_`, `float_`, `attrs`, `path`, `function_`, `any` — primitive types
+    - `string`, `int_`, `float_`, `attrs`, `path`, `derivation`, `derivationThunk`, `function_`, `any` — primitive types
     - `listOf : Hoas → Hoas` — List(elem)
     - `sum : Hoas → Hoas → Hoas` — Sum(left, right)
     - `eq : Hoas → Hoas → Hoas → Hoas` — generated EqDT(type, lhs, rhs)
@@ -42,6 +44,7 @@ api.mk {
     - `record : [{ name; type; }] → Hoas` — nested Sigma (sorted fields)
     - `maybe : Hoas → Hoas` — Sum(inner, Unit)
     - `variant : [{ tag; type; }] → Hoas` — nested Sum (sorted tags)
+    - `product : String → [Field] → DataSpec` — named single-constructor μ-datatype
 
     ## Term Combinators
 
@@ -49,7 +52,7 @@ api.mk {
     - `let_ : String → Hoas → Hoas → (Hoas → Hoas) → Hoas` — let binding
     - `zero`, `succ`, `true_`, `false_`, `tt`, `refl` — intro forms; `refl` is check-mode only
     - `nil`, `cons`, `pair`, `inl`, `inr` — data constructors
-    - `stringLit`, `intLit`, `floatLit`, `attrsLit`, `pathLit`, `fnLit`, `anyLit` — primitive literals
+    - `stringLit`, `intLit`, `floatLit`, `attrsLit`, `pathLit`, `derivationLit`, `derivationThunkLit`, `fnLit`, `anyLit` — primitive literals
     - `absurd`, `ann`, `app`, `fst_`, `snd_` — elimination/annotation
 
     ## Eliminators
@@ -59,6 +62,16 @@ api.mk {
     - `listElim` — generated list eliminator adapter
     - `sumElim` — generated sum eliminator adapter
     - `j` — EqDT eliminator adapter with J-shaped arguments
+
+    ## Ornaments
+
+    - `ornI`, `ornDesc`, `ornForget` — first-class ornaments compiled to existing `Desc`, `mu`, and `descInd` programs; ornaments are not kernel primitives
+    - `ornPullback`, `ornLiftFold` — transport base programs to ornamented datatypes by composing with `ornForget`
+    - `ornLiftProducer`, `ornLiftTransform` — lift base producers/transforms through functional ornament output sections
+    - `algOrn` — algebraic ornament builder for `descRet`/`descArg`/`descRec`/keep-only `descPi`/`descPlus`, generating an ornament indexed by an algebra result
+    - `functionalOrnament`, `ornBuild` — manual sections of `ornForget` for explicit base-to-ornamented construction
+    - `validateFunctionalLaws`, `functionalCompose` — law metadata checks and composition for sectioned ornaments
+    - `validateOrnament`, `tryOrnament`, `validateAlgOrn`, `tryAlgOrn` — total structured diagnostics for user-facing ornament construction
 
     ## Elaboration
 
@@ -77,92 +90,92 @@ api.mk {
     are elaborated iteratively via `genericClosure` — safe to 8000+ depth.
   '';
   value = {
-    # Types
     inherit (self)
-      nat bool unit void w string int_ float_ attrs path function_ any listOf sum sumAt eq u
-      record maybe variant;
-    # Level sort and its constructors. `level` is the universe-level
-    # type former (inhabits U(0)); `levelZero`/`levelSuc`/`levelMax`
-    # build Level expressions that flow into `u`/`descArg`/`descPi`'s
-    # level slots. Bound Level variables come from
-    # `forall "k" level (k_var: …)`.
-    inherit (self) level levelZero levelSuc levelMax natToLevel;
-    # Binding
-    inherit (self) forall sigma lam let_;
-    # Terms
-    inherit (self)
-      zero succ true_ false_ tt nil cons pair inl inr inlAt inrAt sup refl
-      stringLit intLit floatLit attrsLit pathLit fnLit anyLit
-      opaqueLam strEq absurd ann app fst_ snd_;
-    # Eliminators
-    inherit (self) ind boolElim listElim sumElim sumElimAt j;
-    # Propositional truncation (Squash). `squash A` formation,
-    # `squashIntro a` introduction, `squashElim A B f x` eliminator
-    # restricted to `Squash`-typed motives.
-    inherit (self) squash squashIntro squashElim;
-    # Descriptions — types, constructors, eliminators.
-    # `descI`/`retI`/`recI`/`piI`/`muI` build `Desc I` / `μ I D i` at an
-    # arbitrary index type; `desc`/`descRet`/`descRec`/`descPi`/`mu` are
-    # ⊤-slice aliases that specialise I to `Unit`.
-    inherit (self) descI desc descIAt descAt muI mu retI recI piI piIAt
-                   piIWithEq
-                   descRet descArg descArgAt descArgWithEq descRec
-                   descPi descPiAt descPiWithEq
-                   plusI plus
-                   descCon descInd descElim
-                   interpD allD everywhereD
-                   congSuc maxSucDom;
-    # Lift primitive — Tarski + non-cumulative cross-level transport.
-    # `LiftAt l m A : U(m)` with `l ≤ m`; `liftAt l m A a` /
-    # `lowerAt l m A x` introduce / eliminate. The `eq` witness is
-    # auto-emitted as `mkBootRefl` by the elaborator. The `*WithEq` variants
-    # take an explicit `eq` term — used when `l`/`m` are level-polymorphic
-    # binders and `convLevel` cannot decide `refl`.
-    inherit (self) LiftAt liftAt lowerAt
-                   LiftAtWithEq liftAtWithEq lowerAtWithEq;
-    # Prelude descriptions
-    inherit (self) natDesc listDesc sumDesc natDescTm descDesc descDescTm descDescVal __descDesc descDescApp;
-    # descDesc-encoded constructor Tms — closed kernel terms that
-    # produce `μ ⊤ (descDesc I k) tt` values structurally encoding
-    # source descriptions. Each is the pre-elaborated form of the
-    # corresponding `encodeDesc*` HOAS combinator; the shared encoding
-    # context lives in `descEncodingCtx` (a Nix-level helper internal
-    # to `hoas/`).
-    inherit (self) encodeDescRet encodeDescRetTm
-                   encodeDescArg encodeDescArgTm
-                   encodeDescArgAt encodeDescArgAtTm
-                   encodeDescRec encodeDescRecTm
-                   encodeDescPi  encodeDescPiTm
-                   encodeDescPiAt encodeDescPiAtTm
-                   encodeDescPlus encodeDescPlusTm
-                   encodeDescElim encodeDescElimTm encodeDescElimVal;
-    # Fin prelude — indexed family `Fin : Nat → U` with vacuous base at
-    # `Fin 0` (discharged via `absurdFin0`).
-    inherit (self) finDesc fin fzero fsuc finElim absurdFin0;
-    # Vec prelude — indexed family `Vec A : Nat → U`. `vhead` / `vtail`
-    # extract head / tail of a non-empty vector via `natCaseU`- /
-    # `natPredCase`-motives over `vecElim`. `natPredCase` dispatches the
-    # succ-case result type through the private plus-summand eliminator.
-    inherit (self) natCaseU natPredCase vecDesc vec vnil vcons vecElim vhead vtail;
-    # Eq-as-description — public equality as an indexed datatype over a
-    # single retI-only description. The iso helpers bridge to the private
-    # bootstrap identity used by descRet.
-    inherit (self) eqDesc eqDT reflDT eqToEqDT eqDTToEq eqIsoFwd eqIsoBwd;
-    # Datatype macro
-    inherit (self)
-      field fieldD fieldAt fieldDAt fieldAtWithEq fieldDAtWithEq
-      recField recFieldAt
-      piField piFieldD piFieldAt piFieldDAt piFieldAtWithEq piFieldDAtWithEq
-      con conI
-      datatype datatypeAt datatypeI datatypeP datatypePAt datatypePI;
-    inherit (self) WDT wDesc wElim;
-    # Elaboration
-    inherit (self) elaborate elab reifyLevel;
-    # HOAS surface → SourceMap walker, and the pair-producing `elab2`
-    # that the diagnostic shell consumes.
-    inherit (self) sourceMapOf elab2;
-    # Convenience
-    inherit (self) checkHoas inferHoas natLit;
+      False True WDT absurd absurdFin0 algArg algOrn algOrnDiagnosticRecords
+      algOrnDiagnostics algPiKeep algPlus algRec algRet allD and ann any
+      anyLit app attrs attrsLit bool boolElim canonApp checkFunctionalLaws
+      checkHoas con conI congSuc cons datatype datatypeI datatypeP datatypePI
+      dec decAnd decElim decNot decOr decideEqIntZ decideEqNat decideLeIntZ
+      decideLeNat derivation derivationLit derivationThunk derivationThunkLit
+      desc descArg descCon descDesc descElim descInd descPi descRec descRet
+      elab elab2 elaborate eq eqCongSucc eqDT eqDTToEq eqDesc eqInjSucc
+      eqIsoBwd eqIsoFwd eqRefutSuccZero eqRefutZeroSucc eqToEqDT everywhereD
+      false_ field fieldD fin finDesc finElim floatLit float_ fnLit forall
+      fst_ fsuc function_ functionalCompose functionalLawDiagnosticRecords
+      functionalLawDiagnostics functionalOrnament
+      functionalOrnamentDiagnosticRecords functionalOrnamentDiagnostics fzero
+      iff ind inferHoas inl inr intLit int_ interpD intz intzDecode intzDesc
+      intzElim intzLe intzLit intzNegSucc intzNegSuccCong intzNegSuccInjective
+      intzPos intzPosCong intzPosInjective j lam le leDesc leElim leInjSS
+      leRefutSuccZero leSS leZ let_ level levelMax levelSuc levelZero listDesc
+      listElim listOf maxSucDom maybe mu nat natCaseU natDesc natLit
+      natPredCase natToLevel nil no not opaqueLam or_ ornArgInsert ornArgKeep
+      ornBuild ornCompose ornDesc ornForget ornI ornId ornIndexProof
+      ornLiftFold ornLiftProducer ornLiftTransform ornMu ornPiKeep ornPlus
+      ornPullback ornRec ornRet ornSection ornTargetIndex ornament
+      ornamentDiagnosticRecords ornamentDiagnostics pair path pathLit piField
+      piFieldD plus predNat product recField recFieldAt record refinementPred
+      refl reflDT reifyLevel retI sigma signsDiffer signsDifferRev snd_
+      sourceMapOf squash squashElim squashIntro strEq string stringLit succ
+      sum sumDesc sumElim sup true_ tryAlgOrn tryFunctionalOrnament
+      tryOrnament tt u unit validateAlgOrn validateFunctionalLaws
+      validateFunctionalOrnament validateOrnament variant vcons vec vecDesc
+      vecElim vhead vnil void vtail w wDesc wElim withConLabel withDescLabel
+      yes zero;
+
+    # Unstable internal surface — reachable cross-module but not part of the
+    # end-user API. Three reasons a binding lives here rather than at the
+    # public top-level:
+    #   - Low-level bootstrap (boot-sum / boot-eq) used by description-
+    #     machinery consumers (e.g. `experimental/desc-interp`) because the
+    #     freer-monad-as-description encoding constructs μ-values at the raw
+    #     description layer where no SumDT/EqDT-generated form applies.
+    #   - Kernel-Tm encoders (`encodeDescX` / `descDescTm` / `descDescVal` /
+    #     `natDescTm` / `__descDesc`) — Tm/Val-level forms paired with their
+    #     surface combinators; consumed only by `tc/eval`, `tc/generic`, and
+    #     the kernel adapter glue. End-users write the surface forms.
+    #   - Indexed/equality-aligned variants of public surface combinators
+    #     (`*At` / `*AtWithEq` / `*I` / `*IAt` / `*IWithEq`) used internally
+    #     by ornament construction, levitated-description indexing, and
+    #     evaluator test fixtures. End-users write the non-indexed form
+    #     unless they're authoring genuinely indexed datatypes (in which
+    #     case `H.datatypeI` / `H.conI` / `H.recFieldAt` / `H.piFieldAtIndex`
+    #     remain at the public surface).
+    # Consumers reach these via `fx.tc.hoas._internal.<binding>` (boot*),
+    # `fx.tc.hoas._internal._encoders.<binding>` (Tm/Val encoders), or
+    # `fx.tc.hoas._internal._indexed.<binding>` (indexed-variant scaffolding),
+    # opting in explicitly at the call site.
+    _internal = api.mk {
+      description = "Unstable internal surface — boot-sum/boot-eq helpers, kernel-Tm encoders, and indexed-variant scaffolding. Prefer SumDT/EqDT-generated forms and the matching non-indexed surface combinators for end-user code.";
+      value = {
+        inherit (self) bootEq bootRefl bootJ bootSum bootInl bootInr bootSumElim;
+        _encoders = api.mk {
+          description = "Kernel-Tm and Val-level encoders for surface description combinators. Used by `tc/eval` (descDescVal in `mkDescDescAppVF`) and `tc/generic` (the `encodeDescXTm` pre-evaluations in `desc.nix`'s `reconstruct`).";
+          value = {
+            inherit (self)
+              __descDesc descDescApp descDescTm descDescVal encodeDescArg
+              encodeDescArgAt encodeDescArgAtTm encodeDescArgTm encodeDescElim
+              encodeDescElimTm encodeDescElimVal encodeDescPi encodeDescPiAt
+              encodeDescPiAtTm encodeDescPiTm encodeDescPlus encodeDescPlusTm
+              encodeDescRec encodeDescRecTm encodeDescRet encodeDescRetTm
+              natDescTm;
+          };
+        };
+        _indexed = api.mk {
+          description = "Indexed/equality-aligned variants of public surface combinators. Used by ornament construction (`muI` in `tc/generic/ornaments`), indexed-datatype test fixtures (`piI`/`recI`/`plusI`/`inrAt` in `tc/eval`/`tc/check`/`tc/conv`/`tc/quote`), and indexed-field construction (`fieldAt`/`piFieldAtIndex` in `tc/generic/derive`).";
+          value = {
+            inherit (self)
+              datatypeAt datatypePAt descArgAt descArgWithEq descAt descI
+              descIAt descPiAt descPiWithEq fieldAt fieldAtWithEq fieldDAt
+              fieldDAtWithEq inlAt inrAt liftAt LiftAt liftAtWithEq
+              LiftAtWithEq lowerAt lowerAtWithEq muI piFieldAt piFieldAtIndex
+              piFieldAtIndexWithEq piFieldAtWithEq piFieldDAt piFieldDAtIndex
+              piFieldDAtIndexWithEq piFieldDAtWithEq piI piIAt piIWithEq plusI
+              recI sumAt sumElimAt;
+          };
+        };
+      };
+    };
   };
   tests = partTests;
 }

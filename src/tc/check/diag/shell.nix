@@ -71,6 +71,44 @@ in {
   scope = {
     inherit runCheckD runCheckDLazy checkD inferD;
   };
+
+  __docs = {
+    runCheckD = {
+      description = "runCheckD: kernel-result decorator — runs `C.runCheck` then, on failure, attaches a resolved hint (via `fx.diag.hints.resolve`) and a SourceMap-sourced surface back-mapping; success path untouched.";
+      signature = "runCheckD : SourceMap -> Computation -> Tm | { error; msg; expected; got; hint; surface }";
+      doc = ''
+        Lives outside the trust boundary: no new effect handlers,
+        no rule logic. The trusted `typeError` handler from `ctx.nix`
+        runs first; this combinator is a value-level transform on
+        the failure attrset.
+
+        On success, returns whatever the trusted core returned
+        (elaborated `Tm`). On failure, augments the flat record
+        with `hint` (a `Hint` record or `null`) and `surface` (the
+        SourceMap's hoas payload at the blame chain's leaf, or
+        `null` when the chain exits the mapped sub-tree).
+      '';
+    };
+    runCheckDLazy = {
+      description = "runCheckDLazy: deferred-SourceMap variant of `runCheckD` — takes a thunk that's forced only on failure, sparing the success path the full SourceMap walker allocation.";
+      signature = "runCheckDLazy : (Unit -> SourceMap) -> Computation -> Tm | { error; msg; expected; got; hint; surface }";
+      doc = ''
+        Used by kernel HOAS entry points (`checkHoas` / `inferHoas`)
+        where the SourceMap is a pure byproduct of elaboration and
+        is consulted only when resolving surface positions on error.
+        The success path pays one closure allocation instead of the
+        full SourceMap construction.
+      '';
+    };
+    checkD = {
+      description = "checkD: `check` with diagnostic decoration — shorthand for `runCheckD sm (C.check ctx tm ty)`; returns the elaborated term on success, decorated error record on failure.";
+      signature = "checkD : Ctx -> Tm -> Val -> SourceMap -> Tm | { error; msg; expected; got; hint; surface }";
+    };
+    inferD = {
+      description = "inferD: `infer` with diagnostic decoration — shorthand for `runCheckD sm (C.infer ctx tm)`; returns `{ term; type }` on success, decorated error record on failure.";
+      signature = "inferD : Ctx -> Tm -> SourceMap -> { term; type } | { error; msg; expected; got; hint; surface }";
+    };
+  };
   tests =
     let
       T = fx.tc.term;

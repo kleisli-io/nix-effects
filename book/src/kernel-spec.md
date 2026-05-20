@@ -69,7 +69,7 @@ Tm ::=
 
   -- Pairs
   | Sigma(n : Name, A : Tm, B : Tm)     -- Σ(n : A). B
-  | Pair(a : Tm, b : Tm, T : Tm)        -- (a, b) as T
+  | Pair(a : Tm, b : Tm)                -- (a, b)
   | Fst(t : Tm)                         -- π₁ t
   | Snd(t : Tm)                         -- π₂ t
 
@@ -89,6 +89,13 @@ Tm ::=
   | BootRefl                            -- internal refl
   | BootJ(A : Tm, a : Tm, P : Tm, pr : Tm, b : Tm, eq : Tm)
     -- private identity eliminator
+  | Funext                              -- function extensionality axiom
+
+  -- Propositional truncation
+  | Squash(A : Tm)                      -- proof-irrelevant truncation
+  | SquashIntro(a : Tm)                 -- introduction into Squash
+  | SquashElim(A : Tm, B : Tm, f : Tm, x : Tm)
+    -- recTrunc: A -> Squash B, Squash A -> Squash B
 
   -- Levels (Tarski-style sort of universe levels — see §6.6, §8.5)
   | Level                               -- the Level sort itself, lives at U(0)
@@ -107,9 +114,14 @@ Tm ::=
   | DescPi(K : Tm, S : Tm, f : Tm, D : Tm)
                                         -- π^K S f D — recursive Π over S : U(K), indexed by f
   | DescPlus(A : Tm, B : Tm)            -- A + B — first-class binary coproduct of descriptions
-  | DescElim(K : Tm, P : Tm, onRet : Tm, onArg : Tm,
-             onRec : Tm, onPi : Tm, onPlus : Tm, scrut : Tm)
-                                        -- description recursor at level K
+  | DescDescApp(I : Tm, L : Tm)         -- canonical descDesc I L reference
+  | InterpD(level : Tm, I : Tm, D : Tm, X : Tm, i : Tm)
+                                        -- interpretation of D at index i
+  | AllD(level : Tm, I : Tm, D : Tm, K : Tm, X : Tm, M : Tm, i : Tm, d : Tm)
+                                        -- all recursive positions satisfy M
+  | EverywhereD(level : Tm, I : Tm, D : Tm, K : Tm, X : Tm, M : Tm,
+                ih : Tm, i : Tm, d : Tm)
+                                        -- builds AllD evidence from ih
   | DescInd(D : Tm, motive : Tm, step : Tm, i : Tm, scrut : Tm)
                                         -- generic μ-induction over D at index i
 
@@ -119,7 +131,12 @@ Tm ::=
                                         -- introduction at index i with payload : interp(D, i)
 
   -- Annotations
-  | Ann(t : Tm, A : Tm)                -- (t : A)
+  | Ann(t : Tm, A : Tm)                -- (t : A); may carry trusted/label sidecars
+
+  -- Lift
+  | Lift(l : Tm, m : Tm, eq : Tm, A : Tm)
+  | LiftIntro(l : Tm, m : Tm, eq : Tm, A : Tm, a : Tm)
+  | LiftElim(l : Tm, m : Tm, eq : Tm, A : Tm, x : Tm)
 
   -- Axiomatized primitive types
   | String                              -- string type
@@ -127,6 +144,8 @@ Tm ::=
   | Float                               -- float type
   | Attrs                               -- attribute set type
   | Path                                -- path type
+  | Derivation                          -- derivation attrset type
+  | DerivationThunk                     -- carrier type: closure-wrapped derivation
   | Function                            -- opaque function type
   | Any                                 -- dynamic/any type
 
@@ -139,12 +158,18 @@ Tm ::=
   | FloatLit(f)                         -- float literal
   | AttrsLit                            -- attribute set literal
   | PathLit                             -- path literal
+  | DerivationLit                       -- derivation attrset literal
+  | DerivationThunkLit                  -- derivation-thunk carrier literal
   | FnLit                               -- opaque function literal
   | AnyLit                              -- any literal
 
+  -- Opaque lambda trust boundary for extracted Nix functions
+  | OpaqueLam(fnBox, piTy : Tm)
+
 ```
 
-Public `Nat`, `List`, `Sum`, and `Eq` are not primitive core syntax.
+Public `Nat`, `List`, `Sum`, `Bool`, `Fin`, `Vec`, `Eq`, and `W` are
+not primitive core syntax.
 The HOAS prelude generates them as descriptions:
 
 ```
@@ -208,6 +233,11 @@ Val ::=
   -- Bootstrap identity, private to descRet/Lift/index transport
   | VBootEq(A : Val, a : Val, b : Val)
   | VBootRefl
+  | VFunext
+
+  -- Propositional truncation
+  | VSquash(A : Val)
+  | VSquashIntro(a : Val)
 
   -- Levels (Tarski-style sort of universe levels — see §6.6, §8.5)
   | VLevel                                -- the Level sort itself
@@ -227,13 +257,22 @@ Val ::=
   -- μ-types
   | VMu(I : Val, D : Val, i : Val)          -- μ I D i
   | VDescCon(D : Val, i : Val, d : Val)     -- introduction at index i with payload d
+  | VInterpD(level : Val, I : Val, D : Val, X : Val, i : Val)
+  | VAllD(level : Val, I : Val, D : Val, K : Val, X : Val, M : Val, i : Val, d : Val)
+  | VEverywhereD(level : Val, I : Val, D : Val, K : Val, X : Val, M : Val,
+                 ih : Val, i : Val, d : Val)
+
+  -- Lift
+  | VLift(l : Val, m : Val, eq : Val, A : Val)
+  | VLiftIntro(l : Val, m : Val, eq : Val, A : Val, a : Val)
 
   -- Axiomatized primitive types
-  | VString | VInt | VFloat | VAttrs | VPath | VFunction | VAny
+  | VString | VInt | VFloat | VAttrs | VPath | VDerivation | VDerivationThunk | VFunction | VAny
 
   -- Primitive literal values
   | VStringLit(s) | VIntLit(n) | VFloatLit(f)
-  | VAttrsLit | VPathLit | VFnLit | VAnyLit
+  | VAttrsLit | VPathLit | VDerivationLit | VDerivationThunkLit | VFnLit | VAnyLit
+  | VOpaqueLam(fnBox, piTy : Val)
 
   -- Neutrals (stuck computations)
   | VNe(level : ℕ, spine : [Elim])
@@ -245,10 +284,13 @@ Elim ::=
   | EBootSumElim(A : Val, B : Val, P : Val, l : Val, r : Val)
   | EBootJ(A : Val, a : Val, P : Val, pr : Val, b : Val)
   | EStrEq(arg : Val)
-  | EDescElim(K : Val, motive : Val, onRet : Val, onArg : Val,
-              onRec : Val, onPi : Val, onPlus : Val)
-                                            -- carries K so the spine round-trips back to DescElim K
   | EDescInd(D : Val, motive : Val, step : Val, i : Val)
+  | EInterpD(level : Val, I : Val, X : Val, i : Val)
+  | EAllD(level : Val, I : Val, K : Val, X : Val, M : Val, i : Val, d : Val)
+  | EEverywhereD(level : Val, I : Val, K : Val, X : Val, M : Val,
+                 ih : Val, i : Val, d : Val)
+  | ELiftElim(l : Val, m : Val, eq : Val, A : Val)
+  | ESquashElim(A : Val, B : Val, f : Val)
 
 Closure ::= (env : Env, body : Tm)
 Env     ::= [Val]          -- list indexed by de Bruijn index
@@ -321,7 +363,7 @@ vApp(_, _)               = THROW "kernel bug: vApp on non-function"
 
 ```
 eval(ρ, Sigma(n, A, B))  = VSigma(n, eval(ρ, A), (ρ, B))
-eval(ρ, Pair(a, b, T))   = VPair(eval(ρ, a), eval(ρ, b))
+eval(ρ, Pair(a, b))      = VPair(eval(ρ, a), eval(ρ, b))
 eval(ρ, Fst(t))          = vFst(eval(ρ, t))
 eval(ρ, Snd(t))          = vSnd(eval(ρ, t))
 
@@ -365,6 +407,46 @@ them. These are representation details, not public eliminators.
 Deep generated natural/list values are stack-safe through the constructor
 flattening and `desc-con` trampoline paths, rather than through primitive
 nat/list evaluator cases.
+
+### 4.5 Description interpretation, Lift, Squash, and Funext
+
+The current kernel includes several small primitives used by generated
+datatypes and proof-oriented APIs:
+
+```text
+eval(ρ, DescDescApp(I,L))              = tagged descDesc value
+eval(ρ, InterpD(level,I,D,X,i))        = vInterpD(level,I,D,X,i)
+eval(ρ, AllD(level,I,D,K,X,M,i,d))     = vAllD(level,I,D,K,X,M,i,d)
+eval(ρ, EverywhereD(level,I,D,K,X,M,ih,i,d)) =
+  vEverywhereD(level,I,D,K,X,M,ih,i,d)
+
+eval(ρ, Lift(l,m,eq,A))                = vLiftF(l,m,eq,A)
+eval(ρ, LiftIntro(l,m,eq,A,a))         = vLiftIntroF(l,m,eq,A,a)
+eval(ρ, LiftElim(l,m,eq,A,x))          = vLiftElimF(l,m,eq,A,x)
+
+eval(ρ, Squash(A))                     = VSquash(eval(ρ,A))
+eval(ρ, SquashIntro(a))                = VSquashIntro(eval(ρ,a))
+eval(ρ, SquashElim(A,B,f,x))           = vSquashElim(eval(ρ,A), eval(ρ,B), eval(ρ,f), eval(ρ,x))
+
+eval(ρ, Funext)                        = VFunext
+eval(ρ, OpaqueLam(fnBox, piTy))        = VOpaqueLam(fnBox, eval(ρ,piTy))
+```
+
+`Lift l m eq A` collapses definitionally to `A` when `l` and `m` are
+level-convertible; nested Lifts compose; `lower (lift a)` reduces to
+`a`; and `lift (lower x)` eta-reduces on stuck neutrals. The `eq`
+witness is irrelevant for conversion once the levels and underlying
+type match.
+
+`Squash A` is proof-irrelevant. Any two `SquashIntro` inhabitants at a
+shared `Squash A` type are definitionally equal, and neutral inhabitants
+of `Squash A` convert against introductions by the shared-type invariant.
+
+`DescDescApp` stamps a canonical reference on the generated
+`descDesc I L` value so quotation and conversion can avoid descending
+into the self-describing universe spiral. `InterpD`, `AllD`, and
+`EverywhereD` are the kernel primitives behind description
+interpretation and the generated `desc-ind` iota rule.
 
 ### 4.6 Unit
 
@@ -449,6 +531,8 @@ eval(ρ, Int)          = VInt
 eval(ρ, Float)        = VFloat
 eval(ρ, Attrs)        = VAttrs
 eval(ρ, Path)         = VPath
+eval(ρ, Derivation)   = VDerivation
+eval(ρ, DerivationThunk) = VDerivationThunk
 eval(ρ, Function)     = VFunction
 eval(ρ, Any)          = VAny
 
@@ -457,6 +541,8 @@ eval(ρ, IntLit(n))    = VIntLit(n)
 eval(ρ, FloatLit(f))  = VFloatLit(f)
 eval(ρ, AttrsLit)     = VAttrsLit
 eval(ρ, PathLit)      = VPathLit
+eval(ρ, DerivationLit) = VDerivationLit
+eval(ρ, DerivationThunkLit) = VDerivationThunkLit
 eval(ρ, FnLit)        = VFnLit
 eval(ρ, AnyLit)       = VAnyLit
 
@@ -528,6 +614,8 @@ quote(d, VInt)             = Int
 quote(d, VFloat)           = Float
 quote(d, VAttrs)           = Attrs
 quote(d, VPath)            = Path
+quote(d, VDerivation)      = Derivation
+quote(d, VDerivationThunk) = DerivationThunk
 quote(d, VFunction)        = Function
 quote(d, VAny)             = Any
 quote(d, VStringLit(s))    = StringLit(s)
@@ -535,6 +623,8 @@ quote(d, VIntLit(n))       = IntLit(n)
 quote(d, VFloatLit(f))     = FloatLit(f)
 quote(d, VAttrsLit)        = AttrsLit
 quote(d, VPathLit)         = PathLit
+quote(d, VDerivationLit)   = DerivationLit
+quote(d, VDerivationThunkLit) = DerivationThunkLit
 quote(d, VFnLit)           = FnLit
 quote(d, VAnyLit)          = AnyLit
 quote(d, VNe(l, sp))       = quoteSp(d, Var(d - l - 1), sp)
@@ -574,6 +664,8 @@ conv(d, VInt,         VInt)         = true
 conv(d, VFloat,       VFloat)       = true
 conv(d, VAttrs,       VAttrs)       = true
 conv(d, VPath,        VPath)        = true
+conv(d, VDerivation,  VDerivation)  = true
+conv(d, VDerivationThunk, VDerivationThunk) = true
 conv(d, VFunction,    VFunction)    = true
 conv(d, VAny,         VAny)         = true
 conv(d, VStringLit(s₁), VStringLit(s₂)) = (s₁ == s₂)
@@ -581,6 +673,8 @@ conv(d, VIntLit(n₁),    VIntLit(n₂))    = (n₁ == n₂)
 conv(d, VFloatLit(f₁),  VFloatLit(f₂))  = (f₁ == f₂)
 conv(d, VAttrsLit,    VAttrsLit)    = true
 conv(d, VPathLit,     VPathLit)     = true
+conv(d, VDerivationLit, VDerivationLit) = true
+conv(d, VDerivationThunkLit, VDerivationThunkLit) = true
 conv(d, VFnLit,       VFnLit)       = true
 conv(d, VAnyLit,      VAnyLit)      = true
 
@@ -909,7 +1003,7 @@ inhabitants of `U(0)`:
 
 ```
 
-(Similarly for Float, Attrs, Path, Function, Any — all at level 0.)
+(Similarly for Float, Attrs, Path, Derivation, DerivationThunk, Function, Any — all at level 0.)
 
 **Primitive literals** (synthesis)
 
@@ -928,6 +1022,7 @@ Literals synthesize their corresponding type:
 ```
 
 (Similarly for AttrsLit → VAttrs, PathLit → VPath,
+DerivationLit → VDerivation, DerivationThunkLit → VDerivationThunk,
 FnLit → VFunction, AnyLit → VAny.)
 
 **StrEq** (string equality)
@@ -1030,6 +1125,14 @@ rejected.
                 ──────────────────────
                 Γ ⊢ PathLit ⇐ A  ↝  PathLit
 
+                whnf(A) = VDerivation
+                ──────────────────────
+                Γ ⊢ DerivationLit ⇐ A  ↝  DerivationLit
+
+                whnf(A) = VDerivationThunk
+                ──────────────────────
+                Γ ⊢ DerivationThunkLit ⇐ A  ↝  DerivationThunkLit
+
                 whnf(A) = VFunction
                 ──────────────────────
                 Γ ⊢ FnLit ⇐ A  ↝  FnLit
@@ -1086,7 +1189,7 @@ levels are computed structurally during the type formation check
                 ──────────────────────
                 Γ ⊢ String type  ↝  String
 
-                (Similarly for Int, Float, Attrs, Path, Function, Any)
+                (Similarly for Int, Float, Attrs, Path, Derivation, DerivationThunk, Function, Any)
 
                 ──────────────────────
                 Γ ⊢ U(i) type  ↝  U(i)
@@ -1142,40 +1245,19 @@ typing", below).
 `K : Level` (§8.5). `μ I D i` is the kernel value `VMu(Î, D̂, î)`,
 the `i`-th type in the family classified by `D`.
 
-#### 7.6.1 desc-elim INFER (universe-polymorphic)
+#### 7.6.1 Description eliminators are encoded at the HOAS layer
 
-`descElim^K` recurses over a description at level `K`. The motive,
-each case branch, and the eliminated description must agree on `K`:
+There is no `DescElim` core term in the current kernel. The HOAS
+surface exposes description elimination by applying the generated
+`encodeDescElim` program to a `descDesc I K` value. The trusted core
+operations involved are `DescDescApp`, `InterpD`, `AllD`,
+`EverywhereD`, and `DescInd`.
 
-```
-                Γ ⊢ K ⇐ Level  ↝  K'    K̂ = eval(Γ.env, K')
-                Γ ⊢ scrut ⇒ scrutTy  ↝  scrut'
-                whnf(scrutTy) = VDesc(K_scrut, Î)
-                convLevel(Γ.depth, K̂, K_scrut) = true     -- K conformance
-                Γ ⊢ P ⇐ VPi(_, VDesc(K̂, Î), ([], U(j)))  ↝  P'
-                P̂ = eval(Γ.env, P')
-                Γ ⊢ onRet ⇐ Π(j:Î). P̂(descRet j)             ↝  onRet'
-                Γ ⊢ onArg ⇐ Π(S:U(K̂)). Π(T: S → Desc^K̂ Î).
-                              (Π(s:S). P̂(T s)) → P̂(descArg K̂ S T)  ↝  onArg'
-                Γ ⊢ onRec ⇐ Π(j:Î). Π(D':Desc^K̂ Î). P̂(D') →
-                              P̂(descRec j D')                       ↝  onRec'
-                Γ ⊢ onPi  ⇐ Π(S:U(K̂)). Π(f: S → Î). Π(D': S → Desc^K̂ Î).
-                              (Π(s:S). P̂(D' s)) → P̂(descPi K̂ S f D')  ↝  onPi'
-                Γ ⊢ onPlus ⇐ Π(A:Desc^K̂ Î). Π(B:Desc^K̂ Î).
-                              P̂(A) → P̂(B) → P̂(descPlus A B)         ↝  onPlus'
-                ──────────────────────
-                Γ ⊢ DescElim(K, P, onRet, onArg, onRec, onPi, onPlus, scrut)
-                  ⇒ vApp(P̂, eval(Γ.env, scrut'))
-
-```
-
-The `K conformance` check (`convLevel(K̂, K_scrut)`) is the
-per-elimination verification that the eliminator's Level argument
-matches the scrutinee description's level. Without it an eliminator
-at `K = zero` could descend into a description containing
-`descArg^1 (U 0) …`, and the case branches' sort binders (typed
-`S : U(K̂) = U(0)`) would be ill-typed against the scrutinee's
-actual `S : U(1)`.
+The level agreement once handled by a primitive `DescElim` rule is now
+checked by the ordinary typing rules for `Desc I K`, `interpD`, and the
+encoded eliminator's Pi type. `DescDescApp(I, K)` carries a canonical
+reference so quotation and conversion can recognize the self-describing
+description universe without forcing the recursive encoding.
 
 #### 7.6.2 Homogeneity by typing (desc CHECK rules)
 
@@ -1285,6 +1367,8 @@ checkTypeLevel(Γ, Int)         = { Int,     0 }
 checkTypeLevel(Γ, Float)       = { Float,   0 }
 checkTypeLevel(Γ, Attrs)       = { Attrs,   0 }
 checkTypeLevel(Γ, Path)        = { Path,    0 }
+checkTypeLevel(Γ, Derivation)  = { Derivation, 0 }
+checkTypeLevel(Γ, DerivationThunk) = { DerivationThunk, 0 }
 checkTypeLevel(Γ, Function)    = { Function, 0 }
 checkTypeLevel(Γ, Any)         = { Any,     0 }
 checkTypeLevel(Γ, BootSum(A,B))= { BootSum(A',B'), max(level(A), level(B)) }
@@ -1638,8 +1722,8 @@ f : Pi(x, H.nat, H.nat) ⊢ App(f, H.zero) : H.nat
 -- StrEq on non-string
 ⊢ StrEq(H.zero, StringLit("foo"))     REJECT  (lhs is H.nat, expected String)
 
--- Ill-typed pair
-⊢ Pair(H.zero, H.zero, Sigma(x, H.nat, Unit))  REJECT
+-- Ill-typed pair under expected Sigma
+⊢ Pair(H.zero, H.zero) ⇐ Sigma(x, H.nat, Unit)  REJECT
 
 ```
 
@@ -1705,14 +1789,13 @@ where `normal_form(t)` is the expected normal form.
 The following are documented implementation choices or limitations,
 not bugs. They are recorded here so auditors do not rediscover them.
 
-### 13.1 Pair quotation uses dummy type annotation
+### 13.1 Trusted annotation sidecars are semantically erased
 
-`quote(d, VPair(a, b))` produces `Pair(quote(d,a), quote(d,b), Unit)`
-— the type annotation is always `Unit` regardless of the actual pair
-type. The `VPair` value does not carry its type (values are untyped
-in NbE), so the annotation cannot be reconstructed without additional
-context. Quoted pairs are structurally correct but carry a dummy
-annotation.
+`Ann` terms may carry implementation sidecars such as `trusted`,
+`_descRef`, `_label`, and `_conLabel`. Evaluation may propagate those
+sidecars to values for performance, source maps, or generated datatype
+metadata, but conversion ignores them. They must never affect
+definitional equality.
 
 ### 13.2 Lambda domain annotations discarded in checking mode
 
@@ -1728,7 +1811,7 @@ making the original annotation unrecoverable.
 Term constructors (`mkVar`, `mkApp`, etc.) accept arbitrary Nix
 values without type validation. `mkVar "hello"` produces
 `{ tag = "var"; idx = "hello"; }`, which crashes at eval time.
-The trust boundary is the HOAS layer (`hoas.nix`), which is the
+The trust boundary is the HOAS layer (`src/tc/hoas/`), which is the
 public API — direct term construction is internal to the kernel.
 
 ### 13.4 `tryEval` only catches `throw` and `assert false`

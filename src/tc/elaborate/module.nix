@@ -3,9 +3,11 @@
 # Public export assembly for the elaboration bridge. `self` is the
 # disjoint-union fixpoint of `core.nix` and `extract.nix`; `partTests`
 # is the aggregated test map from both parts.
-{ self, partTests, api, ... }:
+{ self, partTests, partDocs, api, ... }:
 
-api.mk {
+api.mkModule {
+  inherit partDocs;
+  description = "fx.tc.elaborate: elaboration bridge between `fx.types` and the kernel — `elaborateType`/`elaborateValue`/`extract`/`decide` thread between Nix values and kernel terms.";
   doc = ''
     # fx.tc.elaborate — Elaboration Bridge
 
@@ -28,11 +30,11 @@ api.mk {
 
     ## Structural Validation
 
-    - `validateValue : String → Hoas → NixVal → [{ path; msg; }]` —
-      applicative structural validator. Mirrors `elaborateValue`'s recursion
-      but accumulates all errors instead of throwing on the first.
-      Path accumulator threads structural context (Reader effect).
-      Error list is the free monoid (Writer effect).
+    - `validateValue : Path → Hoas → NixVal → [{ type; context; value; path; reason; }]` —
+      collecting-handler bridge over `fx.tc.generic.check.deriveCheck`.
+      Accumulates every `typeCheck` effect emission from the canonical
+      structural validator into a list of typed error records carrying
+      structured `Path` (Position-list) descents to each failure site.
       Empty list ↔ `elaborateValue` would succeed (soundness invariant).
 
     ## Value Extraction
@@ -66,6 +68,11 @@ api.mk {
       elaborateType elaborateValue validateValue
       extract extractInner reifyType
       verifyAndExtract decide decideType;
+
+    _internal = api.mk {
+      description = "fx.tc.elaborate._internal: cross-part elaboration helpers reachable from sibling parts via the self-fixpoint; not part of the stable consumer surface.";
+      value = { inherit (self) reifyDesc; };
+    };
   };
   tests = partTests;
 }

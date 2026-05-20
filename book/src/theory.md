@@ -13,7 +13,7 @@ A computation is either:
 
 - `Pure value` — finished, returning a value
 - `Impure effect continuation` — suspended, waiting for a handler to
-  service `effect` and feed the result to `continuation`
+  interpret `effect` and feed the result to `continuation`
 
 `send` creates an `Impure` node:
 
@@ -68,10 +68,11 @@ structure — effect name, parameter, handler result — and a worklist loop
 (`builtins.genericClosure`) iterates over steps instead of recursing. This
 is the pattern Van Horn & Might (2010) identified in *Abstracting Abstract
 Machines*: store-allocated continuations plus worklist iteration give you
-bounded stack depth. The [Trampoline](trampoline.md) chapter covers the
-implementation — how `genericClosure` becomes a trampoline, why `deepSeq`
-prevents thunk accumulation, and which automated tests pin stack-safety
-behavior.
+bounded stack depth. The
+[Trampoline](/nix-effects/internals/trampoline) chapter covers the
+implementation: how `genericClosure` becomes a trampoline, why
+`deepSeq` prevents thunk accumulation, and which automated tests pin
+stack-safety behavior.
 
 ## Value-dependent types
 
@@ -84,14 +85,14 @@ The user-facing API provides convenience constructors on top.
 function of the first component's value:
 
 ```nix
-Σ(fipsMode : Bool). if fipsMode then ListOf FIPSCipher else ListOf String
+Σ(generated : Bool). if generated then TargetClass else String
 
 ```
 
 In nix-effects:
 
 ```nix
-Sigma { fst = Bool; snd = b: if b then ListOf FIPSCipher else ListOf String; }
+Sigma { fst = Bool; snd = b: if b then TargetClass else String; }
 
 ```
 
@@ -130,24 +131,27 @@ kernel-backed type.
 
 ## Refinement types
 
-Sometimes you need a type that's narrower than `Int` but wider than an
-enum. Freeman & Pfenning (1991) introduced the refinement type: given a
-base type T and a predicate P, the type {x:T | P(x)} admits only values
-of T that satisfy P. `refined` is the direct implementation — `refined
-"Port" Int (x: x >= 1 && x <= 65535)` is {x:Int | 1 ≤ x ≤ 65535} with
-a name attached. Rondon et al. (2008) later scaled the idea with
-SMT-based inference under the name *Liquid Types*. We skip the solver and
-use runtime predicate checking:
+Sometimes you need a type that's narrower than `String` but wider than
+an enum hard-coded into every caller. Freeman & Pfenning (1991)
+introduced the refinement type: given a base type T and a predicate P,
+the type {x:T | P(x)} admits only values of T that satisfy P.
+`refined` is the direct implementation — `refined "TargetClass" String
+(x: builtins.elem x [ "module" "file" "package" "check" ])` is a string
+whose value is one of the renderer classes, with a name attached. Rondon
+et al. (2008) later scaled the idea with SMT-based inference under the
+name *Liquid Types*. We skip the solver and use runtime predicate
+checking:
 
 ```nix
-Port     = refined "Port"     Int (x: x >= 1 && x <= 65535);
+TargetClass = refined "TargetClass" String
+  (x: builtins.elem x [ "module" "file" "package" "check" ]);
 NonEmpty = refined "NonEmpty" String (s: builtins.stringLength s > 0);
-Nat      = refined "Nat"      Int (x: x >= 0);
+Nat      = refined "Nat" Int (x: x >= 0);
 
 ```
 
-`Port.check` composes the kernel's decision (`Int`) with the refinement
-predicate.
+`TargetClass.check` composes the kernel's decision (`String`) with the
+refinement predicate.
 Combinators for building compound predicates:
 
 ```nix
@@ -192,7 +196,7 @@ every resource was consumed the expected number of times. The grade
 discipline is enforced at runtime through the effect system, not
 statically — so you get usage tracking without a custom type checker, but
 violations show up at eval time rather than before it. That's a real
-trade-off, and for configuration validation we're comfortable with it.
+trade-off, and for eval-time DSL validation we're comfortable with it.
 
 ## Higher-order contracts and blame
 
@@ -236,7 +240,7 @@ how to report.
    ICFP 2002. [[doi](https://doi.org/10.1145/581478.581484)]
 
 6. Van Horn, D., & Might, M. (2010). *Abstracting Abstract Machines*.
-   ICFP 2010. (See [Trampoline](trampoline.md))
+   ICFP 2010. (See [Trampoline](/nix-effects/internals/trampoline))
 
 7. Freeman, T., & Pfenning, F. (1991). *Refinement Types for ML*.
    PLDI 1991. [[doi](https://doi.org/10.1145/113445.113468)]

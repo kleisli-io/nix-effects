@@ -1,7 +1,7 @@
 { lib, fx }:
 
 let
-  inherit (fx.types) Int String Bool Float Path Null Unit Any Record mkType;
+  inherit (fx.types) Int String Bool Float Path Null Unit Any Record mkType defEq;
   refined = fx.types.refined;
   sug = fx.sugar.types;
 
@@ -102,12 +102,19 @@ let
     expected = true;
   };
 
+  # Sugar preserves type identity: the type-theoretic claim is that
+  # `Record { age = Int }` and `Record { age = sug.Int }` denote the
+  # same type. The right predicate is definitional equality (conv),
+  # not Nix `==` on `_kernel` — the latter is an
+  # implementation-coupled approximation that stops being sound once
+  # the kernel encoding carries closures (post Record/Variant
+  # description-backed migration).
   recordKernelIdentity = {
     expr =
       let
         r1 = Record { age = Int; };
         r2 = Record { age = sug.Int; };
-      in r1._kernel == r2._kernel;
+      in defEq r1 r2;
     expected = true;
   };
 
@@ -117,7 +124,7 @@ let
         p = x: x > 0;
         r1 = Record { age = refined "Int?" Int p; };
         r2 = Record { age = sug.Int p; };
-      in r1._kernel == r2._kernel;
+      in defEq r1 r2;
     expected = true;
   };
 
@@ -135,7 +142,7 @@ let
           name = sug.String;
           active = sug.Bool;
         };
-      in r1._kernel == r2._kernel;
+      in defEq r1 r2;
     expected = true;
   };
 

@@ -71,6 +71,9 @@ let
     # --- effects / tests (full inline+integration suite) ---
     "effects.tests" = { tier = "heavy"; };
 
+    # --- experimental / descInterp ---
+    "experimental.descInterp.bindChain.s100k" = { tier = "heavy"; };
+
     # --- tc / conv ---
     "tc.conv.identical-shallow" = { tier = "quick"; };
     "tc.conv.identical-deep"    = { tier = "quick"; };
@@ -98,7 +101,9 @@ let
     "tc.diag.hint-resolve-5000"      = { tier = "quick"; };
 
     # --- tc / bindP ---
-    "tc.bindP.slow-path-chain-5000" = { tier = "quick"; };
+    "tc.bindP.slow-path-chain-5000"           = { tier = "quick"; };
+    "tc.bindP.universal-blame-chain"          = { tier = "quick"; };
+    "tc.bindP.desc-con-trampoline-blame-5000" = { tier = "quick"; };
 
     # --- tc / elaborate ---
     "tc.elaborate.flatten"   = { tier = "quick"; };
@@ -122,6 +127,29 @@ let
     "tc.e2e.tc-test-suite-per-module.term"      = { tier = "quick"; };
     "tc.e2e.tc-test-suite-per-module.value"     = { tier = "quick"; };
     "tc.e2e.tc-test-suite-per-module.verified"  = { tier = "quick"; };
+
+    # --- tc / ornaments ---
+    "tc.ornaments.ornDesc-normalize" = { tier = "quick"; };
+    "tc.ornaments.ornForget-elaborate" = { tier = "quick"; };
+    "tc.ornaments.ornForget-check" = { tier = "quick"; };
+    "tc.ornaments.ornCompose-check" = { tier = "quick"; };
+    "tc.ornaments.functional-synthesis-build" = { tier = "quick"; };
+    "tc.ornaments.functional-diagnostics-missing-builder" = { tier = "quick"; };
+    "tc.ornaments.functional-liftProducer-check" = { tier = "quick"; };
+    "tc.ornaments.alg-list-to-vec-check" = { tier = "quick"; };
+
+    # --- tc / decidable ---
+    "tc.decidable.leRange1000" = { tier = "standard"; };
+    "tc.decidable.leDiag50"    = { tier = "quick"; };
+
+    # --- tc / generic ---
+    "tc.generic.metadata-normalize"       = { tier = "quick"; };
+    "tc.generic.view-review"              = { tier = "quick"; };
+    "tc.generic.derive-descriptor"        = { tier = "quick"; };
+    "tc.generic.derive-schema"            = { tier = "quick"; };
+    "tc.generic.derive-deps"              = { tier = "quick"; };
+    "tc.generic.synthetic-builder-chain"  = { tier = "quick"; };
+    "tc.generic.functional-builder-chain" = { tier = "quick"; };
   };
 
   defaultTier = "standard";

@@ -1,151 +1,149 @@
 # nix-effects stream/reduce: Stream consumption/folding
 #
 # Terminal operations that consume a stream into a single value.
-{ fx, api, ... }:
-
+{ fx, ... }:
 let
   inherit (fx.kernel) pure bind;
-  inherit (api) mk;
+  fold = f: z: stream:
+    bind stream (step:
+      if step._tag == "Done" then pure z
+      else fold f (f z step.head) step.tail);
 
-  fold = mk {
-    doc = ''
-      Left fold over a stream.
+  toList = stream: fold (acc: x: acc ++ [ x ]) [] stream;
 
-      ```
-      fold : (b -> a -> b) -> b -> Computation (Step r a) -> Computation b
-      ```
-    '';
-    value = f: z: stream:
-      bind stream (step:
-        if step._tag == "Done" then pure z
-        else fold f (f z step.head) step.tail);
-  };
+  length = stream: fold (n: _: n + 1) 0 stream;
 
-  toList = mk {
-    doc = ''
-      Collect all stream elements into a list.
+  sum = stream: fold (acc: x: acc + x) 0 stream;
 
-      ```
-      toList : Computation (Step r a) -> Computation [a]
-      ```
-    '';
-    value = stream: fold (acc: x: acc ++ [ x ]) [] stream;
-  };
+  signalOn = z: cmp: stream:
+    let
+      go = current: s:
+        bind s (step:
+          if step._tag == "Done" then pure step
+          else let next = step.head;
+                   same = cmp current next;
+               in if same
+                  then go current step.tail
+                  else  fx.stream.core.more next (go next step.tail));
+    in fx.stream.core.more z (go z stream);
 
-  length = mk {
-    doc = ''
-      Count the number of elements in a stream.
+  signal = z: stream: signalOn z (x: y: x == y) stream;
 
-      ```
-      length : Computation (Step r a) -> Computation int
-      ```
-    '';
-    value = stream: fold (n: _: n + 1) 0 stream;
-  };
+  any = pred: stream:
+    bind stream (step:
+      if step._tag == "Done" then pure false
+      else if pred step.head then pure true
+      else any pred step.tail);
 
-  sum = mk {
-    doc = ''
-      Sum all numeric elements in a stream.
+  all = pred: stream:
+    bind stream (step:
+      if step._tag == "Done" then pure true
+      else if !(pred step.head) then pure false
+      else all pred step.tail);
 
-      ```
-      sum : Computation (Step r number) -> Computation number
-      ```
-    '';
-    value = stream: fold (acc: x: acc + x) 0 stream;
-  };
+in {
+  inherit fold toList length sum signal signalOn any all;
 
-  signalOn = mk {
-    doc = ''
-      Return a stream that emits only when the incoming values change.
-      The comparator receives the current value and the next stream value;
-      if they compare equal, the next value is skipped.
 
-      The returned stream begins with the provided initial value.
 
-      ```
-      signalOn : a -> (a -> a -> bool) -> Computation (Step r a) -> Computation (Step r a)
-      ```
-    '';
-    value = z: cmp: stream:
-      let
-        go = current: s:
-          bind s (step:
-            if step._tag == "Done" then pure step
-            else let next = step.head;
-                     same = cmp current next;
-                 in if same
-                    then go current step.tail
-                    else  fx.stream.core.more next (go next step.tail));
-      in fx.stream.core.more z (go z stream);
-    tests = {
-      "signalOn-empty-stream" = {
-        expr = (fx.stream.reduce.toList (signalOn 42 (x: y: x == y) (fx.stream.core.fromList []))).value;
-        expected = [ 42 ];
-      };
-      "signalOn-skips-duplicate-values" = {
-        expr = (fx.stream.reduce.toList (signalOn 0 (x: y: x == y) (fx.stream.core.fromList [ 0 0 1 1 2 ]))).value;
-        expected = [ 0 1 2 ];
-      };
-      "signalOn-uses-comparator" = {
-        expr = (fx.stream.reduce.toList (signalOn "init" (curr: next: builtins.substring 0 3 curr == builtins.substring 0 3 next) (fx.stream.core.fromList [ "odd-1" "odd-3" "even-2" "even-4" "odd-5" ]))).value;
-        expected = [ "init" "odd-1" "even-2" "odd-5" ];
+  __docs = {
+    _self = {
+      description = "Stream reduction: `fold`/`toList`/`length`/`sum`/`signal`/`signalOn`/`any`/`all` — terminal operations that consume a stream into a single computation.";
+      doc = "Stream reduction: fold, toList, length, sum, signal, signalOn, any, all.";
+    };
+
+    fold = {
+      description = "fold: left-fold a stream into a single value with initial accumulator `z`; the canonical terminal combinator other reducers delegate to.";
+      signature = "fold : (b -> a -> b) -> b -> Computation (Step r a) -> Computation b";
+      doc = ''
+        Left fold over a stream. Drains the stream, threading the
+        accumulator through `f` for each element.
+      '';
+    };
+
+    toList = {
+      description = "toList: collect all stream elements into a list in emission order; equivalent to `fold (acc: x: acc ++ [x]) []`.";
+      signature = "toList : Computation (Step r a) -> Computation [a]";
+      doc = ''
+        Collect all stream elements into a list, preserving emission order.
+      '';
+    };
+
+    length = {
+      description = "length: count the number of elements in a stream; equivalent to `fold (n: _: n + 1) 0` over the stream's element steps.";
+      signature = "length : Computation (Step r a) -> Computation Int";
+      doc = ''
+        Count the number of elements in a stream.
+      '';
+    };
+
+    sum = {
+      description = "sum: sum all numeric elements in a stream starting from 0; equivalent to `fold (acc: x: acc + x) 0`.";
+      signature = "sum : Computation (Step r Number) -> Computation Number";
+      doc = ''
+        Sum all numeric elements in a stream. Initial accumulator is `0`.
+      '';
+    };
+
+    signalOn = {
+      description = "signalOn: emit `z` then forward only values the comparator deems different from the previous emission; suppresses runs of equivalent inputs.";
+      signature = "signalOn : a -> (a -> a -> Bool) -> Computation (Step r a) -> Computation (Step r a)";
+      doc = ''
+        Return a stream that emits only when the incoming values change.
+        The comparator receives the current value and the next stream value;
+        if they compare equal, the next value is skipped.
+
+        The returned stream begins with the provided initial value `z`.
+      '';
+      tests = {
+        "signalOn-empty-stream" = {
+          expr = (fx.stream.reduce.toList (signalOn 42 (x: y: x == y) (fx.stream.core.fromList []))).value;
+          expected = [ 42 ];
+        };
+        "signalOn-skips-duplicate-values" = {
+          expr = (fx.stream.reduce.toList (signalOn 0 (x: y: x == y) (fx.stream.core.fromList [ 0 0 1 1 2 ]))).value;
+          expected = [ 0 1 2 ];
+        };
+        "signalOn-uses-comparator" = {
+          expr = (fx.stream.reduce.toList (signalOn "init" (curr: next: builtins.substring 0 3 curr == builtins.substring 0 3 next) (fx.stream.core.fromList [ "odd-1" "odd-3" "even-2" "even-4" "odd-5" ]))).value;
+          expected = [ "init" "odd-1" "even-2" "odd-5" ];
+        };
       };
     };
-  };
 
-  signal = mk {
-    doc = ''
-      Return a stream that emits only when the incoming values change,
-      using structural equality to detect duplicates.
-      Equivalent to `signalOn initialValue (x: y: x == y)`.
-
-      ```
-      signal : a -> Computation (Step r a) -> Computation (Step r a)
-      ```
-    '';
-    value = z: stream: signalOn z (x: y: x == y) stream;
-    tests = {
-      "signal-identity-checks-equality" = {
-        expr = (fx.stream.reduce.toList (signal 0 (fx.stream.core.fromList [ 0 0 1 1 2 ]))).value;
-        expected = [ 0 1 2 ];
+    signal = {
+      description = "signal: emit `z` then forward only values not structurally equal to the previous emission; specialisation of `signalOn` over `==`.";
+      signature = "signal : a -> Computation (Step r a) -> Computation (Step r a)";
+      doc = ''
+        Return a stream that emits only when the incoming values change,
+        using structural equality to detect duplicates.
+        Equivalent to `signalOn z (x: y: x == y)`.
+      '';
+      tests = {
+        "signal-identity-checks-equality" = {
+          expr = (fx.stream.reduce.toList (signal 0 (fx.stream.core.fromList [ 0 0 1 1 2 ]))).value;
+          expected = [ 0 1 2 ];
+        };
       };
     };
-  };
 
-  any = mk {
-    doc = ''
-      Check if any element satisfies a predicate.
-      Short-circuits on first match (via lazy evaluation).
+    any = {
+      description = "any: return `true` if any element satisfies the predicate; short-circuits on first match via lazy evaluation of the stream tail.";
+      signature = "any : (a -> Bool) -> Computation (Step r a) -> Computation Bool";
+      doc = ''
+        Check if any element satisfies a predicate. Short-circuits on
+        first match — the rest of the stream is never forced.
+      '';
+    };
 
-      ```
-      any : (a -> bool) -> Computation (Step r a) -> Computation bool
-      ```
-    '';
-    value = pred: stream:
-      bind stream (step:
-        if step._tag == "Done" then pure false
-        else if pred step.head then pure true
-        else any pred step.tail);
-  };
+    all = {
+      description = "all: return `true` if every element satisfies the predicate; short-circuits on first miss via lazy evaluation of the stream tail.";
+      signature = "all : (a -> Bool) -> Computation (Step r a) -> Computation Bool";
+      doc = ''
+        Check if all elements satisfy a predicate. Short-circuits on
+        first failing element.
+      '';
+    };
 
-  all = mk {
-    doc = ''
-      Check if all elements satisfy a predicate.
-
-      ```
-      all : (a -> bool) -> Computation (Step r a) -> Computation bool
-      ```
-    '';
-    value = pred: stream:
-      bind stream (step:
-        if step._tag == "Done" then pure true
-        else if !(pred step.head) then pure false
-        else all pred step.tail);
-  };
-
-in mk {
-  doc = "Stream reduction: fold, toList, length, sum, signal, signalOn, any, all.";
-  value = {
-    inherit fold toList length sum signal signalOn any all;
   };
 }

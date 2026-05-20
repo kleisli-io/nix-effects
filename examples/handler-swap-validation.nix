@@ -30,7 +30,7 @@ let
 
   renderPath = e:
     if e.path == [] then e.context
-    else builtins.concatStringsSep "." e.path;
+    else builtins.concatStringsSep "" (map (p: p.segment) e.path);
 
   collecting =
     let r = runWith fx.effects.typecheck.collecting [];

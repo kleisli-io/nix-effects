@@ -54,37 +54,19 @@ let
 
 in {
   scope = {
-    # `checkDescAtAnyLevel : Ctx → Tm → Val → Computation { term; level; }`
-    # — infer a description term under a known index type `iTyVal`.
-    # A primitive `VDesc` result carries its level directly. An encoded
-    # description has type `VMu`; scan the bounded prelude levels and use
-    # the `VDesc ↔ VMu` conversion rule to recover the matching level.
-    checkDescAtAnyLevel = ctx: dTm: iTyVal:
-      if dTm.tag == "ann"
-         && (dTm.trusted or false)
-         && dTm.type.tag == "desc"
-         && (dTm ? _descRef)
-      then
-        let
-          iTm = dTm.type.I;
-          iVal = E.eval ctx.env iTm;
-          kTm = dTm.type.k;
-          kVal =
-            if kTm.tag == "level-zero"
-            then V.vLevelZero
-            else E.eval ctx.env kTm;
-        in
-        if C.conv ctx.depth iVal iTyVal
-        then pure { term = dTm; level = kVal; }
-        else send "typeError" {
-          error = D.mkKernelError {
-            rule     = "checkDescAtAnyLevel";
-            msg      = "description index type mismatch";
-            expected = Q.quote ctx.depth iTyVal;
-            got      = Q.quote ctx.depth iVal;
-          };
-        }
-      else bind (self.infer ctx dTm) (dResult:
+    checkDescAtAnyLevel =
+      # checkDescAtAnyLevel: see top-of-file commentary.
+      #
+      # Strategy: a primitive `VDesc` result carries its level
+      # directly. An encoded description has type `VMu`; the scan
+      # builds `vDesc lev iTyVal` for each candidate `lev` and asks
+      # `conv` whether it matches the inferred type. Conv fires the
+      # symmetric `VDesc ↔ VMu` unfolding internally (same mechanism
+      # as `conv.nix:344-355`). The candidate-level scan is bounded
+      # by the prelude's maximum description level.
+      ctx: dTm: iTyVal:
+      let
+        checkInferredDesc = dResult:
         let
           dTy = dResult.type;
           # Recognise an encoded description type `μ⊤(descDesc I L) tt`
@@ -148,7 +130,73 @@ in {
             expected = { tag = "desc"; };
             got      = Q.quote ctx.depth dTy;
           };
-        });
+        };
+        inferDesc = bind (self.infer ctx dTm) checkInferredDesc;
+        inferParamTerms = params:
+          if params == [] then pure []
+          else bind (self.infer ctx (builtins.head params)) (pResult:
+            bind (inferParamTerms (builtins.tail params)) (rest:
+              pure ([ pResult.term ] ++ rest)));
+        hasCompleteDescRef = tm:
+          tm ? _descRef
+          && (tm._descRef.kind or null) == "datatype-desc"
+          && (tm._descRef.signature.complete or false);
+        generatedParamTerm = tm:
+          let t = tm.tag or null; in
+          if t == "ann" then hasCompleteDescRef tm || generatedParamTerm tm.term
+          else if t == "mu" then hasCompleteDescRef tm.D
+          else if t == "desc-con" then hasCompleteDescRef tm.D
+          else t == "unit" || t == "string" || t == "int"
+            || t == "float" || t == "attrs" || t == "path"
+            || t == "function" || t == "any" || t == "level"
+            || t == "U" || t == "tt" || t == "level-zero"
+            || t == "level-suc" || t == "level-max"
+            || t == "var";
+        canonicalTrustedDescTerm = kVal:
+          bind (inferParamTerms (dTm._descRef.params or [])) (params:
+            let
+              descTyTm = T.mkDesc (Q.quote ctx.depth kVal) (Q.quote ctx.depth iTyVal);
+              ref = dTm._descRef // {
+                I = Q.quote ctx.depth iTyVal;
+                level = Q.quote ctx.depth kVal;
+                inherit params;
+              };
+              certifiedGeneratedDesc =
+                (dTm._descRef.kind or null) == "datatype-desc"
+                && (dTm._descRef.signature.complete or false)
+                && builtins.all generatedParamTerm params;
+              bodyComp =
+                if certifiedGeneratedDesc
+                then pure dTm.term
+                else self.check ctx dTm.term (V.vDesc kVal iTyVal);
+            in bind bodyComp (bodyTm:
+              pure (T.mkAnnTrustedWithDescRef bodyTm descTyTm ref)));
+      in
+      if dTm.tag == "ann"
+         && (dTm.trusted or false)
+         && dTm.type.tag == "desc"
+         && (dTm ? _descRef)
+      then
+        let
+          iTm = dTm.type.I;
+          iVal = E.eval ctx.env iTm;
+          kTm = dTm.type.k;
+          kVal =
+            if kTm.tag == "level-zero"
+            then V.vLevelZero
+            else E.eval ctx.env kTm;
+        in
+        if C.conv ctx.depth iVal iTyVal
+        then bind (canonicalTrustedDescTerm kVal) (term:
+          pure { inherit term; level = kVal; })
+        else bind (self.check ctx iTm vU0) (iCheckedTm:
+          let iCheckedVal = E.eval ctx.env iCheckedTm; in
+          if C.conv ctx.depth iCheckedVal iTyVal
+          then bind (canonicalTrustedDescTerm kVal) (term:
+            pure { inherit term; level = kVal; })
+          else inferDesc)
+      else inferDesc;
+
     checkTypeLevel = ctx: tm:
       let t = tm.tag; in
       if t == "unit" then pure { term = T.mkUnit; level = V.vLevelZero; }
@@ -262,5 +310,55 @@ in {
     checkType = ctx: tm:
       bind (self.checkTypeLevel ctx tm) (r: pure r.term);
   };
+
   tests = {};
+
+  __docs = {
+    checkDescAtAnyLevel = {
+      description = "checkDescAtAnyLevel: description checking at any universe level — accepts both primitive `VDesc` results and encoded `VMu` descriptions (the §6.6 `VDesc ↔ μ_⊤(descDesc I L)` correspondence) and threads the universe level back to the caller for downstream encoding decisions.";
+      signature = "checkDescAtAnyLevel : Ctx -> Tm -> Val -> Computation { term; level }";
+      doc = ''
+        Trusted-annotation fast path: when `dTm` is a `T.mkAnnTrusted`
+        with a complete `_descRef`, build a canonical description term
+        directly (skipping the unfolding scan) and reuse the carried
+        level. Otherwise fall through to inference and dispatch on the
+        inferred type's tag:
+
+        - `VDesc`: the level is already on the type; conv-check that the
+          index type matches `iTyVal` and forward.
+        - `VMu`: the description is encoded — scan a bounded list of
+          candidate universe levels (the prelude exercises `L = 0..3`)
+          and ask `conv` whether `V.vDesc lev iTyVal` unifies with the
+          inferred type. Conv fires the symmetric `VDesc ↔ VMu`
+          unfolding internally (same mechanism as
+          `conv.nix:344-355`).
+        - Anything else: emit a `typeError` — not a description.
+
+        Used by `desc-con` checking (`check.nix`) for `_descConCert`
+        validation, by `infer.nix` for `desc-ind` motive and branch
+        checking, and by `type.nix:mu` to thread the description level
+        into the `μ` type's universe level.
+      '';
+    };
+    checkType = {
+      description = "checkType: thin wrapper around `checkTypeLevel` that discards the level — verifies `tm` is a type and returns the elaborated term only.";
+      signature = "checkType : Ctx -> Tm -> Computation Tm";
+    };
+    checkTypeLevel = {
+      description = "checkTypeLevel: type-formation judgement (§7.5, §8.2) — verifies that `tm` is a type and returns both the elaborated term and the universe Level value it inhabits.";
+      signature = "checkTypeLevel : Ctx -> Tm -> Computation { term; level }";
+      doc = ''
+        `level` is a kernel Level *value* (`V.vLevelZero`,
+        `V.vLevelSuc`, `V.vLevelMax`) — not a Nix integer — so
+        level-polymorphic types (`U(k)` for a variable `k : Level`)
+        flow through without ad-hoc integer machinery. Levels come
+        from the typing derivation, not post-hoc value inspection
+        (e.g., `Π(x:A). B` computes its level as the `vLevelMax` of
+        domain/codomain levels). The fallback path delegates to
+        `infer` and succeeds iff the inferred type is a universe; in
+        that case `.type.level` is already a Level value and is
+        forwarded verbatim.
+      '';
+    };
+  };
 }

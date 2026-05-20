@@ -23,30 +23,31 @@
 # A Hint is `{ _tag = "Hint"; text; category; severity; docLink; }`.
 # The `_tag` keeps it terminal for `api.extractValue`; all other
 # fields are plain data consumable by renderers, LSPs, docs, and
-# linters. Severity is `"error"` at this layer. `docLink` points at
-# a per-key anchor inside the auto-generated diag module page on
-# `docs.kleisli.io`; the anchor slug matches the docs-site markdown
-# renderer's slug for the corresponding heading text.
+# linters. Severity is `"error"` at this layer. `docLink` resolves
+# to a dedicated per-key page on `docs.kleisli.io` of the form
+# `/nix-effects/diag-hints/<slug>`; the slug matches the docs-site
+# markdown renderer's slug for the key, so one fetch lands an agent
+# on focused, single-key content.
 #
 # Chain walking is stack-safe by construction: direct recursion up to
 # `fastPathLimit` frames, then a `builtins.genericClosure` worklist
 # that WHNF-forces the next Error node at each step. `deepSeq` is
 # unsafe on recursive Error payloads; WHNF suffices because each step
 # only reads `err.children` (one hop).
-{ lib, fx, api, ... }:
-
+{ lib, fx, ... }:
 let
-  inherit (api) mk;
-
   fastPathLimit = 500;
 
-  # Page URL of the auto-generated diag module on docs.kleisli.io
-  # (served by depots/kleisli/projects/kleisli-docs). Per-key anchors
-  # are appended via `slugify` below; the anchor scheme matches the
-  # heading-id slugifier in
-  # `depots/kleisli/projects/kleisli-content/src/markdown.lisp`, so
-  # `docLink` fragment ↔ rendered heading id.
-  docBase = "https://docs.kleisli.io/nix-effects/core-api/diag";
+  # Base URL of the per-key Hint pages on docs.kleisli.io (served by
+  # depots/kleisli/projects/kleisli-docs). Each Hint key gets its own
+  # page at `${docBase}/${slugify key}`; the corresponding `.md` file
+  # is emitted by kleisli-docs.nix:diagHintsEntries and exposed as a
+  # `docs://kleisli/nix-effects/diag-hints/<slug>` MCP resource via
+  # the existing scan-docs / register-doc-resources pipeline. Slug
+  # rule matches the kleisli-content heading-id slugifier so the URL
+  # path segment also serves as an in-page anchor on overview pages
+  # that reference the key.
+  docBase = "https://docs.kleisli.io/nix-effects/diag-hints";
 
   # Slugify a hint key the same way kleisli-content's markdown renderer
   # slugifies heading text: lowercase, then replace any character not in
@@ -69,8 +70,8 @@ let
   # Structured hint constructor. `_tag = "Hint"` stops api.extractValue
   # from recursing into the record (matches the Layer ADT's discipline).
   # `severity` exists so promoting a hint to a warning is an additive
-  # override. `docLink` is set to the page root here and overridden
-  # per-entry below with the per-key anchor.
+  # override. `docLink` is set to the section root here and overridden
+  # per-entry below with `${docBase}/${slugify key}`.
   mkHint = category: text: {
     _tag     = "Hint";
     inherit category text;
@@ -191,9 +192,9 @@ let
   # keys or text; text is position-semantic.
   #
   # Each entry's `docLink` is rewritten below to point at the per-key
-  # heading anchor on /nix-effects/core-api/diag, computed by `slugify`
-  # so the URL fragment matches the heading id emitted by the docs
-  # site's markdown renderer.
+  # page `/nix-effects/diag-hints/<slug>`, computed by `slugify`
+  # so the URL path segment matches the file name emitted by
+  # kleisli-docs.nix:diagHintsEntries.
   hintsByKey = {
     "DArgSort::universe-mismatch" = mkHint "universe"
       "the sort position of `arg` must live in U(0); descriptions only carry small types. Pass `u 0`, or factor the dependency through `descRec` / `descPi` if a larger type is genuinely needed.";
@@ -286,12 +287,12 @@ let
       "the motive's domain must be a type (live in some U(k)). The motive receives the scrutinee's type as its domain and returns a type; supply a concrete type such as `nat`, `u 0`, or the datatype being eliminated.";
   };
 
-  # Final hint table: rewrite each entry's docLink to point at the
-  # per-key anchor on the diag docs page. The anchor slug is computed
-  # by the same rule the docs-site markdown renderer uses, so the
-  # docLink fragment dereferences to the rendered heading id.
+  # Final hint table: rewrite each entry's docLink to its dedicated
+  # per-key page. The slug is computed by the same rule kleisli-docs.nix
+  # uses to name the `.md` file, so the URL dereferences to the
+  # focused per-key markdown page in one fetch.
   hints = lib.mapAttrs
-    (key: hint: hint // { docLink = "${docBase}#${slugify key}"; })
+    (key: hint: hint // { docLink = "${docBase}/${slugify key}"; })
     hintsByKey;
 
   # -- Key parsing and indexing (precomputed at module load).
@@ -365,8 +366,14 @@ let
       fx.diag.error.nestUnder fx.diag.positions.DArgSort inner
     ) leafUMismatch (lib.range 1 5000);
 
-in mk {
-  doc = ''
+in {
+  inherit resolve classify hints mkHint taxonomy;
+
+
+
+  __docs = {
+    _self = {
+      doc = ''
     Hint resolver for diagnostic Errors.
 
     Exports:
@@ -378,11 +385,14 @@ in mk {
     The `_tag` marker keeps it terminal for `api.extractValue`, and
     the remaining fields are plain data consumable by renderers,
     LSPs, docs, and linters. Severity is `"error"` at this layer;
-    `docLink` points at the per-key heading anchor on the
-    auto-generated diag module page (`/nix-effects/core-api/diag`).
-    The anchor slug matches the docs-site markdown renderer's
-    heading-id slugification rule, so each hint's docLink lands
-    precisely on the rendered section for its key.
+    `docLink` resolves to a dedicated per-key page on
+    `docs.kleisli.io` of the form
+    `/nix-effects/diag-hints/<slug>`, where `<slug>` matches the
+    docs-site heading-id slugification rule applied to the key.
+    Each per-key page is also exposed as an MCP resource at
+    `docs://kleisli/nix-effects/diag-hints/<slug>`, so a compiler
+    Hint dereferences to focused agent-readable content in one
+    fetch.
 
     Keys encode a leaf-anchored suffix of the blame path plus the
     classifier pattern: `"<pos1>.<pos2>...<posN>::<pattern>"`. A key
@@ -396,10 +406,7 @@ in mk {
     frames, then falls through to a `builtins.genericClosure` slow
     path that WHNF-forces the next node.
   '';
-  value = {
-    inherit resolve classify hints mkHint taxonomy;
-  };
-  tests = {
+      tests = {
     # -- resolve: happy-path hits covering the required ≥7 hints. --
     "resolve-DArgSort-universe-mismatch" = {
       expr = resolve (fx.diag.error.nestUnder
@@ -678,19 +685,12 @@ in mk {
       expected = true;
     };
 
-    # -- Anchor coherence: every docLink decomposes as `${docBase}#${slugify key}`. --
-    "hints-docLinks-have-matching-per-key-anchor" = {
+    # -- Path coherence: every docLink decomposes as `${docBase}/${slugify key}`. --
+    "hints-docLinks-have-matching-per-key-path" = {
       expr =
         let
           check = key: hint:
-            let
-              parts = lib.splitString "#" hint.docLink;
-              base = builtins.elemAt parts 0;
-              fragment =
-                if builtins.length parts > 1
-                then builtins.elemAt parts 1
-                else "";
-            in base == docBase && fragment == slugify key;
+            hint.docLink == "${docBase}/${slugify key}";
         in builtins.all
              (key: check key hints.${key})
              (builtins.attrNames hints);
@@ -1063,5 +1063,27 @@ in mk {
                      fx.diag.positions.ULevel leaf);
       expected = hints."ULevel::type-mismatch";
     };
+  };
+    };
+
+    resolve = {
+      description = "resolve: walk a blame path inward from leaf to root, returning the `Hint` under the longest matching suffix-key — the canonical lookup for surfacing position-semantic guidance on a kernel `Error`.";
+      signature = "resolve : Error -> Hint | null";
+    };
+    classify = {
+      description = "classify: derive the classifier pattern string from an `Error`'s detail and leaf position — yields the right-hand side of suffix-keys consumed by `resolve` (e.g. `\"universe-mismatch\"`).";
+      signature = "classify : Error -> String";
+    };
+    hints = {
+      description = "hints: the closed `{ key = Hint }` registry indexed by `<pos1>.<pos2>...<posN>::<pattern>` keys; each value carries `text`, `category`, `severity`, `docLink` to the per-key `/nix-effects/diag-hints/<slug>` page.";
+    };
+    mkHint = {
+      description = "mkHint: structured `Hint` constructor from a `category` and `text` — sets `_tag = \"Hint\"` (terminal for `extractValue`), `severity = \"error\"`, and the default `docLink` pointing at the diag-hints section root.";
+      signature = "mkHint : Category -> String -> Hint";
+    };
+    taxonomy = {
+      description = "taxonomy: closed list of allowed `Hint.category` values (`\"universe\"`, `\"sort\"`, `\"description\"`, `\"arity\"`, `\"indexing\"`, `\"inhabitation\"`, …); enforced by the `hints-categories-in-taxonomy` test.";
+    };
+
   };
 }

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Headline changes
+
+#### Kernel `Derivation` and `DerivationThunk` primitives
+
+- **`Derivation` and `DerivationThunk` join the axiomatized primitive set as new Nix native types.** `Derivation` is decided by `(v: builtins.isAttrs v && (v.type or null) == "derivation")` and sits parallel to `Path` (which uses `builtins.isPath`). `DerivationThunk` is decided by `(v: builtins.isAttrs v && (v._tag or null) == "DerivationThunk" && v ? _force)` — a closure-wrapped derivation carrier whose shape is opaque to `builtins.deepSeq`. The three primitives share no values: `Path` rejects attrsets, `Derivation` rejects strings and non-derivation attrsets, `DerivationThunk` rejects raw drvs and carriers without the `_tag` discriminator.
+- **Full pipeline coverage.** `Derivation` / `DerivationLit` and `DerivationThunk` / `DerivationThunkLit` ride through eval, quote, conv, infer, check, elaborate, extract, and the generic native predicate / expectation / onPrim wiring, mirroring the existing `Path` primitive's surface exactly. HOAS surface: `H.derivation` / `H.derivationLit` and `H.derivationThunk` / `H.derivationThunkLit`. The types are exported on both the sugar wrapper and the non-sugar `fx.types.{Derivation,DerivationThunk}` surface.
+- **Motivates principled `package`-shaped fields.** Downstream typed builders can now require `package : H.derivation` instead of falling back to `H.any`, validating at the review boundary that a tool or dependency carries a real Nix derivation rather than a string. Handler-state-bound payloads use `H.derivationThunk` so `fx.send`-time validation structurally rejects unwrapped drvs.
+- **Handler-state transport via `DerivationThunk`.** A real Nix derivation cannot be threaded through trampoline-threaded handler state — its cyclic `passthru`/`all`/`outputs` graph hangs `builtins.deepSeq newState` (`src/trampoline.nix:124`), uncatchable by `tryEval`. The runtime carrier `fx.state.mkDerivationThunk` wraps a drv as `{ _tag = "DerivationThunk"; _force = _: drv; }` — closures are opaque to `deepSeq` — and `fx.state.forceDerivationThunk` recovers it after the trampoline returns. The companion user type `fx.types.DerivationThunk` uses `kernelType = H.derivationThunk` with no guard — membership is decided structurally by the kernel native predicate (`_kernelSufficient = true`). `DerivationThunk` is disjoint from `Derivation` — no implicit subtyping, explicit one-step coercions in both directions.
+
+#### Ornament layer for generated datatypes
+
+- **Ornaments are now a public datatype refinement layer.** Generated datatypes can be refined by checked ornaments with compiled descriptions and forgetful maps, including identity, composition, pullback, liftFold, law tests, structured diagnostics, and source-path reporting.
+- **Algebraic ornaments connect folds to indices and inserted fields.** The public `algOrn` helper validates supported description/algebra shapes, covers the List-to-Vec pattern, and rejects unsupported fragments with stable diagnostics.
+- **Functional ornaments add the forward direction.** A functional ornament is an ornament plus a checked section of its forgetful map, so base values can be canonically enriched, composed, lifted through producers/transforms, and diagnosed when inserted data or proof obligations are missing.
+
+### Added
+
+- **`fx.state` namespace** — new state-carrier surface. Initial inhabitants: `mkDerivationThunk` / `forceDerivationThunk` / `isDerivationThunk` for deepSeq-safe drv transport through handler state. Source: `src/state/derivation-thunk.nix`; rationale in `book/src/trampoline.md` § "State-shape contract".
+- **`fx.types.Derivation` and `fx.types.DerivationThunk`** — both exported on the public `fx.types` surface and both kernel-decided (`kernelType = H.derivation` / `kernelType = H.derivationThunk`, no guard). `Derivation` accepts raw drv attrsets; `DerivationThunk` accepts carriers produced by `fx.state.mkDerivationThunk`. Intentionally disjoint value sets; explicit coercions only.
+- **First-class ornaments for generated datatypes** — HOAS and generic surfaces expose ornament construction, checked metadata, `ornDesc`, `ornForget`, identity, composition, pullback transport, liftFold transport, and indexed/unit-indexed compatibility.
+- **Ornament diagnostics and law harness** — validation APIs report datatype, constructor, field, indexed-branch, and algebra-node context while semantic maps stay pure after validation.
+- **Functional ornaments for generated datatypes** — the HOAS surface exposes `functionalOrnament`, section/build accessors, law diagnostics, composition, and producer/transform lifting. The generic surface adds synthesis from `{ base; spec; synth; }`, proof and measure obligations, structured diagnostics, and canonical build/forget helpers.
+- **MetaBuilder-style functional ornament pilot** — a synthetic `CoreBuilder -> CodeGenBuilder -> IdlBuilder` chain demonstrates public-API enrichment, composed sections, forget coherence, lifted producers, and missing-enrichment diagnostics.
+
+### Performance
+
+- **Ornament benchmark workloads** — quick-tier workloads now cover `ornDesc`, `ornForget`, composition, algebraic ornaments, generic metadata/view/review/derive artifacts, functional synthesis, failed synthesis diagnostics, lifted producers, and the synthetic MetaBuilder-style chain. On the local quick sample, `tc.generic.functional-builder-chain` evaluated in about 221 ms wall / 0.171 s evaluator CPU while preserving `forget` and `liftedForget` checks.
+
 ## [0.11.0] - 2026-05-13
 
 ### Headline changes

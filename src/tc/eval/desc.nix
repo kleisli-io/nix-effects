@@ -19,9 +19,11 @@
 # evaluator core. The mutual recursion (`instantiateF` → `evalF` →
 # `vDescIndF`/`vInterpDF`/`vAllDF`/`vEverywhereDF`) is closed by the
 # walker's fixpoint over `self`.
-{ self, fx, ... }:
+{ self, fx, api, ... }:
 
 let
+  inherit (api) mk;
+
   term = fx.tc.term;
   val = fx.tc.value;
   inherit (val) mkClosure vLam vPi vU vTt vPair vNe
@@ -29,6 +31,40 @@ let
     vSigma vBootSum vBootInl vBootInr vBootEq vDescCon
     vLevelZero
     eDescInd eInterpD eAllD eEverywhereD;
+
+  isOneOf = x: xs:
+    builtins.foldl' (ok: y: ok || x == y) false xs;
+
+  isSumCtorSig = paramIndexes: ctor:
+    builtins.isAttrs ctor
+    && (ctor.complete or false)
+    && (ctor.target.tag or null) == "tt"
+    && builtins.length (ctor.fields or []) == 1
+    && (let field = builtins.elemAt ctor.fields 0; in
+      builtins.isAttrs field
+      && (field.kind or null) == "data"
+      && (field.type.tag or null) == "param"
+      && isOneOf (field.type.index or null) paramIndexes);
+
+  isSumSignature = firstParamIndexes: secondParamIndexes: sig:
+    builtins.isAttrs sig
+    && (sig.complete or false)
+    && builtins.length (sig.constructors or []) == 2
+    && isSumCtorSig firstParamIndexes (builtins.elemAt sig.constructors 0)
+    && isSumCtorSig secondParamIndexes (builtins.elemAt sig.constructors 1);
+
+  isSumDescRef = ref:
+    let
+      arity = ref.arity or null;
+      paramCount = builtins.length (ref.params or []);
+    in
+    builtins.isAttrs ref
+    && (ref.kind or null) == "datatype-desc"
+    && (ref.name or null) == "Sum"
+    && arity == 2
+    && (if paramCount == 3
+        then isSumSignature [ 1 ] [ 1 2 ] (ref.signature or {})
+        else isSumSignature [ 0 ] [ 0 1 ] (ref.signature or {}));
 
   dViewRet = j: { tag = "DViewRet"; idx = 0; inherit j; };
   dViewFn = apply: { tag = "VDescViewFn"; inherit apply; };
@@ -124,14 +160,10 @@ in {
         in self.vAppF f (self.vAppF f (self.vAppF f step i) d) evResult
       else throw "tc: vDescInd on non-mu (tag=${scrut.tag})";
 
-    # Value-level constructor for `descDesc I L`-as-tagged-VDescCon.
-    # Build the tagged shell before demanding the recursively computed
-    # fields. Conv/quote use `_canonRef` without forcing `.D`; eliminators
-    # use `descViewF`'s one-step semantic view of the same reference.
     mkDescDescAppVF = fuel: I: L:
       let
         raw = self.vAppF fuel
-                (self.vAppF fuel fx.tc.hoas.descDescVal I) L;
+                (self.vAppF fuel fx.tc.hoas._internal._encoders.descDescVal I) L;
       in {
         tag = "VDescCon";
         D = raw.D;
@@ -140,13 +172,27 @@ in {
         _canonRef = { id = "descDesc"; inherit I L; };
       };
 
+    mkCanonAppVF = fuel: id: paramVals: bodyVal:
+      let
+        raw = builtins.foldl' (acc: p: self.vAppF fuel acc p)
+                bodyVal paramVals;
+      in
+        if raw.tag or null != "VDescCon"
+        then throw "tc: canon-app body produced non-VDescCon (tag=${raw.tag or "<unknown>"}) for id=${id}"
+        else {
+          tag = "VDescCon";
+          D = raw.D;
+          i = raw.i;
+          d = raw.d;
+          _canonRef = { inherit id; params = paramVals; };
+        };
+
     sumViewF = d:
       if d.tag == "VBootInl" then { side = "inl"; value = d.val; }
       else if d.tag == "VBootInr" then { side = "inr"; value = d.val; }
       else if d.tag == "VDescCon"
            && d.D ? _descRef
-           && d.D._descRef.kind == "datatype-desc"
-           && (d.D._descRef.name or null) == "Sum"
+           && isSumDescRef d.D._descRef
            && (d.d.tag == "VBootInl" || d.d.tag == "VBootInr")
            && d.d.val.tag == "VPair"
       then {
@@ -172,9 +218,7 @@ in {
            && d ? _descConCert
            && d._descConCert.kind == "datatype-con-payload"
            && d._descConCert.fieldCount == 1
-           && d._descConCert.ref.kind == "datatype-desc"
-           && (d._descConCert.ref.name or null) == "Sum"
-           && (d._descConCert.ref.arity or null) == 2
+           && isSumDescRef d._descConCert.ref
            && (d.d.tag == "boot-inl" || d.d.tag == "boot-inr")
            && d.d.term.tag == "pair"
       then
@@ -214,9 +258,7 @@ in {
       }
       else if d.tag == "VDescCon"
            && d.D ? _descRef
-           && d.D._descRef.kind == "datatype-desc"
-           && (d.D._descRef.name or null) == "Sum"
-           && (d.D._descRef.arity or null) == 2
+           && isSumDescRef d.D._descRef
            && (d.d.tag == "VBootInl" || d.d.tag == "VBootInr")
            && d.d.val.tag == "VPair"
       then
@@ -302,31 +344,77 @@ in {
           isPair = v:
             builtins.isAttrs v
             && (let tag = v.tag or null; in tag == "VPair");
+          # I, k recovered from the descDesc-app reference embedded in D.D.
+          # Encoder bodies in hoas/desc.nix:184-371 stamp D with
+          # `c.dDesc = descDescApp I k` whose `_canonRef = { id="descDesc"; I; L=k }`.
+          # Synthesized VDescCons outside the encoder path get null; downstream
+          # consumers tolerate missing-metadata via `?`/`or`.
+          hasDescDescRef =
+               D ? D
+            && builtins.isAttrs D.D
+            && D.D ? _canonRef
+            && (D.D._canonRef.id or null) == "descDesc";
+          I_val = if hasDescDescRef then D.D._canonRef.I else null;
+          k_val = if hasDescDescRef then D.D._canonRef.L else null;
+          # Erasable presentation labels. Stamped onto the encoded
+          # VDescCon by the `ann`-with-`_label`/`_conLabel` elaboration
+          # of `H.withDescLabel` / `H.withConLabel`; null for
+          # unlabeled descriptions, preserving back-compat for views
+          # built before label-aware encoders. Conv ignores both
+          # (operates structurally on `.D/.i/.d`), so deepEqualDesc
+          # remains label-irrelevant on both axes. `label` is the
+          # per-node binding name; `conLabel` is the surrounding
+          # constructor's name (populated at the spine site in
+          # `hoas/datatype.nix`).
+          label_val    = D._label    or null;
+          conLabel_val = D._conLabel or null;
+          # For arg/pi, peel a possible VLift wrapper off the encoded sTy to
+          # recover (l, eq, S_orig). vLiftF collapses LiftAt l l _ A ≡ A so
+          # homogeneous descriptions present `sTy` without the wrapper.
+          peelLift = sTy:
+            if builtins.isAttrs sTy && (sTy.tag or null) == "VLift"
+            then { l = sTy.l; eq = sTy.eq; sTyRaw = sTy.A; }
+            else { l = k_val; eq = vBootRefl; sTyRaw = sTy; };
         in
         if info == null then null
         else if info.idx == 0 then
           if isPair info.payload
-          then { idx = 0; j = info.payload.fst; }
+          then { idx = 0; j = info.payload.fst;
+                 I = I_val; k = k_val;
+                 label = label_val; conLabel = conLabel_val; }
           else null
         else if info.idx == 1 then
           if isPair info.payload && isPair info.payload.snd
-          then { idx = 1; sTy = info.payload.fst; tFn = info.payload.snd.fst; }
+          then let lift = peelLift info.payload.fst; in
+            { idx = 1;
+              sTy = info.payload.fst;
+              tFn = info.payload.snd.fst;
+              I = I_val; k = k_val;
+              label = label_val; conLabel = conLabel_val;
+              inherit (lift) l eq sTyRaw; }
           else null
         else if info.idx == 2 then
           if isPair info.payload && isPair info.payload.snd
-          then { idx = 2; j = info.payload.fst; sub = info.payload.snd.fst; }
+          then { idx = 2; j = info.payload.fst; sub = info.payload.snd.fst;
+                 I = I_val; k = k_val;
+                 label = label_val; conLabel = conLabel_val; }
           else null
         else if info.idx == 3 then
           if isPair info.payload && isPair info.payload.snd && isPair info.payload.snd.snd
-          then
+          then let lift = peelLift info.payload.fst; in
             { idx = 3;
               sTy = info.payload.fst;
               fn  = info.payload.snd.fst;
-              sub = info.payload.snd.snd.fst; }
+              sub = info.payload.snd.snd.fst;
+              I = I_val; k = k_val;
+              label = label_val; conLabel = conLabel_val;
+              inherit (lift) l eq sTyRaw; }
           else null
         else if info.idx == 4 then
           if isPair info.payload && isPair info.payload.snd
-          then { idx = 4; A = info.payload.fst; B = info.payload.snd.fst; }
+          then { idx = 4; A = info.payload.fst; B = info.payload.snd.fst;
+                 I = I_val; k = k_val;
+                 label = label_val; conLabel = conLabel_val; }
           else null
         else null
       else null;
@@ -609,26 +697,26 @@ in {
             in self.vBootSumElimF f AInterp BInterp motive onLeftLam onRightLam d
           else throw "tc: vEverywhereD on plus with non-sum d (tag=${d.tag})";
 
-    # Default-fuel wrappers for desc-owned bindings.
-    vDescInd = self.vDescIndF self.defaultFuel;
-    vInterpD = self.vInterpDF self.defaultFuel;
-    vAllD = self.vAllDF self.defaultFuel;
+    vDescInd     = self.vDescIndF     self.defaultFuel;
+    vInterpD     = self.vInterpDF     self.defaultFuel;
+    vAllD        = self.vAllDF        self.defaultFuel;
     vEverywhereD = self.vEverywhereDF self.defaultFuel;
-    sumView = self.sumViewF;
-    descView = D: self.descViewF self.defaultFuel D;
+    sumView      = self.sumViewF;
+    descView     = D: self.descViewF     self.defaultFuel D;
     isEncodedDesc = D: D.tag == "VDescCon" || D.tag == "VNe";
     linearProfile = D: self.linearProfileF self.defaultFuel D;
   };
 
   tests = let
-    H = fx.tc.hoas;
+    H  = fx.tc.hoas;
+    HI = fx.tc.hoas._internal._indexed;
     # Build a trivial family X : Unit → U₀ that returns Unit for any index.
     X_unit = vLam "_" vUnit (mkClosure [] term.mkUnit);
     retUnit = H.retI H.unit 0 H.tt;
-    recUnit = D: H.recI H.unit 0 H.tt D;
+    recUnit = D: HI.recI H.unit 0 H.tt D;
     argNatUnit = H.descArg H.unit 0 H.nat (_: retUnit);
-    piNatUnit = H.piI H.unit 0 H.nat (H.lam "_" H.nat (_: H.tt)) retUnit;
-    plusUnit = A: B: H.plusI H.unit 0 A B;
+    piNatUnit = HI.piI H.unit 0 H.nat (H.lam "_" H.nat (_: H.tt)) retUnit;
+    plusUnit = A: B: HI.plusI H.unit 0 A B;
     evalDesc = h: self.eval [] (H.elab h);
     Dret = evalDesc retUnit;
     DrecRet = evalDesc (recUnit retUnit);
@@ -738,9 +826,26 @@ in {
     };
     "sumView-generated-inr-level-one" = {
       expr = let
-        s = self.eval [] (H.elab (H.inrAt (H.levelSuc H.levelZero) (H.u 0) (H.u 0) H.unit));
+        s = self.eval [] (H.elab (HI.inrAt (H.levelSuc H.levelZero) (H.u 0) (H.u 0) H.unit));
       in (self.sumView s).side;
       expected = "inr";
+    };
+    "sumView-generated-wrong-sum-shape-declines" = {
+      expr = let
+        Bad = H.datatypeP "Sum"
+          [ { name = "A"; kind = H.u 0; } { name = "B"; kind = H.u 0; } ]
+          (ps: let A = builtins.elemAt ps 0; in [
+            (H.con "only" [ (H.field "value" A) ])
+          ]);
+        v = self.eval [] (H.elab (H.app (H.app (H.app Bad.only H.nat) H.bool) H.zero));
+      in {
+        sum = self.sumView v;
+        payload = self.sumPayloadValView v;
+      };
+      expected = {
+        sum = null;
+        payload = null;
+      };
     };
     "sumPayloadTmView-bootstrap-inl-rebuild" = {
       expr = let
@@ -892,6 +997,100 @@ in {
               val.vLevelZero X_unit M ih vTt vBootRefl;
       in (builtins.head r.spine).tag;
       expected = "EEverywhereD";
+    };
+  };
+
+  __docs = {
+    mkCanonAppVF = {
+      description = "mkCanonAppVF: value-level constructor for `canon-app id params body`-as-tagged-`VDescCon` — currying-applies `body` to `params` and stamps the result with `_canonRef = { id; params; }` so conv/quote short-circuit on the canonical identity instead of forcing `.D`.";
+      signature = "mkCanonAppVF : Int -> String -> [Val] -> Val -> Val";
+      doc = ''
+        Generic counterpart of `mkDescDescAppVF` for user-registered
+        canonical descriptions. `bodyVal` is expected to be a curried
+        chain of `VLam`s that, after applying every element of
+        `paramVals`, yields a `VDescCon`. The raw result's `.D`/`.i`/`.d`
+        fields are reused; the `_canonRef` stamp takes precedence in
+        conv and quote so the recursive `.D` slot is never forced.
+
+        Throws if the curried application does not produce a
+        `VDescCon` — the smart-form's static contract.
+      '';
+    };
+    mkDescDescAppVF = {
+      description = "mkDescDescAppVF: value-level constructor for `descDesc I L`-as-tagged-`VDescCon` — builds the tagged shell before forcing the recursively computed fields so conv/quote can recognise the canonical reference without descending into the strong-levitation spiral.";
+      signature = "mkDescDescAppVF : Int -> Val -> Val -> Val";
+      doc = ''
+        Returns a `VDescCon` whose `_canonRef = { id = "descDesc";
+        I; L; }` marker lets conv/quote treat the value opaquely.
+        Eliminators (`descView`, `vInterpDF`, ...) walk through
+        `descViewF`'s one-step semantic view of the same reference
+        rather than forcing `.D` directly.
+
+        The underlying `raw` value is `descDescVal I L` evaluated via
+        `vAppF`; its fields are reused but the canonical marker takes
+        precedence in conv and quote. This separation enables sharing
+        a single `descDesc` value across every recursive position in
+        the kernel without re-evaluating the spiral.
+      '';
+    };
+    sumPayloadTmView = {
+      description = "sumPayloadTmView: term-level sum-payload view — given a `Tm` that is `boot-inl`/`boot-inr` or a sum-shaped `desc-con` with `_descConCert`, return `{ side; value; rebuild; rebuildVal; }` to drive the `desc-con` trampoline's payload walker; `null` for non-sum shapes.";
+      signature = "sumPayloadTmView : Tm -> { side : \"inl\" | \"inr\"; value : Tm; rebuild : Tm -> Tm; rebuildVal : (Tm -> Val) -> Val -> Val; } | null";
+    };
+    sumPayloadValView = {
+      description = "sumPayloadValView: value-level sum-payload view — given a `Val` that is `VBootInl`/`VBootInr` or a sum-shaped `VDescCon` with `_descRef`, return `{ side; value; rebuild; }` for use in the `desc-con` trampoline; `null` for non-sum shapes.";
+      signature = "sumPayloadValView : Val -> { side : \"inl\" | \"inr\"; value : Val; rebuild : Val -> Val; } | null";
+    };
+    vDescInd = {
+      description = "vDescInd: default-fuel generic eliminator for description-based indexed inductives — `ind D P step i (con d) = step i d (everywhere D D P (lam j x. ind D P step j x) i d)`.";
+      signature = "vDescInd : Val -> Val -> Val -> Val -> Val -> Val";
+      doc = ''
+        Arguments: description `D`, motive `P : (i:I) -> mu D i -> U`,
+        step function `step`, target index `i`, scrutinee
+        (a `VDescCon` or `VNe`). On `VDescCon`, builds the inductive
+        hypothesis as a self-reference closure over `step`/`motive`/`D`/`I`,
+        feeds the canonical `mu D` family to `vEverywhereDF`, and
+        applies `step i d (everywhereResult)`. On `VNe`, extends the
+        spine with `eDescInd D motive step i`. The motive must be a
+        `VLam` so `I` is recoverable from its domain annotation.
+      '';
+    };
+    vInterpD = {
+      description = "vInterpD: default-fuel description interpretation — given `L_val I_val D X i`, compute the type `interp I D X i` whose values are layers of the recursive datatype determined by `D`.";
+      signature = "vInterpD : Val -> Val -> Val -> Val -> Val -> Val";
+    };
+    vAllD = {
+      description = "vAllD: default-fuel `allD L I D K X M i d` — the type expressing that every recursive position in description-payload `d` (at index `i`) satisfies motive `M`.";
+      signature = "vAllD : Val -> Val -> Val -> Val -> Val -> Val -> Val -> Val -> Val";
+    };
+    vEverywhereD = {
+      description = "vEverywhereD: default-fuel `everywhereD L I D K X M ih i d` — apply inductive hypothesis `ih` at every recursive position of `d`, producing the `allD` witness consumed by `vDescInd`.";
+      signature = "vEverywhereD : Val -> Val -> Val -> Val -> Val -> Val -> Val -> Val -> Val -> Val";
+    };
+    descView = {
+      description = "descView: default-fuel one-step semantic view of a description value — return `{ tag = \"DView{Ret,Arg,Rec,Pi,Plus}\"; idx; ...payload }` selecting the description's outer constructor.";
+      signature = "descView : Val -> { tag : DViewTag; idx : Int; ... } | null";
+      doc = ''
+        Dispatches on both primitive `VDescX` shapes and encoded
+        `VDescCon` shapes uniformly. The `idx` field gives the summand
+        position (`0` = ret, `1` = arg, `2` = rec, `3` = pi, `4` = plus).
+        Primary consumer is `check.nix`'s `desc-con` trampoline, which
+        uses the view to detect plus-coproduct shapes with linear
+        recursion. Returns `null` for `VNe` or values whose `_canonRef`
+        is opaque.
+      '';
+    };
+    linearProfile = {
+      description = "linearProfile: default-fuel linear-recursion classifier — given a description value `D`, return a list of pre-rec field types if `D` is a `descArg`-chain ending in `descRec descRet`; `null` if `D` is non-linear (tree, multi-rec, or non-plus).";
+      signature = "linearProfile : Val -> [{ S : Val; ... }] | null";
+      doc = ''
+        Walks the `descArg`/`descRec` chain via `descView`; succeeds
+        when every pre-rec field is `descArg` and the tail is exactly
+        `descRec descRet`. Used by `check.nix`'s `desc-con` trampoline
+        to detect when a plus-coproduct `A + B` has exactly one
+        linear-recursive summand — the case where chain peeling
+        applies and 5000+ layers can be checked without recursion.
+      '';
     };
   };
 }

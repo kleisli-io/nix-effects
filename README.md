@@ -58,14 +58,24 @@ write a validator for the record. The handler only decides what to do
 with derived failures:
 
 ```nix
-# src/effects/typecheck.nix — three handlers for the same effect.
+# src/effects/typecheck.nix — six policies for the same typeCheck effect.
+
+mkErrorRecord = param: {
+  context = param.context;
+  typeName = param.type.name;
+  actual = describeValue param.value;
+  path = param.path or [ ];
+  reason = param.reason or "shape-mismatch";
+  message = mkMessage param;
+};
 
 strict = {
   typeCheck = { param, state }:
     if param.type.check param.value
     then { resume = true; inherit state; }
-    else builtins.throw
-      "Type error in ${param.context}: expected ${param.type.name}, got ${builtins.typeOf param.value}";
+    else
+      let reason = param.reason or "shape-mismatch"; in
+      builtins.throw "[${reason}] ${mkMessage param}";
 };
 
 collecting = {
@@ -74,32 +84,38 @@ collecting = {
     then { resume = true; inherit state; }
     else {
       resume = false;
-      state = state ++ [{
-        context = param.context;
-        typeName = param.type.name;
-        actual = builtins.typeOf param.value;
-        message = "Expected ${param.type.name}, got ${builtins.typeOf param.value}";
-      }];
+      state = state ++ [ (mkErrorRecord param) ];
     };
 };
 
 logging = {
   typeCheck = { param, state }:
     let passed = param.type.check param.value;
-    in { resume = passed;
-         state = state ++ [{
-           context = param.context;
-           typeName = param.type.name;
-           inherit passed;
-         }]; };
+    in {
+      resume = passed;
+      state = state ++ [{
+        context = param.context;
+        typeName = param.type.name;
+        path = param.path or [ ];
+        reason = param.reason or "shape-mismatch";
+        inherit passed;
+      }];
+    };
 };
+
+firstN = N: { /* collect at most N mkErrorRecord failures */ };
+summarize = { /* count passes/failures and group failures by reason */ };
+pretty = cfg: { /* render "[reason] Expected T at <path>, got <shape>" */ };
+
+policy = { inherit strict collecting logging firstN summarize pretty; };
 ```
 
-The same derived validation runs under all three without a rewrite.
+The same derived validation runs under all six without a rewrite.
 `strict` throws on the first bad field. `collecting` visits every
-reachable position and returns failures with their paths. `logging`
-records every check, pass or fail, which is how you debug a value that
-does not match the description you wrote.
+reachable position and returns `{ context, typeName, actual, path, reason,
+message }` records. `logging` records every check, pass or fail. `firstN`
+keeps a bounded prefix of failures, `summarize` keeps aggregate counts by
+reason, and `pretty` stores display-ready diagnostic lines.
 
 The dependent type checker in `src/tc/` is ordinary pure Nix — no
 `fx.*` calls — but the generated `.validate` route goes through
@@ -230,21 +246,18 @@ validation = AspectDecl.validate {
   requires = [ "base" 1 ];
 };
 
-# Strict — abort on first error
-strict = fx.run validation {
-  typeCheck = { param, state }:
-    if param.type.check param.value
-    then { resume = true; inherit state; }
-    else { abort = null; state = state ++ [ param.context ]; };
-} [];
+# Strict — throw on first error
+strict = fx.run validation fx.effects.typecheck.strict null;
 
-# Collecting — gather all errors, continue checking
-collecting = fx.run validation {
-  typeCheck = { param, state }:
-    if param.type.check param.value
-    then { resume = true; inherit state; }
-    else { resume = false; state = state ++ [ param.context ]; };
-} [];
+# Collecting — gather every reachable error record
+collecting = fx.run validation fx.effects.typecheck.collecting [];
+
+# Summary — bounded state for large validations
+summary = fx.run validation fx.effects.typecheck.summarize {
+  byReason = {};
+  passed = 0;
+  failed = 0;
+};
 ```
 
 The `resume` vs `abort` distinction: `resume` feeds a value back to the
@@ -435,69 +448,72 @@ and forward-compatibility notes.
 
 ## API reference
 
-The `fx` attrset is the entire public API:
+The `fx` attrset exposes the public API. Common entry points:
 
 ```
-fx.pure         fx.impure       fx.isPure       fx.isComp      fx.match
-fx.send         fx.bind         fx.map          fx.seq
-fx.pipe         fx.kleisli
-fx.run          fx.handle       fx.adapt        fx.adaptHandlers
+fx.pure                              fx.impure                            fx.isPure
+fx.isComp                            fx.match                             fx.send
+fx.bind                              fx.map                               fx.seq
+fx.pipe                              fx.kleisli                           fx.run
+fx.handle                            fx.rotate                            fx.queue
+fx.adapt                             fx.adaptHandlers
 
-fx.types.mkType     fx.types.check      fx.types.validate
-fx.types.make       fx.types.refine
+fx.types.mkType                      fx.types.check                       fx.types.validate
+fx.types.make                        fx.types.refine                      fx.types.defEq
 
-fx.types.String     fx.types.Int        fx.types.Bool       fx.types.Float
-fx.types.Attrs      fx.types.Path       fx.types.Function   fx.types.Null
-fx.types.Unit       fx.types.Any
+fx.types.String                      fx.types.Int                         fx.types.Bool
+fx.types.Float                       fx.types.Attrs                       fx.types.Path
+fx.types.Derivation                  fx.types.Function                    fx.types.Null
+fx.types.Unit                        fx.types.Any
 
-fx.types.Record     fx.types.ListOf     fx.types.Maybe
-fx.types.Either     fx.types.Variant
+fx.types.Record                      fx.types.ListOf                      fx.types.Maybe
+fx.types.Either                      fx.types.Variant
 
-fx.types.Pi         fx.types.Sigma      fx.types.Certified
-fx.types.Vector     fx.types.DepRecord
+fx.types.Pi                          fx.types.Sigma                       fx.types.Certified
+fx.types.Vector                      fx.types.DepRecord
 
-fx.types.Linear     fx.types.Affine     fx.types.Graded
+fx.types.Linear                      fx.types.Affine                      fx.types.Graded
 
-fx.types.refined    fx.types.allOf      fx.types.anyOf      fx.types.negate
-fx.types.positive   fx.types.nonNegative  fx.types.inRange
-fx.types.nonEmpty   fx.types.matching
+fx.types.refined                     fx.types.allOf                       fx.types.anyOf
+fx.types.negate                      fx.types.positive                    fx.types.nonNegative
+fx.types.inRange                     fx.types.nonEmpty                    fx.types.matching
 
-fx.types.typeAt     fx.types.level
-fx.types.Type_0 .. fx.types.Type_4      # convenience aliases; typeAt n works for any n
+fx.types.typeAt                      fx.types.level
+fx.types.Type_0 .. fx.types.Type_4   # convenience aliases; typeAt n works for any n
 
-fx.effects.get      fx.effects.put      fx.effects.modify   fx.effects.gets
-fx.effects.state    fx.effects.error    fx.effects.typecheck
-fx.effects.conditions  fx.effects.reader  fx.effects.writer
-fx.effects.acc      fx.effects.choice
-fx.effects.linear   fx.effects.scope     fx.effects.hasHandler
+fx.effects.get                       fx.effects.put                       fx.effects.modify
+fx.effects.gets                      fx.effects.state                     fx.effects.error
+fx.effects.typecheck                 fx.effects.policy                    # alias for fx.effects.typecheck.policy
+fx.effects.conditions                fx.effects.reader                    fx.effects.writer
+fx.effects.acc                       fx.effects.choice                    fx.effects.linear
+fx.effects.scope                     fx.effects.hasHandler
 
-fx.stream.done      fx.stream.more      fx.stream.fromList
-fx.stream.iterate   fx.stream.range     fx.stream.replicate
-fx.stream.map       fx.stream.flatMap   fx.stream.filter    fx.stream.scanl
-fx.stream.take      fx.stream.takeWhile fx.stream.drop
-fx.stream.fold      fx.stream.toList    fx.stream.length
-fx.stream.sum       fx.stream.signal    fx.stream.signalOn
-fx.stream.any       fx.stream.all
-fx.stream.concat    fx.stream.interleave  fx.stream.zip  fx.stream.zipWith
+fx.stream.done                       fx.stream.more                       fx.stream.fromList
+fx.stream.iterate                    fx.stream.range                      fx.stream.replicate
+fx.stream.map                        fx.stream.flatMap                    fx.stream.filter
+fx.stream.scanl                      fx.stream.take                       fx.stream.takeWhile
+fx.stream.drop                       fx.stream.fold                       fx.stream.toList
+fx.stream.length                     fx.stream.sum                        fx.stream.signal
+fx.stream.signalOn                   fx.stream.any                        fx.stream.all
+fx.stream.concat                     fx.stream.interleave                 fx.stream.zip
+fx.stream.zipWith
 
-fx.types.hoas                           fx.types.verified
-fx.types.elaborateType                  fx.types.elaborateValue
-fx.types.extract                        fx.types.verifyAndExtract
-fx.types.decide                         fx.types.decideType
-fx.types.generic.check.deriveCheck      fx.types.generic.check.checkWithGuard
-fx.types.generic.derive.deriveSchema    fx.types.generic.derive.deriveDocs
-fx.types.generic.derive.deriveDeps      fx.types.generic.value.view
+fx.types.hoas                        fx.types.verified
+fx.types.elaborateType               fx.types.elaborateValue              fx.types.validateValue
+fx.types.extract                     fx.types.extractInner                fx.types.reifyType
+fx.types.verifyAndExtract            fx.types.decide                      fx.types.decideType
+fx.types.generic.check.deriveCheck   fx.types.generic.check.checkWithGuard
+fx.types.generic.derive.deriveSchema fx.types.generic.derive.deriveDocs
+fx.types.generic.derive.deriveDeps   fx.types.generic.value.view
 
-fx.kernel.pure      fx.kernel.send      fx.kernel.bind
-fx.kernel.pipe      fx.kernel.kleisli
+fx.kernel.pure                       fx.kernel.send                       fx.kernel.bind
+fx.kernel.pipe                       fx.kernel.kleisli
 fx.trampoline.handle
 
-fx.sugar.do         fx.sugar.letM
-fx.sugar.operators.__div
-fx.sugar.types.wrap
-fx.sugar.types.Int  fx.sugar.types.String  fx.sugar.types.Bool
-fx.sugar.types.Float  fx.sugar.types.Path  fx.sugar.types.Null
-fx.sugar.types.Unit  fx.sugar.types.Any
+fx.sugar.do                          fx.sugar.letM                        fx.sugar.operators.__div
+fx.sugar.types.wrap                  fx.sugar.types.Int                   fx.sugar.types.String
+fx.sugar.types.Bool                  fx.sugar.types.Float                 fx.sugar.types.Path
+fx.sugar.types.Null                  fx.sugar.types.Unit                  fx.sugar.types.Any
 ```
 
 Types additionally expose:

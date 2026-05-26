@@ -690,6 +690,8 @@ nix-effects and you'd like it listed here, open a PR.
 - **[ned](https://github.com/denful/ned)** by [@vic](https://github.com/vic)  —
   Ned is a minimalist kernel built upon nix-effects to bring effectful stream-based Functional-Reactive-Programming into Nix. Ned was born from the experience and knowledge obtained while using nix-effects in Den. Ned is being used to simplify Den's internal subsystems communication and effect-protocols by using cycle-like composition while keeping effects drive state and events.
 
+- **[dnzl](https://github.com/denful/dnzl)** by [@vic](https://github.com/vic)  — Dnzl is an Actor System for Nix based using nix-effects streams for inbox and sidecar communication channels. Behaviours are plain Nix functions that become actors when incoming messages are stream-folded over state. Dnzl features idiomatic behaviour replacement, state and error handling. Dnzl actors are based on Ned cycles for composability, creating trees of nested actors ala erlang.
+
 - **[zen](https://github.com/denful/zen)** by [@vic](https://github.com/vic)  —
   Zen is a minimal stream-based Nix module system. It uses nix-effects rotation and scoped handlers to achieve sub-modules and provide the config fixed-point via Ned streams. It also aims to provide other advanced features made possible by nix-effects: Inter module communication -akin to Actors- where modules can query others without knowing about their names (decoupling), negotiate merge strategies, reconciliate on values by interested modules, stateful mediators, etc. Zen aims to use nix-effect's MLTT types for verification, and allow only proved configs to be created.
 

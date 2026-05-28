@@ -222,6 +222,7 @@ rec {
   preserveIdTy = Eq Nat (addHoas H.zero H.zero) H.zero;
   preserveIdImpl = Refl;
   preserveId = verify preserveIdTy preserveIdImpl;
+  annPreserveId = H.ann preserveIdImpl preserveIdTy;
 
   # -- preserveComp (raw): double(g+f) = double(g) + double(f) ---------
   #
@@ -305,8 +306,8 @@ rec {
   # equation and the same proof witnesses it.
   doubleHom = rec {
     map_ = doubleImpl;
-    preserveId_ = preserveIdImpl;
-    preserveOp_ = preserveCompImpl;
+    preserveId_ = annPreserveId;
+    preserveOp_ = annPreserveComp;
 
     ty = MonoidHomOf natAddMonoid natAddMonoid;
     impl = builtins.foldl' app MonoidHomDT.mk
@@ -338,7 +339,8 @@ rec {
       lam "f" Nat (f: addHoas f f)));
 
     preserveId_ =
-      lam "_" Unit (_: Refl);
+      lam "_" Unit (_:
+        H.ann Refl (Eq Nat (addHoas H.zero H.zero) H.zero));
 
     preserveComp_ =
       lam "_" Unit (_: lam "_" Unit (_: lam "_" Unit (_:

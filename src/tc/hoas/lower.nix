@@ -1,4 +1,4 @@
-# HOAS → Tm elaboration. `elaborate : Int → HoasTree → Tm` walks the
+# HOAS → Tm lowering. `lower : Int → HoasTree → Tm` walks the
 # intermediate HOAS tree built by the combinators / macro layer and emits
 # de Bruijn indexed kernel terms. Binding chains (pi/sigma/lam/let), succ
 # chains, and cons chains trampoline via `genericClosure` for stack safety
@@ -64,15 +64,15 @@ let
 
   elaborateDescRef = depth: ref:
     ref // {
-      I = elaborate depth ref.I;
-      level = elaborateLevel depth ref.level;
-      params = map (elaborate depth) (ref.params or [ ]);
+      I = lower depth ref.I;
+      level = lowerLevel depth ref.level;
+      params = map (lower depth) (ref.params or [ ]);
     };
 
   elaborateDescConCert = depth: cert:
     cert // {
       ref = elaborateDescRef depth cert.ref;
-      target = elaborate depth cert.target;
+      target = lower depth cert.target;
     };
 
   appSpine = h:
@@ -160,7 +160,7 @@ let
     else if f.kind == "recAt" then self.muI mono.I mono.dHoas (f.idxFn prev)
     else if f.kind == "pi" || f.kind == "piAt" then f.S
     else if f.kind == "piD" || f.kind == "piDAt" then f.SFn prev
-    else throw "hoas.elaborate: unknown datatype field kind '${f.kind}'";
+    else throw "hoas.lower: unknown datatype field kind '${f.kind}'";
 
   fieldMarkers = fields:
     builtins.genList
@@ -272,7 +272,7 @@ let
           in
           go (i + 1) prev' (T.mkApp acc argTm);
     in
-    go 0 { } (elaborate depth mono);
+    go 0 { } (lower depth mono);
 
   elaborateForCheck = depth: hoasTy: hoasTm:
     let
@@ -286,7 +286,7 @@ let
       && hoasTm ? _htag
       && hoasTm._htag == "refl"
       && eqView != null
-    then elaborate depth (self.reflDT eqView.A eqView.a)
+    then lower depth (self.reflDT eqView.A eqView.a)
     else if ctorFlat != null then ctorFlat
     else if builtins.isAttrs whTy
       && whTy ? _htag
@@ -306,7 +306,7 @@ let
       && hoasTm._htag == "lam"
     then
       let marker = self.mkMarker depth; in
-      T.mkLam hoasTm.name (elaborate depth whTy.domain)
+      T.mkLam hoasTm.name (lower depth whTy.domain)
         (elaborateForCheck (depth + 1) (whTy.body marker) (hoasTm.body marker))
     else if builtins.isAttrs hoasTm
       && hoasTm ? _htag
@@ -314,10 +314,10 @@ let
     then
       let marker = self.mkMarker depth; in
       T.mkLet hoasTm.name
-        (elaborate depth hoasTm.type)
+        (lower depth hoasTm.type)
         (elaborateForCheck depth hoasTm.type hoasTm.val)
         (elaborateForCheck (depth + 1) hoasTy (hoasTm.body marker))
-    else elaborate depth hoasTm;
+    else lower depth hoasTm;
 
   # Build per-layer L/R interp Tm lists for a plus-spine of n summands
   # over index type `I`. Given the outer mu's description HOAS
@@ -339,7 +339,7 @@ let
         if remaining == 1 then builtins.elemAt descsHoas k
         else self.plusI I level (builtins.elemAt descsHoas k) (spineAfter (k + 1));
       interpTm = dHoas:
-        elaborate depth
+        lower depth
           (self.interpD level I dHoas muFam targetIdxVal);
     in
     {
@@ -437,7 +437,7 @@ let
         # in.
         else if mono._htag == "desc-con"
           && builtins.length fieldArgs == 0
-        then elaborate depth mono
+        then lower depth mono
         else null
     else null;
 
@@ -478,7 +478,7 @@ let
             if flat != null then flat
             else elaborateCtorChecked depth mono fullFieldArgs
         else if mono._htag == "desc-con" && builtins.length fieldArgs == 0
-        then elaborate depth mono
+        then lower depth mono
         else null
     else null;
 
@@ -499,7 +499,7 @@ let
     if builtins.length fieldArgs != nFields || shape == null then null
     else
       let
-        dTm = elaborate depth mono.dHoas;
+        dTm = lower depth mono.dHoas;
         descLevel = mono.descLevel or 0;
         ctorIdx = mono.ctorIndex;
         nCtors = mono.nCtors;
@@ -561,9 +561,9 @@ let
         let
           prev = prevOfArgs fieldArgs;
           targetIdxHoas = mono.targetIdx prev;
-          targetIdxTm = elaborate depth targetIdxHoas;
-          dataTms = map (a: elaborate depth a) (payloadArgsOf fieldArgs);
-          leafTm = elaborate depth (self.payloadLeafAt I descLevel targetIdxHoas);
+          targetIdxTm = lower depth targetIdxHoas;
+          dataTms = map (a: lower depth a) (payloadArgsOf fieldArgs);
+          leafTm = lower depth (self.payloadLeafAt I descLevel targetIdxHoas);
           tags = mkTags targetIdxHoas;
           payload = builtins.foldl'
             (acc: j:
@@ -670,12 +670,12 @@ let
             if !eligible then false
             else
               let
-                preElabPayloadTms = map (a: elaborate depth a) (payloadArgsOf layer0);
+                preElabPayloadTms = map (a: lower depth a) (payloadArgsOf layer0);
                 checks = builtins.genList
                   (j:
                     let
                       f = builtins.elemAt mono.fields j;
-                      vTy = E.eval [ ] (elaborate depth f.type);
+                      vTy = E.eval [ ] (lower depth f.type);
                       tm = builtins.elemAt preElabPayloadTms j;
                       res = CH.checkTm CH.emptyCtx tm vTy;
                     in
@@ -688,12 +688,12 @@ let
           # first non-chain-successor tail).
           #
           # Pre-phase-1c (paramArgsInSpine = true): the rec arg carried its
-          # params in the spine (e.g. `nil A`). `elaborate`'s `app` branch
+          # params in the spine (e.g. `nil A`). `lower`'s `app` branch
           # would re-enter `tryFlattenCtorChain` on the rec arg's app spine
-          # and flatten it. Plain `elaborate` is correct here.
+          # and flatten it. Plain `lower` is correct here.
           #
           # Post-phase-1c (paramArgsInSpine = false): the rec arg is a bare
-          # `dt-ctor-poly`/`dt-ctor-mono` HOAS node. `elaborate` falls
+          # `dt-ctor-poly`/`dt-ctor-mono` HOAS node. `lower` falls
           # through `t == "dt-ctor-poly"` to `h.fallback`, synthesising an
           # `ann (lam-cascade)` of Pi type — which the kernel desc-con
           # check rule rejects against the rec field's `μ I D i_rec`
@@ -723,12 +723,12 @@ let
                 else if builtins.isAttrs baseMono
                   && (baseMono._htag or null) == "desc-con"
                   && baseSp.head.nFields == 0
-                then elaborate depth baseMono
+                then lower depth baseMono
                 else null
               else null;
           baseTm =
             if paramArgsInSpine
-            then elaborate depth innermost.recArg
+            then lower depth innermost.recArg
             else if baseFlat != null
             then baseFlat
             else elaborateForCheck depth recCarrierTy innermost.recArg;
@@ -742,9 +742,9 @@ let
             let
               prev = prevOfArgs nonRecHoasArgs;
               targetIdxHoas = mono.targetIdx prev;
-              targetIdxTm = elaborate depth targetIdxHoas;
-              nonRecTms = map (a: elaborate depth a) (payloadArgsOf nonRecHoasArgs);
-              leafTm = elaborate depth (self.payloadLeafAt I descLevel targetIdxHoas);
+              targetIdxTm = lower depth targetIdxHoas;
+              nonRecTms = map (a: lower depth a) (payloadArgsOf nonRecHoasArgs);
+              leafTm = lower depth (self.payloadLeafAt I descLevel targetIdxHoas);
               tags = mkTags targetIdxHoas;
               innerMost = T.mkPair accTm leafTm;
               payloadInner = builtins.foldl'
@@ -792,23 +792,23 @@ let
   #   - a HOAS Level term — either an `_htag`-tagged construct
   #     (`level`/`levelZero`/`levelSuc`/`levelMax`) or a `_hoas`-tagged
   #     marker for a bound `forall "k" level …` variable. Both route
-  #     through `elaborate`, whose first dispatch already handles
+  #     through `lower`, whose first dispatch already handles
   #     markers (→ `T.mkVar`) and `_htag` nodes uniformly.
   # Anything else is a typed error at this boundary so a leaked marker
   # or random attrset fails loudly here rather than corrupting the
   # kernel tree downstream.
-  elaborateLevel = depth: lvl:
+  lowerLevel = depth: lvl:
     if builtins.isInt lvl then T.mkLevelLit lvl
     else if self.isMarker lvl || (builtins.isAttrs lvl && lvl ? _htag)
-    then elaborate depth lvl
+    then lower depth lvl
     else
-      throw "hoas.elaborateLevel: expected Int or HOAS Level; got ${
+      throw "hoas.lower.level: expected Int or HOAS Level; got ${
       if builtins.isAttrs lvl
       then "attrset with keys: ${builtins.concatStringsSep ", " (builtins.attrNames lvl)}"
       else builtins.typeOf lvl
     }";
 
-  # Inverse of `elaborateLevel`: a kernel Level Value back to a HOAS
+  # Inverse of `lowerLevel`: a kernel Level Value back to a HOAS
   # Level node. Concrete chains map to the `levelZero`/`levelSuc`
   # combinators; `vLevelMax` reifies recursively; a neutral `vNe`
   # (a bound Level variable in the surrounding context) reifies to a
@@ -826,15 +826,15 @@ let
       else throw "hoas.reifyLevel: VNe Level with non-empty spine — Levels are not function-typed"
     else throw "hoas.reifyLevel: unsupported Level value tag '${lv.tag or "?"}'";
 
-  # Elaboration: HOAS tree → de Bruijn Tm.
+  # Lowering: HOAS tree → de Bruijn Tm.
   #
-  # elaborate : Int → HoasTree → Tm
+  # lower : Int → HoasTree → Tm
   # depth tracks the current binding depth. When we encounter a binding
   # combinator (pi, lam, sigma, let), we:
   #   1. Apply the stored Nix lambda to mkMarker(depth)
-  #   2. Recursively elaborate the resulting body at depth+1
+  #   2. Recursively lower the resulting body at depth+1
   #   3. Markers with level L become T.mkVar(depth - L - 1)
-  elaborate = depth: h:
+  lower = depth: h:
     # Marker → variable
     if self.isMarker h then
       T.mkVar (depth - h.level - 1)
@@ -846,7 +846,7 @@ let
           then "attrset with keys: ${builtins.concatStringsSep ", " (builtins.attrNames h)}"
           else builtins.typeOf h;
       in
-      throw "hoas.elaborate: not an HOAS node (${desc})"
+      throw "hoas.lower: not an HOAS node (${desc})"
 
     else
       let t = h._htag; in
@@ -874,14 +874,14 @@ let
       else if t == "lit-val" then T.mkLitVal h.val
       else if t == "desc-desc-app" then
         T.mkDescDescAppAt
-          (elaborateLevel depth (h.iLev or self.levelZero))
-          (elaborate depth h.I)
-          (elaborateLevel depth h.L)
+          (lowerLevel depth (h.iLev or self.levelZero))
+          (lower depth h.I)
+          (lowerLevel depth h.L)
       else if t == "canon-app" then
-        T.mkCanonApp h.id (map (elaborate depth) h.params) (elaborate depth h.body)
+        T.mkCanonApp h.id (map (lower depth) h.params) (lower depth h.body)
       else if t == "unit" then T.mkUnit
       else if t == "empty" then T.mkEmpty
-      else if t == "absurd" then T.mkAbsurd (elaborate depth h.type) (elaborate depth h.term)
+      else if t == "absurd" then T.mkAbsurd (lower depth h.type) (lower depth h.term)
       else if t == "string" then T.mkString
       else if t == "int" then T.mkInt
       else if t == "float" then T.mkFloat
@@ -890,35 +890,35 @@ let
       else if t == "derivation" then T.mkDerivation
       else if t == "function" then T.mkFunction
       else if t == "any" then T.mkAny
-      else if t == "U" then T.mkU (elaborateLevel depth h.level)
+      else if t == "U" then T.mkU (lowerLevel depth h.level)
       # Level sort and its three constructors. `level` is a type former
       # (`U(0)`-inhabiting); the constructors build a Level Tm that
       # ultimately lands in a `U`/`desc-arg`/`desc-pi` level slot.
       else if t == "level" then T.mkLevel
       else if t == "level-zero" then T.mkLevelZero
-      else if t == "level-suc" then T.mkLevelSuc (elaborateLevel depth h.pred)
+      else if t == "level-suc" then T.mkLevelSuc (lowerLevel depth h.pred)
       else if t == "level-max" then
-        T.mkLevelMax (elaborateLevel depth h.lhs) (elaborateLevel depth h.rhs)
+        T.mkLevelMax (lowerLevel depth h.lhs) (lowerLevel depth h.rhs)
       # Raw list tags are used by value extraction; public `listOf` is an
       # app spine over `ListDT.T`.
-      else if t == "list" then T.mkMu T.mkUnit (elaborate depth (self.listDesc h.elem)) T.mkTt
+      else if t == "list" then T.mkMu T.mkUnit (lower depth (self.listDesc h.elem)) T.mkTt
       # Raw sum tags are used by value extraction; public `sum` is an app
       # spine over `SumDT.T`.
-      else if t == "sum" then T.mkMu T.mkUnit (elaborate depth (self.sumDesc h.left h.right)) T.mkTt
+      else if t == "sum" then T.mkMu T.mkUnit (lower depth (self.sumDesc h.left h.right)) T.mkTt
       # Private bootstrap coproduct used by descPlus interpretation.
-      else if t == "boot-sum" then T.mkBootSum (elaborate depth h.L) (elaborate depth h.R)
+      else if t == "boot-sum" then T.mkBootSum (lower depth h.L) (lower depth h.R)
       else if t == "boot-inl" then
-        T.mkBootInl (elaborate depth h.L) (elaborate depth h.R) (elaborate depth h.term)
+        T.mkBootInl (lower depth h.L) (lower depth h.R) (lower depth h.term)
       else if t == "boot-inr" then
-        T.mkBootInr (elaborate depth h.L) (elaborate depth h.R) (elaborate depth h.term)
+        T.mkBootInr (lower depth h.L) (lower depth h.R) (lower depth h.term)
       else if t == "boot-sum-elim" then
-        T.mkBootSumElim (elaborate depth h.left) (elaborate depth h.right)
-          (elaborate depth h.motive)
-          (elaborate depth h.onLeft)
-          (elaborate depth h.onRight)
-          (elaborate depth h.scrut)
+        T.mkBootSumElim (lower depth h.left) (lower depth h.right)
+          (lower depth h.motive)
+          (lower depth h.onLeft)
+          (lower depth h.onRight)
+          (lower depth h.scrut)
       else if t == "boot-eq" then
-        T.mkBootEq (elaborate depth h.type) (elaborate depth h.lhs) (elaborate depth h.rhs)
+        T.mkBootEq (lower depth h.type) (lower depth h.lhs) (lower depth h.rhs)
 
       # -- Compound types (sugar for nested sigma/sum) --
       else if t == "record" then
@@ -927,14 +927,14 @@ let
           n = builtins.length fields;
         in
         if n == 0 then T.mkUnit
-        else if n == 1 then elaborate depth (builtins.head fields).type
+        else if n == 1 then lower depth (builtins.head fields).type
         else
         # Build nested Sigma right-to-left: Σ(f1:T1).Σ(f2:T2)...Tn
-          let lastType = elaborate depth (builtins.elemAt fields (n - 1)).type;
+          let lastType = lower depth (builtins.elemAt fields (n - 1)).type;
           in builtins.foldl'
             (acc: i:
               let field = builtins.elemAt fields (n - 2 - i); in
-              T.mkSigma field.name (elaborate depth field.type) acc
+              T.mkSigma field.name (lower depth field.type) acc
             )
             lastType
             (builtins.genList (x: x) (n - 1))
@@ -944,7 +944,7 @@ let
       # Delegates to the `sum` branch so the description-based
       # representation (μ(sumDesc l r)) is used uniformly with
       # `inl`/`inr` values.
-        elaborate depth (self.sum h.inner self.unit)
+        lower depth (self.sum h.inner self.unit)
 
       else if t == "thunk" then
       # Lazy deepSeq-safe carrier `{ _tag : String; _force : Unit -> inner }`.
@@ -952,7 +952,7 @@ let
       # never invokes the closure — that's the whole laziness point);
       # `inner` is preserved at the HOAS surface for diagnostics and
       # forget, but does NOT appear in the elaborated kernel type.
-        elaborate depth
+        lower depth
           (self.record [
             { name = "_tag"; type = self.string; }
             { name = "_force"; type = self.function_; }
@@ -963,15 +963,15 @@ let
           branches = h.branches;
           n = builtins.length branches;
         in
-        if n == 0 then elaborate depth self.void
-        else if n == 1 then elaborate depth (builtins.head branches).type
+        if n == 0 then lower depth self.void
+        else if n == 1 then lower depth (builtins.head branches).type
         else
         # Build nested Sum right-to-left: Sum(T1, Sum(T2, ...Tn)).
         # Delegates to the `sum` branch so the nesting is in the
         # description representation, matching the inl/inr injection
         # shape.
           let lastType = (builtins.elemAt branches (n - 1)).type;
-          in elaborate depth (builtins.foldl'
+          in lower depth (builtins.foldl'
             (acc: i:
               let branch = builtins.elemAt branches (n - 2 - i); in
               self.sum branch.type acc
@@ -996,7 +996,7 @@ let
           };
           n = builtins.length chain - 1;
           base = (builtins.elemAt chain n).val;
-          baseElab = elaborate (depth + n) base;
+          baseElab = lower (depth + n) base;
         in
         builtins.foldl'
           (acc: i:
@@ -1008,11 +1008,11 @@ let
               plicityAttr =
                 if node ? _plicity then { _plicity = node._plicity; } else { };
             in
-            if nt == "pi" then T.mkPi node.name (elaborate d node.domain) acc // plicityAttr
-            else if nt == "sigma" then T.mkSigma node.name (elaborate d node.fst) acc
-            else if nt == "lam" then T.mkLam node.name (elaborate d node.domain) acc // plicityAttr
+            if nt == "pi" then T.mkPi node.name (lower d node.domain) acc // plicityAttr
+            else if nt == "sigma" then T.mkSigma node.name (lower d node.fst) acc
+            else if nt == "lam" then T.mkLam node.name (lower d node.domain) acc // plicityAttr
             else T.mkLet node.name
-              (elaborate d node.type)
+              (lower d node.type)
               (elaborateForCheck d node.type node.val)
               acc
           )
@@ -1023,7 +1023,7 @@ let
       else if t == "tt" then T.mkTt
       else if t == "boot-refl" then T.mkBootRefl
       else if t == "refl" then
-        throw "hoas.elaborate: public refl requires an expected Eq type; use checkHoas or reflDT"
+        throw "hoas.lower: public refl requires an expected Eq type; use checkHoas or reflDT"
       else if t == "funext" then T.mkFunext
       else if t == "string-lit" then T.mkStringLit h.value
       else if t == "int-lit" then T.mkIntLit h.value
@@ -1034,27 +1034,27 @@ let
       else if t == "fn-lit" then T.mkFnLit
       else if t == "any-lit" then T.mkAnyLit
       else if t == "pair" then
-        T.mkPair (elaborate depth h.fst) (elaborate depth h.snd)
+        T.mkPair (lower depth h.fst) (lower depth h.snd)
       else if t == "opaque-lam" then
-        T.mkOpaqueLam h._fnBox (elaborate depth h.piHoas)
+        T.mkOpaqueLam h._fnBox (lower depth h.piHoas)
       else if t == "str-eq" then
-        T.mkStrEq (elaborate depth h.lhs) (elaborate depth h.rhs)
+        T.mkStrEq (lower depth h.lhs) (lower depth h.rhs)
       else if t == "ann" then
         if h.trusted or false
         then
           let
-            term = elaborate depth h.term;
-            type = elaborate depth h.type;
+            term = lower depth h.term;
+            type = lower depth h.type;
           in
           if h ? _descRef
           then T.mkAnnTrustedWithDescRef term type (elaborateDescRef depth h._descRef)
           else T.mkAnnTrusted term type
-        else T.mkAnn (elaborateForCheck depth h.type h.term) (elaborate depth h.type)
+        else T.mkAnn (elaborateForCheck depth h.type h.term) (lower depth h.type)
       # Macro constructor fallback: elaborate as the annotated lam cascade.
       # Saturated chain applications are recognised in the `app` branch
       # below and emit flat `desc-con` Tms without touching this branch.
-      else if t == "dt-ctor-mono" then elaborate depth h.fallback
-      else if t == "dt-ctor-poly" then elaborate depth h.fallback
+      else if t == "dt-ctor-mono" then lower depth h.fallback
+      else if t == "dt-ctor-poly" then lower depth h.fallback
       # `app` tries flat-chain flattening for saturated macro-constructor
       # applications first. Non-chain applications fall through to the
       # regular `mkApp (elab fn) (elab arg)`.
@@ -1064,60 +1064,60 @@ let
           plicityAttr = if h ? _plicity then { _plicity = h._plicity; } else { };
         in
         if flat != null then flat
-        else T.mkApp (elaborate depth h.fn) (elaborate depth h.arg) // plicityAttr
-      else if t == "fst" then T.mkFst (elaborate depth h.pair)
-      else if t == "snd" then T.mkSnd (elaborate depth h.pair)
+        else T.mkApp (lower depth h.fn) (lower depth h.arg) // plicityAttr
+      else if t == "fst" then T.mkFst (lower depth h.pair)
+      else if t == "snd" then T.mkSnd (lower depth h.pair)
 
       # -- Descriptions --
       else if t == "desc" then
         T.mkDescAt
-          (if h ? iLev then elaborateLevel depth h.iLev else T.mkLevelZero)
-          (if h ? k then elaborateLevel depth h.k else T.mkLevelZero)
-          (elaborate depth h.I)
+          (if h ? iLev then lowerLevel depth h.iLev else T.mkLevelZero)
+          (if h ? k then lowerLevel depth h.k else T.mkLevelZero)
+          (lower depth h.I)
       else if t == "mu" then
-        T.mkMu (elaborate depth h.I) (elaborate depth h.D) (elaborate depth h.i)
+        T.mkMu (lower depth h.I) (lower depth h.D) (lower depth h.i)
       else if t == "desc-con" then
         let
-          D = elaborate depth h.D;
-          i = elaborate depth h.i;
-          d = elaborate depth h.d;
+          D = lower depth h.D;
+          i = lower depth h.i;
+          d = lower depth h.d;
         in
         if h ? _descConCert
         then T.mkDescConWithCert D i d (elaborateDescConCert depth h._descConCert)
         else T.mkDescCon D i d
       else if t == "desc-ind" then
-        T.mkDescInd (elaborate depth h.D) (elaborate depth h.motive)
-          (elaborate depth h.step)
-          (elaborate depth h.i)
-          (elaborate depth h.scrut)
+        T.mkDescInd (lower depth h.D) (lower depth h.motive)
+          (lower depth h.step)
+          (lower depth h.i)
+          (lower depth h.scrut)
       # Kernel-primitive `interpD` / `allD` / `everywhereD` Tms (CDMM
       # §4.2.3 + §6.1). The `level` / `K` slots accept any Level encoding
-      # (Nix-int, HOAS Level term, or kernel Tm) via `elaborateLevel`.
+      # (Nix-int, HOAS Level term, or kernel Tm) via `lowerLevel`.
       else if t == "interp-d" then
-        T.mkInterpD (elaborateLevel depth h.level)
-          (elaborate depth h.I)
-          (elaborate depth h.D)
-          (elaborate depth h.X)
-          (elaborate depth h.i)
+        T.mkInterpD (lowerLevel depth h.level)
+          (lower depth h.I)
+          (lower depth h.D)
+          (lower depth h.X)
+          (lower depth h.i)
       else if t == "all-d" then
-        T.mkAllD (elaborateLevel depth h.level)
-          (elaborate depth h.I)
-          (elaborate depth h.D)
-          (elaborateLevel depth h.K)
-          (elaborate depth h.X)
-          (elaborate depth h.M)
-          (elaborate depth h.i)
-          (elaborate depth h.d)
+        T.mkAllD (lowerLevel depth h.level)
+          (lower depth h.I)
+          (lower depth h.D)
+          (lowerLevel depth h.K)
+          (lower depth h.X)
+          (lower depth h.M)
+          (lower depth h.i)
+          (lower depth h.d)
       else if t == "everywhere-d" then
-        T.mkEverywhereD (elaborateLevel depth h.level)
-          (elaborate depth h.I)
-          (elaborate depth h.D)
-          (elaborateLevel depth h.K)
-          (elaborate depth h.X)
-          (elaborate depth h.M)
-          (elaborate depth h.ih)
-          (elaborate depth h.i)
-          (elaborate depth h.d)
+        T.mkEverywhereD (lowerLevel depth h.level)
+          (lower depth h.I)
+          (lower depth h.D)
+          (lowerLevel depth h.K)
+          (lower depth h.X)
+          (lower depth h.M)
+          (lower depth h.ih)
+          (lower depth h.i)
+          (lower depth h.d)
 
       # Encoded desc constructors. Each `desc-*-enc` HOAS node carries
       # the index type `I` and the relevant kernel arguments; elaborate
@@ -1137,10 +1137,10 @@ let
       # or neither.
       else if t == "desc-ret-enc" then
         let
-          iLevTm = elaborateLevel depth (h.iLev or self.levelZero);
-          iTm = elaborate depth h.I;
-          kTm = elaborateLevel depth h.k;
-          jTm = elaborate depth h.j;
+          iLevTm = lowerLevel depth (h.iLev or self.levelZero);
+          iTm = lower depth h.I;
+          kTm = lowerLevel depth h.k;
+          jTm = lower depth h.j;
           chain = T.mkApp (T.mkApp (T.mkApp (T.mkApp self.encodeDescRetTm iLevTm) iTm) kTm) jTm;
           tyTm = T.mkMu T.mkUnit (T.mkDescDescAppAt iLevTm iTm kTm) T.mkTt;
         in
@@ -1155,18 +1155,18 @@ let
       else if t == "desc-arg-enc" then
         let
           marker = self.mkMarker depth;
-          iLevTm = elaborateLevel depth (h.iLev or self.levelZero);
-          iTm = elaborate depth h.I;
-          kTm = elaborateLevel depth h.k;
-          sTm = elaborate depth h.S;
-          bodyTm = elaborate (depth + 1) (h.body marker);
+          iLevTm = lowerLevel depth (h.iLev or self.levelZero);
+          iTm = lower depth h.I;
+          kTm = lowerLevel depth h.k;
+          sTm = lower depth h.S;
+          bodyTm = lower (depth + 1) (h.body marker);
           tLam = T.mkLam "_" sTm bodyTm;
           chain =
             if h ? l && h ? eq
             then
               let
-                lTm = elaborateLevel depth h.l;
-                eqTm = elaborate depth h.eq;
+                lTm = lowerLevel depth h.l;
+                eqTm = lower depth h.eq;
               in
               T.mkApp
                 (T.mkApp
@@ -1183,7 +1183,7 @@ let
                 tLam
             else if h ? l
             then
-              let lTm = elaborateLevel depth h.l; in
+              let lTm = lowerLevel depth h.l; in
               T.mkApp
                 (T.mkApp
                   (T.mkApp
@@ -1219,11 +1219,11 @@ let
         else chain
       else if t == "desc-rec-enc" then
         let
-          iLevTm = elaborateLevel depth (h.iLev or self.levelZero);
-          iTm = elaborate depth h.I;
-          kTm = elaborateLevel depth h.k;
-          jTm = elaborate depth h.j;
-          dTm = elaborate depth h.D;
+          iLevTm = lowerLevel depth (h.iLev or self.levelZero);
+          iTm = lower depth h.I;
+          kTm = lowerLevel depth h.k;
+          jTm = lower depth h.j;
+          dTm = lower depth h.D;
           chain = T.mkApp
             (T.mkApp
               (T.mkApp
@@ -1245,18 +1245,18 @@ let
         else chain
       else if t == "desc-pi-enc" then
         let
-          iLevTm = elaborateLevel depth (h.iLev or self.levelZero);
-          iTm = elaborate depth h.I;
-          kTm = elaborateLevel depth h.k;
-          sTm = elaborate depth h.S;
-          fTm = elaborate depth h.f;
-          dTm = elaborate depth h.D;
+          iLevTm = lowerLevel depth (h.iLev or self.levelZero);
+          iTm = lower depth h.I;
+          kTm = lowerLevel depth h.k;
+          sTm = lower depth h.S;
+          fTm = lower depth h.f;
+          dTm = lower depth h.D;
           chain =
             if h ? l && h ? eq
             then
               let
-                lTm = elaborateLevel depth h.l;
-                eqTm = elaborate depth h.eq;
+                lTm = lowerLevel depth h.l;
+                eqTm = lower depth h.eq;
               in
               T.mkApp
                 (T.mkApp
@@ -1275,7 +1275,7 @@ let
                 dTm
             else if h ? l
             then
-              let lTm = elaborateLevel depth h.l; in
+              let lTm = lowerLevel depth h.l; in
               T.mkApp
                 (T.mkApp
                   (T.mkApp
@@ -1315,11 +1315,11 @@ let
         else chain
       else if t == "desc-plus-enc" then
         let
-          iLevTm = elaborateLevel depth (h.iLev or self.levelZero);
-          iTm = elaborate depth h.I;
-          kTm = elaborateLevel depth h.k;
-          aTm = elaborate depth h.A;
-          bTm = elaborate depth h.B;
+          iLevTm = lowerLevel depth (h.iLev or self.levelZero);
+          iTm = lower depth h.I;
+          kTm = lowerLevel depth h.k;
+          aTm = lower depth h.A;
+          bTm = lower depth h.B;
           chain = T.mkApp
             (T.mkApp
               (T.mkApp
@@ -1341,17 +1341,17 @@ let
         else chain
       else if t == "desc-elim-enc" then
         let
-          iLevTm = elaborateLevel depth (h.iLev or self.levelZero);
-          iTm = elaborate depth h.I;
-          kTm = elaborateLevel depth h.k;
-          lTm = elaborateLevel depth h.L;
-          mTm = elaborate depth h.motive;
-          rTm = elaborate depth h.onRet;
-          aTm = elaborate depth h.onArg;
-          ecTm = elaborate depth h.onRec;
-          pTm = elaborate depth h.onPi;
-          plTm = elaborate depth h.onPlus;
-          sTm = elaborate depth h.scrut;
+          iLevTm = lowerLevel depth (h.iLev or self.levelZero);
+          iTm = lower depth h.I;
+          kTm = lowerLevel depth h.k;
+          lTm = lowerLevel depth h.L;
+          mTm = lower depth h.motive;
+          rTm = lower depth h.onRet;
+          aTm = lower depth h.onArg;
+          ecTm = lower depth h.onRec;
+          pTm = lower depth h.onPi;
+          plTm = lower depth h.onPlus;
+          sTm = lower depth h.scrut;
         in
         T.mkApp
           (T.mkApp
@@ -1383,19 +1383,19 @@ let
       # polymorphic binders and `convLevel` cannot decide `refl`). Same
       # bound-witness shape as desc-arg.
       else if t == "lift" then
-        T.mkLift (elaborateLevel depth h.l) (elaborateLevel depth h.m)
-          (if h ? eq then elaborate depth h.eq else T.mkBootRefl)
-          (elaborate depth h.A)
+        T.mkLift (lowerLevel depth h.l) (lowerLevel depth h.m)
+          (if h ? eq then lower depth h.eq else T.mkBootRefl)
+          (lower depth h.A)
       else if t == "lift-intro" then
-        T.mkLiftIntro (elaborateLevel depth h.l) (elaborateLevel depth h.m)
-          (if h ? eq then elaborate depth h.eq else T.mkBootRefl)
-          (elaborate depth h.A)
-          (elaborate depth h.a)
+        T.mkLiftIntro (lowerLevel depth h.l) (lowerLevel depth h.m)
+          (if h ? eq then lower depth h.eq else T.mkBootRefl)
+          (lower depth h.A)
+          (lower depth h.a)
       else if t == "lift-elim" then
-        T.mkLiftElim (elaborateLevel depth h.l) (elaborateLevel depth h.m)
-          (if h ? eq then elaborate depth h.eq else T.mkBootRefl)
-          (elaborate depth h.A)
-          (elaborate depth h.x)
+        T.mkLiftElim (lowerLevel depth h.l) (lowerLevel depth h.m)
+          (if h ? eq then lower depth h.eq else T.mkBootRefl)
+          (lower depth h.A)
+          (lower depth h.x)
 
       # -- Eliminators --
       # Generated datatype eliminators route through the macro-generated
@@ -1404,14 +1404,14 @@ let
       # description, not through dedicated kernel eliminator tags.
       else if t == "j" then
         let
-          headTm = elaborate depth
+          headTm = lower depth
             (self.implicitApp
               (self.implicitApp (self.EqDT.elim 0) h.type)
               h.lhs);
-          motiveTm = elaborate depth h.motive;
+          motiveTm = lower depth h.motive;
           baseTy = self.app (self.app h.motive h.lhs) (self.reflDT h.type h.lhs);
           baseTm = elaborateForCheck depth baseTy h.base;
-          rhsTm = elaborate depth h.rhs;
+          rhsTm = lower depth h.rhs;
           eqTm = elaborateForCheck depth (self.eq h.type h.lhs h.rhs) h.eq;
         in
         T.mkApp
@@ -1425,49 +1425,49 @@ let
           eqTm
 
       else if t == "boot-j" then
-        T.mkBootJ (elaborate depth h.type) (elaborate depth h.lhs)
-          (elaborate depth h.motive)
-          (elaborate depth h.base)
-          (elaborate depth h.rhs)
-          (elaborate depth h.eq)
+        T.mkBootJ (lower depth h.type) (lower depth h.lhs)
+          (lower depth h.motive)
+          (lower depth h.base)
+          (lower depth h.rhs)
+          (lower depth h.eq)
 
       else if t == "squash" then
-        T.mkSquash (elaborate depth h.A)
+        T.mkSquash (lower depth h.A)
       else if t == "squash-intro" then
-        T.mkSquashIntro (elaborate depth h.a)
+        T.mkSquashIntro (lower depth h.a)
       else if t == "squash-elim" then
-        T.mkSquashElim (elaborate depth h.A) (elaborate depth h.B)
-          (elaborate depth h.f)
-          (elaborate depth h.x)
+        T.mkSquashElim (lower depth h.A) (lower depth h.B)
+          (lower depth h.f)
+          (lower depth h.x)
 
       else if h ? _surfaceRegistry then
         let
           handler = fx.tc.surface.registry.handlerFor h._surfaceRegistry t;
         in
         if handler == null
-        then throw "hoas.elaborate: unknown tag: ${t}"
+        then throw "hoas.lower: unknown tag: ${t}"
         else
           handler (fx.tc.surface.handlerContext {
-            inherit depth h elaborate;
+            inherit depth h lower;
             hoas = self;
             inherit fx;
           })
 
-      else throw "hoas.elaborate: unknown tag: ${t}";
+      else throw "hoas.lower: unknown tag: ${t}";
 in
 {
   scope = {
-    elaborate = api.leaf {
-      description = "elaborate: depth-parameterised HOAS-to-Tm compiler — `elaborate depth h` converts a HOAS term to its de Bruijn `Tm` representation; `depth` is the binding level at the call site.";
-      signature = "elaborate : Int -> Hoas -> Tm";
+    lower = api.leaf {
+      description = "lower: depth-parameterised HOAS-to-Tm compiler — `lower depth h` converts a HOAS term to its de Bruijn `Tm` representation; `depth` is the binding level at the call site.";
+      signature = "lower : Int -> Hoas -> Tm";
       doc = ''
         The principal HOAS-side compilation entry. Binding chains are
-        elaborated iteratively via `genericClosure` for stack safety
+        lowered iteratively via `genericClosure` for stack safety
         to 8000+ depth. Use directly when controlling the binding
-        depth (e.g. when re-elaborating an open HOAS subterm). For
+        depth (e.g. when re-lowering an open HOAS subterm). For
         the closed-term case, prefer `elab` which fixes `depth = 0`.
       '';
-      value = elaborate;
+      value = lower;
     };
     reifyLevel = api.leaf {
       description = "reifyLevel: HOAS Level → kernel Level Tm — converts a HOAS-side level expression (Int, level term, or already-reified Tm) to the kernel's canonical Level representation.";
@@ -1478,11 +1478,11 @@ in
     # Rigid-fallback on structural overlay error; throw on unsolved
     # metas at the boundary.
     elab = api.leaf {
-      description = "elab: closed-term HOAS-to-Tm compiler — elaborates a HOAS term from depth 0, runs meta-aware synthesis + zonking, and surfaces unsolved metas as a throw at the elaborator boundary.";
+      description = "elab: closed-term HOAS-to-Tm compiler — lowers a HOAS term from depth 0, runs meta-aware synthesis + zonking, and surfaces unsolved metas as a throw at the elaborator boundary.";
       signature = "elab : Hoas -> Tm";
       value = h:
         let
-          tmRaw = elaborate 0 h;
+          tmRaw = lower 0 h;
           outerTag = tmRaw.tag or null;
         in
         # Meta-aware synthesis only fires for outer `app` (implicit-Pi
@@ -1590,7 +1590,7 @@ in
       '';
       value = hoasTm:
         let
-          tmRaw = elaborate 0 hoasTm;
+          tmRaw = lower 0 hoasTm;
           outerTag = tmRaw.tag or null;
           # See H.elab for the structural rationale: only `app` / `meta`
           # heads can drive new meta allocation through `elabInferApp`.

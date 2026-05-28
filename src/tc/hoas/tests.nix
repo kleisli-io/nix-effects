@@ -519,7 +519,7 @@ in
     #
     # This local HOAS smoke test uses a concrete case, where normalization
     # makes H.refl sufficient. The library-level universal proof lives in
-    # apps/category-theory/arithmetic.nix as addRightZero.
+    # examples/category-theory/arithmetic.nix as addRightZero.
     "theorem-3-plus-0-eq-3" = {
       expr =
         let

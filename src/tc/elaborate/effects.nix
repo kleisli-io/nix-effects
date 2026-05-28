@@ -2,7 +2,7 @@
 #
 # `metaEff` is a kernel-typed 5-element `H.variant`. Each op identity
 # is a HOAS sum-injection over its right-nested desugaring (see
-# `tc/hoas/elaborate.nix:586-601`); the Nix-host payload rides as a
+# `tc/hoas/lower.nix`); the Nix-host payload rides as a
 # sidecar attrset on the injection term. The substrate does not type-
 # check payload semantics, but the dispatch-tag space is honest and
 # `kernel.send`'s `_htag` assertion accepts the op.

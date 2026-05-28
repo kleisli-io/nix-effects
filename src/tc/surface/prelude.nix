@@ -62,12 +62,12 @@ let
     constructors = {
       nil = {
         tag = "prelude.nil";
-        handler = { context, hoas, elaborate, depth, ... }:
+        handler = { context, hoas, lower, depth, ... }:
           let r = nilFromExpected { inherit context hoas; };
           in
           if r ? error then r
           else if context.expectedType == null then r.term
-          else elaborate depth r.term;
+          else lower depth r.term;
       };
     };
   };

@@ -42,20 +42,22 @@ rec {
   addLeftZeroTy = Pi "n" Nat (n: Eq Nat (addHoas H.zero n) n);
   addLeftZeroImpl = lam "n" Nat (_: Refl);
   addLeftZero = verify addLeftZeroTy addLeftZeroImpl;
+  annAddLeftZero = H.ann addLeftZeroImpl addLeftZeroTy;
 
   addSuccTy = Pi "m" Nat (m: Pi "n" Nat (n:
     Eq Nat (addHoas (H.succ m) n) (H.succ (addHoas m n))));
   addSuccImpl = lam "m" Nat (_: lam "n" Nat (_: Refl));
   addSucc = verify addSuccTy addSuccImpl;
+  annAddSucc = H.ann addSuccImpl addSuccTy;
 
   # -- addRightZero: by induction, step uses cong succ --
 
   addRightZeroTy = Pi "n" Nat (n: Eq Nat (addHoas n H.zero) n);
 
   addRightZeroImpl = lam "n" Nat (n:
-    ind
+    ind 0
       (lam "k" Nat (k: Eq Nat (addHoas k H.zero) k))
-      Refl
+      (H.ann Refl (Eq Nat (addHoas H.zero H.zero) H.zero))
       (lam "k" Nat (k: lam "ih" (Eq Nat (addHoas k H.zero) k) (ih:
         congSucc (addHoas k H.zero) k ih)))
       n);
@@ -69,10 +71,12 @@ rec {
     Eq Nat (addHoas (addHoas x y) z) (addHoas x (addHoas y z)))));
 
   addAssocImpl = lam "x" Nat (x: lam "y" Nat (y: lam "z" Nat (z:
-    ind
+    ind 0
       (lam "k" Nat (k:
         Eq Nat (addHoas (addHoas k y) z) (addHoas k (addHoas y z))))
-      Refl
+      (H.ann Refl
+        (Eq Nat (addHoas (addHoas H.zero y) z)
+          (addHoas H.zero (addHoas y z))))
       (lam "k" Nat (k:
         lam "ih" (Eq Nat (addHoas (addHoas k y) z) (addHoas k (addHoas y z))) (ih:
           congSucc (addHoas (addHoas k y) z) (addHoas k (addHoas y z)) ih)))
@@ -87,9 +91,10 @@ rec {
     Eq Nat (addHoas m (H.succ n)) (H.succ (addHoas m n))));
 
   addRightSuccImpl = lam "m" Nat (m: lam "n" Nat (n:
-    ind
+    ind 0
       (lam "k" Nat (k: Eq Nat (addHoas k (H.succ n)) (H.succ (addHoas k n))))
-      Refl
+      (H.ann Refl
+        (Eq Nat (addHoas H.zero (H.succ n)) (H.succ (addHoas H.zero n))))
       (lam "k" Nat (k: lam "ih" (Eq Nat (addHoas k (H.succ n)) (H.succ (addHoas k n))) (ih:
         congSucc (addHoas k (H.succ n)) (H.succ (addHoas k n)) ih)))
       m));
@@ -105,7 +110,7 @@ rec {
     Eq Nat (addHoas m n) (addHoas n m)));
 
   addCommImpl = lam "m" Nat (m: lam "n" Nat (n:
-    ind
+    ind 0
       (lam "k" Nat (k: Eq Nat (addHoas k n) (addHoas n k)))
       (symProof Nat (addHoas n H.zero) n (app annAddRightZero n))
       (lam "k" Nat (k:

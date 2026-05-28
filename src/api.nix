@@ -8,8 +8,8 @@
 # `api.leaf` / `api.namespace`). The wrap co-locates the binding's value
 # with its `doc`/`description`/`signature`/`tests` metadata in a single
 # record `{ _type = "nix-effects-api"; title; doc; description; signature;
-# sections; value; tests; docHidden; }`. There is no sibling `__docs` map; "binding
-# without doc" and "doc without binding" are structurally unrepresentable.
+# sections; value; tests; docHidden; }`. "Binding without doc" and
+# "doc without binding" are structurally unrepresentable.
 #
 # `extractValue` strips wraps recursively to yield the public-API tree.
 # `extractDocs` walks wraps to surface a hierarchical docs tree.

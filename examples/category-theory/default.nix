@@ -30,12 +30,12 @@
 #   nix eval --impure --expr \
 #     'let fx = import ./nix/nix-effects {};
 #      in builtins.all (x: x)
-#        (builtins.attrValues (import ./nix/nix-effects/apps/category-theory { inherit fx; }).tests)'
+#        (builtins.attrValues (import ./nix/nix-effects/examples/category-theory { inherit fx; }).tests)'
 #
 # Call the extracted add:
 #   nix eval --impure --expr \
 #     'let fx = import ./nix/nix-effects {};
-#      in (import ./nix/nix-effects/apps/category-theory { inherit fx; }).api.add 3 5'
+#      in (import ./nix/nix-effects/examples/category-theory { inherit fx; }).api.add 3 5'
 { fx }:
 
 let
@@ -54,6 +54,85 @@ let
 
 in
 rec {
+  __example = {
+    title = "Category Theory";
+    description = "Kernel-checked arithmetic, algebra, functors, and Yoneda-style constructions.";
+    introduction = ''
+      This example is a larger proof library, organized as a guided tour. Each
+      file builds on the previous one: proof combinators, arithmetic lemmas,
+      algebraic structures, functors, and a Yoneda-style round trip.
+
+      The public `api` exposes extracted Nix functions. The `hoas` attrset
+      keeps the typed HOAS terms available for users who want to inspect or
+      extend the proofs.
+    '';
+    sections = [
+      {
+        title = "Arithmetic proof layer";
+        prose = ''
+          The first layer derives equality combinators from `J`, defines
+          addition by Nat elimination, and proves the standard addition laws.
+          Computational facts are extracted as ordinary Nix functions.
+        '';
+        code = ''
+          cat = import ./examples/category-theory { inherit fx; };
+
+          cat.api.add 3 5 == 8
+          cat.tests.addComm
+        '';
+        tests = [
+          "sym"
+          "trans"
+          "cong"
+          "addRightZero"
+          "addAssoc"
+          "addComm"
+          "addComputes"
+        ];
+      }
+      {
+        title = "Algebra and functors";
+        prose = ''
+          The algebra files package the arithmetic proofs as a monoid and a
+          one-object category. The functor file reuses the same doubling map as
+          both a monoid homomorphism and an endofunctor.
+        '';
+        code = ''
+          cat.tests.natAddMonoid
+          cat.tests.natCategory
+          cat.tests.doubleFunctor
+        '';
+        tests = [
+          "natAddMonoid"
+          "natCategory"
+          "compComm"
+          "double"
+          "preserveId"
+          "preserveComp"
+          "doubleComputes"
+        ];
+      }
+      {
+        title = "Yoneda round trips";
+        prose = ''
+          The final file states the evaluate/lift pair for a small
+          types-as-groupoids presentation and checks both round-trip laws.
+        '';
+        code = ''
+          cat.tests.yonedaEval
+          cat.tests.yonedaLift
+          cat.tests.evalLift
+          cat.tests.liftEval
+        '';
+        tests = [
+          "yonedaEval"
+          "yonedaLift"
+          "evalLift"
+          "liftEval"
+        ];
+      }
+    ];
+  };
 
   # -- Public API: extracted Nix functions --
 

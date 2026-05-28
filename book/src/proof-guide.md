@@ -578,7 +578,7 @@ normal forms.
   stays neutral because addition recurses on its first argument; it is
   not definitionally equal to `n`. The universal statement is still
   provable as propositional equality with an explicit induction proof.
-  See `apps/category-theory/arithmetic.nix` for `addRightZero`.
+  See `examples/category-theory/arithmetic.nix` for `addRightZero`.
 
 - **Properties of Nix builtins.** The kernel axiomatizes `String`,
   `Int`, `Float`, etc. as opaque types. `builtins.stringLength` is not

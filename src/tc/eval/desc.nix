@@ -1126,7 +1126,7 @@ in
       # Use `reflDT H.unit H.tt` (explicit A, a) so the inner refl
       # elaborates without needing expected-type propagation through
       # `H.inl`'s argument position. Bare `H.refl` would trip
-      # `hoas.elaborate`'s eager guard on `_htag == "refl"`.
+      # `hoas.lower`'s eager guard on `_htag == "refl"`.
       generatedRetInl =
         self.eval [ ] (H.checkHoas (H.sum eqTtH eqTtH) (H.inl (H.reflDT H.unit H.tt)));
     in

@@ -5,7 +5,7 @@
 { fx }:
 
 let
-  buildSim = import ../../../apps/build-sim { inherit fx; };
+  buildSim = import ../../../examples/build-sim { inherit fx; };
 in
 {
   linear50 = (buildSim.evalQuiet buildSim.graphs.benchmarks.linear50).value;

@@ -59,16 +59,6 @@ with derived failures:
 
 ```nix
 # src/effects/typecheck.nix — six policies for the same typeCheck effect.
-
-mkErrorRecord = param: {
-  context = param.context;
-  typeName = param.type.name;
-  actual = describeValue param.value;
-  path = param.path or [ ];
-  reason = param.reason or "shape-mismatch";
-  message = mkMessage param;
-};
-
 strict = {
   typeCheck = { param, state }:
     if param.type.check param.value
@@ -106,8 +96,6 @@ logging = {
 firstN = N: { /* collect at most N mkErrorRecord failures */ };
 summarize = { /* count passes/failures and group failures by reason */ };
 pretty = cfg: { /* render "[reason] Expected T at <path>, got <shape>" */ };
-
-policy = { inherit strict collecting logging firstN summarize pretty; };
 ```
 
 The same derived validation runs under all six without a rewrite.
@@ -117,15 +105,9 @@ message }` records. `logging` records every check, pass or fail. `firstN`
 keeps a bounded prefix of failures, `summarize` keeps aggregate counts by
 reason, and `pretty` stores display-ready diagnostic lines.
 
-The dependent type checker in `src/tc/` is ordinary pure Nix — no
-`fx.*` calls — but the generated `.validate` route goes through
-`typeCheck`, so type errors in deeply nested terms come back with the
-field, branch, or index path that broke.
-
-Recursion in the kernel and the effect interpreter goes through a
-trampoline built on `builtins.genericClosure` (Nix's only iterative
-primitive). Call stack stays O(1) for the interpreter loop. See
-[`book/src/trampoline.md`](book/src/trampoline.md).
+The dependent type checker is ordinary pure Nix, but the generated `.validate`
+route goes through the `typeCheck` effect, so type errors in deeply nested
+terms come back with the field, branch, or index path that broke.
 
 ## Table of contents
 
@@ -183,11 +165,11 @@ primitive). Call stack stays O(1) for the interpreter loop. See
 
 ### Examples in this repository
 
-- **Category theory library** (`apps/category-theory/`) shows proofs,
+- **Category theory library** (`examples/category-theory/`) shows proofs,
   arithmetic, algebraic structures, functors, and Yoneda through the HOAS
   and datatype surface.
-- **Expression interpreter and build simulator** (`apps/interp/`,
-  `apps/build-sim/`) exercise the effect layer at scale.
+- **Expression interpreter and build simulator** (`examples/interp/`,
+  `examples/build-sim/`) exercise the effect layer at scale.
 
 ## Quick start
 
@@ -414,7 +396,7 @@ Chains of saturated or linear-recursive constructors flatten to flat
 `desc-con` terms at elaboration time, so deeply nested generated lists and
 natural numbers remain stack-safe.
 
-The category theory library in [`apps/category-theory/`](apps/category-theory/)
+The category theory library in [`examples/category-theory/`](examples/category-theory/)
 uses the same surface for arithmetic proofs, algebraic structures, functors,
 and Yoneda's lemma.
 

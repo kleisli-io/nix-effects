@@ -59,7 +59,7 @@ let
           tm =
             if expectedType == null
             then H.elab root
-            else H.elaborate 0 root;
+            else H.lower 0 root;
         in
         if builtins.isAttrs tm && tm ? error
         then tm

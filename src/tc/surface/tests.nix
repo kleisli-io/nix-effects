@@ -17,23 +17,23 @@ let
     constructors = {
       lit = {
         tag = "toy.lit";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (if h.value then hoas.true_ else hoas.false_);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (if h.value then hoas.true_ else hoas.false_);
       };
       not = {
         tag = "toy.not";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (boolIf hoas h.term hoas.false_ hoas.true_);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (boolIf hoas h.term hoas.false_ hoas.true_);
       };
       and = {
         tag = "toy.and";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (boolIf hoas h.lhs h.rhs hoas.false_);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (boolIf hoas h.lhs h.rhs hoas.false_);
       };
       or = {
         tag = "toy.or";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (boolIf hoas h.lhs hoas.true_ h.rhs);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (boolIf hoas h.lhs hoas.true_ h.rhs);
       };
     };
   };
@@ -48,14 +48,14 @@ let
     constructors = {
       explicitLam = {
         tag = "plicit.explicit-lam";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.lam h.name h.domain h.body);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.lam h.name h.domain h.body);
       };
       implicitLam = {
         tag = "plicit.implicit-lam";
         plicity = "implicit";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.lam h.name h.domain h.body);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.lam h.name h.domain h.body);
       };
     };
   };
@@ -63,8 +63,8 @@ let
   evalBool = term:
     El.extract H.bool (E.eval [ ] (H.elab term));
 
-  badRegistry = self.register self.empty "toy.bad" ({ depth, elaborate, hoas, ... }:
-    elaborate depth hoas.zero);
+  badRegistry = self.register self.empty "toy.bad" ({ depth, lower, hoas, ... }:
+    lower depth hoas.zero);
   badTerm = self.node badRegistry "toy.bad" { };
 
   RawToy = self.defineSurface {
@@ -85,16 +85,16 @@ let
     constructors = {
       expected = {
         tag = "context.expected";
-        handler = { context, hoas, elaborate, depth, ... }:
-          elaborate depth
+        handler = { context, hoas, lower, depth, ... }:
+          lower depth
             (if context.expectedType != null && (context.expectedType._htag or null) == "unit"
             then hoas.tt
             else hoas.zero);
       };
       positioned = {
         tag = "context.positioned";
-        handler = { context, hoas, elaborate, depth, ... }:
-          elaborate depth
+        handler = { context, hoas, lower, depth, ... }:
+          lower depth
             (if context.position == { path = [ "root" "term" ]; }
             then hoas.tt
             else hoas.zero);

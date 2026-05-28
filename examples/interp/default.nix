@@ -117,9 +117,91 @@ let
   lang = { inherit num bool var add mul sub lt eq if_ let_ lam app; };
 
 in
-{
+rec {
+  __example = {
+    title = "Expression Interpreter";
+    description = "A small expression language interpreted with lookup, scoped environment, and failure effects.";
+    introduction = ''
+      This example implements a strict expression language with arithmetic,
+      booleans, let bindings, lambdas, application, and recursive bindings.
+      The evaluator emits effects for environment lookup, local scope, and
+      failure; handlers decide how those requests run.
+
+      The same module also exports scalable expression generators used by the
+      benchmark suite.
+    '';
+    sections = [
+      {
+        title = "Expression syntax";
+        prose = ''
+          Expressions are plain tagged Nix attrsets. Constructors keep the
+          evaluator independent from any parser or source format.
+        '';
+        code = ''
+          num = n: { _tag = "Expr"; _variant = "Num"; inherit n; };
+          add = l: r: { _tag = "Expr"; _variant = "Add"; inherit l r; };
+          lam = param: body: { _tag = "Expr"; _variant = "Lam"; inherit param body; };
+          app = fn: arg: { _tag = "Expr"; _variant = "App"; inherit fn arg; };
+        '';
+        tests = [
+          "arithmeticComputes"
+          "lambdaApplicationComputes"
+        ];
+      }
+      {
+        title = "Handler boundary";
+        prose = ''
+          Variable lookup, scoped execution, and failure are effects. Recursive
+          bindings work by building a closure whose environment refers back to
+          itself, while the handler owns the actual environment map.
+        '';
+        code = ''
+          lookup = name: send "lookup" name;
+          getEnv = send "getEnv" null;
+          fail = msg: send "fail" msg;
+
+          run = expr:
+            let result = handle {
+              handlers = mkHandler { };
+              state = { env = { }; };
+            } (eval expr);
+            in if result ? error then throw "eval error: ''${result.error}" else result.value;
+        '';
+        tests = [
+          "recursiveFibComputes"
+          "nestedLetsCompute"
+        ];
+      }
+      {
+        title = "Benchmark generators";
+        prose = ''
+          `exprs.nix` generates large recursive and nested expressions. The
+          benchmark suite imports these generators from `examples/interp`.
+        '';
+        code = ''
+          interp.exprs.benchmarks.fib10
+          interp.exprs.benchmarks.lets500
+          interp.exprs.benchmarks.sum1000
+        '';
+        tests = [ ];
+      }
+    ];
+  };
+
   inherit eval run lang;
   inherit num bool var add mul sub lt eq if_ let_ lam app;
   inherit VNum VBool VClosure;
   exprs = import ./exprs.nix lang;
+
+  arithmeticComputes =
+    run (add (num 2) (mul (num 3) (num 4))) == VNum 14;
+
+  lambdaApplicationComputes =
+    run (app (lam "x" (add (var "x") (num 1))) (num 41)) == VNum 42;
+
+  recursiveFibComputes =
+    run exprs.benchmarks.fib10 == VNum 55;
+
+  nestedLetsCompute =
+    run (exprs.mkNestedLets 10) == VNum 9;
 }

@@ -36,8 +36,7 @@ let
   inherit (prelude) H verify Nat U0 Unit Eq Refl Pi lam app;
   inherit (arithmetic)
     addImpl
-    addAssocImpl addLeftZeroImpl addRightZeroImpl
-    annAddRightZero annAddAssoc annAddComm;
+    annAddLeftZero annAddRightZero annAddAssoc annAddComm;
   inherit (prelude) addHoas;
 
   # -- Monoid -------------------------------------------------------------
@@ -131,9 +130,9 @@ rec {
     A = Nat;
     op = addImpl;
     e = H.zero;
-    assoc = addAssocImpl;
-    lid = addLeftZeroImpl;
-    rid = addRightZeroImpl;
+    assoc = annAddAssoc;
+    lid = annAddLeftZero;
+    rid = annAddRightZero;
 
     ty = MonoidOf A;
     impl = builtins.foldl' app MonoidDT.mk [ A op e assoc lid rid ];
@@ -153,13 +152,18 @@ rec {
   natCategory = rec {
     Obj = Unit;
     Hom = lam "_" Unit (_: lam "_" Unit (_: Nat));
-    id_ = lam "_" Unit (_: H.zero);
-    comp = lam "_" Unit (_: lam "_" Unit (_: lam "_" Unit (_:
-      lam "g" Nat (g: lam "f" Nat (f: addHoas g f)))));
+    idTy = Pi "_" Unit (_: Nat);
+    id_ = H.ann (lam "_" Unit (_: H.zero)) idTy;
+    compTy = Pi "_" Unit (_: Pi "_" Unit (_: Pi "_" Unit (_:
+      Pi "_" Nat (_: Pi "_" Nat (_: Nat)))));
+    comp = H.ann
+      (lam "_" Unit (_: lam "_" Unit (_: lam "_" Unit (_:
+        lam "g" Nat (g: lam "f" Nat (f: addHoas g f))))))
+      compTy;
     lid = lam "_" Unit (_: lam "_" Unit (_:
       lam "f" Nat (f: app annAddRightZero f)));
     rid = lam "_" Unit (_: lam "_" Unit (_:
-      lam "f" Nat (_: Refl)));
+      lam "f" Nat (f: H.ann Refl (Eq Nat (addHoas H.zero f) f))));
     assoc = lam "_" Unit (_: lam "_" Unit (_: lam "_" Unit (_: lam "_" Unit (_:
       lam "f" Nat (f: lam "g" Nat (g: lam "h" Nat (h:
         app (app (app annAddAssoc h) g) f)))))));
@@ -176,11 +180,11 @@ rec {
   # β-reduce to `add g f = add f g`; the proof is `addComm` at those
   # arguments.
   compCommTy =
-    let O = natCategory.Obj; in
+    let o = H.tt; in
     Pi "f" Nat (f: Pi "g" Nat (g:
       Eq Nat
-        (app (app (app (app (app natCategory.comp O) O) O) g) f)
-        (app (app (app (app (app natCategory.comp O) O) O) f) g)));
+        (app (app (app (app (app natCategory.comp o) o) o) g) f)
+        (app (app (app (app (app natCategory.comp o) o) o) f) g)));
 
   compCommImpl = lam "f" Nat (f: lam "g" Nat (g:
     app (app annAddComm g) f));

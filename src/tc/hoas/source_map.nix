@@ -22,8 +22,8 @@
 # tags) without a dedicated nullary entry.
 #
 # `elab2 : HoasTree → { tm; sm; }` pairs the Tm produced by
-# `elaborate 0 h` with `sourceMapOf h`. The existing single-Tm
-# `elaborate` and `elab` remain the primitives used by the datatype
+# `lower 0 h` with `sourceMapOf h`. The existing single-Tm
+# `lower` and `elab` remain the primitives used by the datatype
 # macro and chain-flatten paths, which never need the SM.
 { self, fx, lib, api, ... }:
 
@@ -530,7 +530,7 @@ let
       # walker catches up.
       else SM.leaf h;
 
-  elab2 = h: { tm = self.elaborate 0 h; sm = sourceMapOf h; };
+  elab2 = h: { tm = self.lower 0 h; sm = sourceMapOf h; };
 
 in
 {
@@ -1104,13 +1104,13 @@ in
           in p ? tm && p ? sm && SMf.isSourceMap p.sm;
         expected = true;
       };
-      "elab2-tm-matches-elaborate" = {
+      "elab2-tm-matches-lower" = {
         expr =
           let
             h = H.forall "x" H.unit (_: H.string);
             p = elab2 h;
           in
-          p.tm == self.elaborate 0 h;
+          p.tm == self.lower 0 h;
         expected = true;
       };
     };

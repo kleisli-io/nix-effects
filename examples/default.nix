@@ -6,6 +6,9 @@ let
   verifiedFunctions = import ./verified-functions.nix { inherit fx; };
   handlerSwapValidation = import ./handler-swap-validation.nix { inherit fx; };
   stlc = import ./stlc { inherit fx lib api; };
+  categoryTheory = import ./category-theory { inherit fx; };
+  interp = import ./interp { inherit fx; };
+  buildSim = import ./build-sim { inherit fx; };
 
   concatMap = f: xs: builtins.concatLists (map f xs);
 
@@ -14,10 +17,11 @@ let
       (suite.__example.sections or [ ]);
 
   boolTests = names: suite:
+    let testValues = suite.tests or suite; in
     builtins.listToAttrs (map
       (name: {
         inherit name;
-        value = { expr = suite.${name}; expected = true; };
+        value = { expr = testValues.${name}; expected = true; };
       })
       names);
 
@@ -33,11 +37,12 @@ let
 
   module = api.namespace {
     title = "Examples";
-    description = "Worked examples for proofs, effect-handler policy, and small surface languages over HOAS.";
+    description = "Worked examples for proofs, effect-handler policy, small surface languages, and complete applications over HOAS.";
     doc = ''
       The examples show nix-effects in complete, small programs. They move
       from proof construction, to effect-handler policy, to surface languages
-      built over the HOAS kernel.
+      built over the HOAS kernel, to application-sized interpreters and graph
+      evaluators.
 
       The same examples live in the source tree under `examples/` if you want
       to run or adapt them locally.
@@ -49,7 +54,9 @@ let
           Start with proof examples when you want to see values checked by the
           kernel. Use the effect example to compare validation policies without
           changing the computation. Use the surface-language examples when you
-          want to build a small syntax layer over HOAS.
+          want to build a small syntax layer over HOAS. Use the application
+          examples when you want complete programs that also feed the benchmark
+          suite.
         '';
         code = ''
           examples/
@@ -58,6 +65,9 @@ let
             verified-functions.nix
             handler-swap-validation.nix
             stlc/
+            category-theory/
+            interp/
+            build-sim/
         '';
         tests = [ ];
       }
@@ -68,6 +78,9 @@ let
       verifiedFunctions = mkExample verifiedFunctions;
       handlerSwapValidation = mkExample handlerSwapValidation;
       stlc = stlc.module;
+      categoryTheory = mkExample categoryTheory;
+      interp = mkExample interp;
+      buildSim = mkExample buildSim;
     };
     tests = { };
   };
@@ -78,5 +91,6 @@ let
 in
 {
   inherit module tree results;
-  inherit proofBasics equalityProofs verifiedFunctions handlerSwapValidation stlc;
+  inherit proofBasics equalityProofs verifiedFunctions handlerSwapValidation stlc
+    categoryTheory interp buildSim;
 }

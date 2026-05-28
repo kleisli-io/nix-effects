@@ -55,7 +55,89 @@ let
   evalQuiet = graph: handle { handlers = handlersQuiet; state = mkState graph; } (buildNode graph.root);
 
 in
-{
+rec {
+  __example = {
+    title = "Build Simulator";
+    description = "A dependency-graph evaluator with cache, configuration, logging, and failure effects.";
+    introduction = ''
+      This example models a small build planner. Nodes depend on other nodes,
+      builders consume dependency outputs, and handlers provide cache,
+      configuration, logging, and failure behavior.
+
+      The graph generators produce the scalable workloads used by the
+      benchmark suite.
+    '';
+    sections = [
+      {
+        title = "Graph nodes";
+        prose = ''
+          Nodes are plain Nix records. A builder receives the evaluated
+          dependency results and configuration, then returns either a value or
+          an error marker.
+        '';
+        code = ''
+          leaf = name: value: {
+            inherit name;
+            deps = [ ];
+            builder = { deps, config }: value;
+          };
+
+          sumBuilder = { deps, config }:
+            builtins.foldl' (acc: v: acc + v) (config.base or 0)
+              (builtins.attrValues deps);
+        '';
+        tests = [
+          "linearGraphBuilds"
+          "wideGraphBuilds"
+        ];
+      }
+      {
+        title = "Effectful evaluation";
+        prose = ''
+          The evaluator requests cache reads, cache writes, configuration,
+          logging, and failure through effects. Swapping the handler changes
+          observability without changing graph traversal.
+        '';
+        code = ''
+          eval = graph:
+            handle { handlers = handlersWithLogging; state = mkState graph; }
+              (buildNode graph.root);
+
+          evalQuiet = graph:
+            handle { handlers = handlersQuiet; state = mkState graph; }
+              (buildNode graph.root);
+        '';
+        tests = [
+          "failureReturnsError"
+        ];
+      }
+      {
+        title = "Benchmark generators";
+        prose = ''
+          `graphs.nix` generates linear, wide, diamond, tree, mixed, and
+          failing graphs. The benchmark suite imports them from
+          `examples/build-sim`.
+        '';
+        code = ''
+          buildSim.graphs.benchmarks.linear500
+          buildSim.graphs.benchmarks.diamond10
+          buildSim.graphs.benchmarks.mixed_large
+        '';
+        tests = [ ];
+      }
+    ];
+  };
+
   inherit eval evalQuiet buildNode buildDeps;
   graphs = import ./graphs.nix { };
+
+  linearGraphBuilds =
+    (evalQuiet graphs.benchmarks.linear50).value == 1;
+
+  wideGraphBuilds =
+    (evalQuiet graphs.benchmarks.wide50).value == 50;
+
+  failureReturnsError =
+    (evalQuiet graphs.benchmarks.linear_fail_early).value.error
+      == "build failed: n10: intentional failure at node 10";
 }

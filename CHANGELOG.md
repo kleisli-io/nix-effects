@@ -69,7 +69,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Desc` and description operations lift the old `I : U(0)` restriction.** `descDesc`, `VDesc`, `canonRef`, `interpD`, `allD`, and `everywhereD` now carry the index universe level explicitly.
 - **`fx.sugar.do` is replaced by a composable Kleisli pipeline; the old form is available as `steps`.** Documentation and compatibility tests now use the split naming.
 - **Source internals are gated behind `exposeInternals`.** The public import keeps the curated API surface by default while internal consumers can opt into the raw source tree.
-- **Documentation extraction uses co-located API metadata.** The legacy `__docs` sibling convention was replaced by `_self` descriptions and `api.mk` wrappers throughout the source tree.
 - **Bench history archives the recovery baseline.** The previous active baseline was renamed to `baseline.recovery-target.{json,md}`, and the failed `ci-1f13e07f` gate artifacts were removed from the active history.
 
 ### Fixed
@@ -93,7 +92,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - **Legacy bespoke `H.record` / `H.variant` implementation path** — the public constructors remain, but their behaviour now comes from generated datatype descriptions and `RecordOpen` metadata records.
-- **Legacy `__docs` sibling maps for documentation extraction** — public documentation now lives on API wrappers and explicit module structure.
 
 ## [0.11.0] - 2026-05-13
 
@@ -263,8 +261,8 @@ A macro layer for user-defined datatypes lands on top of the kernel's descriptio
 ### Changed
 
 - **`Nat`, `List`, `Sum` use the macro surface for their µ/ctor/elim construction** — their HOAS forwarding stays unchanged from the user view; internally they flow through `datatype` / `datatypeP`, so every test-suite improvement on the macro improves the kernel primitives too
-- **`apps/category-theory/algebra.nix`** — old nested-Σ `MonoidOf` / `CategoryTy` encoding replaced by macro datatypes. `natAddMonoid` and `natCategory` are exposed as HOAS records carrying both the component HOAS terms (`.op`, `.e`, `.comp`, …) and the bundled `(ty, impl)` pair that the kernel checks
-- **Example-library invocations** — README and apps use `nix eval` rather than `nix-instantiate --eval --strict`
+- **`examples/category-theory/algebra.nix`** — old nested-Σ `MonoidOf` / `CategoryTy` encoding replaced by macro datatypes. `natAddMonoid` and `natCategory` are exposed as HOAS records carrying both the component HOAS terms (`.op`, `.e`, `.comp`, …) and the bundled `(ty, impl)` pair that the kernel checks
+- **Example-library invocations** — README and examples use `nix eval` rather than `nix-instantiate --eval --strict`
 
 ### Documented
 
@@ -308,7 +306,7 @@ On the kernel side, `Desc` and `μ` join as primitives, and `Nat`, `List`, `Sum`
 - **HOAS substitution for dependent Sigma** — `elaborateValue` Sigma case uses `body(â)` for correct dependent type computation, replacing the sentinel test heuristic
 - **`_kernelPrecise` / `_kernelSufficient`** — orthogonal decomposition of the old `_kernelExact`. `_kernelPrecise` drives parent kernel building; `_kernelSufficient` drives guard decisions. Constructors compose both independently
 - **`.diagnose` method** on all types — returns `{ kernel; guard; agreement; }` for independent kernel/guard reporting
-- **Category theory library** (`apps/category-theory/`) — formally verified proofs running at Nix eval time. Proof combinators (sym, trans, cong) derived from J elimination; natural number arithmetic with 7 verified properties including commutativity; Monoid and Category as dependent sigma types with (Nat,+,0) instances; commutativity of composition in the endomorphism monoid; doubling endofunctor with functoriality proof via 5-step equational rewriting
+- **Category theory library** (`examples/category-theory/`) — formally verified proofs running at Nix eval time. Proof combinators (sym, trans, cong) derived from J elimination; natural number arithmetic with 7 verified properties including commutativity; Monoid and Category as dependent sigma types with (Nat,+,0) instances; commutativity of composition in the endomorphism monoid; doubling endofunctor with functoriality proof via 5-step equational rewriting
 - **Cross-cutting integration tests** — Record(Pi, Sigma(refined)), Maybe(DepRecord(dependent ListOf)), ListOf(Pi), Either(Sigma, Pi) verifying conjunction across compound types
 
 ### Changed
@@ -363,7 +361,7 @@ On the kernel side, `Desc` and `μ` join as primitives, and `Nat`, `List`, `Sum`
 - `kernel.kleisli`: Kleisli composition `(a -> M b) -> (b -> M c) -> (a -> M c)`
 - `queue.identity`: sentinel variant representing the identity continuation, letting the trampoline skip queue application for bare `send` effects
 - Benchmark infrastructure: `nix run .#bench` / `nix run .#bench-compare` with named history, 3-run median, and comparison tables
-- Benchmark apps: expression interpreter (`apps/interp`) and dependency graph evaluator (`apps/build-sim`) with scalable workload generators
+- Benchmark examples: expression interpreter (`examples/interp`) and dependency graph evaluator (`examples/build-sim`) with scalable workload generators
 - Benchmark stress tests: effectHeavy, bindHeavy, mixed, rawGC microbenchmarks for diagnosing bottlenecks
 - Per-module test result reporting in `tests` output
 

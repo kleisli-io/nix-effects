@@ -22,7 +22,7 @@
 { prelude }:
 
 let
-  inherit (prelude) verify U0 Eq Refl J Pi lam app;
+  inherit (prelude) H verify U0 Eq Refl J Pi lam app;
 
   # B : A → U₀  (a type family over A)
   TyFam = A: Pi "_" A (_: U0);
@@ -45,7 +45,7 @@ rec {
 
   yonedaEvalImpl = lam "A" U0 (A: lam "a" A (a: lam "B" (TyFam A) (B:
     lam "alpha" (SectionTy A a B) (alpha:
-      app (app alpha a) Refl))));
+      app (app alpha a) (H.ann Refl (Eq A a a))))));
 
   yonedaEval = verify yonedaEvalTy yonedaEvalImpl;
 
@@ -70,12 +70,15 @@ rec {
   evalLiftTy = Pi "A" U0 (A: Pi "a" A (a: Pi "B" (TyFam A) (B:
     Pi "b" (app B a) (b:
       Eq (app B a)
-        (J A a (liftMotive A a B) b a Refl)
+        (J A a (liftMotive A a B) b a (H.ann Refl (Eq A a a)))
         b))));
 
   evalLiftImpl = lam "A" U0 (A: lam "a" A (a: lam "B" (TyFam A) (B:
     lam "b" (app B a) (b:
-      Refl))));
+      H.ann Refl
+        (Eq (app B a)
+          (J A a (liftMotive A a B) b a (H.ann Refl (Eq A a a)))
+          b)))));
 
   evalLift = verify evalLiftTy evalLiftImpl;
 
@@ -88,7 +91,10 @@ rec {
     Pi "alpha" (SectionTy A a B) (alpha:
       Pi "x" A (x: Pi "p" (Eq A a x) (p:
         Eq (app B x)
-          (J A a (liftMotive A a B) (app (app alpha a) Refl) x p)
+          (J A a (liftMotive A a B)
+            (app (app alpha a) (H.ann Refl (Eq A a a)))
+            x
+            p)
           (app (app alpha x) p)))))));
 
   liftEvalImpl = lam "A" U0 (A: lam "a" A (a: lam "B" (TyFam A) (B:
@@ -97,9 +103,18 @@ rec {
         J A a
           (lam "y" A (y: lam "q" (Eq A a y) (q:
             Eq (app B y)
-              (J A a (liftMotive A a B) (app (app alpha a) Refl) y q)
+              (J A a (liftMotive A a B)
+                (app (app alpha a) (H.ann Refl (Eq A a a)))
+                y
+                q)
               (app (app alpha y) q))))
-          Refl
+          (H.ann Refl
+            (Eq (app B a)
+              (J A a (liftMotive A a B)
+                (app (app alpha a) (H.ann Refl (Eq A a a)))
+                a
+                (H.ann Refl (Eq A a a)))
+              (app (app alpha a) (H.ann Refl (Eq A a a)))))
           x
           p))))));
 

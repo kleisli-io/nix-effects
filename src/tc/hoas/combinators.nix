@@ -539,7 +539,7 @@ in
         Soundness depends on the carried `Tm` being closed under the
         binders surrounding the embed site.
 
-        Elaborates via the `pre-elab` rule in `tc/hoas/elaborate.nix`.
+        Elaborates via the `pre-elab` rule in `tc/hoas/lower.nix`.
       '';
       value = tm: { _htag = "pre-elab"; inherit tm; };
     };

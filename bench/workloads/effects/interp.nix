@@ -8,7 +8,7 @@
 { fx }:
 
 let
-  interp = import ../../../apps/interp { inherit fx; };
+  interp = import ../../../examples/interp { inherit fx; };
 in
 {
   fib10 = interp.run interp.exprs.benchmarks.fib10;

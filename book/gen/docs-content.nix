@@ -26,6 +26,10 @@
 
 let
   docs = nix-effects.extractDocs;
+  docsLib =
+    if nix-effects ? docs
+    then nix-effects.docs
+    else import ../../src/docs.nix { api = import ../../src/api.nix { inherit lib; }; inherit lib; };
   exampleDocs = nix-effects.examplesDocs or { };
   bookSrc = ../src;
   nxSrc = ../../src;
@@ -57,64 +61,7 @@ let
   githubSourceLineLink = relPath: line:
     "[`${relPath}:${toString line}`](${githubBlob relPath}#L${toString line})";
 
-  # Escape `\` and `"` for a YAML double-quoted scalar.
-  yamlEscape = s: builtins.replaceStrings [ "\\" "\"" ] [ "\\\\" "\\\"" ] s;
-
-  trimText = s:
-    lib.removeSuffix "\n" (lib.trimWith { start = true; end = true; } s);
-
-  descriptionMinLength = 60;
-  descriptionMaxLength = 160;
-
-  shortenDescription = description:
-    let
-      trimmed = trimText description;
-      maxStem = descriptionMaxLength - 3;
-    in
-    if builtins.stringLength trimmed <= descriptionMaxLength
-    then trimmed
-    else builtins.substring 0 maxStem trimmed + "...";
-
-  frontMatterDescription = description:
-    if description == null || description == "" then null
-    else
-      let
-        shortened = shortenDescription description;
-      in
-      if builtins.stringLength shortened < descriptionMinLength
-      then null
-      else shortened;
-
-  # Add YAML front matter to markdown content.
-  # Strips a leading `# Title` from body to avoid duplicate heading.
-  addFrontMatter = { title, body, mtime ? null, sha ? null, description ? null }:
-    let
-      # Strip leading "# Title\n\n" from body to avoid duplicate heading
-      lines = lib.splitString "\n" body;
-      firstLine = builtins.head lines;
-      hasH1 = lib.hasPrefix "# " firstLine;
-      strippedBody =
-        if hasH1
-        then
-          let
-            rest = builtins.tail lines;
-            # Also strip leading blank line after the heading
-            trimmed =
-              if rest != [ ] && builtins.head rest == ""
-              then builtins.tail rest
-              else rest;
-          in
-          lib.concatStringsSep "\n" trimmed
-        else body;
-      mtimeLine = if mtime != null then "mtime: ${toString mtime}\n" else "";
-      shaLine = if sha != null && sha != "" then "sha: ${sha}\n" else "";
-      pageDescription = frontMatterDescription description;
-      descriptionLine =
-        if pageDescription != null
-        then "description: \"${yamlEscape pageDescription}\"\n"
-        else "";
-    in
-    "---\ntitle: \"${title}\"\n${mtimeLine}${shaLine}${descriptionLine}---\n\n${strippedBody}";
+  inherit (docsLib) addFrontMatter metaKeys renderApiPage trimText;
 
   # Enumerate .nix files contributed by a split-module directory under
   # nix-effects/src/. Returns an empty list for non-split-module dirs (no
@@ -146,79 +93,6 @@ let
       ("## Source\n\n"
         + lib.concatMapStrings (f: "- ${githubSourceLink f}\n") files
         + "\n");
-
-  # Metadata keys present alongside documented children on a doc-tree node.
-  # The walker treats these as scalar fields, not as candidate child pages/entries.
-  metaKeys = [ "title" "doc" "description" "signature" "sections" "tests" "appendix" ];
-
-  # Render an API module page with front matter.
-  # `sourceFiles` is an optional list of project-relative paths.
-  # `appendBody` is markdown injected between the per-symbol entries and
-  # the source-files footer; used by the diag/hints page to attach the
-  # Hint registry and by the walker to attach sub-namespace navigation.
-  renderApiPage = { title, node, mtime ? null, sha ? null, sourceFiles ? [ ], appendBody ? "", namespacePath ? null, subNamespaces ? [ ] }:
-    let
-      entries = lib.filterAttrs (k: _: !(builtins.elem k metaKeys)) node;
-      entryNames = lib.sort (a: b: a < b) (builtins.attrNames entries);
-
-      shortNameList = names:
-        let
-          sorted = lib.sort (a: b: a < b) names;
-          shown = lib.take 4 sorted;
-          extra = builtins.length sorted - builtins.length shown;
-          rendered = lib.concatStringsSep ", " (map (n: "`${n}`") shown);
-        in
-        rendered + lib.optionalString (extra > 0) ", and ${toString extra} more";
-
-      fallbackIntro =
-        let
-          pathText =
-            if namespacePath == null then "This namespace"
-            else "The `${namespacePath}` namespace";
-          surface =
-            if entryNames != [ ] && subNamespaces != [ ] then "public values and child namespaces"
-            else if entryNames != [ ] then "public values"
-            else "child namespaces";
-          entrySentence =
-            lib.optionalString (entryNames != [ ])
-              " Key exports include ${shortNameList entryNames}.";
-          childSentence =
-            lib.optionalString (subNamespaces != [ ])
-              " Child namespaces cover ${shortNameList subNamespaces}.";
-        in
-        "${pathText} groups ${surface} for this part of nix-effects.${entrySentence}${childSentence}";
-
-      intro =
-        if node ? doc && node.doc != "" then node.doc
-        else if node ? description && node.description != "" then node.description
-        else fallbackIntro;
-
-      moduleDoc = lib.optionalString (intro != "")
-        (linkifyHints (lib.removeSuffix "\n" (lib.trimWith { start = true; end = true; } intro))
-          + "\n\n");
-
-      renderEntry = name: entry:
-        let
-          hasDesc = entry ? description && entry.description != "";
-          hasDoc = entry ? doc && entry.doc != "";
-          hasSig = entry ? signature && entry.signature != "";
-          trim = s: lib.removeSuffix "\n" (lib.trimWith { start = true; end = true; } s);
-          descBlock = lib.optionalString hasDesc "_${trim entry.description}_\n\n";
-          sigBlock = lib.optionalString hasSig "```\n${trim entry.signature}\n```\n\n";
-          docBlock = lib.optionalString hasDoc "${linkifyHints (trim entry.doc)}\n\n";
-        in
-        lib.optionalString (hasDesc || hasDoc || hasSig)
-          "## `${name}`\n\n${descBlock}${sigBlock}${docBlock}";
-
-      entriesBody = lib.concatStringsSep "" (lib.mapAttrsToList renderEntry entries);
-
-      sourceFilesSection = renderSourceFilesSection sourceFiles;
-    in
-    addFrontMatter {
-      inherit title mtime sha;
-      description = node.description or null;
-      body = "${moduleDoc}${entriesBody}${appendBody}${sourceFilesSection}";
-    };
 
   handwrittenSections = [
     {
@@ -845,7 +719,9 @@ let
           inherit mtime sha;
           namespacePath = "fx.${builtins.replaceStrings [ "/" ] [ "." ] srcPath}";
           subNamespaces = orderedDocNames urlPrefix nestedChildren;
-          sourceFiles = sourceFilesFor srcPath;
+          libraryName = "nix-effects";
+          linkify = linkifyHints;
+          sourceFilesSection = renderSourceFilesSection (sourceFilesFor srcPath);
           appendBody = (node.appendix or "") + subNamespaceSection;
         });
       };
@@ -1011,6 +887,17 @@ let
         "stlc/recursiveLists"
         "stlc/refinementsDiagnostics"
       ];
+    }
+    {
+      slug = "application-examples";
+      title = "Applications";
+      description = "Complete example programs that double as benchmark workloads.";
+      introduction = ''
+        Application examples are full modules rather than isolated snippets.
+        They expose ordinary Nix APIs, include prose walkthroughs, and provide
+        workload generators consumed by the benchmark suite.
+      '';
+      pages = [ "categoryTheory" "interp" "buildSim" ];
     }
   ];
 

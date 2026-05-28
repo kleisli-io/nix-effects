@@ -7,7 +7,7 @@
 let
   H = fx.types.hoas;
 
-  catApp = import ../../../apps/category-theory { inherit fx; };
+  catApp = import ../../../examples/category-theory { inherit fx; };
 
   # Tests whose forcing has multi-second cost — bidirectional CHECK
   # against the polymorphic iso, full Q.nf round-trip through
@@ -80,7 +80,7 @@ in
   # each a `verifyAndExtract` invocation on a typed implementation.
   category-theory-verify = builtins.all (x: x) (builtins.attrValues catApp.tests);
 
-  # Repeated forcing of the two named proofs from `apps/category-theory`.
+  # Repeated forcing of the two named proofs from `examples/category-theory`.
   # Nix's let-binding sharing means the typecheck cost is paid once;
   # subsequent iterations re-walk the already-forced result. Useful as a
   # multi-pass forced-walk benchmark over already-elaborated proof terms.

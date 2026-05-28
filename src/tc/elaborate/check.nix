@@ -214,7 +214,7 @@ in
         # `H.nil` argument peels on the Sub-rule's inferred side against
         # the resulting `List ?A`. `?A` solves to `Nat` via conv.
         #
-        # Uses raw `H.elaborate 0` rather than `H.elab` because `H.elab`
+        # Uses raw `H.lower 0` rather than `H.elab` because `H.elab`
         # throws on unsolved metas at the boundary; here the test's job
         # is precisely to feed a meta-bearing Tm to `elabCheckTm` so the
         # Sub-rule peel + conv path can resolve `?A := Nat`.
@@ -224,7 +224,7 @@ in
               ctx = fx.tc.check.emptyCtx;
               listNatTm = H.elab (H.listOf H.nat);
               listNatVal = fx.tc.eval.eval [ ] listNatTm;
-              consTm = H.elaborate 0 (H.cons H.zero H.nil);
+              consTm = H.lower 0 (H.cons H.zero H.nil);
               got = elabCheckTm ctx consTm listNatVal;
             in
             got ? error;

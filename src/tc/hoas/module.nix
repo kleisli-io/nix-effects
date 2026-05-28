@@ -4,18 +4,18 @@
 # `combinators.nix` (core HOAS nodes + binding forms +
 # descriptions + eliminator wrappers), `desc.nix` (prelude descriptions and
 # descDesc encoders), `datatype.nix` (datatype macro +
-# prelude instances + surface forwarders), and `elaborate.nix` (HOAS → Tm
-# elaborator + kernel-checker convenience wrappers); `partTests` is the
+# prelude instances + surface forwarders), and `lower.nix` (HOAS → Tm
+# lowering + kernel-checker convenience wrappers); `partTests` is the
 # aggregated test map.
 { self, partTests, api, ... }:
 
 api.mk {
-  description = "fx.tc.hoas: HOAS surface combinators for kernel terms — types, binders, descriptions, datatypes, ornaments, and the elaborator that compiles to de Bruijn `Tm`.";
+  description = "fx.tc.hoas: HOAS surface combinators for kernel terms — types, binders, descriptions, datatypes, ornaments, and the lowering pass that compiles to de Bruijn `Tm`.";
   doc = ''
     # fx.types.hoas — HOAS Surface Combinators
 
     Higher-Order Abstract Syntax layer that lets you write kernel terms
-    using Nix lambdas for variable binding. The `elaborate` function
+    using Nix lambdas for variable binding. The `lower` function
     compiles HOAS trees to de Bruijn indexed Tm terms.
 
     ## Example
@@ -71,9 +71,9 @@ api.mk {
     - `validateFunctionalLaws`, `functionalCompose` — law metadata checks and composition for sectioned ornaments
     - `validateOrnament`, `tryOrnament`, `validateAlgOrn`, `tryAlgOrn` — total structured diagnostics for user-facing ornament construction
 
-    ## Elaboration
+    ## Lowering
 
-    - `elaborate : Int → Hoas → Tm` — compile at given depth
+    - `lower : Int → Hoas → Tm` — compile at given depth
     - `elab : Hoas → Tm` — compile from depth 0
 
     ## Convenience
@@ -96,7 +96,7 @@ api.mk {
       dec decAnd decElim decNot decOr decideEqIntZ decideEqNat decideLeIntZ
       decideLeNat derivation derivationLit
       desc descArg descCon descDesc descElim descInd descPi descRec descRet
-      elab elab2 elaborate embedTm eq eqCongSucc eqDT eqDTToEq eqDesc eqInjSucc
+      elab elab2 embedTm eq eqCongSucc eqDT eqDTToEq eqDesc eqInjSucc
       eqIsoBwd eqIsoFwd eqRefutSuccZero eqRefutZeroSucc eqToEqDT everywhereD
       false_ field fieldD fin finDesc finElim floatLit float_ fnLit forall
       implicitApp implicitForall implicitLam plicity surfacePlicity
@@ -108,7 +108,7 @@ api.mk {
       intzPos intzPosCong intzPosInjective isLeafOrn j just lam le leDesc leElim leInjSS
       leRefutSuccZero leSS leZ leafOrnament leafOrnamentDiagnosticRecords
       leafOrnamentDiagnostics let_ level levelMax levelSuc levelZero listDesc
-      listElim listOf litVal maxSucDom maybe mu nat natCaseU natDesc natLit
+      listElim listOf litVal lower maxSucDom maybe mu nat natCaseU natDesc natLit
       natPredCase natToLevel nil no nothing not opaqueLam or_ ornArgInsert ornArgKeep
       ornBuild ornCompose ornDesc ornForget ornI ornId ornIndexProof
       ornLiftFold ornLiftProducer ornLiftTransform ornMu ornPiKeep ornPlus

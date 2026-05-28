@@ -46,7 +46,7 @@ in
     handlerContext = api.leaf {
       value = handlerContext;
       description = "Build the argument record passed to surface elaboration handlers, adding expected type, source position, and implicit-meta helpers.";
-      signature = "{ h, depth, elaborate, hoas, fx, ... } -> HandlerArgs";
+      signature = "{ h, depth, lower, hoas, fx, ... } -> HandlerArgs";
     };
     withSurfaceContext = api.leaf {
       value = withSurfaceContext;

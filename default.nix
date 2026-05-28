@@ -12,8 +12,7 @@ let
   #
   # Walks `src/` building the fx tree. Every documented binding is an
   # `api.mk` wrap (or its aliases `api.leaf` / `api.namespace`) carrying
-  # `{ description; doc; signature; value; tests }`. Docs are co-located
-  # with values on each wrap; there is no sibling `__docs` map.
+  # `{ description; doc; signature; value; tests }`.
   #
   # Two directory shapes:
   #
@@ -64,8 +63,6 @@ let
         { }
         entries;
 
-      legacyDocsHint = path:
-        "readSrc: ${path}: uses legacy `__docs` sibling; co-locate docs into per-leaf `api.leaf` / `api.namespace` wraps (see .kli/tasks/2026-05-18-nix-effects-principled-co-locate-leaf-value-doc/plan.md)";
     in
     if isSplitModule then
       let
@@ -93,10 +90,7 @@ let
               (acc: n:
                 let
                   part = importPart n s.selfForParts;
-                  scope =
-                    if (part.__docs or { }) != { }
-                    then throw (legacyDocsHint "${toString dir}/${n}")
-                    else part.scope;
+                  scope = part.scope;
                   collisions = lib.intersectLists
                     (builtins.attrNames acc)
                     (builtins.attrNames scope);
@@ -148,15 +142,9 @@ let
             then
               let
                 r = import (dir + "/${name}") ctx;
-                isLegacy =
-                  builtins.isAttrs r
-                  && (r._type or null) != "nix-effects-api"
-                  && (r.__docs or { }) != { };
                 bare = lib.removeSuffix ".nix" name;
               in
-              if isLegacy
-              then throw (legacyDocsHint "${toString dir}/${name}")
-              else acc // { ${bare} = r; }
+              acc // { ${bare} = r; }
             else acc
           )
           { }
@@ -325,6 +313,9 @@ let
 
     # API utilities
     inherit api;
+
+    # Documentation rendering utilities for API trees produced by extractDocs.
+    docs = src.docs;
   };
 
   integrationTests = import ./tests { inherit lib fx api; };

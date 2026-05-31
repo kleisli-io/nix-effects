@@ -12,13 +12,13 @@ let
     constructors = {
       lit = {
         tag = "bench-toy.lit";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (if h.value then hoas.true_ else hoas.false_);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (if h.value then hoas.true_ else hoas.false_);
       };
       not = {
         tag = "bench-toy.not";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (boolIf hoas h.term hoas.false_ hoas.true_);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (boolIf hoas h.term hoas.false_ hoas.true_);
       };
     };
   };

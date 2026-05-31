@@ -40,35 +40,35 @@ let
       # `sigma "_" A (_: B)`.
       sigma = {
         tag = "stlc.sigma";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.sigma h.name h.fst h.snd);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.sigma h.name h.fst h.snd);
       };
 
       # Pair introduction `(a, b)`.
       pair = {
         tag = "stlc.pair";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.pair h.fst h.snd);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.pair h.fst h.snd);
       };
 
       # Product projections. These infer through annotated pairs in the
       # examples below, so errors come from the normal kernel projection rules.
       fst = {
         tag = "stlc.fst";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.fst_ h.pair);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.fst_ h.pair);
       };
       snd = {
         tag = "stlc.snd";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.snd_ h.pair);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.snd_ h.pair);
       };
 
       # Binary sum type `A + B`.
       sum = {
         tag = "stlc.sum";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.sum h.left h.right);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.sum h.left h.right);
       };
 
       # Sum introductions. The left and right types are explicit so each
@@ -76,13 +76,13 @@ let
       # datatype constructors.
       inl = {
         tag = "stlc.inl";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.inlAtExplicit 0 h.left h.right h.term);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.inlAtExplicit 0 h.left h.right h.term);
       };
       inr = {
         tag = "stlc.inr";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.inrAtExplicit 0 h.left h.right h.term);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.inrAtExplicit 0 h.left h.right h.term);
       };
 
       # Case analysis into a non-dependent result type.
@@ -91,8 +91,8 @@ let
       # the motive is constant: every branch returns `result`.
       case = {
         tag = "stlc.case";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth
             (hoas.sumElim 0 h.left h.right
               (hoas.lam "_" (hoas.sum h.left h.right) (_: h.result))
               (hoas.lam "left" h.left h.onLeft)

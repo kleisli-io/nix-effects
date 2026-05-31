@@ -17,7 +17,7 @@ let
     tag = "DViewArg";
     idx = 1;
     sTy = V.vUnit;
-    tFn = { tag = "VDescViewFn"; apply = _: sub; };
+    tFn = { tag = "VDescViewFn"; kind = "const"; result = sub; };
   };
 
   recD = sub: {

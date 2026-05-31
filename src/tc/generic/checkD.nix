@@ -13,7 +13,7 @@ let
 
   applyDescFn = fn: arg:
     if builtins.isAttrs fn && (fn.tag or null) == "VDescViewFn"
-    then fn.apply arg
+    then E.dispatch.applyDescViewFnByKindF E.dispatch.defaultFuel fn arg
     else E.vApp fn arg;
 
   interpTy = spec:

@@ -176,7 +176,7 @@ in
         else if t == "app" then
           bindPR P.AppHead "app" (self.infer ctx tm.fn)
             (fResult:
-              let fTy = fResult.type; in
+              let fTy = E.forceVal fResult.type; in
               if fTy.tag != "VPi"
               then
                 send "typeError"
@@ -199,7 +199,7 @@ in
         else if t == "fst" then
           bindPR P.Scrut "fst" (self.infer ctx tm.pair)
             (pResult:
-              let pTy = pResult.type; in
+              let pTy = E.forceVal pResult.type; in
               if pTy.tag != "VSigma"
               then
                 send "typeError"
@@ -219,7 +219,7 @@ in
         else if t == "snd" then
           bindPR P.Scrut "snd" (self.infer ctx tm.pair)
             (pResult:
-              let pTy = pResult.type; in
+              let pTy = E.forceVal pResult.type; in
               if pTy.tag != "VSigma"
               then
                 send "typeError"
@@ -299,7 +299,7 @@ in
                         pure (T.mkLam tm.motive.name (Q.quote ctx.depth aVal) innerR.term))
                     else
                       bindP P.Motive (self.infer ctx tm.motive) (result:
-                        let rTy = result.type; in
+                        let rTy = E.forceVal result.type; in
                         if rTy.tag != "VPi"
                         then
                           jMotiveErr "J motive must be a function"
@@ -311,7 +311,7 @@ in
                             (Q.quote ctx.depth aVal)
                             (Q.quote ctx.depth rTy.domain)
                         else
-                          let innerTy = E.instantiate rTy.closure (V.freshVar ctx.depth); in
+                          let innerTy = E.forceVal (E.instantiate rTy.closure (V.freshVar ctx.depth)); in
                           if innerTy.tag != "VPi"
                           then
                             jMotiveErr "J motive must take two arguments"
@@ -323,7 +323,7 @@ in
                               (Q.quote (ctx.depth + 1) (eqDomTy ctx.depth))
                               (Q.quote (ctx.depth + 1) innerTy.domain)
                           else
-                            let codVal = E.instantiate innerTy.closure (V.freshVar (ctx.depth + 1)); in
+                            let codVal = E.forceVal (E.instantiate innerTy.closure (V.freshVar (ctx.depth + 1))); in
                             if codVal.tag != "VU"
                             then
                               jMotiveErr "J motive must return a type"
@@ -517,7 +517,7 @@ in
         else if t == "desc-con" then
           bindPR P.MuDesc "desc-con" (self.infer ctx tm.D)
             (dResult:
-              let dTy = dResult.type; in
+              let dTy = E.forceVal dResult.type; in
               if dTy.tag != "VDesc"
               then
                 send "typeError"
@@ -893,7 +893,8 @@ in
             (bodyResult:
               let
                 nParams = builtins.length tm.params;
-                walk = idx: paramTms: tyVal:
+                walk = idx: paramTms: tyVal0:
+                  let tyVal = E.forceVal tyVal0; in
                   if idx == nParams then
                     pure
                       {
@@ -941,7 +942,7 @@ in
         else if t == "opaque-lam" then
           bindPR P.OpaqueType "opaque-lam" (self.checkType ctx tm.piTy)
             (piTyTm:
-              let piTyVal = E.eval ctx.env piTyTm; in
+              let piTyVal = E.forceVal (E.eval ctx.env piTyTm); in
               if piTyVal.tag != "VPi" then
                 send "typeError"
                   {

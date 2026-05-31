@@ -100,35 +100,35 @@ let
       # HOAS list carrier, which is backed by the kernel's description `mu`.
       list = {
         tag = "stlc.list";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.listOf h.elem);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.listOf h.elem);
       };
 
       # Explicit empty list: `nil Nat`.
       nil = {
         tag = "stlc.nil";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.nilAtExplicit h.elem);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.nilAtExplicit h.elem);
       };
 
       # Expected-type-driven empty list: `implicitNil`.
       implicitNil = {
         tag = "stlc.implicit-nil";
-        handler = { context, depth, elaborate, hoas, ... }:
+        handler = { context, depth, lower, hoas, ... }:
           let
             r = implicitElementFromExpected {
               inherit context hoas;
               label = "stlc.list-nil-element";
             };
           in
-          if r ? error then r else elaborate depth (hoas.nilAtExplicit r.elem);
+          if r ? error then r else lower depth (hoas.nilAtExplicit r.elem);
       };
 
       # Explicit cons: `cons Nat h t`.
       cons = {
         tag = "stlc.cons";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.consAtExplicit h.elem h.head h.tail);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.consAtExplicit h.elem h.head h.tail);
       };
 
       # Expected-type-driven cons: `implicitCons h t`.
@@ -138,14 +138,14 @@ let
       # use an explicit `nil A` or another typed list expression there.
       implicitCons = {
         tag = "stlc.implicit-cons";
-        handler = { context, depth, h, elaborate, hoas, ... }:
+        handler = { context, depth, h, lower, hoas, ... }:
           let
             r = implicitElementFromExpected {
               inherit context hoas;
               label = "stlc.list-cons-element";
             };
           in
-          if r ? error then r else elaborate depth (hoas.consAtExplicit r.elem h.head h.tail);
+          if r ? error then r else lower depth (hoas.consAtExplicit r.elem h.head h.tail);
       };
 
       # Non-dependent list fold.
@@ -160,8 +160,8 @@ let
       # and returning the folded result for `cons head tail`.
       listFold = {
         tag = "stlc.list-fold";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth
             (hoas.listElim 0 h.elem
               (hoas.lam "_" (hoas.listOf h.elem) (_: h.result))
               h.onNil

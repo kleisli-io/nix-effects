@@ -417,7 +417,11 @@ let
       in
       {
         value = lowerFreeField A final._comp.d.term.fst;
-        state = final._state;
+        # Force the state slot: `put` leaves it a VThunkTm that `pinVal`
+        # won't unwrap. The value slot stays lazy — `run` is shared with
+        # elaboration, whose value can be a meta-bearing thunk the kernel
+        # `forceVal` must not touch.
+        state = fx.tc.eval.forceVal final._state;
       };
 
   # `handle Eff Resp A { return?; handler; dispatch; state?; evalOp?;

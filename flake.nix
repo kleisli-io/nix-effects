@@ -75,7 +75,9 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
           lib = nixpkgs.lib;
-          nix-unit-pkg = nix-unit.packages.${system}.default;
+          # Pinned nix-unit (2.34.0), shared with `shell.nix` via `pins.nix`
+          # so `nix flake check` and `just test` run the same binary.
+          nix-unit-pkg = (import ./pins.nix).nix-unit pkgs;
           nix-effects-with-pkgs = import ./. { inherit pkgs lib; };
         in
         {

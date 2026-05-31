@@ -32,7 +32,8 @@ let
 
   # Flatten nested max into a list of leaf summands, threading a
   # pending outer shift (number of `suc` layers) down to each leaf.
-  flattenLevel = shift: v:
+  flattenLevel = shift: v0:
+    let v = E.forceVal v0; in
     if v.tag == "VLevelMax" then
       flattenLevel shift v.lhs ++ flattenLevel shift v.rhs
     else if v.tag == "VLevelSuc" then
@@ -174,8 +175,12 @@ let
 
   # -- Main conversion checker --
   # Returns true if v1 and v2 are definitionally equal at depth d.
-  conv = d: v1: v2:
-    let t1 = v1.tag; t2 = v2.tag; in
+  conv = d: v1raw: v2raw:
+    let
+      v1 = E.forceVal v1raw;
+      v2 = E.forceVal v2raw;
+      t1 = v1.tag; t2 = v2.tag;
+    in
 
     # Lift idempotent collapse — short-circuit before any structural
       # rule. `Lift l l _ A ≡ A` keeps homogeneous code transparent under
@@ -434,6 +439,55 @@ let
       then true
       else if descDescArgConv then true
       else if descDescConConv then true
+      # One side is chain-form (`_shape == "linearChain"`); promote the
+      # other on the fly via a `genericClosure` peel driven by the
+      # chain-form side's `_payloadTag` + per-layer heads count, then
+      # iterate both as chain-form. A direct `V.vDescCon` foldl' chain
+      # (no eval-time classifier) and its quote→eval round-tripped
+      # sibling meet here.
+      else if (v1._shape or null) == "linearChain"
+           || (v2._shape or null) == "linearChain" then
+        let
+          v1IsChain = (v1._shape or null) == "linearChain";
+          v2IsChain = (v2._shape or null) == "linearChain";
+          chainSide = if v1IsChain then v1 else v2;
+          payloadTag = chainSide._payloadTag;
+          nFields =
+            let csLayers = E.effLayers chainSide; in
+            if csLayers == [ ] then 0
+            else builtins.length (builtins.head csLayers).heads;
+          # Canonicalize both operands to a flat layer list + flat base,
+          # forcing every sub-Val and flattening nested chain bases. Routing
+          # both sides through the same peeler makes layer counts and bases
+          # comparable regardless of which side arrived in chain form.
+          c1 = E.forceAndPeelChainV payloadTag nFields v1;
+          c2 = E.forceAndPeelChainV payloadTag nFields v2;
+          layers1 = c1.layers; layers2 = c2.layers;
+          n1 = builtins.length layers1; n2 = builtins.length layers2;
+          ptag1 = if c1.outerTag != null then c1.outerTag else payloadTag;
+          ptag2 = if c2.outerTag != null then c2.outerTag else payloadTag;
+          pleft1 = if c1.outerLeft != null then c1.outerLeft else chainSide._payloadLeft;
+          pleft2 = if c2.outerLeft != null then c2.outerLeft else chainSide._payloadLeft;
+          pright1 = if c1.outerRight != null then c1.outerRight else chainSide._payloadRight;
+          pright2 = if c2.outerRight != null then c2.outerRight else chainSide._payloadRight;
+          layerConv = k:
+            let l1 = builtins.elemAt layers1 k;
+                l2 = builtins.elemAt layers2 k;
+                h1 = l1.heads; h2 = l2.heads;
+                nh = builtins.length h1;
+            in conv d l1.i l2.i
+               && builtins.length h2 == nh
+               && builtins.all
+                    (j: conv d (builtins.elemAt h1 j) (builtins.elemAt h2 j))
+                    (builtins.genList (j: j) nh);
+        in
+        n1 == n2
+        && ptag1 == ptag2
+        && conv d v1.D v2.D
+        && conv d pleft1 pleft2
+        && conv d pright1 pright2
+        && conv d c1.base c2.base
+        && builtins.all layerConv (builtins.genList (k: k) n1)
       else
         let
           classifyD = D:
@@ -449,34 +503,6 @@ let
               else null;
           classify = classifyD v1.D;
           nFields = if classify == null then 0 else builtins.length classify.profile;
-          isRetLeaf = p:
-            p.tag == "VBootRefl"
-            || (p.tag == "VLiftIntro" && p.a.tag == "VBootRefl");
-          sameD = D:
-            if (D ? _descRef) && (v1.D ? _descRef)
-            then descRefConv d D._descRef v1.D._descRef
-            else conv d D v1.D;
-          collectPairs = p:
-            let
-              collect = k: node: acc:
-                if k == nFields then
-                  if node.tag != "VPair" then null
-                  else if !(isRetLeaf node.snd) then null
-                  else if node.fst.tag != "VDescCon" then null
-                  else { heads = acc; tail = node.fst; leaf = node.snd; }
-                else if node.tag != "VPair" then null
-                else collect (k + 1) node.snd (acc ++ [ node.fst ]);
-            in
-            collect 0 p [ ];
-          peel = node:
-            if classify == null then null
-            else if node.tag != "VDescCon" then null
-            else if !(sameD node.D) then null
-            else if node.d.tag != classify.side then null
-            else
-              let inner = collectPairs node.d.val; in
-              if inner == null then null
-              else inner;
           indexConv = a: b:
             if a.tag == "VTt" && b.tag == "VTt"
             then true
@@ -518,48 +544,40 @@ let
             && indexConv item.a.i item.b.i
             && ctorPayloadConv injectionVals.a injectionVals.b;
           baseConv = item: baseCtorConv item || baseStructuralConv item;
-          chain = builtins.genericClosure {
-            startSet = [{ key = 0; a = v1; b = v2; pa = peel v1; pb = peel v2; }];
-            operator = item:
-              if item.pa == null || item.pb == null then [ ]
-              else
-                let a = item.pa.tail; b = item.pb.tail; in
-                [{ key = item.key + 1; inherit a b; pa = peel a; pb = peel b; }];
-          };
-          n = builtins.length chain - 1;
-          base = builtins.elemAt chain n;
-          basePeelA = base.pa;
-          basePeelB = base.pb;
-          layerConv = item:
-            let pa = item.pa; pb = item.pb; in
-            if pa == null || pb == null then false
-            else
-            # `peel` already proved both layer descriptions match the
-            # same outer D; transitivity gives the per-layer D match.
-            # The boot-sum arm types are determined by that D.
-              let
-                leafOk =
-                  if pa.leaf.tag == "VBootRefl" && pb.leaf.tag == "VBootRefl"
-                  then true
-                  else conv d pa.leaf pb.leaf;
-                headsOk =
-                  if builtins.length pa.heads == 0 && builtins.length pb.heads == 0
-                  then true
-                  else listConv d pa.heads pb.heads;
-              in
-              indexConv item.a.i item.b.i && leafOk && headsOk;
+          # Peel each operand INDEPENDENTLY to linearChain normal form via the
+          # canonical force-and-flatten oracle: it forces every sub-Val read
+          # (closing the latent VThunkTm under-peel) and splices a chain-form
+          # tail. Symmetric normal forms make layer counts and bases directly
+          # comparable, replacing the old unforced lockstep dual-peel.
+          c1 = E.forceAndPeelChainV classify.side nFields v1;
+          c2 = E.forceAndPeelChainV classify.side nFields v2;
+          layers1 = c1.layers; layers2 = c2.layers;
+          n1 = builtins.length layers1; n2 = builtins.length layers2;
+          baseItem = { a = c1.base; b = c2.base; };
+          # Per-layer D match follows by transitivity from `conv d v1.D v2.D`
+          # over the shared linear-recursive descriptor; boot-sum arm types and
+          # the ret-leaf (validated inside the oracle) are determined by that D,
+          # so comparing index + heads suffices per layer.
+          layerConv = k:
+            let
+              l1 = builtins.elemAt layers1 k;
+              l2 = builtins.elemAt layers2 k;
+              h1 = l1.heads; h2 = l2.heads;
+            in
+            indexConv l1.i l2.i
+            && (if builtins.length h1 == 0 && builtins.length h2 == 0
+                then true
+                else listConv d h1 h2);
         in
-        if classify == null || n == 0 then
-          baseConv base
-        else if (basePeelA == null) != (basePeelB == null) then false
+        if classify == null then
+          baseConv { a = v1; b = v2; }
+        else if n1 != n2 then false
+        else if n1 == 0 then
+          baseConv baseItem
         else
-          builtins.foldl'
-            (ok: i:
-              ok && layerConv (builtins.elemAt chain i)
-            )
-            true
-            (builtins.genList (i: i) n)
-          && baseConv base
+          conv d v1.D v2.D
+          && builtins.all layerConv (builtins.genList (k: k) n1)
+          && baseConv baseItem
 
     # Lift type-former — structural with witness-irrelevance. The `eq`
     # slot is not compared: two `VLift`s with matching levels and
@@ -715,6 +733,7 @@ api.namespace {
         vSquash vSquashIntro eSquashElim
         mkClosure eApp eFst eSnd eBootSumElim eBootJ;
       T = fx.tc.term;
+      Q = fx.tc.quote;
       H = fx.tc.hoas;
       HI = fx.tc.hoas._internal._indexed;
       elabVal = h: E.eval [ ] (H.elab h);
@@ -1548,6 +1567,69 @@ api.namespace {
               (builtins.genList (x: x) 5000)));
           in
           conv 0 deep deep;
+        expected = true;
+      };
+
+      # Mixed-encoding arm: nested `V.vDescCon` foldl' chain (no
+      # eval-time classifier, so no chain-form promotion) vs its
+      # quote→eval round-tripped chain-form sibling. Exercises the
+      # promote-on-the-fly path in the chain-form arm.
+      "conv-crossform-roundtrip-100" = {
+        expr =
+          let
+            unit = vUnit;
+            tt   = vTt;
+            listDescVal = E.eval [ ] (H.elab (H.listDesc H.nat));
+            leftTy  = vBootEq unit tt tt;
+            rightTy = vU V.vLevelZero;
+            zV      = E.eval [ ] (H.elab H.zero);
+            nilLayer = V.vDescCon listDescVal tt
+              (vBootInl leftTy rightTy vBootRefl);
+            consLayer = head_: tail_:
+              V.vDescCon listDescVal tt
+                (vBootInr leftTy rightTy
+                  (vPair head_ (vPair tail_ vBootRefl)));
+            v1 = builtins.foldl'
+              (acc: _: consLayer zV acc)
+              nilLayer
+              (builtins.genList (x: x) 100);
+            v2 = E.eval [ ] (Q.quote 0 v1);
+          in
+          conv 0 v1 v2;
+        expected = true;
+      };
+
+      # Raw-vs-raw classify-peel arm where one operand's recursive TAIL is
+      # chain-form (mixed encoding). Both tops are raw, so this lands in the
+      # classify-peel else-arm, NOT the linearChain arm. A chain-form tail has
+      # `.d = vTt` (tag "VTt" != the recursive side); the pre-oracle lockstep
+      # peel treated it as a base and wrongly returned `false` on two equal
+      # lists. `forceAndPeelChainV` splices the chain-form tail, flattening
+      # both operands to the same N layers.
+      "conv-rawtop-chainform-tail-100" = {
+        expr =
+          let
+            unit = vUnit;
+            tt   = vTt;
+            listDescVal = E.eval [ ] (H.elab (H.listDesc H.nat));
+            leftTy  = vBootEq unit tt tt;
+            rightTy = vU V.vLevelZero;
+            zV      = E.eval [ ] (H.elab H.zero);
+            nilLayer = V.vDescCon listDescVal tt
+              (vBootInl leftTy rightTy vBootRefl);
+            consLayer = head_: tail_:
+              V.vDescCon listDescVal tt
+                (vBootInr leftTy rightTy
+                  (vPair head_ (vPair tail_ vBootRefl)));
+            innerRaw = builtins.foldl'
+              (acc: _: consLayer zV acc)
+              nilLayer
+              (builtins.genList (x: x) 99);
+            innerChain = E.eval [ ] (Q.quote 0 innerRaw);
+            vRaw   = consLayer zV innerRaw;
+            vMixed = consLayer zV innerChain;
+          in
+          conv 0 vRaw vMixed;
         expected = true;
       };
 

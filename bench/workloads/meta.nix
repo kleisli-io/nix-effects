@@ -168,6 +168,26 @@ let
     "tc.generic.derive-deps" = { tier = "quick"; };
     "tc.generic.synthetic-builder-chain" = { tier = "quick"; };
     "tc.generic.functional-builder-chain" = { tier = "quick"; };
+
+    # --- tc / eval-depth-scaling ---
+    # Depth-N regression detector for the three CEK hotspots. Per-N tier
+    # split: N≤1000 cheap (quick), N=5000 (standard, <60s), N=10000
+    # (heavy, ≥60s). Gated against its own post-CEK baseline (criterion e).
+    "tc.eval-depth-scaling.desc-ind.n10" = { tier = "quick"; };
+    "tc.eval-depth-scaling.desc-ind.n100" = { tier = "quick"; };
+    "tc.eval-depth-scaling.desc-ind.n1000" = { tier = "quick"; };
+    "tc.eval-depth-scaling.desc-ind.n5000" = { tier = "standard"; };
+    "tc.eval-depth-scaling.desc-ind.n10000" = { tier = "heavy"; };
+    "tc.eval-depth-scaling.vAppF.n10" = { tier = "quick"; };
+    "tc.eval-depth-scaling.vAppF.n100" = { tier = "quick"; };
+    "tc.eval-depth-scaling.vAppF.n1000" = { tier = "quick"; };
+    "tc.eval-depth-scaling.vAppF.n5000" = { tier = "standard"; };
+    "tc.eval-depth-scaling.vAppF.n10000" = { tier = "heavy"; };
+    "tc.eval-depth-scaling.conv.n10" = { tier = "quick"; };
+    "tc.eval-depth-scaling.conv.n100" = { tier = "quick"; };
+    "tc.eval-depth-scaling.conv.n1000" = { tier = "quick"; };
+    "tc.eval-depth-scaling.conv.n5000" = { tier = "standard"; };
+    "tc.eval-depth-scaling.conv.n10000" = { tier = "heavy"; };
   };
 
   defaultTier = "standard";

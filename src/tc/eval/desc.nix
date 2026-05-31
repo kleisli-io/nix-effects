@@ -75,12 +75,34 @@ let
     else isSumSignature [ 0 ] [ 0 1 ] (ref.signature or { }));
 
   dViewRet = j: { tag = "DViewRet"; idx = 0; inherit j; };
-  dViewFn = apply: { tag = "VDescViewFn"; inherit apply; };
+  # Defunctionalised view-function records. `applyDescViewFnF` and
+  # `vAppF`'s VDescViewFn arm switch on `.kind`; no closure ever stored.
+  #
+  # - "vapp": `s ↦ vAppF tPayload (liftIntro liftK liftDDescL refl liftSTy s)`.
+  #   Used by `descViewF` idx==1 — the single CEK-violating call site;
+  #   `KApp_VV` resolves it by frame-pushing `kAppVV liftedArg` onto
+  #   `tPayload` rather than firing a closure that re-enters `runMachineF`
+  #   via `instantiateF`. `noLift = true` short-circuits the lift to the
+  #   identity (used when `hasDescDescRef` is false).
+  # - "const": `_ ↦ result`. Spine closures `con0`/`con2`/`con3-inner` in
+  #   `descDescCanonicalViewF` whose bodies ignore the argument.
+  # - "descDescCon1": `S_lifted ↦ dViewPi sLifted (vLam "_" sLifted …) retD`
+  #   from `descDescCanonicalViewF`'s `con1`. Captures `L`, `iLev`.
+  # - "descDescCon3": `S_lifted ↦ dViewArg (liftTy (levelMaxOpt L iLev) fTy)
+  #   (mkDescViewFnConst recRetD)` from `con3`. Captures `L`, `iLev`, `I`.
+  mkDescViewFnVApp = tPayload: liftK: liftDDescL: liftSTy: noLift:
+    { tag = "VDescViewFn"; kind = "vapp";
+      inherit tPayload liftK liftDDescL liftSTy noLift; };
+  mkDescViewFnConst = result:
+    { tag = "VDescViewFn"; kind = "const"; inherit result; };
+  mkDescViewFnDescDescCon1 = L: iLev:
+    { tag = "VDescViewFn"; kind = "descDescCon1"; inherit L iLev; };
+  mkDescViewFnDescDescCon3 = L: iLev: I:
+    { tag = "VDescViewFn"; kind = "descDescCon3"; inherit L iLev I; };
   dViewArg = sTy: tFn: {
     tag = "DViewArg";
     idx = 1;
-    inherit sTy;
-    tFn = if builtins.isFunction tFn then dViewFn tFn else tFn;
+    inherit sTy tFn;
   };
   dViewRec = j: sub: { tag = "DViewRec"; idx = 2; inherit j sub; };
   dViewPi = sTy: fn: sub: { tag = "DViewPi"; idx = 3; inherit sTy fn sub; };
@@ -124,183 +146,21 @@ let
 in
 {
   scope = {
-    # vDescInd — generic eliminator for description-based indexed inductives.
+    inherit levelMaxOpt isSumDescRef;
+
+    # vDescIndF — generic eliminator for description-based indexed inductives.
     # ind D P step i (con d) = step i d (everywhere D D P (λj x. ind D P step j x) i d)
+    # The KDescInd resume action carries the full cert / linear / fallback
+    # classification; this wrapper just preloads the entry frame.
     vDescIndF = fuel: D: motive: step: i: scrut:
-      if fuel <= 0 then throw "normalization budget exceeded"
-      else if scrut.tag == "VNe" then
-        vNe scrut.level (scrut.spine ++ [ (eDescInd D motive step i) ])
-      else if scrut.tag == "VDescCon" then
-        let
-          # Extract I from motive. motive : (i:I) → μ D i → U is a
-          # VLam "i" I closure; we read I off the domain annotation.
-          # A VNe motive cannot drive VDescCon reduction (no I to build ih with).
-          I =
-            if motive.tag != "VLam"
-            then throw "tc: vDescInd on VDescCon requires VLam motive (got ${motive.tag})"
-            else motive.domain;
-          # ih : Π(j:I). Π(x:μ D j). motive j x  (self-reference for inductive hypothesis)
-          # Closure env = [step, motive, D, I]; under j: [j, step, motive, D, I];
-          # under x: [x, j, step, motive, D, I]. Var 0 = x, Var 1 = j,
-          # Var 2 = step, Var 3 = motive, Var 4 = D, Var 5 = I.
-          ihValRaw = vLam "j" I
-            (mkClosure [ step motive D I ]
-              (term.mkLam "x"
-                (term.mkMu (term.mkVar 4) (term.mkVar 3) (term.mkVar 0))
-                (term.mkDescInd (term.mkVar 4) (term.mkVar 3) (term.mkVar 2)
-                  (term.mkVar 1)
-                  (term.mkVar 0))));
-          # X family fed to `vEverywhereDF`: λj:I. μ D j — the recursive
-          # children's type. env [I, D]; under j-binder [j, I, D].
-          # j=0, I=1, D=2.
-          muFam = vLam "j" I
-            (mkClosure [ I D ]
-              (term.mkMu (term.mkVar 1) (term.mkVar 2) (term.mkVar 0)));
-          # _ihShortcut: opaque metadata letting `vEverywhereDF` idx==2 bypass
-          # the `vAppF ∘ vAppF ∘ evalF` roundtrip on recursive ih applications.
-          # Standard `vAppF` dispatch on `tag == "VLam"` is unaffected.
-          ihVal = ihValRaw // {
-            _ihShortcut = { inherit D motive step muFam I; };
-          };
-          certifiedResult = self.vDescIndCertifiedF fuel step scrut;
-          linearResult = self.vDescIndLinearF fuel D motive step ihVal muFam I scrut;
-        in
-        if certifiedResult != null
-        then certifiedResult
-        else if linearResult != null
-        then linearResult
-        else self.vDescIndFLayer fuel D motive step ihVal muFam I i scrut.d
-      else throw "tc: vDescInd on non-mu (tag=${scrut.tag})";
+      self.runDescIndAtF fuel D motive step i scrut;
 
-    # `vDescIndF` factored into reduction core that takes pre-built `ihVal`/
-    # `muFam`. The chain shortcut in `vEverywhereDF` idx==2 calls this
-    # directly, sharing closures across an elimination chain instead of
-    # allocating fresh closures per layer via the IH-body evalF roundtrip.
-    # `vDescIndFLayer` doesn't carry the description's level — `desc-ind` has
-    # no level slot; the typing rule recovers it from D's inferred type at
-    # check time. `vLevelZero` here is a placeholder for the L and K slots:
-    # the result is fed into `step` via `vAppF`, whose type was already
-    # checked against the proper L/K at descInd's typing site, so the
-    # placeholder doesn't propagate to a type-correctness gap.
-    # `vEverywhereDF` dispatches uniformly across primitive (VDescX) and
-    # encoded (VDescCon) shapes via the per-summand `view`, so D's encoding
-    # is irrelevant here.
+    # vDescIndFLayer — one layer of `vDescIndF`: run `vEverywhereDF` on
+    # `(I, D, muFam, motive, ihVal, i, d)` and apply `step i d` to the result.
+    # `vLevelZero` placeholders for L and K are sound because the step's type
+    # was checked against the proper L/K at the descInd typing site.
     vDescIndFLayer = fuel: D: motive: step: ihVal: muFam: I: i: d:
-      if fuel <= 0 then throw "normalization budget exceeded"
-      else
-        let
-          f = fuel - 1;
-          evResult = self.vEverywhereDF f vLevelZero I D vLevelZero muFam motive ihVal i d;
-        in
-        self.vAppF f (self.vAppF f (self.vAppF f step i) d) evResult;
-
-    vDescIndCertifiedF = fuel: step: scrut:
-      if fuel <= 0 then throw "normalization budget exceeded"
-      else
-        let
-          f = fuel - 1;
-          cert = scrut._descConCert or null;
-          ref = if cert == null then null else cert.ref;
-          ctorMeta =
-            if ref == null
-              || (cert.kind or null) != "datatype-con-payload"
-              || !(ref ? constructors)
-              || cert.ctor >= builtins.length ref.constructors
-            then null
-            else builtins.elemAt ref.constructors cert.ctor;
-          hasIH =
-            ctorMeta != null
-            && builtins.any
-              (k: k == "recAt" || k == "pi" || k == "piAt" || k == "piD" || k == "piDAt")
-              (ctorMeta.fieldKinds or [ ]);
-        in
-        if ctorMeta != null && !hasIH
-        then self.vAppF f (self.vAppF f (self.vAppF f step scrut.i) scrut.d) vTt
-        else null;
-
-    vDescIndLinearF = fuel: D: motive: step: ihVal: muFam: I: scrut:
-      if fuel <= 0 then throw "normalization budget exceeded"
-      else
-        let
-          f = fuel - 1;
-          ref = D._descRef or null;
-          linear = if ref == null then null else ref.linearChain or null;
-          sameLinearDesc = desc:
-            let other = desc._descRef or null; in
-            ref != null
-            && linear != null
-            && other != null
-            && (other.kind or null) == (ref.kind or null)
-            && (other.name or null) == (ref.name or null)
-            && (other.arity or null) == (ref.arity or null)
-            && (other.indexed or null) == (ref.indexed or null)
-            && builtins.length (other.params or [ ]) == builtins.length (ref.params or [ ])
-            && (other.linearChain or null) == linear;
-          payloadTag =
-            if linear == null then null
-            else if linear.side == "inl" then "VBootInl"
-            else "VBootInr";
-          nFields = if linear == null then 0 else linear.dataFieldCount;
-          isRetLeaf = p:
-            p.tag == "VBootRefl"
-            || (p.tag == "VLiftIntro" && p.a.tag == "VBootRefl");
-          collectPairs = inner:
-            let
-              collect = i: p:
-                if i == nFields then
-                  if p.tag != "VPair" then null
-                  else if !(isRetLeaf p.snd) then null
-                  else if p.fst.tag != "VDescCon" then null
-                  else { tail = p.fst; }
-                else if p.tag != "VPair" then null
-                else collect (i + 1) p.snd;
-            in
-            collect 0 inner;
-          walkPayload = payload:
-            if payload.tag == payloadTag
-            then collectPairs payload.val
-            else null;
-          peel = node:
-            if node.tag != "VDescCon" then null
-            else if !(sameLinearDesc node.D) then null
-            else
-              let payload = walkPayload node.d; in
-              if payload == null then null else payload.tail;
-        in
-        if linear == null || scrut.tag != "VDescCon" then null
-        else
-          let
-            chain = builtins.genericClosure {
-              startSet = [{ key = 0; val = scrut; tail = peel scrut; }];
-              operator = item:
-                if item.tail == null then [ ]
-                else [{ key = item.key + 1; val = item.tail; tail = peel item.tail; }];
-            };
-            n = builtins.length chain - 1;
-          in
-          if n < 1 then null
-          else if n > f then throw "normalization budget exceeded"
-          else
-            let
-              base = (builtins.elemAt chain n).val;
-              baseResult =
-                self.vDescIndFLayer (f - n) D motive step ihVal muFam I base.i base.d;
-              foldStep = acc: idx: {
-                result =
-                  let
-                    layer = (builtins.elemAt chain (n - 1 - idx)).val;
-                    fuelHere = f - n + idx;
-                    stepFn =
-                      self.vAppF fuelHere
-                        (self.vAppF fuelHere step layer.i)
-                        layer.d;
-                  in
-                  self.vAppF fuelHere stepFn (vPair acc.result vTt);
-              };
-            in
-            (builtins.foldl' foldStep
-              { result = baseResult; }
-              (builtins.genList (x: x) n)).result;
+      self.runDescIndLayerAtF fuel D motive step ihVal muFam I i d;
 
     mkDescDescAppVF = api.leaf {
       description = "mkDescDescAppVF: value-level constructor for `descDesc I L`-as-tagged-`VDescCon` — builds the tagged shell before forcing the recursively computed fields so conv/quote can recognise the canonical reference without descending into the strong-levitation spiral.";
@@ -338,7 +198,7 @@ in
     };
 
     mkCanonAppVF = api.leaf {
-      description = "mkCanonAppVF: value-level constructor for `canon-app id params body`-as-tagged-`VDescCon` — currying-applies `body` to `params` and stamps the result with `_canonRef = { id; params; }` so conv/quote short-circuit on the canonical identity instead of forcing `.D`.";
+      description = "mkCanonAppVF: value-level constructor for `canon-app id params body`-as-tagged-`VDescCon` — currying-applies `body` to `params` and stamps the result with `_canonRef = { id; params; body; }` so conv/quote short-circuit on the canonical identity instead of forcing `.D`.";
       signature = "mkCanonAppVF : Int -> String -> [Val] -> Val -> Val";
       doc = ''
         Generic counterpart of `mkDescDescAppVF` for user-registered
@@ -347,6 +207,10 @@ in
         `paramVals`, yields a `VDescCon`. The raw result's `.D`/`.i`/`.d`
         fields are reused; the `_canonRef` stamp takes precedence in
         conv and quote so the recursive `.D` slot is never forced.
+
+        `bodyVal` is preserved on the stamp so `quote` can emit
+        `T.mkCanonApp id params body`. `canonRefConv` compares stamps
+        by `(id, params)` only; `body` is conv-irrelevant.
 
         Throws if the curried application does not produce a
         `VDescCon` — the smart-form's static contract.
@@ -364,7 +228,7 @@ in
           D = raw.D;
           i = raw.i;
           d = raw.d;
-          _canonRef = { inherit id; params = paramVals; };
+          _canonRef = { inherit id; params = paramVals; body = bodyVal; };
         };
     };
 
@@ -501,27 +365,18 @@ in
       let
         sk = vLevelSuc (levelMaxOpt L iLev);
         liftTy = l: A: self.vLiftF l sk vBootRefl A;
-        lowerTy = l: A: x: self.vLiftElimF l sk vBootRefl A x;
         retD = dViewRet vTt;
         recRetD = dViewRec vTt retD;
 
-        con0 = dViewArg (liftTy iLev I) (_: retD);
+        con0 = dViewArg (liftTy iLev I) (mkDescViewFnConst retD);
 
-        con1 = dViewArg (liftTy (vLevelSuc L) (vU L)) (S_lifted:
-          let
-            S = lowerTy (vLevelSuc L) (vU L) S_lifted;
-            sLifted = liftTy L S;
-          in
-          dViewPi sLifted (vLam "_" sLifted (mkClosure [ ] term.mkTt)) retD);
+        con1 = dViewArg (liftTy (vLevelSuc L) (vU L))
+          (mkDescViewFnDescDescCon1 L iLev);
 
-        con2 = dViewArg (liftTy iLev I) (_: recRetD);
+        con2 = dViewArg (liftTy iLev I) (mkDescViewFnConst recRetD);
 
-        con3 = dViewArg (liftTy (vLevelSuc L) (vU L)) (S_lifted:
-          let
-            S = lowerTy (vLevelSuc L) (vU L) S_lifted;
-            fTy = vPi "_" S (mkClosure [ I ] (term.mkVar 1));
-          in
-          dViewArg (liftTy (levelMaxOpt L iLev) fTy) (_: recRetD));
+        con3 = dViewArg (liftTy (vLevelSuc L) (vU L))
+          (mkDescViewFnDescDescCon3 L iLev I);
 
         con4 = dViewRec vTt recRetD;
 
@@ -536,7 +391,8 @@ in
         B = spineFrom 1;
       };
 
-    descViewF = fuel: D:
+    descViewF = fuel: D0:
+      let D = self.forceVal D0; in
       if fuel <= 0 then throw "normalization budget exceeded"
       else if isDView D then D
       else if D.tag == "VDescCon" && D ? _canonRef then
@@ -630,9 +486,8 @@ in
             let
               sMeta = lowerMeta (vLevelSuc k_val) (vU k_val) info.payload.fst;
               tPayload = info.payload.snd.fst;
-              tFn = dViewFn (s:
-                self.vAppF (fuel - 1) tPayload
-                  (liftMeta k_val sMeta s));
+              tFn = mkDescViewFnVApp tPayload k_val dDescL_val sMeta
+                (!hasDescDescRef);
               lift = peelLift sMeta;
             in
             {
@@ -699,7 +554,39 @@ in
       else null;
 
     applyDescViewFnF = fuel: fn: arg:
-      if fn.tag == "VDescViewFn" then fn.apply arg else self.vAppF fuel fn arg;
+      if fn.tag != "VDescViewFn" then self.vAppF fuel fn arg
+      else self.applyDescViewFnByKindF fuel fn arg;
+
+    # Dispatch on the defunctionalised view-function kind. Each arm
+    # reproduces the body of the closure that the corresponding
+    # `mkDescViewFn*` factory replaces.
+    applyDescViewFnByKindF = fuel: fn: arg:
+      if fn.kind == "vapp" then
+        let liftedArg =
+          if fn.noLift then arg
+          else self.vLiftIntroF fn.liftK fn.liftDDescL vBootRefl fn.liftSTy arg;
+        in self.vAppF (fuel - 1) fn.tPayload liftedArg
+      else if fn.kind == "const" then fn.result
+      else if fn.kind == "descDescCon1" then
+        let
+          L = fn.L; iLev = fn.iLev;
+          sk = vLevelSuc (levelMaxOpt L iLev);
+          S = self.vLiftElimF (vLevelSuc L) sk vBootRefl (vU L) arg;
+          sLifted = self.vLiftF L sk vBootRefl S;
+          retD = dViewRet vTt;
+        in
+        dViewPi sLifted (vLam "_" sLifted (mkClosure [ ] term.mkTt)) retD
+      else if fn.kind == "descDescCon3" then
+        let
+          L = fn.L; iLev = fn.iLev; I = fn.I;
+          sk = vLevelSuc (levelMaxOpt L iLev);
+          S = self.vLiftElimF (vLevelSuc L) sk vBootRefl (vU L) arg;
+          fTy = vPi "_" S (mkClosure [ I ] (term.mkVar 1));
+          recRetD = dViewRec vTt (dViewRet vTt);
+        in
+        dViewArg (self.vLiftF (levelMaxOpt L iLev) sk vBootRefl fTy)
+          (mkDescViewFnConst recRetD)
+      else throw "tc: applyDescViewFnF: unknown VDescViewFn kind=${fn.kind or "<missing>"}";
 
     # linearProfile D — recognise the "linear recursive" description shape
     # that the desc-con trampoline decomposes layer-by-layer. Returns either
@@ -718,19 +605,38 @@ in
         isRet = nd:
           let view = self.descViewF fuel nd; in
           view != null && view.idx == 0;
-        go = node: acc:
-          let view = self.descViewF fuel node; in
-          if view == null then null
-          else if view.idx == 1 then
-            if !(canApplyDescViewFn view.tFn) then null
+        # genericClosure walker. Each running item carries `{ key; node; acc; }`;
+        # terminal items add `result` (null = decline, list = accept). The
+        # `if item ? result` guard makes the operator a no-op on terminals,
+        # so genericClosure halts once the terminal has been emitted.
+        chain = builtins.genericClosure {
+          startSet = [ { key = 0; node = D; acc = [ ]; } ];
+          operator = item:
+            if item ? result then [ ]
             else
-              let subD = self.applyDescViewFnF fuel view.tFn vTt; in
-              go subD (acc ++ [{ S = view.sTy; }])
-          else if view.idx == 2 then
-            if isRet view.sub then acc else null
-          else null;
+              let view = self.descViewF fuel item.node; in
+              if view == null then
+                [ (item // { key = item.key + 1; result = null; }) ]
+              else if view.idx == 1 then
+                if !(canApplyDescViewFn view.tFn) then
+                  [ (item // { key = item.key + 1; result = null; }) ]
+                else
+                  let subD = self.applyDescViewFnF fuel view.tFn vTt; in
+                  [ {
+                      key = item.key + 1;
+                      node = subD;
+                      acc = item.acc ++ [ { S = view.sTy; } ];
+                    } ]
+              else if view.idx == 2 then
+                if isRet view.sub
+                then [ (item // { key = item.key + 1; result = item.acc; }) ]
+                else [ (item // { key = item.key + 1; result = null; }) ]
+              else
+                [ (item // { key = item.key + 1; result = null; }) ];
+        };
+        last = builtins.elemAt chain (builtins.length chain - 1);
       in
-      go D [ ];
+      last.result;
 
     # vInterpDF — kernel-primitive interpretation of a description.
     # Dispatches on D's outer constructor per CDMM §4.2.3:
@@ -739,75 +645,10 @@ in
     #   interpD L I (descRec j D)      X i ⇝ Σ _:X j. interpD L I D X i
     #   interpD L I (descPi _ _ S f D) X i ⇝ Σ _:(Π s:S. X (f s)). interpD L I D X i
     #   interpD L I (descPlus A B)     X i ⇝ interpD L I A X i ⊎ interpD L I B X i
-    # Encoded `VDescCon` decomposes via `decodeDescCaseF` and dispatches per
-    # summand idx. Sub-Sigma closures emit `mkInterpD` Tms so eval re-enters
-    # this dispatcher when instantiated. Stuck `VNe` D appends an `eInterpD`
-    # frame to the spine.
+    # The KInterpD resume action carries the full per-`view.idx` dispatch;
+    # this wrapper just preloads the entry frame.
     vInterpDF = fuel: L_val: I_val: D: X: i:
-      if fuel <= 0 then throw "normalization budget exceeded"
-      else if D.tag == "VNe" then
-        vNe D.level (D.spine ++ [ (eInterpD L_val I_val X i) ])
-      else
-        let
-          f = fuel - 1;
-          view = self.descViewF f D;
-        in
-        if view == null then throw "tc: vInterpD on non-desc or malformed desc (tag=${D.tag})"
-        else
-          if view.idx == 0 then
-            # Eq over I lives at I's universe, not necessarily U(0).
-            let
-              iLev = view.iLev or vLevelZero;
-              retLevel = levelMaxOpt L_val iLev;
-            in
-            self.vLiftF iLev retLevel vBootRefl (vBootEq I_val view.j i)
-          else if view.idx == 1 then
-          # Σ s:S. interpD L I (T s) X i.
-          # Closure env: [tFn, L, I, X, i]. Under s: [s, tFn, L, I, X, i].
-          # s=0, tFn=1, L=2, I=3, X=4, i=5.
-            let
-              ihClosure = mkClosure [ view.tFn L_val I_val X i ]
-                (term.mkInterpD (term.mkVar 2) (term.mkVar 3)
-                  (term.mkApp (term.mkVar 1) (term.mkVar 0))
-                  (term.mkVar 4)
-                  (term.mkVar 5));
-            in
-            vSigma "s" view.sTy ihClosure
-          else if view.idx == 2 then
-          # Σ _:X j. interpD L I D X i.
-          # Sub-D doesn't depend on `_`; closure env carries `sub` as a
-          # bound Val referenced by index. env [L, I, X, i, sub]. Under _:
-          # [_, L, I, X, i, sub]. _=0, L=1, I=2, X=3, i=4, sub=5.
-            let
-              Xj = self.vAppF f X view.j;
-              ihClosure = mkClosure [ L_val I_val X i view.sub ]
-                (term.mkInterpD (term.mkVar 1) (term.mkVar 2) (term.mkVar 5)
-                  (term.mkVar 3)
-                  (term.mkVar 4));
-            in
-            vSigma "_" Xj ihClosure
-          else if view.idx == 3 then
-          # Σ _:(Π s:S. X (f s)). interpD L I D X i.
-          # Pi-binder env: [X, fn]. Under s: [s, X, fn]. s=0, X=1, fn=2.
-          # Body Tm: X (fn s) = mkApp X (mkApp fn s).
-            let
-              piTy = vPi "s" view.sTy (mkClosure [ X view.fn ]
-                (term.mkApp (term.mkVar 1)
-                  (term.mkApp (term.mkVar 2) (term.mkVar 0))));
-              ihClosure = mkClosure [ L_val I_val X i view.sub ]
-                (term.mkInterpD (term.mkVar 1) (term.mkVar 2) (term.mkVar 5)
-                  (term.mkVar 3)
-                  (term.mkVar 4));
-            in
-            vSigma "_" piTy ihClosure
-          else # view.idx == 4
-          # interpD L I A X i ⊎ interpD L I B X i. Both sides eager — vBootSum's
-          # slots are types (Vals), no closure needed.
-            let
-              AInterp = self.vInterpDF f L_val I_val view.A X i;
-              BInterp = self.vInterpDF f L_val I_val view.B X i;
-            in
-            vBootSum AInterp BInterp;
+      self.runInterpDAtF fuel L_val I_val X i D;
 
     # vAllDF — kernel-primitive All-witness type over a description.
     # Dispatches on D's outer constructor per CDMM §6.1:
@@ -818,108 +659,13 @@ in
     #     Σ _:(Π s:S. M (f s) ((fst d) s)). allD L I D K X M i (snd d)
     #   allD L I (descPlus A B)     K X M i d ⇝
     #     case d of inl a → allD L I A K X M i a | inr b → allD L I B K X M i b
-    # Stuck `VNe` d on a canonical `descPlus` D builds a stuck `vBootSumElim` so
-    # the result's neutral form carries an `EBootSumElim` frame at d. Stuck `VNe`
-    # D appends an `eAllD` frame to the spine.
+    # The KAllD resume action carries the full per-`view.idx` dispatch, the
+    # `applyDescViewFnF`/`vBootSumElimF` sub-driver re-entries for descArg /
+    # plus-stuck, and the sub-frame chain (KAllD_ArgGotSubD, KAllD_RecCombine,
+    # KAllD_PlusStuck_GotAInterp, KAllD_PlusStuck_GotBInterp); this wrapper
+    # just preloads the entry frame.
     vAllDF = fuel: L_val: I_val: D: K_val: X: M: i: d:
-      if fuel <= 0 then throw "normalization budget exceeded"
-      else if D.tag == "VNe" then
-        vNe D.level (D.spine ++ [ (eAllD L_val I_val K_val X M i d) ])
-      else
-        let
-          f = fuel - 1;
-          view = self.descViewF f D;
-        in
-        if view == null then throw "tc: vAllD on non-desc or malformed desc (tag=${D.tag})"
-        else
-          if view.idx == 0 then
-            self.vLiftF vLevelZero K_val vBootRefl vUnit
-          else if view.idx == 1 then
-          # Direct unfold (no Sigma): recurse on (T (fst d)) with (snd d).
-            let
-              fstD = self.vFst d;
-              sndD = self.vSnd d;
-              subD = self.applyDescViewFnF f view.tFn fstD;
-            in
-            self.vAllDF f L_val I_val subD K_val X M i sndD
-          else if view.idx == 2 then
-          # Σ _:M j (fst d). allD L I D K X M i (snd d).
-          # Closure env: [L, I, K, X, M, i, sndD, sub]. Under _:
-          # [_, L, I, K, X, M, i, sndD, sub]. _=0..sub=8.
-            let
-              fstD = self.vFst d;
-              sndD = self.vSnd d;
-              Mjfd = self.vAppF f (self.vAppF f M view.j) fstD;
-              ihClosure = mkClosure [ L_val I_val K_val X M i sndD view.sub ]
-                (term.mkAllD (term.mkVar 1) (term.mkVar 2) (term.mkVar 8)
-                  (term.mkVar 3)
-                  (term.mkVar 4)
-                  (term.mkVar 5)
-                  (term.mkVar 6)
-                  (term.mkVar 7));
-            in
-            vSigma "_" Mjfd ihClosure
-          else if view.idx == 3 then
-          # Σ _:(Π s:S. M (f s) ((fst d) s)). allD L I D K X M i (snd d).
-          # Pi env: [M, fn, fstD]. Under s: [s, M, fn, fstD].
-          # s=0, M=1, fn=2, fstD=3.
-            let
-              fstD = self.vFst d;
-              sndD = self.vSnd d;
-              piTy = vPi "s" view.sTy (mkClosure [ M view.fn fstD ]
-                (term.mkApp
-                  (term.mkApp (term.mkVar 1)
-                    (term.mkApp (term.mkVar 2) (term.mkVar 0)))
-                  (term.mkApp (term.mkVar 3) (term.mkVar 0))));
-              ihClosure = mkClosure [ L_val I_val K_val X M i sndD view.sub ]
-                (term.mkAllD (term.mkVar 1) (term.mkVar 2) (term.mkVar 8)
-                  (term.mkVar 3)
-                  (term.mkVar 4)
-                  (term.mkVar 5)
-                  (term.mkVar 6)
-                  (term.mkVar 7));
-            in
-            vSigma "_" piTy ihClosure
-          else # view.idx == 4
-          # case d of inl a → allD L I A …; inr b → allD L I B …
-            let sv = self.sumPayloadValView d; in
-            if sv != null then
-              if sv.side == "inl"
-              then self.vAllDF f L_val I_val view.A K_val X M i sv.value
-              else self.vAllDF f L_val I_val view.B K_val X M i sv.value
-            else if d.tag == "VNe" then
-            # Stuck d: encode as `vBootSumElim` so the neutral d carries an
-            # `EBootSumElim` frame. Left/right interp types feed the sum-elim
-            # type slots; on-cases recurse back into vAllDF via mkAllD.
-              let
-                AInterp = self.vInterpDF f L_val I_val view.A X i;
-                BInterp = self.vInterpDF f L_val I_val view.B X i;
-                # Motive: λ_:(AInterp+BInterp). U(K). Constant in scrut, so
-                # the binder type is a placeholder (eval doesn't re-check).
-                motive = vLam "_" (vBootSum AInterp BInterp) (mkClosure [ K_val ]
-                  (term.mkU (term.mkVar 1)));
-                # On-left: λa:AInterp. allD L I A K X M i a.
-                # Closure env: [L, I, K, X, M, i, A]. Under a:
-                # [a, L, I, K, X, M, i, A]. a=0..A=7.
-                onLeftLam = vLam "a" AInterp
-                  (mkClosure [ L_val I_val K_val X M i view.A ]
-                    (term.mkAllD (term.mkVar 1) (term.mkVar 2) (term.mkVar 7)
-                      (term.mkVar 3)
-                      (term.mkVar 4)
-                      (term.mkVar 5)
-                      (term.mkVar 6)
-                      (term.mkVar 0)));
-                onRightLam = vLam "b" BInterp
-                  (mkClosure [ L_val I_val K_val X M i view.B ]
-                    (term.mkAllD (term.mkVar 1) (term.mkVar 2) (term.mkVar 7)
-                      (term.mkVar 3)
-                      (term.mkVar 4)
-                      (term.mkVar 5)
-                      (term.mkVar 6)
-                      (term.mkVar 0)));
-              in
-              self.vBootSumElimF f AInterp BInterp motive onLeftLam onRightLam d
-            else throw "tc: vAllD on plus with non-sum d (tag=${d.tag})";
+      self.runAllDAtF fuel L_val I_val K_val X M i d D;
 
     # vEverywhereDF — kernel-primitive recursor that produces an `allD`
     # witness from a per-recursive-position witness `ih : Π(j:I)(x:X j). M j x`.
@@ -933,99 +679,13 @@ in
     #     pair (λs:S. ih (f s) ((fst d) s)) (everywhereD L I D K X M ih i (snd d))
     #   everywhereD L I (descPlus A B)     K X M ih i d ⇝
     #     case d of inl a → everywhereD L I A K X M ih i a | inr b → …
-    # Stuck `VNe` D appends an `eEverywhereD` frame to the spine.
+    # The KEverywhereD resume action carries the full per-`view.idx` dispatch,
+    # including the `_ihShortcut` fast path on descRec (which routes through
+    # `KDescIndLayer_GotEvResult` rather than a synchronous `vDescIndFLayer`
+    # call) and the plus-stuck `vBootSumElim` staging; this wrapper just
+    # preloads the entry frame.
     vEverywhereDF = fuel: L_val: I_val: D: K_val: X: M: ih: i: d:
-      if fuel <= 0 then throw "normalization budget exceeded"
-      else if D.tag == "VNe" then
-        vNe D.level (D.spine ++ [ (eEverywhereD L_val I_val K_val X M ih i d) ])
-      else
-        let
-          f = fuel - 1;
-          view = self.descViewF f D;
-        in
-        if view == null then throw "tc: vEverywhereD on non-desc or malformed desc (tag=${D.tag})"
-        else
-          if view.idx == 0 then
-          # Inhabitant of `Lift 0 K refl Unit`. `vLiftIntroF` idempotents at
-          # K=0 to `vTt` directly.
-            self.vLiftIntroF vLevelZero K_val vBootRefl vUnit vTt
-          else if view.idx == 1 then
-            let
-              fstD = self.vFst d;
-              sndD = self.vSnd d;
-              subD = self.applyDescViewFnF f view.tFn fstD;
-            in
-            self.vEverywhereDF f L_val I_val subD K_val X M ih i sndD
-          else if view.idx == 2 then
-            let
-              fstD = self.vFst d;
-              sndD = self.vSnd d;
-              # When `ih` carries `_ihShortcut` (i.e. it was built by
-              # `vDescIndF` for this very chain) and the recursive child is
-              # a `VDescCon`, bypass the closure-eval roundtrip: call the
-              # reduction core directly with the shared ihVal/muFam.
-              # Stuck VNe children and non-shortcut ih values fall through
-              # to the standard `vAppF ∘ vAppF` path.
-              ihHere =
-                if ih ? _ihShortcut && fstD.tag == "VDescCon"
-                then
-                  let s = ih._ihShortcut; in
-                  self.vDescIndFLayer f s.D s.motive s.step ih s.muFam s.I view.j fstD.d
-                else self.vAppF f (self.vAppF f ih view.j) fstD;
-              evRest = self.vEverywhereDF f L_val I_val view.sub K_val X M ih i sndD;
-            in
-            vPair ihHere evRest
-          else if view.idx == 3 then
-            let
-              fstD = self.vFst d;
-              sndD = self.vSnd d;
-              # λs:S. ih (f s) ((fst d) s). env [ih, fn, fstD]. Under s:
-              # [s, ih, fn, fstD]. s=0, ih=1, fn=2, fstD=3.
-              piLam = vLam "s" view.sTy (mkClosure [ ih view.fn fstD ]
-                (term.mkApp
-                  (term.mkApp (term.mkVar 1)
-                    (term.mkApp (term.mkVar 2) (term.mkVar 0)))
-                  (term.mkApp (term.mkVar 3) (term.mkVar 0))));
-              evRest = self.vEverywhereDF f L_val I_val view.sub K_val X M ih i sndD;
-            in
-            vPair piLam evRest
-          else # view.idx == 4
-            let sv = self.sumPayloadValView d; in
-            if sv != null then
-              if sv.side == "inl"
-              then self.vEverywhereDF f L_val I_val view.A K_val X M ih i sv.value
-              else self.vEverywhereDF f L_val I_val view.B K_val X M ih i sv.value
-            else if d.tag == "VNe" then
-              let
-                AInterp = self.vInterpDF f L_val I_val view.A X i;
-                BInterp = self.vInterpDF f L_val I_val view.B X i;
-                # Motive's codomain is allD-at-plus, but eval doesn't re-check
-                # binder annotations — placeholder U(K) preserves shape.
-                motive = vLam "_" (vBootSum AInterp BInterp) (mkClosure [ K_val ]
-                  (term.mkU (term.mkVar 1)));
-                # On-left: λa. everywhereD L I A K X M ih i a. env
-                # [L, I, K, X, M, ih, i, A]. Under a: [a, ...]. a=0..A=8.
-                onLeftLam = vLam "a" AInterp
-                  (mkClosure [ L_val I_val K_val X M ih i view.A ]
-                    (term.mkEverywhereD (term.mkVar 1) (term.mkVar 2) (term.mkVar 8)
-                      (term.mkVar 3)
-                      (term.mkVar 4)
-                      (term.mkVar 5)
-                      (term.mkVar 6)
-                      (term.mkVar 7)
-                      (term.mkVar 0)));
-                onRightLam = vLam "b" BInterp
-                  (mkClosure [ L_val I_val K_val X M ih i view.B ]
-                    (term.mkEverywhereD (term.mkVar 1) (term.mkVar 2) (term.mkVar 8)
-                      (term.mkVar 3)
-                      (term.mkVar 4)
-                      (term.mkVar 5)
-                      (term.mkVar 6)
-                      (term.mkVar 7)
-                      (term.mkVar 0)));
-              in
-              self.vBootSumElimF f AInterp BInterp motive onLeftLam onRightLam d
-            else throw "tc: vEverywhereD on plus with non-sum d (tag=${d.tag})";
+      self.runEverywhereDAtF fuel L_val I_val K_val X M ih i d D;
 
     vDescInd = api.leaf {
       description = "vDescInd: default-fuel generic eliminator for description-based indexed inductives — `ind D P step i (con d) = step i d (everywhere D D P (lam j x. ind D P step j x) i d)`.";
@@ -1115,9 +775,9 @@ in
       DdescDesc0 = self.mkDescDescAppVF self.defaultFuel val.vLevelZero vUnit val.vLevelZero;
       DdescDesc0Level = val.vLevelSuc val.vLevelZero;
       M_unit = vLam "i" vUnit
-        (mkClosure [ ] (term.mkLam "_" val.vUnit (term.mkU term.mkLevelZero)));
+        (mkClosure [ ] (term.mkLam "_" term.mkUnit (term.mkU term.mkLevelZero)));
       ih_unit = vLam "j" vUnit
-        (mkClosure [ ] (term.mkLam "x" val.vUnit (term.mkU term.mkLevelZero)));
+        (mkClosure [ ] (term.mkLam "x" term.mkUnit (term.mkU term.mkLevelZero)));
       descDescRetPayload = vPair vTt vBootRefl;
       descDescRetBranch = val.vBootInl val.vUnit val.vUnit descDescRetPayload;
       malformedDescRetBranch = val.vBootInl val.vUnit val.vUnit vTt;
@@ -1332,7 +992,7 @@ in
         # allD 0 Unit (descRet tt) 0 X M tt d = Lift 0 0 _ Unit ≡ Unit.
         expr =
           let
-            M = vLam "i" vUnit (mkClosure [ ] (term.mkLam "_" val.vUnit (term.mkU term.mkLevelZero)));
+            M = vLam "i" vUnit (mkClosure [ ] (term.mkLam "_" term.mkUnit (term.mkU term.mkLevelZero)));
           in
           (self.vAllD val.vLevelZero vUnit Dret val.vLevelZero X_unit M vTt vBootRefl).tag;
         expected = "VUnit";
@@ -1342,7 +1002,7 @@ in
         #   = Σ _:M tt zero. Unit.
         expr =
           let
-            M = vLam "i" vUnit (mkClosure [ ] (term.mkLam "_" val.vUnit (term.mkU term.mkLevelZero)));
+            M = vLam "i" vUnit (mkClosure [ ] (term.mkLam "_" term.mkUnit (term.mkU term.mkLevelZero)));
           in
           (self.vAllD val.vLevelZero vUnit DrecRet
             val.vLevelZero
@@ -1355,7 +1015,7 @@ in
       "vAllD-stuck" = {
         expr =
           let
-            M = vLam "i" vUnit (mkClosure [ ] (term.mkLam "_" val.vUnit (term.mkU term.mkLevelZero)));
+            M = vLam "i" vUnit (mkClosure [ ] (term.mkLam "_" term.mkUnit (term.mkU term.mkLevelZero)));
           in
           (self.vAllD val.vLevelZero vUnit (val.freshVar 0)
             val.vLevelZero
@@ -1368,7 +1028,7 @@ in
       "vAllD-stuck-spine-tag" = {
         expr =
           let
-            M = vLam "i" vUnit (mkClosure [ ] (term.mkLam "_" val.vUnit (term.mkU term.mkLevelZero)));
+            M = vLam "i" vUnit (mkClosure [ ] (term.mkLam "_" term.mkUnit (term.mkU term.mkLevelZero)));
             r = self.vAllD val.vLevelZero vUnit (val.freshVar 0)
               val.vLevelZero
               X_unit
@@ -1404,9 +1064,9 @@ in
         #   = liftIntro 0 0 refl Unit tt ≡ tt.
         expr =
           let
-            M = vLam "i" vUnit (mkClosure [ ] (term.mkLam "_" val.vUnit (term.mkU term.mkLevelZero)));
+            M = vLam "i" vUnit (mkClosure [ ] (term.mkLam "_" term.mkUnit (term.mkU term.mkLevelZero)));
             ih = vLam "j" vUnit (mkClosure [ ]
-              (term.mkLam "x" val.vUnit (term.mkU term.mkLevelZero)));
+              (term.mkLam "x" term.mkUnit (term.mkU term.mkLevelZero)));
           in
           (self.vEverywhereD val.vLevelZero vUnit Dret val.vLevelZero
             X_unit
@@ -1419,9 +1079,9 @@ in
       "vEverywhereD-stuck" = {
         expr =
           let
-            M = vLam "i" vUnit (mkClosure [ ] (term.mkLam "_" val.vUnit (term.mkU term.mkLevelZero)));
+            M = vLam "i" vUnit (mkClosure [ ] (term.mkLam "_" term.mkUnit (term.mkU term.mkLevelZero)));
             ih = vLam "j" vUnit (mkClosure [ ]
-              (term.mkLam "x" val.vUnit (term.mkU term.mkLevelZero)));
+              (term.mkLam "x" term.mkUnit (term.mkU term.mkLevelZero)));
           in
           (self.vEverywhereD val.vLevelZero vUnit (val.freshVar 0)
             val.vLevelZero
@@ -1455,9 +1115,9 @@ in
       "vEverywhereD-stuck-spine-tag" = {
         expr =
           let
-            M = vLam "i" vUnit (mkClosure [ ] (term.mkLam "_" val.vUnit (term.mkU term.mkLevelZero)));
+            M = vLam "i" vUnit (mkClosure [ ] (term.mkLam "_" term.mkUnit (term.mkU term.mkLevelZero)));
             ih = vLam "j" vUnit (mkClosure [ ]
-              (term.mkLam "x" val.vUnit (term.mkU term.mkLevelZero)));
+              (term.mkLam "x" term.mkUnit (term.mkU term.mkLevelZero)));
             r = self.vEverywhereD val.vLevelZero vUnit (val.freshVar 0)
               val.vLevelZero
               X_unit

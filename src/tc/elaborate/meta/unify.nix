@@ -163,7 +163,10 @@ let
             domain = if pi != null then pi.domain else V.vUnit;
             nextTy =
               if pi != null
-              then E.instantiate pi.closure (V.freshVar i)
+              # `pi.closure` may capture `VMeta`s from the meta's type
+              # telescope; the kernel evaluator crashes inspecting them
+              # (reads `.tag`). Route through the overlay.
+              then fx.tc.elaborate.instantiateOverlay pi.closure (V.freshVar i)
               else null;
           in
           T.mkLam "_" (quoteDomain i domain) (build (i - 1) nextTy inner);

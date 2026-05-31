@@ -238,8 +238,8 @@ in
         diagnostic renderer. Cross-ref: `infer` for the synthesis side,
         `checkMotive` for eliminator motive validation.
       '';
-      value = ctx: tm: ty:
-        let t = tm.tag; in
+      value = ctx: tm: ty0:
+        let ty = E.forceVal ty0; t = tm.tag; in
 
         if t == "lam" && ty.tag == "VPi" then
           let

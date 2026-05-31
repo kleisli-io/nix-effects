@@ -19,4 +19,5 @@
   generic = import ./generic.nix { inherit fx; };
   generic-fold = import ./generic-fold.nix { inherit fx; };
   decidable = import ./decidable.nix { inherit fx; };
+  eval-depth-scaling = import ./eval-depth-scaling.nix { inherit fx; };
 }

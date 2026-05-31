@@ -24,6 +24,7 @@ let
   sugarTypesTests = import ./sugar-types-test.nix { inherit lib fx; };
   sugarCompatTests = import ./sugar-compat-test.nix { inherit lib fx; };
   thunkTests = import ./thunk-test.nix { inherit lib fx; };
+  layerLeakRegression = import ./regression-layer-leak.nix { inherit lib fx; };
   descInterpParityTests = import ./experimental/desc-interp-parity { inherit lib fx; };
   descInterpLawsTests = import ./experimental/desc-interp-laws { inherit lib fx; };
 
@@ -114,6 +115,7 @@ let
       pipeline = mkDescriptorSuite pipelineTests;
       scope = mkDescriptorSuite scopeTests;
       thunk = mkBoolSuite thunkTests;
+      layerLeak = mkBoolSuite layerLeakRegression;
 
       sugar = testNamespace {
         value = {

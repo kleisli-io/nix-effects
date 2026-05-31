@@ -36,6 +36,14 @@ let
   bootUnitUnit = V.vBootSum V.vUnit V.vUnit;
   eqTt = V.vBootEq V.vUnit V.vTt V.vTt;
 
+  # A Pi whose codomain closure captures a `VMeta` and lifts it. Walking
+  # this telescope forces the meta through `KLift_X`, which reads `.tag`
+  # (absent on `VMeta`) — so the kernel evaluator crashes and only the
+  # overlay instantiator succeeds.
+  piUnitLiftMeta = V.vPi "_" V.vUnit
+    (V.mkClosure [ (m1 [ ] V.vUnit) ]
+      (T.mkLift T.mkLevelZero (T.mkLevelSuc T.mkLevelZero) T.mkBootRefl (T.mkVar 1)));
+
   conv = lhs: rhs: ty: {
     tag = "conv";
     depth = 0;
@@ -104,6 +112,19 @@ in
       expr =
         let
           r = pattern1 x;
+          applied = apply1 (solved r 0).tm V.vTt;
+        in
+        { inherit (r.constraint) status; tag = applied.tag; };
+      expected = { status = "solved"; tag = "VTt"; };
+    };
+
+    # Regression: solving a pattern meta whose type telescope lifts a
+    # captured `VMeta`. `lamSolution` opens the telescope via the overlay;
+    # kernel instantiation would route the meta into the CEK machine.
+    "meta-suite-positive-pattern-meta-typed-telescope" = {
+      expr =
+        let
+          r = solve (conv (m0 [ (app x) ] piUnitLiftMeta) x V.vUnit);
           applied = apply1 (solved r 0).tm V.vTt;
         in
         { inherit (r.constraint) status; tag = applied.tag; };

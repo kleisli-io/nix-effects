@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Kernel evaluator defunctionalized into a CEK-style abstract machine.** The evaluation hot path (`evalF` / `vAppF` / `instantiateF` / `vDescIndF` / `vEverywhereDF` and the desc-con trampoline) is now driven by a `builtins.genericClosure` + `builtins.foldl'` state machine (`src/tc/eval/machine.nix`) over an explicit frame/continuation algebra, replacing direct mutual recursion. User-level recursion depth N now produces O(1) libnix call frames and O(1) Nix call-depth per evaluator step, with O(N) work spread over O(N) driver iterations. Public signatures of `evalF` / `vAppF` / `instantiateF` / `vDescIndF` / `quote` / `nf` are preserved byte-for-byte; no consumer call site changes. The migration is partial — `quote` end-to-end handoff, `conv`, and `vLiftElimF` / `vBootElim*` defunctionalization remain.
+- **`VDescCon` linear chains use a flat chain-form representation.** `vDescConChain` / `_layers` / `_shape = "linearChain"` replace the deep nested-attrset descriptor chain, unblocking 5000-deep constructor and evaluation workloads that previously overflowed. `quote` binder and VNe-spine read-back route through the machine's `runQuoteF`.
+- **`nix-unit` pinned to 2.34.0.**
+
+### Added
+
+- **Depth-scaling regression workload** `bench/workloads/tc/eval-depth-scaling.nix` exercises evaluator depth N across desc-ind, vAppF, and conv chains, guarding against future depth regressions.
+
+### Fixed
+
+- **WHNF-forcing boundaries in conversion, elaboration, and read-back.** Operands of `vStrEq`, meta-bearing annotations, and types are forced to weak-head normal form before tag dispatch; meta-bearing closures are opened via the overlay instantiator in `tc.elaborate` (kernel instantiation would crash reading `.tag` on a metavariable); `extract` and `quote` read-back honor WHNF boundaries; run-state results are forced to WHNF.
+
 ## [0.12.0] - 2026-05-20
 
 ### Headline changes

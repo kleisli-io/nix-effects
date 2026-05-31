@@ -9,12 +9,14 @@
 # (the flake-package name stem). For shell use we also expose shorter
 # `bench-*` aliases via a symlink shim, since the CONTRIBUTING docs,
 # handoffs, and error messages all refer to the short names.
-{ pkgs ? import ./nixpkgs.nix { }
+{ pkgs ? (import ./pins.nix).nixpkgs { }
 ,
 }:
 let
   nix-effects = import ./. { inherit pkgs; };
   bench = nix-effects.bench.runner;
+
+  nix-unit-pinned = (import ./pins.nix).nix-unit pkgs;
 
   bench-shims = pkgs.runCommand "nix-effects-bench-shims" { } ''
     mkdir -p $out/bin
@@ -28,7 +30,7 @@ let
 in
 pkgs.mkShell {
   buildInputs = [
-    pkgs.nix-unit
+    nix-unit-pinned
     pkgs.just
 
     # Bench harness — both long (nix-effects-bench-*) and short (bench-*)

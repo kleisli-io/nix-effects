@@ -121,7 +121,7 @@ let
   #
   #   h         the current surface node
   #   depth     current binder depth for HOAS elaboration
-  #   elaborate recursive HOAS elaboration function
+  #   lower     recursive HOAS-to-Tm lowering function
   #   hoas      the HOAS API
   #   context   expected type, source position, and implicit-meta helper
   #
@@ -140,8 +140,8 @@ let
       # as `pi "_" A (_: B)`.
       pi = {
         tag = "stlc.pi";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.forall h.name h.domain h.body);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.forall h.name h.domain h.body);
       };
 
       # Explicitly typed lambda:
@@ -153,8 +153,8 @@ let
       # the HOAS elaborator. This avoids a separate name-resolution pass.
       lam = {
         tag = "stlc.lam";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.lam h.name h.domain h.body);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.lam h.name h.domain h.body);
       };
 
       # Lambda with omitted domain:
@@ -167,14 +167,14 @@ let
       # plicity-style implicit binders (see `implicitLam` below).
       holeLam = {
         tag = "stlc.hole-lam";
-        handler = { context, depth, h, elaborate, hoas, ... }:
+        handler = { context, depth, h, lower, hoas, ... }:
           let
             r = holeLambdaFromExpected {
               inherit context hoas;
               inherit (h) name body;
             };
           in
-          if r ? error then r else elaborate depth r.term;
+          if r ? error then r else lower depth r.term;
       };
 
       # Implicit Pi binder (plicity sidecar):
@@ -187,8 +187,8 @@ let
       # function inhabits this type.
       implicitPi = {
         tag = "stlc.implicit-pi";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.implicitForall h.name h.domain h.body);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.implicitForall h.name h.domain h.body);
       };
 
       # Implicit lambda (plicity sidecar):
@@ -199,16 +199,16 @@ let
       # descend through when the expected type begins with an implicit Pi.
       implicitLam = {
         tag = "stlc.implicit-lam";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.implicitLam h.name h.domain h.body);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.implicitLam h.name h.domain h.body);
       };
 
       # Implicit application — caller passes the implicit argument
       # explicitly, bypassing automatic insertion at this site.
       implicitApp = {
         tag = "stlc.implicit-app";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.implicitApp h.fn h.arg);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.implicitApp h.fn h.arg);
       };
 
       # Type annotation. This is useful around lambdas because application
@@ -216,16 +216,16 @@ let
       # from `ann term type`, then application proceeds normally.
       ann = {
         tag = "stlc.ann";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.ann h.term h.type);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.ann h.term h.type);
       };
 
       # Function application. No special STLC-specific checking is done here;
       # the kernel checker handles the application rule after elaboration.
       app = {
         tag = "stlc.app";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.app h.fn h.arg);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.app h.fn h.arg);
       };
     };
   };
@@ -414,14 +414,14 @@ rec {
             constructors = {
               lam = {
                 tag = "stlc.lam";
-                handler = { depth, h, elaborate, hoas, ... }:
-                  elaborate depth (hoas.lam h.name h.domain h.body);
+                handler = { depth, h, lower, hoas, ... }:
+                  lower depth (hoas.lam h.name h.domain h.body);
               };
 
               app = {
                 tag = "stlc.app";
-                handler = { depth, h, elaborate, hoas, ... }:
-                  elaborate depth (hoas.app h.fn h.arg);
+                handler = { depth, h, lower, hoas, ... }:
+                  lower depth (hoas.app h.fn h.arg);
               };
             };
           };

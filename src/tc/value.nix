@@ -75,6 +75,50 @@ let
   vDescConTagged = D: i: d: ref:
     { tag = "VDescCon"; inherit D i d; _canonRef = ref; };
 
+  # Flat-chain VDescCon for linearChain Descs. Bijective dual of the
+  # canonical N-deep VDescCon: chain-wide fields on the outer Val,
+  # per-layer in `_layers` (outer-first), `.d = vTt` (no chain info).
+  # Discriminator: `_shape == "linearChain"`. Outer cert is `_layers[0].cert`.
+  # LayerRec = { i : Val; heads : [Val]; cert : Cert | null }
+  vDescConChain = D: i: payloadTag: payloadLeft: payloadRight: layers: base:
+    { tag = "VDescCon"; inherit D i;
+      d = vTt;
+      _shape = "linearChain";
+      _payloadTag = payloadTag;
+      _payloadLeft = payloadLeft;
+      _payloadRight = payloadRight;
+      _layers = layers;
+      _base = base;
+    };
+
+  # Machine-internal deferred-layer Val for `descInd`'s linear-chain
+  # accumulator. Represents one layer of a folded chain as DATA so the
+  # CEK driver can expand it via kAppVV frames instead of consuming
+  # libnix stack via recursive `vAppF`. Applying a `VLazyDescIndAccLayer`
+  # to an argument expands to `step i d (vPair prevAcc vTt) arg` via
+  # four kAppVV frames; the cascade through `prevAcc` (itself another
+  # `VLazyDescIndAccLayer` for non-base layers) resolves through the
+  # driver's kont stack — never through libnix recursion.
+  #
+  # Invariant: this tag is MACHINE-INTERNAL. The driver's `Done` handler
+  # forces any `VLazyDescIndAccLayer` before returning. External code
+  # (conv, quote, pretty) never observes it.
+  vLazyDescIndAccLayer = step: i: d: prevAcc:
+    { tag = "VLazyDescIndAccLayer"; inherit step i d prevAcc; };
+
+  # Machine-internal deferred-Tm Val. `ev` returns this for any
+  # non-atomic Tm so sub-Val fields stay unevaluated until tag-checked.
+  # Stored sub-Val readers force via a peek helper; the driver's `Done`
+  # handler forces any top-level `VThunkTm` before returning by
+  # transitioning back to `Eval` (mirrors `VLazyDescIndAccLayer`).
+  #
+  # Invariant: this tag is MACHINE-INTERNAL. External code (conv,
+  # quote, pretty, elaborate) never observes a top-level `VThunkTm`;
+  # only stored sub-Val fields may carry it, and those are forced at
+  # read sites.
+  vThunkTm = env: tm:
+    { tag = "VThunkTm"; inherit env tm; };
+
   # `interpD` / `allD` / `everywhereD` — kernel-primitive interpretation
   # / All-witness / everywhere-recursion over Desc. Carry the same slots
   # as their Tm counterparts (mirroring `mkInterpD`/`mkAllD`/
@@ -363,6 +407,77 @@ api.namespace {
       expr = (vDescCon (freshVar 0) vTt vBootRefl) ? _canonRef;
       expected = false;
     };
+    "vdesccon-chain-tag" = {
+      expr = (vDescConChain (freshVar 0) vTt "VBootInr" vUnit vUnit [ ]
+        (vDescCon (freshVar 0) vTt vBootRefl)).tag;
+      expected = "VDescCon";
+    };
+    "vdesccon-chain-shape" = {
+      expr = (vDescConChain (freshVar 0) vTt "VBootInr" vUnit vUnit [ ]
+        (vDescCon (freshVar 0) vTt vBootRefl))._shape;
+      expected = "linearChain";
+    };
+    "vdesccon-chain-layers-length" = {
+      expr = builtins.length
+        (vDescConChain (freshVar 0) vTt "VBootInr" vUnit vUnit
+          (builtins.genList
+            (n: { i = vTt; heads = [ vTt ]; cert = null; }) 5)
+          (vDescCon (freshVar 0) vTt vBootRefl))._layers;
+      expected = 5;
+    };
+    "vdesccon-chain-base-points-to-supplied" = {
+      expr = (vDescConChain (freshVar 0) vTt "VBootInr" vUnit vUnit [ ]
+        (vDescConTagged (freshVar 0) vTt vBootRefl
+          { id = "nil"; params = [ ]; }))._base._canonRef.id;
+      expected = "nil";
+    };
+    "vdesccon-chain-d-is-stub" = {
+      # `.d` is `vTt` regardless of `_layers` length — chain info lives
+      # only in `_layers`/`_base`; non-chain-aware code reading `.d.fst`
+      # crashes loudly rather than silently observing a 2-step view.
+      expr = (vDescConChain (freshVar 0) vTt "VBootInr" vUnit vUnit
+        (builtins.genList (n: { i = vTt; heads = [ vTt ]; cert = null; }) 100)
+        (vDescConTagged (freshVar 0) vTt vBootRefl
+          { id = "nil"; params = [ ]; })).d.tag;
+      expected = "VTt";
+    };
+    "vdesccon-chain-payload-wrap" = {
+      # Chain-wide BootSum wrapper info is preserved verbatim for quote.
+      expr =
+        let
+          v = vDescConChain (freshVar 0) vTt "VBootInr" vUnit vUnit
+            [ { i = vTt; heads = [ vTt ]; cert = null; } ]
+            (vDescCon (freshVar 0) vTt vBootRefl);
+        in
+        { tag = v._payloadTag; left = v._payloadLeft.tag; right = v._payloadRight.tag; };
+      expected = { tag = "VBootInr"; left = "VUnit"; right = "VUnit"; };
+    };
+    "vlazydescindacclayer-tag" = {
+      expr = (vLazyDescIndAccLayer vTt vTt vTt vTt).tag;
+      expected = "VLazyDescIndAccLayer";
+    };
+    "vlazydescindacclayer-step" = {
+      expr = (vLazyDescIndAccLayer
+        (vLam "x" vUnit (mkClosure [ ] { tag = "var"; idx = 0; }))
+        vTt vTt vTt).step.tag;
+      expected = "VLam";
+    };
+    "vlazydescindacclayer-prevacc" = {
+      expr = (vLazyDescIndAccLayer vTt vTt vTt vBootRefl).prevAcc.tag;
+      expected = "VBootRefl";
+    };
+    "vthunktm-tag" = {
+      expr = (vThunkTm [ ] { tag = "tt"; }).tag;
+      expected = "VThunkTm";
+    };
+    "vthunktm-env" = {
+      expr = (vThunkTm [ vTt ] { tag = "var"; idx = 0; }).env;
+      expected = [ vTt ];
+    };
+    "vthunktm-tm" = {
+      expr = (vThunkTm [ ] { tag = "tt"; }).tm.tag;
+      expected = "tt";
+    };
     "edescind-tag" = { expr = (eDescInd (freshVar 0) vUnit vTt vTt).tag; expected = "EDescInd"; };
     "edescind-i" = { expr = (eDescInd (freshVar 0) vUnit vTt vTt).i.tag; expected = "VTt"; };
     # Lift primitive
@@ -550,6 +665,21 @@ api.namespace {
       value = vDescConTagged;
       description = "vDescConTagged: value-domain `descCon` carrying a `Squash`-truncated guard certificate — surfaces refinement proofs on `fx.types.Certified` values.";
       signature = "vDescConTagged : Val -> Val -> Val -> Val -> Val  -- D, i, payload, cert";
+    };
+    vDescConChain = api.leaf {
+      value = vDescConChain;
+      description = "vDescConChain: flat-chain VDescCon for linearChain Descs. `.d` is stub `vTt`; chain lives in `_layers` (Nix list, outer-first) + `_base`. Chain-wide BootSum wrapper info on `_payloadTag`/`_payloadLeft`/`_payloadRight`. Outer cert is `_layers[0].cert`. O(1) libnix stack on deep force; non-chain-aware consumers crash on `.d.fst` rather than silently mis-reading a degenerate view.";
+      signature = "vDescConChain : Val -> Val -> String -> Val -> Val -> [LayerRec] -> Val -> Val  -- D, i, payloadTag, payloadLeft, payloadRight, layers, base";
+    };
+    vLazyDescIndAccLayer = api.leaf {
+      value = vLazyDescIndAccLayer;
+      description = "vLazyDescIndAccLayer: MACHINE-INTERNAL deferred accumulator layer of a `descInd` linear chain. Applying expands via four kAppVV frames (step i d (vPair prevAcc vTt) arg); never escapes `runMachineAtF`.";
+      signature = "vLazyDescIndAccLayer : Val -> Val -> Val -> Val -> Val  -- step, i, d, prevAcc";
+    };
+    vThunkTm = api.leaf {
+      value = vThunkTm;
+      description = "vThunkTm: MACHINE-INTERNAL deferred-Tm Val produced by `ev` on non-atomic Tms. Captures `{ env; tm }`; the driver's `Done` handler forces top-level VThunkTm before returning, so external code observes it only in stored sub-Val fields.";
+      signature = "vThunkTm : Env -> Tm -> Val";
     };
 
     vInterpD = api.leaf {

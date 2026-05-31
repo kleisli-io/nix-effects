@@ -162,6 +162,16 @@ let
   mkDescCon = D: i: d: { tag = "desc-con"; inherit D i d; };
   mkDescConWithCert = D: i: d: cert:
     { tag = "desc-con"; inherit D i d; _descConCert = cert; };
+  # Flat-form linear-chain encoding of an N-deep mkDescCon. Bijective
+  # dual of the chain-form Val (`_shape == "linearChain"`): chain-wide
+  # outer fields on the head, per-layer `{ i; heads }` records in a
+  # flat Nix-list (outer-first), `base = { D; i; d }` at the terminator.
+  # libnix walks the list iteratively, so `forceValueDeep` depth is
+  # O(1) regardless of N.
+  mkDescConChain = args:
+    { tag = "desc-con-chain";
+      inherit (args) layers base outerD payloadTag payloadLeft payloadRight;
+    };
   mkDescInd = D: motive: step: i: scrut:
     { tag = "desc-ind"; inherit D motive step i scrut; };
   # `interpD ℓ I D X i : U(ℓ)` — kernel-primitive interpretation of a
@@ -791,6 +801,11 @@ api.namespace {
       value = mkDescConWithCert;
       description = "mkDescConWithCert: `mkDescCon` carrying a `Squash`-truncated guard certificate — used by `fx.types.Certified` to thread refinement proofs through the kernel.";
       signature = "mkDescConWithCert : Tm -> Tm -> Tm -> Tm -> Tm  -- D, i, payload, cert";
+    };
+    mkDescConChain = api.leaf {
+      value = mkDescConChain;
+      description = "mkDescConChain: flat-form linear-chain dual of an N-deep mkDescCon. `layers` is a flat outer-first Nix-list of `{ i; heads }` records; `base = { D; i; d }` at the terminator. The consumer pass-graph (evalF, conv, extract, quote) walks the list iteratively, so libnix `forceValueDeep` depth is O(1) regardless of N. Bijective dual of the chain-form Val (`_shape == \"linearChain\"`).";
+      signature = "mkDescConChain : { layers : [{i:Tm; heads:[Tm]}]; base : {D:Tm; i:Tm; d:Tm}; outerD : Tm; payloadTag : String; payloadLeft : Tm; payloadRight : Tm; } -> Tm";
     };
     mkDescInd = api.leaf {
       value = mkDescInd;

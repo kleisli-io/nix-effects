@@ -19,19 +19,24 @@ let
   # Level to index conversion: index = depth - level - 1
   lvl2Ix = depth: level: depth - level - 1;
 
+  # Quote-machine driver bound with `quote` as the fallback. Tags whose
+  # dispatch lives in `qEvalStep` (binders, VPair, leaves) route here;
+  # the machine calls back into `quote` for any tag it does not handle,
+  # giving an incremental migration boundary.
+  runQ = E.machine.runQuoteF quote E.dispatch.defaultFuel;
+
   # Quote a value at binding depth d back to a term.
-  quote = d: v:
-    let t = v.tag; in
-    if t == "VPi" then
-      T.mkPi v.name (quote d v.domain)
-        (quote (d + 1) (E.instantiate v.closure (V.freshVar d)))
-    else if t == "VLam" then
-      T.mkLam v.name (quote d v.domain)
-        (quote (d + 1) (E.instantiate v.closure (V.freshVar d)))
-    else if t == "VSigma" then
-      T.mkSigma v.name (quote d v.fst)
-        (quote (d + 1) (E.instantiate v.closure (V.freshVar d)))
-    else if t == "VPair" then T.mkPair (quote d v.fst) (quote d v.snd)
+  # `quote` is a read-back boundary: force `v` to WHNF through the
+  # iterative driver before inspecting its tag, so a deferred `VThunkTm`
+  # (at the top or at any recursively-quoted sub-field) reduces to its
+  # underlying Val rather than falling through to the unknown-tag throw.
+  # One-step WHNF only — sub-fields stay lazy until their own `quote` call.
+  quote = d: v0:
+    let v = E.forceVal v0; t = v.tag; in
+    if t == "VPi" then runQ d v
+    else if t == "VLam" then runQ d v
+    else if t == "VSigma" then runQ d v
+    else if t == "VPair" then runQ d v
     else if t == "VUnit" then T.mkUnit
     else if t == "VTt" then T.mkTt
     else if t == "VEmpty" then T.mkEmpty
@@ -52,7 +57,7 @@ let
     # `iLev = vLevelZero` the level-zero `mkDesc` constructor is
     # the compact source form.
       let
-        iLevVal = v.iLev or V.vLevelZero;
+        iLevVal = E.forceVal (v.iLev or V.vLevelZero);
         levelTm =
           if v.level.tag == "VLevelZero"
           then T.mkLevelZero
@@ -63,103 +68,7 @@ let
       then T.mkDesc levelTm iTm
       else T.mkDescAt (quote d iLevVal) levelTm iTm
     else if t == "VMu" then T.mkMu (quote d v.I) (quote d v.D) (quote d v.i)
-    # VDescCon — trampolined for deep recursive chains (5000+ cons/succ layers).
-    # Mirrors the eval/check desc-con trampoline at the quote layer: peels a
-    # linear-recursive chain whose outer D has plus-view shape and whose "recursive"
-    # summand B has linearProfile [{S_1}..{S_n}] (n ≥ 0 data heads then rec tail).
-    # Each peeled layer has payload VBootInr left right (VPair h_1 (...(VPair rec VBootRefl))).
-    # Non-linear shapes (nil leaves, non-plus D, tree recursion) return null and
-    # fall through to the single-layer recursive quote at baseTm below.
-    else if t == "VDescCon" then
-    # Canonical-identity short-circuit. A VDescCon carrying
-    # `_canonRef = { id; params; }` round-trips through the canonical
-    # constructor Tm that produced it; walking `.d`/`.D` would descend
-    # through the referenced description's body and loop. The
-    # canonical `descDesc` stamp uses `params = [iLev, I, L]`. All
-    # other ids round-trip via the generic `mkCanonApp` Tm.
-      if v ? _canonRef
-      then
-        let
-          ref = v._canonRef;
-          params =
-            if ref ? params then ref.params
-            else throw "quote: canonical reference missing params";
-        in
-        if ref.id == "descDesc"
-        then
-          if builtins.length params == 3
-          then
-            T.mkDescDescAppAt
-              (quote d (builtins.elemAt params 0))
-              (quote d (builtins.elemAt params 1))
-              (quote d (builtins.elemAt params 2))
-          else throw "quote: descDesc canonical reference expects three params"
-        else T.mkCanonApp ref.id (map (quote d) params)
-      else
-        let
-          peel = node:
-            if node.tag != "VDescCon" then null
-            else
-              let
-                view = E.descView node.D;
-                bSide = if view != null && view.idx == 4 then view.B else null;
-              in
-              if bSide == null then null
-              else if node.d.tag != "VBootInr" then null
-              else
-                let
-                  profile = E.linearProfile bSide;
-                  nFields = if profile == null then 0 else builtins.length profile;
-                  collect = k: p: acc:
-                    if k == nFields then
-                      if p.tag != "VPair" then null
-                      else if p.snd.tag != "VBootRefl" then null
-                      else if p.fst.tag != "VDescCon" then null
-                      else { heads = acc; tail = p.fst; }
-                    else if p.tag != "VPair" then null
-                    else collect (k + 1) p.snd (acc ++ [ p.fst ]);
-                in
-                if profile == null then null
-                else collect 0 node.d.val [ ];
-          chain = builtins.genericClosure {
-            startSet = [{ key = 0; val = v; }];
-            operator = item:
-              let peeled = peel item.val; in
-              if peeled == null then [ ]
-              else [{ key = item.key + 1; val = peeled.tail; }];
-          };
-          n = builtins.length chain - 1;
-          base = (builtins.elemAt chain n).val;
-          baseTm = T.mkDescCon (quote d base.D) (quote d base.i) (quote d base.d);
-        in
-        if n == 0 then baseTm
-        else
-          let
-            # All layers share D and the VBootInr wrapper's left/right type args
-            # (they are interp-of-D.{A,B} which depends only on D, shared
-            # across layers). Quote once; reuse in the fold.
-            outerD = quote d v.D;
-            leftTm = quote d v.d.left;
-            rightTm = quote d v.d.right;
-          in
-          builtins.foldl'
-            (acc: k:
-              let
-                layer = (builtins.elemAt chain (n - 1 - k)).val;
-                peeled = peel layer;
-                headTms = map (h: quote d h) peeled.heads;
-                buildInner = hs: tail:
-                  if hs == [ ] then tail
-                  else
-                    T.mkPair (builtins.head hs)
-                      (buildInner (builtins.tail hs) tail);
-              in
-              T.mkDescCon outerD (quote d layer.i)
-                (T.mkBootInr leftTm rightTm
-                  (buildInner headTms (T.mkPair acc T.mkBootRefl)))
-            )
-            baseTm
-            (builtins.genList (x: x) n)
+    else if t == "VDescCon" then runQ d v
     # Lift primitive — round-trip type-former and introducer. Level-zero
     # fast-path on `v.l` / `v.m` mirrors the desc-arg / desc-pi shape.
     else if t == "VLift" then
@@ -199,7 +108,7 @@ let
     else if t == "VFnLit" then T.mkFnLit
     else if t == "VAnyLit" then T.mkAnyLit
     else if t == "VOpaqueLam" then T.mkOpaqueLam v._fnBox (quote d v.piTy)
-    else if t == "VNe" then quoteSp d (T.mkVar (lvl2Ix d v.level)) v.spine
+    else if t == "VNe" then runQ d v
     else throw "tc: quote unknown tag '${t}'";
 
   # Quote a spine of eliminators applied to a head term.
@@ -736,7 +645,7 @@ api.namespace {
               (builtins.genList (x: x) 5000);
           in
           (quote 0 deep).tag;
-        expected = "desc-con";
+        expected = "desc-con-chain";
       };
 
       # -- C5: Under-binder quotation --

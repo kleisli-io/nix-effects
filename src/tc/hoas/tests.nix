@@ -5168,6 +5168,68 @@ in
       expected = false;
     };
 
+    "canon-app-quote-emits-canon-app-tag" = {
+      expr =
+        let
+          body = lam "A" (u 0) (_: natDesc);
+          v    = E.eval [ ] (elab (canonApp "MyOne" [ nat ] body));
+        in (Q.quote 0 v).tag;
+      expected = "canon-app";
+    };
+
+    "canon-app-quote-emits-id" = {
+      expr =
+        let
+          body = lam "A" (u 0) (_: natDesc);
+          v    = E.eval [ ] (elab (canonApp "MyOne" [ nat ] body));
+        in (Q.quote 0 v).id;
+      expected = "MyOne";
+    };
+
+    "canon-app-quote-emits-params-length" = {
+      expr =
+        let
+          body =
+            lam "A" (u 0) (_:
+              lam "B" (u 0) (_:
+                lam "C" (u 0) (_: natDesc)));
+          v = E.eval [ ] (elab (canonApp "Tri" [ nat bool unit ] body));
+        in builtins.length (Q.quote 0 v).params;
+      expected = 3;
+    };
+
+    "canon-app-quote-emits-body-tm" = {
+      expr =
+        let
+          body = lam "A" (u 0) (_: natDesc);
+          v    = E.eval [ ] (elab (canonApp "MyOne" [ nat ] body));
+          q    = Q.quote 0 v;
+        in builtins.isAttrs q.body && q.body ? tag;
+      expected = true;
+    };
+
+    "canon-app-roundtrip-eval-quote-eval-VDescCon" = {
+      expr =
+        let
+          body = lam "A" (u 0) (_: natDesc);
+          v    = E.eval [ ] (elab (canonApp "MyOne" [ nat ] body));
+          tm'  = Q.quote 0 v;
+          v'   = E.eval [ ] tm';
+        in v'.tag;
+      expected = "VDescCon";
+    };
+
+    "canon-app-roundtrip-preserves-canonRef-id" = {
+      expr =
+        let
+          body = lam "A" (u 0) (_: natDesc);
+          v    = E.eval [ ] (elab (canonApp "MyOne" [ nat ] body));
+          tm'  = Q.quote 0 v;
+          v'   = E.eval [ ] tm';
+        in v'._canonRef.id;
+      expected = "MyOne";
+    };
+
     # End-to-end through VMu wrapper: μ(canonApp id [p1..pn] body) i,
     # mimicking the freeFx-as-μ pattern. Conv on VMu × VMu reaches the
     # inner VDescCon-stamped value via `v.D`; the canon stamp short-

@@ -32,7 +32,8 @@ let
 
     vAppF = fuel: fn: arg:
       if isVMeta fn then extendVMeta fn (V.eApp arg)
-      else if fn.tag == "VDescViewFn" then fn.apply arg
+      else if fn.tag == "VDescViewFn" then
+        E.dispatch.applyDescViewFnByKindF fuel fn arg
       else if fn.tag == "VLam" then overlaySelf.instantiateF fuel fn.closure arg
       else if fn.tag == "VNe" then V.vNe fn.level (fn.spine ++ [ (V.eApp arg) ])
       else throw "tc.overlay: vApp on non-function (tag=${fn.tag})";

@@ -1,5 +1,5 @@
 #!/usr/bin/env nix-unit
-{ pkgs ? import ./nixpkgs.nix { }
+{ pkgs ? (import ./pins.nix).nixpkgs { }
 , ...
 }:
 let

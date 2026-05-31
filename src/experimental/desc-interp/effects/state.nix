@@ -153,23 +153,32 @@ let
       putPrefixVal = fx.tc.eval.eval [ ] (H.elab putPrefix);
       modifyPrefixVal = fx.tc.eval.eval [ ] (H.elab modifyPrefix);
 
+      # `argValOf op → Val` — the op argument's evaluated Val. The smart
+      # constructors precompute it as a lazy `_argVal` sidecar; the op is
+      # the same Nix reference on every trampoline step (the FreeFx round-
+      # trip recovers it verbatim — `trampoline.nix:lowerFreeField` returns
+      # `x.a`), so the lazy field is forced once and shared across all
+      # steps, collapsing the per-step `eval [] (H.elab op.arg)` that
+      # otherwise dominates HOAS lowering. Observationally inert:
+      # `_argVal ≡ eval [] (H.elab op.arg)` by construction (pure CSE of a
+      # referentially-transparent expression). The fallback keeps untagged
+      # or cache-less ops correct. The cached Val never reaches the kernel
+      # — `lower`/`conv` dispatch on structural HOAS fields, not sidecars.
+      argValOf = op: op._argVal or (fx.tc.eval.eval [ ] (H.elab op.arg));
+
       # `evalOp op → Val`: tag-keyed O(1) replacement for the trampoline's
       # default `eval [] (H.elab op)`. For `state-get` the entire op Val is
       # cached; for `state-put` / `state-modify` only the constructor
-      # prefix is cached and `vApp prefixVal (eval arg)` skips the prefix
+      # prefix is cached and `vApp prefixVal argVal` skips the prefix
       # eval per Impure node. Fall-through (untagged ops, or unknown tag)
       # uses the generic eval path.
       evalOp = op:
         let t = op._opTag or null; in
         if t == "state-get" then getOpVal
         else if t == "state-put"
-        then
-          fx.tc.eval.vApp putPrefixVal
-            (fx.tc.eval.eval [ ] (H.elab op.arg))
+        then fx.tc.eval.vApp putPrefixVal (argValOf op)
         else if t == "state-modify"
-        then
-          fx.tc.eval.vApp modifyPrefixVal
-            (fx.tc.eval.eval [ ] (H.elab op.arg))
+        then fx.tc.eval.vApp modifyPrefixVal (argValOf op)
         else fx.tc.eval.eval [ ] (H.elab op);
 
       # Shortcut path — partial-evaluation residual for `handle_State`
@@ -205,7 +214,7 @@ let
               stateVal
               stateVal)
         else if t == "state-put" then
-          let paramVal = fx.tc.eval.eval [ ] (H.elab op.arg); in
+          let paramVal = argValOf op; in
           Extract.extract (Extract.Resume
             unitSumDescVal
             unitLeftSigVal
@@ -214,7 +223,7 @@ let
             paramVal)
         else if t == "state-modify" then
           let
-            fnVal = fx.tc.eval.eval [ ] (H.elab op.arg);
+            fnVal = argValOf op;
             newStateVal = fx.tc.eval.vApp fnVal stateVal;
           in
           Extract.extract (Extract.Resume
@@ -227,9 +236,21 @@ let
     in
     {
       inherit eff resp handler dispatch evalOp handlerShortcut;
+      # `_argVal` is the lazily-evaluated argument Val, memoised on the op
+      # so the trampoline's per-step handler/evalOp does not re-lower the
+      # HOAS argument each Impure node. Lazy by construction (a plain attr
+      # binding) so it is forced iff a handler actually demands the arg's
+      # Val — preserving the forcing discipline downstream effects rely on.
+      # Same host-sidecar channel as `_opTag` (invisible to `lower`/`conv`).
       get = send_ (getOp // { _opTag = "state-get"; });
-      put = s: send_ ((putAt S s) // { _opTag = "state-put"; });
-      modify = fn: send_ ((modifyAt S fn) // { _opTag = "state-modify"; });
+      put = s: send_ ((putAt S s) // {
+        _opTag = "state-put";
+        _argVal = fx.tc.eval.eval [ ] (H.elab s);
+      });
+      modify = fn: send_ ((modifyAt S fn) // {
+        _opTag = "state-modify";
+        _argVal = fx.tc.eval.eval [ ] (H.elab fn);
+      });
     };
 
 in

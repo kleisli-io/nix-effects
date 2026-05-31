@@ -42,13 +42,20 @@ api.mk {
   '';
   value = {
     inherit (self)
-      eval evalF instantiate mkValueF
+      eval evalF instantiate mkValueF forceVal forceAndPeelChainV effLayers
       vApp vFst vSnd vBootSumElim vBootJ
       vLiftF vLiftIntroF vLiftElimF
       vDescInd descView linearProfile
       sumPayloadTmView sumPayloadValView
       vInterpD vAllD vEverywhereD
       mkDescDescAppV;
+
+    machine = api.namespace {
+      description = "fx.tc.eval.machine: CEK abstract machine. `runMachineF` is the defunctionalized form of `evalF`; `runQuoteF` is the symmetric read-back driver consumed by `tc/quote.nix`.";
+      value = {
+        inherit (self) runMachineF runQuoteF;
+      };
+    };
 
     dispatch = api.namespace {
       description = "fx.tc.eval.dispatch: full kernel evaluator self-fixpoint. Consumed by overlay constructions (notably `tc/elaborate/eval-overlay.nix`) that need to build a meta-aware self-table replacing selected dispatch attrs while inheriting the rest.";

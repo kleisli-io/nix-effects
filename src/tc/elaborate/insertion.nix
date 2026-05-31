@@ -72,7 +72,10 @@ let
             names = [ forced.name ] ++ (ctx.names or [ ]);
             depth = (ctx.depth or 0) + 1;
           };
-          bodyTy = E.instantiate forced.closure fresh;
+          # `forced.closure` may capture `VMeta`s; the kernel evaluator
+          # crashes inspecting them (reads `.tag`). Route through the overlay
+          # (mirrors `insertImplicits` above).
+          bodyTy = self.instantiateOverlay forced.closure fresh;
         in
         bind_ (descendImplicitPi ctx' bodyTy mkBody) (bodyTm:
           pure_ (T.mkLam forced.name (quote ctx.depth forced.domain) bodyTm
@@ -217,6 +220,27 @@ in
           expr =
             let
               r = self.runElab H.unit (self.elabCheck ctx0 T.mkTt oneImplicitTy);
+            in
+            {
+              tag = r.value.tag;
+              plicity = r.value._plicity or null;
+              bodyTag = r.value.body.tag;
+            };
+          expected = { tag = "lam"; plicity = "implicit"; bodyTag = "tt"; };
+        };
+        # Regression: the implicit Pi's closure captures a `VMeta` lifted in
+        # the body. Opening it via the overlay keeps the meta out of the
+        # kernel CEK machine, whose `KLift_X` reads `.tag` (absent on `VMeta`).
+        "descendImplicitPi-meta-closure-stays-out-of-kernel" = {
+          expr =
+            let
+              liftBody = T.mkLift T.mkLevelZero
+                (T.mkLevelSuc T.mkLevelZero) T.mkBootRefl (T.mkVar 1);
+              m = self.mkVMeta 0 [ ] { ctx = ctx0; ty = V.vUnit; };
+              implicitPi = (V.vPi "A" V.vUnit (V.mkClosure [ m ] liftBody))
+                // { _plicity = "implicit"; };
+              mkBody = _innerCtx: _innerTy: pure_ T.mkTt;
+              r = self.runElab H.unit (descendImplicitPi ctx0 implicitPi mkBody);
             in
             {
               tag = r.value.tag;

@@ -117,8 +117,8 @@ let
       # `lam` throughout the HOAS surface.
       refinement = {
         tag = "stlc.refinement";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.refinementPred h.domain h.predicate);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.refinementPred h.domain h.predicate);
       };
 
       # Refinement introduction:
@@ -131,14 +131,14 @@ let
       # handler enough information to build the positive decision.
       refine = {
         tag = "stlc.refine";
-        handler = { context, depth, h, elaborate, hoas, ... }:
+        handler = { context, depth, h, lower, hoas, ... }:
           let
             r = refineFromExpected {
               inherit context hoas;
               inherit (h) type value proof;
             };
           in
-          if r ? error then r else elaborate depth r.term;
+          if r ? error then r else lower depth r.term;
       };
 
       # Forgetting a refinement is first projection from the dependent pair.
@@ -147,8 +147,8 @@ let
       # the underlying value can project it out with ordinary Sigma reduction.
       forget = {
         tag = "stlc.refinement-forget";
-        handler = { depth, h, elaborate, hoas, ... }:
-          elaborate depth (hoas.fst_ h.term);
+        handler = { depth, h, lower, hoas, ... }:
+          lower depth (hoas.fst_ h.term);
       };
     };
   };

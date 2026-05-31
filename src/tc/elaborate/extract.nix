@@ -17,6 +17,15 @@ let
   E = fx.tc.eval;
   V = fx.tc.value;
 
+  # Effective `_layers` of a chain-form Val, honoring an optional `_layersOff`
+  # slice offset. Fast-path `o == 0` returns the array unchanged — byte-identical
+  # for every value built by the constructor; only offset-carrying machine
+  # predecessors materialize a slice, on cold reads.
+  effLayers = cv:
+    let o = cv._layersOff or 0; ls = cv._layers;
+    in if o == 0 then ls
+       else builtins.genList (i: builtins.elemAt ls (o + i)) ((builtins.length ls) - o);
+
   # View-backed description inspection. Encoded descriptions project
   # through the private `DView*` shape instead of public constructors.
   descViewOf = d:
@@ -196,8 +205,11 @@ in
     };
 
     extractInner = api.leaf {
-      value = hoasTy: tyVal: val:
-        let t = hoasTy._htag or (throw "extract: not an HOAS type"); in
+      value = hoasTy: tyVal: val0:
+        let
+          val = E.forceVal val0;
+          t = hoasTy._htag or (throw "extract: not an HOAS type");
+        in
 
         # Nat: base → 0, succ^n(base) → n. H.nat elaborates to μnatDesc, so every
           # value of type Nat arrives as a VDescCon chain. Under the plus-based
@@ -210,31 +222,40 @@ in
           # and deepSeq-in-key would add O(N²) cost.
         if t == "nat" then
           let
-            succPayload = v:
-              if v.tag != "VDescCon" then null
-              else
-                let sv = E.sumPayloadValView v.d; in
-                if sv != null && sv.side == "inr" && sv.value.tag == "VPair"
-                then sv.value
-                else null;
-            isDescZero = v:
+            isDescZero = v0:
+              let v = E.forceVal v0; in
               if v.tag != "VDescCon" then false
               else
                 let sv = E.sumPayloadValView v.d; in
                 sv != null && sv.side == "inl";
-            chain = builtins.genericClosure {
-              startSet = [{ key = 0; inherit val; }];
-              operator = item:
-                let payload = succPayload item.val; in
-                if payload != null
-                then [{ key = item.key + 1; val = payload.fst; }]
-                else [ ];
-            };
-            last = builtins.elemAt chain (builtins.length chain - 1);
           in
-          if isDescZero last.val
-          then builtins.length chain - 1
-          else throw "extract: Nat value is not a numeral (stuck at ${last.val.tag})"
+          if (val._shape or null) == "linearChain" then
+            if isDescZero val._base
+            then builtins.length (effLayers val)
+            else throw "extract: Nat chain-form base is not zero (stuck at ${val._base.tag})"
+          else
+            let
+              succPayload = v0:
+                let v = E.forceVal v0; in
+                if v.tag != "VDescCon" then null
+                else
+                  let sv = E.sumPayloadValView v.d; in
+                  if sv != null && sv.side == "inr" && sv.value.tag == "VPair"
+                  then sv.value
+                  else null;
+              chain = builtins.genericClosure {
+                startSet = [{ key = 0; inherit val; }];
+                operator = item:
+                  let payload = succPayload item.val; in
+                  if payload != null
+                  then [{ key = item.key + 1; val = payload.fst; }]
+                  else [ ];
+              };
+              last = builtins.elemAt chain (builtins.length chain - 1);
+            in
+            if isDescZero last.val
+            then builtins.length chain - 1
+            else throw "extract: Nat value is not a numeral (stuck at ${last.val.tag})"
 
         else if t == "unit" then
           if val.tag == "VTt" then null
@@ -278,16 +299,8 @@ in
         # Trampolined via genericClosure for stack safety.
           let
             elemTy = hoasTy.elem;
-            consPayload = v:
-              if v.tag != "VDescCon" then null
-              else
-                let sv = E.sumPayloadValView v.d; in
-                if sv != null && sv.side == "inr"
-                  && sv.value.tag == "VPair"
-                  && sv.value.snd.tag == "VPair"
-                then sv.value
-                else null;
-            isDescNil = v:
+            isDescNil = v0:
+              let v = E.forceVal v0; in
               if v.tag != "VDescCon" then false
               else
                 let sv = E.sumPayloadValView v.d; in
@@ -297,26 +310,46 @@ in
                 && tagOfDesc (plusBOf tyVal.D) == "DViewArg"
               then argSOf (plusBOf tyVal.D)
               else throw "extract: list tyVal must be VMu(plus _ (descArg _ _)), got ${tyVal.tag}";
-            chain = builtins.genericClosure {
-              startSet = [{ key = 0; inherit val; }];
-              operator = item:
-                let payload = consPayload item.val; in
-                if payload != null
-                then [{ key = item.key + 1; val = payload.snd.fst; }]
-                else [ ];
-            };
-            n = builtins.length chain;
-            last = builtins.elemAt chain (n - 1);
           in
-          if !(isDescNil last.val)
-          then throw "extract: List is not a proper cons/nil chain (stuck at ${last.val.tag})"
+          if (val._shape or null) == "linearChain" then
+            if !(isDescNil val._base)
+            then throw "extract: List chain-form base is not nil (stuck at ${val._base.tag})"
+            else
+              map
+                (layer: self.extractInner elemTy elemTyVal (builtins.head layer.heads))
+                (effLayers val)
           else
-            builtins.genList
-              (i:
-                let payload = consPayload (builtins.elemAt chain i).val; in
-                self.extractInner elemTy elemTyVal payload.fst
-              )
-              (n - 1)
+            let
+              consPayload = v0:
+                let v = E.forceVal v0; in
+                if v.tag != "VDescCon" then null
+                else
+                  let sv = E.sumPayloadValView v.d; in
+                  if sv != null && sv.side == "inr"
+                    && sv.value.tag == "VPair"
+                    && sv.value.snd.tag == "VPair"
+                  then sv.value
+                  else null;
+              chain = builtins.genericClosure {
+                startSet = [{ key = 0; inherit val; }];
+                operator = item:
+                  let payload = consPayload item.val; in
+                  if payload != null
+                  then [{ key = item.key + 1; val = payload.snd.fst; }]
+                  else [ ];
+              };
+              n = builtins.length chain;
+              last = builtins.elemAt chain (n - 1);
+            in
+            if !(isDescNil last.val)
+            then throw "extract: List is not a proper cons/nil chain (stuck at ${last.val.tag})"
+            else
+              builtins.genList
+                (i:
+                  let payload = consPayload (builtins.elemAt chain i).val; in
+                  self.extractInner elemTy elemTyVal payload.fst
+                )
+                (n - 1)
 
         else if t == "sum" then
         # H.sum l r elaborates to μ(sumDesc l r), so every value of type Sum

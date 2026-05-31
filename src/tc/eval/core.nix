@@ -22,7 +22,7 @@ let
     vSquash vSquashIntro
     vLevel vLevelZero vLevelSuc vLevelMax
     vLift vLiftIntro
-    vDesc vMu vDescCon
+    vDesc vMu vDescCon vDescConChain
     vString vInt vFloat vAttrs vPath vDerivation vFunction vAny
     vStringLit vIntLit vFloatLit vAttrsLit vPathLit vDerivationLit vFnLit vAnyLit
     eApp eFst eSnd eBootSumElim eBootJ eStrEq eAbsurd eLiftElim
@@ -34,6 +34,15 @@ let
   # `level-zero` singleton; evaluating under the U-case returns this
   # sentinel directly — no fuel decrement, no dispatch, no allocation.
   vUZero = vU vLevelZero;
+
+  # Effective `_layers` of a chain-form Val, honoring an optional `_layersOff`
+  # slice offset. Fast-path `o == 0` returns the array unchanged — byte-identical
+  # for every value built by the constructor; only offset-carrying machine
+  # predecessors materialize a slice, on cold reads.
+  effLayers = cv:
+    let o = cv._layersOff or 0; ls = cv._layers;
+    in if o == 0 then ls
+       else builtins.genList (i: builtins.elemAt ls (o + i)) ((builtins.length ls) - o);
 
   # mkValueF: dispatch-algebra-parameterized kernel evaluator body.
   #
@@ -129,6 +138,32 @@ let
         then val.vDescAt vLevelZero iLevVal (ev tm.I)
         else val.vDescAt (ev tm.k) iLevVal (ev tm.I)
       else if t == "mu" then vMu (ev tm.I) (ev tm.D) (ev tm.i)
+      # desc-con-chain — canonical flat-form chain. Bijective dual of
+      # the chain-form Val (`_shape == "linearChain"`); no peel analysis
+      # needed. Layers iterate via `map` (libnix-iterative), so the
+      # construction consumes O(1) simultaneously-active libnix frames
+      # regardless of N — the depth-axis property the brief demands.
+      else if t == "desc-con-chain" then
+        let
+          outerDV = ev tm.outerD;
+          leftV   = ev tm.payloadLeft;
+          rightV  = ev tm.payloadRight;
+          baseDV  = ev tm.base.D;
+          baseIV  = if tm.base.i.tag == "tt" then vTt else ev tm.base.i;
+          baseDdV = ev tm.base.d;
+          baseVal = vDescCon baseDV baseIV baseDdV;
+          layerVals = map (l: {
+            i     = if l.i.tag == "tt" then vTt else ev l.i;
+            heads = map ev l.heads;
+            cert  = null;
+          }) tm.layers;
+          finalOuterI =
+            if layerVals == [ ] then baseIV
+            else (builtins.head layerVals).i;
+        in
+        vDescConChain outerDV finalOuterI tm.payloadTag
+          leftV rightV layerVals baseVal
+
       # desc-con — trampolined for deep recursive chains (5000+).
       # Peels a homogeneous desc-con chain along its single recursive
       # position when D = plus A B with exactly one of A, B linear-
@@ -284,28 +319,68 @@ let
             baseI =
               if base.i.tag == "tt" then vTt else self_.evalF (f - n) env base.i;
             baseVal = withCert base baseI (self_.evalF (f - n) env base.d);
-            buildInner = hs: innerTail:
-              if hs == [ ] then innerTail
-              else vPair (builtins.head hs) (buildInner (builtins.tail hs) innerTail);
-            wrapPayload = innerVal:
-              topPeel.rebuildVal (tm': self_.evalF (f - n) env tm') innerVal;
+            chainForm = classify != null && plusSides != null;
           in
-          builtins.foldl'
-            (acc: i:
-              let
-                layerItem = builtins.elemAt chain (n - 1 - i);
-                layer = layerItem.val;
-                peeled = layerItem.peeled;
-                heads = peeled.heads;
-                headVals = map (h: self_.evalF (f - n + i) env h) heads;
-                iLayerVal =
-                  if layer.i.tag == "tt" then vTt else self_.evalF (f - n + i) env layer.i;
-              in
-              withCert layer iLayerVal
-                (wrapPayload (buildInner headVals (vPair acc vBootRefl)))
-            )
-            baseVal
-            (builtins.genList (x: x) n)
+          if chainForm then
+            let
+              payloadInfo = {
+                tag = if classify.side == "inl" then "VBootInl" else "VBootInr";
+                left = plusSides.A;
+                right = plusSides.B;
+              };
+              tmLayers = builtins.genList
+                (k:
+                  let
+                    layerItem = builtins.elemAt chain k;
+                    layerTm   = layerItem.val;
+                  in {
+                    i =
+                      if layerTm.i.tag == "tt" then vTt
+                      else self_.evalF (f - n) env layerTm.i;
+                    heads = map
+                      (h: self_.evalF (f - n) env h)
+                      layerItem.peeled.heads;
+                    cert = layerTm._descConCert or null;
+                  })
+                n;
+              # Val-level peel: see machine.nix:KDescConPeel_BaseD chain-form
+              # branch for design rationale. Recovers layers when Tm-level
+              # peel terminates at a runtime `var` whose bound Val is a
+              # recursive-side ctor (the typical descInd reduction case).
+              chainNF = self_.forceAndPeelChainV payloadInfo.tag nFields baseVal;
+              allLayers = tmLayers ++ chainNF.layers;
+              finalBase = chainNF.base;
+              finalOuterI =
+                if allLayers == [ ] then finalBase.i
+                else (builtins.head allLayers).i;
+            in
+            vDescConChain dVal finalOuterI
+              payloadInfo.tag payloadInfo.left payloadInfo.right
+              allLayers finalBase
+          else
+            let
+              buildInner = hs: innerTail:
+                if hs == [ ] then innerTail
+                else vPair (builtins.head hs) (buildInner (builtins.tail hs) innerTail);
+              wrapPayload = innerVal:
+                topPeel.rebuildVal (tm': self_.evalF (f - n) env tm') innerVal;
+            in
+            builtins.foldl'
+              (acc: i:
+                let
+                  layerItem = builtins.elemAt chain (n - 1 - i);
+                  layer = layerItem.val;
+                  peeled = layerItem.peeled;
+                  heads = peeled.heads;
+                  headVals = map (h: self_.evalF (f - n + i) env h) heads;
+                  iLayerVal =
+                    if layer.i.tag == "tt" then vTt else self_.evalF (f - n + i) env layer.i;
+                in
+                withCert layer iLayerVal
+                  (wrapPayload (buildInner headVals (vPair acc vBootRefl)))
+              )
+              baseVal
+              (builtins.genList (x: x) n)
       else if t == "desc-ind" then
         self_.vDescIndF f (ev tm.D) (ev tm.motive) (ev tm.step) (ev tm.i) (ev tm.scrut)
 
@@ -438,8 +513,110 @@ in
 
     instantiateF = fuel: cl: arg: self.evalF fuel ([ arg ] ++ cl.env) cl.body;
 
-    vAppF = fuel: fn: arg:
-      if fn.tag == "VDescViewFn" then fn.apply arg
+    # Re-export the outer-`let` chain-`_layers` slicer as a self member so
+    # `machine.nix` (`self.effLayers`) and `conv.nix` (`E.effLayers`) share
+    # one definition.
+    effLayers = effLayers;
+
+    # Force a `VThunkTm` to its underlying Val. Stepwise tail-recursive
+    # against the (already-enforced) invariant that `runMachineF` Done is
+    # never a `VThunkTm`: the second call is a no-op, kept defensive.
+    # Non-`VThunkTm` inputs pass through. Use at every external-API entry
+    # point that reads a stored sub-Val's `.tag`.
+    forceVal = v:
+      if (v.tag or "") != "VThunkTm" then v
+      else self.forceVal (self.runMachineF self.defaultFuel v.env v.tm);
+
+    # Canonical linearChain normal form. Force-peels a Val along its
+    # recursive spine and recursively flattens nested chain-form bases
+    # into a single flat layer list. Every sub-Val `.tag` inspection
+    # forces first (the VThunkTm read-site invariant, value.nix:109-118):
+    # a thunk hiding a recursive ctor would otherwise halt the peel one
+    # layer short. One `genericClosure` -> O(1) libnix frames per layer.
+    # `start` may be a raw recursive `VDescCon` or an already chain-form
+    # Val; both canonicalize identically.
+    #   pTag    : sum-payload discriminator tag (e.g. "VBootInr")
+    #   nFields : constructor arity (#heads per layer)
+    # -> { layers = [{ i; heads; cert }]  # outer-first (value.nix LayerRec)
+    #    ; base                           # flat: not chain-form, not peelable
+    #    ; outerTag, outerLeft, outerRight # payload-wide, from the outermost layer
+    #    }
+    forceAndPeelChainV = pTag: nFields: start:
+      let
+        F = self.forceVal;
+        isRetLeafV = p0:
+          let p = F p0; in
+          p.tag == "VBootRefl"
+          || (p.tag == "VLiftIntro" && (F p.a).tag == "VBootRefl");
+        peel1 = node0:
+          let node = F node0; in
+          if node.tag != "VDescCon" then null
+          else
+            let nd = F node.d; in
+            if nd.tag != pTag then null
+            else
+              let
+                collectV = kk: p0: hs:
+                  let p = F p0; in
+                  if kk == nFields then
+                    if p.tag != "VPair" then null
+                    else if !(isRetLeafV p.snd) then null
+                    else if (F p.fst).tag != "VDescCon" then null
+                    else {
+                      i = node.i; heads = hs; cert = node._descConCert or null;
+                      left = nd.left or null; right = nd.right or null;
+                      tail = p.fst;
+                    }
+                  else if p.tag != "VPair" then null
+                  else collectV (kk + 1) p.snd (hs ++ [ p.fst ]);
+              in collectV 0 nd.val [ ];
+        step = node0:
+          let node = F node0; in
+          if (node._shape or null) == "linearChain"
+          then {
+            kind = "chain"; layers = effLayers node; next = node._base;
+            tag = node._payloadTag or null;
+            left = node._payloadLeft or null; right = node._payloadRight or null;
+          }
+          else
+            let pl = peel1 node; in
+            if pl == null then { kind = "base"; node = node; tag = null; }
+            else {
+              kind = "layer"; layers = [ { inherit (pl) i heads cert; } ]; next = pl.tail;
+              tag = pTag; left = pl.left; right = pl.right;
+            };
+        walk = builtins.genericClosure {
+          startSet = [ { key = 0; s = step start; } ];
+          operator = item:
+            if item.s.kind == "base" then [ ]
+            else [ { key = item.key + 1; s = step item.s.next; } ];
+        };
+        payloadStep =
+          let ps = builtins.filter (it: it.s.tag != null) walk;
+          in if ps == [ ] then null else (builtins.head ps).s;
+      in {
+        layers = builtins.concatLists (map (it: it.s.layers or [ ]) walk);
+        base = (builtins.elemAt walk (builtins.length walk - 1)).s.node;
+        outerTag = if payloadStep == null then null else payloadStep.tag;
+        outerLeft = if payloadStep == null then null else payloadStep.left;
+        outerRight = if payloadStep == null then null else payloadStep.right;
+      };
+
+    # The eliminators below (vAppF, vFst, vSnd, vStrEq, vBootSumElimF, vBootJ,
+    # vAbsurd, vSquashElimF, vLiftF, vLiftIntroF, vLiftElimF) tag-dispatch
+    # without a `VLazyDescIndAccLayer` arm. Safe by a three-layer invariant:
+    # (a) `machine.nix:1116-1128` (`stepIf` Done-transform) — `runMachineF`
+    # cannot exit Done with a layer-tagged Val; the kont stack force-cascades
+    # via `forceLazyLayer` first; (b) `machine.nix:142-171` (`ev` tier-3
+    # dispatch) — every eliminator / desc-ind Tm routes through `evalF` =
+    # `runMachineF`, inheriting (a); (c) `datatype.nix:880-936`
+    # (`dispatchStep`) — user-step `ih` args are emitted as
+    # `fst_ (snd_ … payloadIH)` chains, all tier-3, so layers in the
+    # incoming env force through (b) before binding. Regression coverage:
+    # `nix/nix-effects/tests/regression-layer-leak.nix`.
+    vAppF = fuel: fn0: arg:
+      let fn = self.forceVal fn0; in
+      if fn.tag == "VDescViewFn" then self.applyDescViewFnByKindF fuel fn arg
       else if fn.tag == "VLam" then self.instantiateF fuel fn.closure arg
       else if fn.tag == "VNe" then vNe fn.level (fn.spine ++ [ (eApp arg) ])
       else throw "tc: vApp on non-function (tag=${fn.tag})";
@@ -465,8 +642,10 @@ in
     # vStrEq — string equality primitive.
     # Both VStringLit → plus-encoded VDescCon true/false. Neutral → spine.
     # StrEq is symmetric, so we canonicalize neutral-first for the spine.
-    vStrEq = lhs: rhs:
+    vStrEq = lhs0: rhs0:
       let
+        lhs = self.forceVal lhs0;
+        rhs = self.forceVal rhs0;
         boolDescV = self.eval [ ] boolDescTm;
         eqTtV = vBootEq vUnit vTt vTt;
         vBoolTrue = vDescCon boolDescV vTt (vBootInl eqTtV eqTtV vBootRefl);
@@ -584,39 +763,9 @@ in
     };
 
     evalF = api.leaf {
-      description = "evalF: core kernel-term evaluator — interpret a `Tm` in an environment of values to produce a `Val`, fuel-threaded so each step decrements until exhaustion throws `\"normalization budget exceeded\"`.";
+      description = "evalF: kernel-term evaluator. Routes through the CEK machine in `tc/eval/machine.nix` so every Tm-structural dispatch participates in the same driver loop that knows machine-internal Val tags (notably `VLazyDescIndAccLayer`). `mkValueF` remains exported for overlays (notably `tc/elaborate/eval-overlay.nix`) that compose their own self-table with VMeta-aware dispatch.";
       signature = "evalF : Int -> Env -> Tm -> Val";
-      doc = ''
-        Dispatches per `tm.tag` over the kernel-term ADT: variables,
-        `let`, `ann`, all type formers (`pi`, `sigma`,
-        `boot-sum`, `boot-eq`, `mu`, `squash`, primitives, universe),
-        introduction forms (`lam`, `pair`, `tt`, `boot-inl`/`boot-inr`,
-        `boot-refl`, `squash-intro`, literals, `desc-con`), and
-        elimination forms (`app`, `fst`/`snd`, `boot-sum-elim`,
-        `boot-j`, `squash-elim`, `desc-ind`, `lift-elim`).
-
-        Mutual recursion with `vAppF` / `instantiateF` (this file) and
-        the description walkers `vDescIndF` / `vInterpDF` / `vAllDF` /
-        `vEverywhereDF` (`desc.nix`) is closed by the kernel fixpoint
-        through `self`. `desc-con` chains are trampolined via
-        `builtins.genericClosure` so deep recursive data (5000+
-        layers) never blows the Nix evaluator stack.
-
-        Fuel is decremented once per recursive `self.evalF` call. The
-        budget threads through all sub-evaluations; partial spending
-        is bounded by the budget at the call site. Default budget
-        (`defaultFuel = 10000000`) covers all in-repo workloads; tune
-        only for experimental kernel-stress benchmarks.
-
-        Returns a `Val` with one of the kernel's value tags (`VLam`,
-        `VPi`, `VSigma`, `VPair`, `VTt`, `VBootSum`, `VBootInl`,
-        `VBootInr`, `VBootEq`, `VBootRefl`, `VFunext`, `VSquash`,
-        `VSquashIntro`, `VLift`, `VLiftIntro`, `VDesc`, `VMu`,
-        `VDescCon`, `VU`, primitive `VString`/`VInt`/..., `VStringLit`/...,
-        `VNe` for stuck applications, `VOpaqueLam` for axiomatized
-        lambdas). Unknown tags throw an internal error.
-      '';
-      value = mkValueF self;
+      value = fuel: env: tm: self.runMachineF fuel env tm;
     };
 
     eval = api.leaf {

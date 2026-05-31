@@ -194,7 +194,10 @@ let
       x = V.freshVar d;
       lhsBody = self.elabAppF 10000000 lhs x;
       rhsBody = self.elabAppF 10000000 rhs x;
-      bodyTy = E.instantiate ty.closure x;
+      # Closure env may carry `VMeta`s; the overlay instantiator threads
+      # meta-aware dispatch through the body so a meta never reaches the
+      # kernel CEK machine (kernel-purity, value.nix:13-17).
+      bodyTy = self.instantiateOverlay ty.closure x;
     in
     elabConv (d + 1) bodyTy lhsBody rhsBody;
 
@@ -204,7 +207,7 @@ let
       rhsFst = self.elabFst rhs;
       lhsSnd = self.elabSnd lhs;
       rhsSnd = self.elabSnd rhs;
-      sndTy = E.instantiate ty.closure lhsFst;
+      sndTy = self.instantiateOverlay ty.closure lhsFst;
     in
     andThen
       (elabConv d ty.fst lhsFst rhsFst)
@@ -219,8 +222,8 @@ let
   elabConvPiTypes = d: lhs: rhs:
     let
       x = V.freshVar d;
-      lhsBody = E.instantiate lhs.closure x;
-      rhsBody = E.instantiate rhs.closure x;
+      lhsBody = self.instantiateOverlay lhs.closure x;
+      rhsBody = self.instantiateOverlay rhs.closure x;
       uZero = V.vU V.vLevelZero;
     in
     andThen
@@ -230,8 +233,8 @@ let
   elabConvSigmaTypes = d: lhs: rhs:
     let
       x = V.freshVar d;
-      lhsBody = E.instantiate lhs.closure x;
-      rhsBody = E.instantiate rhs.closure x;
+      lhsBody = self.instantiateOverlay lhs.closure x;
+      rhsBody = self.instantiateOverlay rhs.closure x;
       uZero = V.vU V.vLevelZero;
     in
     andThen
@@ -324,6 +327,23 @@ in
             in
             builtins.length r.state.constraints;
           expected = 2;
+        };
+        # Regression: opening a meta-bearing closure must stay in the overlay.
+        # `elabConvPiTypes` opens both Pi closures, whose envs capture a
+        # `VMeta` lifted in the body. Kernel instantiation would route the
+        # meta into the CEK machine, whose `KLift_X` reads `.tag` (absent on
+        # `VMeta`) and crashes.
+        "elabConv-pitypes-meta-closure-stays-out-of-kernel" = {
+          expr =
+            let
+              liftBody = fx.tc.term.mkLift fx.tc.term.mkLevelZero
+                (fx.tc.term.mkLevelSuc fx.tc.term.mkLevelZero)
+                fx.tc.term.mkBootRefl
+                (fx.tc.term.mkVar 1);
+              pi = V.vPi "x" meta0 (V.mkClosure [ meta0 ] liftBody);
+            in
+            (self.runElab H.unit (elabConv 0 (V.vU V.vLevelZero) pi pi)).value;
+          expected = true;
         };
       };
     };

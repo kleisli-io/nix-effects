@@ -546,25 +546,35 @@ in
                 if sv.side == "inl" then pickArm idx view.A sv.value
                 else pickArm (idx + 1) view.B sv.value
               else { ctorIdx = idx; armDesc = dTy; armPayload = pl; };
-            extractFields = dTy: pl:
-              let view = descViewOf dTy; in
+            # `types` carries the chosen constructor's declared field HOAS
+            # types in declaration order (aligns with the desc-arg walk and the
+            # `fieldNames` zip below). A named-datatype field decodes through
+            # its declared type — which retains `_dtypeMeta` — instead of
+            # `reifyType view.sTy`, which rebuilds it anonymously. A `null` or
+            # absent entry (dependent or metadata-less field) falls back to
+            # `reifyType`.
+            extractFields = types: j: dTy: pl:
+              let
+                view = descViewOf dTy;
+                declared = if j < builtins.length types then builtins.elemAt types j else null;
+              in
               if view.idx == 0 then [ ]
               else if view.idx == 1 then
                 let
                   fieldVal = pl.fst;
                   rest = pl.snd;
-                  fieldHoas = self.reifyType view.sTy;
+                  fieldHoas = if declared != null then declared else self.reifyType view.sTy;
                   fieldNix = self.extractInner fieldHoas view.sTy fieldVal;
                   subDesc = E.vApp view.tFn fieldVal;
                 in
-                [ fieldNix ] ++ extractFields subDesc rest
+                [ fieldNix ] ++ extractFields types (j + 1) subDesc rest
               else if view.idx == 2 then
                 let
                   recVal = pl.fst;
                   rest = pl.snd;
                   recNix = self.extractInner hoasTy tyVal recVal;
                 in
-                [ recNix ] ++ extractFields view.sub rest
+                [ recNix ] ++ extractFields types (j + 1) view.sub rest
               else if view.idx == 3 then
               # Opaque lambda field: return the kernel VLam wrapped as a
               # Nix function via the existing pi-extract discipline. Domain
@@ -577,7 +587,7 @@ in
                   piTyVal = V.vPi "_" view.sTy (V.mkClosure [ ] (H.elab hoasTy));
                   lamNix = self.extractInner piHoas piTyVal lamVal;
                 in
-                [ lamNix ] ++ extractFields view.sub rest
+                [ lamNix ] ++ extractFields types (j + 1) view.sub rest
               else throw "extract: plus desc reached extractFields";
 
           in
@@ -608,14 +618,13 @@ in
           else
             let
               arm = pickArm 0 descTyVal val.d;
-              fieldVals = extractFields arm.armDesc arm.armPayload;
-              conName =
-                if meta != null
-                then (builtins.elemAt constructors arm.ctorIdx).name
-                else "con${toString arm.ctorIdx}";
+              ctor = if meta != null then builtins.elemAt constructors arm.ctorIdx else null;
+              fieldTypes = if ctor != null then map (f: f.type) ctor.fields else [ ];
+              fieldVals = extractFields fieldTypes 0 arm.armDesc arm.armPayload;
+              conName = if ctor != null then ctor.name else "con${toString arm.ctorIdx}";
               fieldNames =
-                if meta != null
-                then map (f: f.name) (builtins.elemAt constructors arm.ctorIdx).fields
+                if ctor != null
+                then map (f: f.name) ctor.fields
                 else builtins.genList (i: "_field${toString i}") (builtins.length fieldVals);
             in
             { _con = conName; }
@@ -637,9 +646,19 @@ in
           let
             meta = datatypeMetaOf hoasTy;
             base = self.reifyType tyVal;
+            baseTag = base._htag or null;
+            # `H.sum A B` is an implicit-app spine; `reifyType` rebuilds the
+            # arms anonymously. Recover the named arms from the spine
+            # (`fn.arg`/`arg`) — they retain `_dtypeMeta`, so nested named
+            # datatypes decode with real constructor/field names instead of
+            # positional `con<i>`/`_field<j>`.
+            sumArms =
+              let l = hoasTy.fn.arg or null; r = hoasTy.arg or null; in
+              if baseTag == "sum" && l != null && r != null
+              then { left = l; right = r; } else null;
             hoasTy' =
-              if meta != null && (base._htag or null) == "mu"
-              then base // { _dtypeMeta = meta; }
+              if meta != null && baseTag == "mu" then base // { _dtypeMeta = meta; }
+              else if sumArms != null then base // sumArms
               else base;
           in
           self.extractInner hoasTy' tyVal val

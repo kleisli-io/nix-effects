@@ -159,6 +159,38 @@ in
       expected = { _tag = "Right"; value = true; };
     };
 
+    # Sum arms that are named datatypes must keep their constructor/field
+    # names through extraction (the arms live in the app-spine, not in the
+    # reified anonymous sum).
+    "value-review-view-sum-of-named-datatypes" = {
+      expr =
+        let
+          V = self;
+          Box = H.datatype "SumArmBox" [ (H.con "box" [ (H.field "n" H.nat) ]) ];
+          Other = H.datatype "SumArmOther" [ (H.con "other" [ (H.field "b" H.bool) ]) ];
+          T = H.sum Box.T Other.T;
+          value = { _tag = "Left"; value = { _con = "box"; n = 5; }; };
+        in
+        V.view T (V.review T value);
+      expected = { _tag = "Left"; value = { _con = "box"; n = 5; }; };
+    };
+
+    # A record field whose type is itself a named datatype must decode with
+    # the inner constructor/field names, not positional `con0`/`_field0`.
+    "value-review-view-nested-named-datatype-field" = {
+      expr =
+        let
+          V = self;
+          Inner = H.datatype "NestedInner" [ (H.con "mk" [ (H.field "n" H.nat) ]) ];
+          Outer = H.datatype "NestedOuter" [
+            (H.con "wrap" [ (H.field "inner" Inner.T) (H.field "tag" H.nat) ])
+          ];
+          record = { _con = "wrap"; inner = { _con = "mk"; n = 7; }; tag = 1; };
+        in
+        V.view Outer.T (V.review Outer.T record);
+      expected = { _con = "wrap"; inner = { _con = "mk"; n = 7; }; tag = 1; };
+    };
+
     "value-review-view-custom-tree" = {
       expr =
         let

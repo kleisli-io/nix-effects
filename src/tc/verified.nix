@@ -84,6 +84,84 @@ let
       (H.lam "r" rightTy (r: right r))
       scrut;
 
+  # `elimData`/`matchData` are to a user `H.datatype` what
+  # `listElim`/`matchList` are to lists: build branch binders from
+  # `_dtypeMeta` and ann-wrap each body against the (meta-β-reduced)
+  # motive image, so branch bodies are checked rather than synthesised.
+  # Handlers are keyed by ctor name, curried over fields then over one IH
+  # per `recAt` field; a zero-binder ctor's handler is the body term.
+  # Non-parametric datatypes only.
+
+  # v.elimData k D motive scrut handlers — dependent motive.
+  elimData = k: D: motive: scrut: handlers:
+    let
+      G = fx.tc.generic.datatype;
+      info = G.datatypeInfo D;
+      _paramCheck =
+        if (builtins.length (info.params or [ ])) != 0
+        then throw "v.elimData: '${info.name}' is parametric; use listElim/sumElim or raw D.elim"
+        else null;
+      appSpine = f: args: builtins.foldl' H.app f args;
+      # Meta-β so the branch target is the result type, not a stuck neutral.
+      motiveAt = x:
+        if builtins.isAttrs motive && (motive._htag or null) == "lam"
+        then motive.body x
+        else H.app motive x;
+      isRec = f: f.kind == "recAt";
+      fieldTy = f: prev:
+        if f.kind == "data" then f.type
+        else if f.kind == "dataD" then f.typeFn prev
+        else if f.kind == "recAt" then D.T
+        else throw "v.elimData: Π-typed field '${f.name}' in '${info.name}' unsupported; use raw D.elim";
+
+      branchOf = con:
+        let
+          handler = handlers.${con.name} or
+            (throw "v.elimData: missing handler for constructor '${con.name}' of '${info.name}'");
+          ctorFn = D.${con.name};
+          fields = con.fields;
+          nF = builtins.length fields;
+          recAt = builtins.filter isRec fields;
+
+          # Bind fields (threading markers for dependent types), then one
+          # IH per recursive field, then ann the saturated body.
+          bindFields = i: prev: vars:
+            if i < nF then
+              let f = builtins.elemAt fields i; in
+              H.lam f.name (fieldTy f prev) (x:
+                bindFields (i + 1)
+                  (if isRec f then prev else prev // { ${f.name} = x; })
+                  (vars ++ [ x ]))
+            else
+              let
+                recVars = builtins.concatMap
+                  (j: if isRec (builtins.elemAt fields j)
+                      then [ (builtins.elemAt vars j) ] else [ ])
+                  (builtins.genList (j: j) nF);
+                target = motiveAt (appSpine ctorFn vars);
+                bindIHs = rem: recs: ihs:
+                  if rem == [ ] then
+                    let
+                      args = vars ++ ihs;
+                      body = if args == [ ] then handler
+                             else builtins.foldl' (acc: a: acc a) handler args;
+                    in H.ann body target
+                  else
+                    let f = builtins.head rem; in
+                    H.lam "ih_${f.name}" (motiveAt (builtins.head recs)) (ih:
+                      bindIHs (builtins.tail rem) (builtins.tail recs) (ihs ++ [ ih ]));
+              in bindIHs recAt recVars [ ];
+        in bindFields 0 { } [ ];
+
+      branches = builtins.map branchOf info.constructors;
+    in
+    builtins.seq _paramCheck
+      (appSpine (H.app (D.elim k) motive) (branches ++ [ scrut ]));
+
+  # v.matchData D resultTy scrut handlers — constant motive λ_.resultTy.
+  matchData = D: resultTy: scrut: handlers:
+    elimData 0 D (H.lam "_" D.T (_: resultTy)) scrut handlers;
+
   # -- Derived combinators (built on list elimination) --
 
   # v.map elemTy resultTy f list
@@ -316,6 +394,8 @@ api.namespace {
     - `match : Hoas → Hoas → { zero; succ : k → ih → Hoas; } → Hoas` — Nat elimination
     - `matchList : Hoas → Hoas → Hoas → { nil; cons : h → t → ih → Hoas; } → Hoas` — List elimination
     - `matchSum : Hoas → Hoas → Hoas → Hoas → { left; right; } → Hoas` — Sum elimination
+    - `matchData : Datatype → Hoas → Hoas → { <con>; } → Hoas` — any non-parametric `H.datatype`
+    - `elimData : Level → Datatype → Hoas → Hoas → { <con>; } → Hoas` — `matchData` with a dependent motive
 
     ## Derived Combinators
 
@@ -494,6 +574,49 @@ api.namespace {
           right = _: nat 99;
         });
         expected = 99;
+      };
+
+      # ===== matchData / elimData =====
+
+      # Fielded ctor, constant motive: project the field (ι-reduction).
+      "v-matchData-field" = {
+        expr =
+          let Box = H.datatype "Box" [ (H.con "mk" [ (H.field "n" NatT) ]) ];
+          in verify NatT (matchData Box NatT (H.app Box.mk (nat 5)) { mk = n: n; });
+        expected = 5;
+      };
+
+      # Multi-ctor; list-returning branches with bare nil/cons (no H.ann),
+      # zero-field ctor handler is the body term directly.
+      "v-matchData-list-branches" = {
+        expr =
+          let
+            Two = H.datatype "Two" [
+              (H.con "emit" [ (H.field "x" NatT) ])
+              (H.con "skip" [ ])
+            ];
+            run = scrut: verify (H.listOf NatT) (matchData Two (H.listOf NatT) scrut {
+              emit = x: H.cons x H.nil;
+              skip = H.nil;
+            });
+          in
+          { e = run (H.app Two.emit (nat 7)); s = run Two.skip; };
+        expected = { e = [ 7 ]; s = [ ]; };
+      };
+
+      # Recursive datatype: one IH binder per recAt field, curried after
+      # the fields. Length of a 2-element list.
+      "v-matchData-recursive-ih" = {
+        expr =
+          let
+            Lst = H.datatype "Lst" [
+              (H.con "nl" [ ])
+              (H.con "cn" [ (H.field "h" NatT) (H.recField "t") ])
+            ];
+            two = H.app (H.app Lst.cn (nat 9)) (H.app (H.app Lst.cn (nat 8)) Lst.nl);
+          in
+          verify NatT (matchData Lst NatT two { nl = nat 0; cn = h: t: ih: H.succ ih; });
+        expected = 2;
       };
 
       # ===== map =====
@@ -1011,6 +1134,16 @@ api.namespace {
         type doesn't depend on which case fires; drop to `H.sumElim`
         for dependent motives. Level fixed at 0.
       '';
+    };
+    elimData = api.leaf {
+      value = elimData;
+      description = "elimData: generic non-parametric user-datatype eliminator with dependent motive — builds branch binders from `_dtypeMeta` and ann-wraps each body against the meta-β-reduced motive image, so branch bodies are checked rather than synthesised. Handlers keyed by ctor name, curried over fields then one IH per `recAt` field.";
+      signature = "elimData : Level -> Datatype -> Hoas -> Hoas -> { <con> : field… -> ih… -> Hoas; } -> Hoas";
+    };
+    matchData = api.leaf {
+      value = matchData;
+      description = "matchData: `elimData` with constant motive `λ_.resultTy` — the `matchSum`/`matchList` analogue for arbitrary non-parametric `H.datatype`s.";
+      signature = "matchData : Datatype -> Hoas -> Hoas -> { <con> : field… -> ih… -> Hoas; } -> Hoas";
     };
     map = api.leaf {
       value = map;

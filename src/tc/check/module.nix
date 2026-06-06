@@ -53,6 +53,7 @@ api.mk {
       emptyCtx extend lookupType
       runCheck checkTm inferTm
       bindP bindPR bindPChain
+      _blame _yield
       diag;
 
     _internal = api.namespace {

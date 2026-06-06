@@ -514,6 +514,47 @@ in
       expected = 0;
     };
 
+    # Depth-flatness regression for the bidirectional checker on deep right-
+    # nested telescopes at N=10000 (the default max-call-depth). checkType's pi
+    # arm and checkTm's lam/let arms each descend one binder per level; a
+    # checker that consumes Nix call-depth per binder overflows max-call-depth
+    # well before N=10000. A flat checker reads all three in O(1) libnix frames
+    # at default ulimit -s 8192. lam checks against the evaluated deep Pi (the
+    # bindPR-wrapped handle path); let nests directly under Unit.
+    "stress-checktype-pi-10000-flat" = {
+      expr =
+        let
+          deepPi = builtins.foldl' (cod: _: T.mkPi "x" T.mkUnit cod)
+            T.mkUnit
+            (builtins.genList (x: x) 10000);
+        in
+        (runCheck (checkType ctx0 deepPi)).tag;
+      expected = "pi";
+    };
+    "stress-checktm-lam-10000-flat" = {
+      expr =
+        let
+          deepPi = builtins.foldl' (cod: _: T.mkPi "x" T.mkUnit cod)
+            T.mkUnit
+            (builtins.genList (x: x) 10000);
+          deepLam = builtins.foldl' (body: _: T.mkLam "x" T.mkUnit body)
+            T.mkTt
+            (builtins.genList (x: x) 10000);
+        in
+        (checkTm ctx0 deepLam (E.eval [ ] deepPi)).tag;
+      expected = "lam";
+    };
+    "stress-checktm-let-10000-flat" = {
+      expr =
+        let
+          deepLet = builtins.foldl' (body: _: T.mkLet "x" T.mkUnit T.mkTt body)
+            T.mkTt
+            (builtins.genList (x: x) 10000);
+        in
+        (checkTm ctx0 deepLet vUnit).tag;
+      expected = "let";
+    };
+
     "roundtrip-tt" = {
       expr = Q.nf [ ] (Q.nf [ ] T.mkTt) == Q.nf [ ] T.mkTt;
       expected = true;

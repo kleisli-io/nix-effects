@@ -1787,6 +1787,60 @@ in
         type = false;
       };
     };
+    # A constructor argument that is checkable-but-not-inferable — a bare
+    # `cons`/`nil` list whose element type is inferred from the expected type —
+    # must be CHECKED against its declared field type by the chain-flattener,
+    # not inferred. Pre-fix the flattener lowered field args in infer mode, so
+    # the list head landed in the element-type slot ("string-lit where U
+    # expected"). The same value checks fine directly against `listOf string`.
+    "flatten-saturated-ctor-checks-unannotated-list-field" = {
+      expr =
+        let
+          One = datatype "OneListFieldRegression" [
+            (con "mk" [ (field "xs" (listOf string)) ])
+          ];
+        in
+        !((checkHoas One.T (app One.mk (cons (stringLit "a") nil))) ? error);
+      expected = true;
+    };
+    # Sibling case in the recursive (chain) branch: the head of a list-of-lists
+    # is itself a checkable-not-inferable list and must be checked against the
+    # element type, not inferred.
+    "flatten-recursive-ctor-checks-list-of-lists-head" = {
+      expr =
+        !((checkHoas (listOf (listOf string))
+          (cons (cons (stringLit "a") nil) nil)) ? error);
+      expected = true;
+    };
+    # Recursive cert path: a homogeneous (shared-reference) multi-layer chain
+    # triggers `chainValidated`, whose pre-check must use the same checked
+    # lowering as the emitted payload so the attestation matches the Tm.
+    "flatten-recursive-ctor-cert-path-homogeneous-list-of-lists" = {
+      expr =
+        let inner = cons (stringLit "a") nil;
+        in
+        !((checkHoas (listOf (listOf string))
+          (cons inner (cons inner nil))) ? error);
+      expected = true;
+    };
+    # `elaborateCtorChecked` path: `pnode`'s two rec fields make `ctorShape`
+    # null, so the flattener declines. Its param-instantiated `value : A` field
+    # type reads as `ann (listOf string) (u 0)`; unless `fieldTyOf` strips that,
+    # the bare `cons`/`nil` head lands in the element-type slot.
+    "flatten-declining-ctor-checks-param-instantiated-data-field" = {
+      expr =
+        let
+          PTree = datatypeP "PTreeAnnRegression" [{ name = "A"; kind = u 0; }] (ps:
+            let A = builtins.elemAt ps 0; in [
+              (con "pleaf" [ ])
+              (con "pnode" [ (field "value" A) (recField "left") (recField "right") ])
+            ]);
+          headList = cons (stringLit "a") nil;
+          pnodeTm = app (app (app PTree.pnode headList) PTree.pleaf) PTree.pleaf;
+        in
+        !((checkHoas (app PTree.T (listOf string)) pnodeTm) ? error);
+      expected = true;
+    };
     "datatype-nat-T-elab" = {
       expr = (elab (datatype "Nat" [
         (con "zero" [ ])

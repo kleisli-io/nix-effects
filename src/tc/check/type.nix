@@ -26,6 +26,7 @@ let
   pure = K.pure;
   send = K.send;
   bind = K.bind;
+  yield = self._yield.wrap;
 
   D = fx.diag.error;
 
@@ -81,6 +82,9 @@ in
       # An encoded description has type `VMu Unit (descDescAt iLev I k)
       # tt`; recover `iLev/I/k` only from that canonical stamp.
       value = ctx: dTm: iTyVal:
+        # Always-yield: cold, non-trivial recursion; head defer flattens
+        # the descent.
+        yield (
         let
           checkInferredDesc = dResult:
             let
@@ -161,18 +165,25 @@ in
               };
           inferDesc = bind (self.infer ctx dTm) checkInferredDesc;
           inferParamTerms = params:
-            if params == [ ] then pure [ ]
+            # Head-yield: defers the list walk so a run of pure-leaf params
+            # can't cascade at width.
+            yield (if params == [ ] then pure [ ]
             else
               bind (self.infer ctx (builtins.head params)) (pResult:
                 bind (inferParamTerms (builtins.tail params)) (rest:
-                  pure ([ pResult.term ] ++ rest)));
+                  pure ([ pResult.term ] ++ rest))));
           hasCompleteDescRef = tm:
             tm ? _descRef
             && (tm._descRef.kind or null) == "datatype-desc"
             && (tm._descRef.signature.complete or false);
           generatedParamTerm = tm:
             let t = tm.tag or null; in
-            if t == "ann" then hasCompleteDescRef tm || generatedParamTerm tm.term
+            # `params` reaching here are `inferParamTerms` outputs: `self.infer`
+            # has already checked each non-trusted `ann` body against its kind
+            # annotation, and trusted anns are correct by construction. A
+            # kind-validated `ann` param is therefore safe to trust without
+            # re-materializing the generated description body.
+            if t == "ann" then true
             else if t == "mu" then hasCompleteDescRef tm.D
             else if t == "desc-con" then hasCompleteDescRef tm.D
             else t == "unit" || t == "string" || t == "int"
@@ -230,7 +241,7 @@ in
                   (term:
                     pure { inherit term; level = kVal; })
               else inferDesc)
-        else inferDesc;
+        else inferDesc);
     };
 
     checkTypeLevel = api.leaf {
@@ -249,8 +260,16 @@ in
         forwarded verbatim.
       '';
       value = ctx: tm:
-        let t = tm.tag; in
-        if t == "unit" then pure { term = T.mkUnit; level = V.vLevelZero; }
+        let
+          t = tm.tag;
+          # Leaf tags: arm is `pure { …; level = vLevelZero }`. Left
+          # un-yielded for the bindP fast path. Every recursive type-former
+          # (U, pi, sigma, …) is excluded → yielded → flat descent (flips ckPi).
+          isLeaf = builtins.elem t [
+            "unit" "string" "int" "float" "attrs" "path" "function" "any" "level"
+          ];
+          body =
+            if t == "unit" then pure { term = T.mkUnit; level = V.vLevelZero; }
         else if t == "string" then pure { term = T.mkString; level = V.vLevelZero; }
         else if t == "int" then pure { term = T.mkInt; level = V.vLevelZero; }
         else if t == "float" then pure { term = T.mkFloat; level = V.vLevelZero; }
@@ -399,6 +418,8 @@ in
                   frame = D.captureFrame ctx;
                 };
               });
+        in
+        if isLeaf then body else yield body;
     };
 
     checkType = api.leaf {

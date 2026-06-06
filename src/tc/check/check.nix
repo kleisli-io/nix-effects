@@ -89,6 +89,7 @@ let
   bindP = self.bindP;
   bindPR = self.bindPR;
   bindPChain = self.bindPChain;
+  yield = self._yield.wrap;
 
 in
 {
@@ -137,6 +138,9 @@ in
         `checkTypeLevel` for the innermost-universe leaf.
       '';
       value = ctx: motTm: chain:
+        # Always-yield: cold path, self-recursive; head defer keeps the
+        # motive descent off the host stack.
+        yield (
         if chain == null then
         # Innermost body: must inhabit some universe — delegate to
         # `checkTypeLevel` which accepts any universe level and carries
@@ -201,7 +205,7 @@ in
                   in
                   go codVal (ch.tail freshV) (d + 1);
             in
-            go result.type chain ctx.depth);
+            go result.type chain ctx.depth));
     };
 
     check = api.leaf {
@@ -239,9 +243,19 @@ in
         `checkMotive` for eliminator motive validation.
       '';
       value = ctx: tm: ty0:
-        let ty = E.forceVal ty0; t = tm.tag; in
-
-        if t == "lam" && ty.tag == "VPi" then
+        let
+          t = tm.tag;
+          # Leaf tags: arm is `pure …` with no recursion. Left un-yielded
+          # so they stay Pure and the bindP `isPure` fast path fires. A
+          # mistagged recursive arm only over-forces — caught loudly by the
+          # depth probe, never silent.
+          isLeaf = builtins.elem t [
+            "tt" "lit-val" "string-lit" "int-lit" "float-lit"
+            "attrs-lit" "path-lit" "derivation-lit" "fn-lit" "any-lit"
+          ];
+          body =
+            let ty = E.forceVal ty0; in
+            if t == "lam" && ty.tag == "VPi" then
           let
             dom = ty.domain;
             cod = E.instantiate ty.closure (V.freshVar ctx.depth);
@@ -301,14 +315,16 @@ in
               bindPR P.AnnTerm "let" (self.check ctx tm.val aVal) (tTm:
                 let
                   tVal = E.eval ctx.env tTm;
+                  tyF = E.forceVal ty;
                   ctx' = {
                     env = [ tVal ] ++ ctx.env;
                     types = [ aVal ] ++ ctx.types;
                     depth = ctx.depth + 1;
                   };
                 in
-                bindPR P.LetBody "let" (self.check ctx' tm.body ty) (uTm:
-                  pure (T.mkLet tm.name aTm tTm uTm))))
+                builtins.seq tyF
+                  (bindPR P.LetBody "let" (self.check ctx' tm.body tyF) (uTm:
+                    pure (T.mkLet tm.name aTm tTm uTm)))))
 
         # Closed-Val splice: trust-mode check. The carried Val is opaque
         # to type-directed elaboration; we trust the user/elaborator that
@@ -598,7 +614,10 @@ in
                                     # numbers layers top-down (0 = outermost).
                                     layerDepth = n - 1 - k;
                                     checkHeads = j: remaining: accTms:
-                                      if remaining == [ ] then pure accTms
+                                      # Head-yield: re-defers the `cert && depth==0` branch
+                                      # whose `m` is a pure `pure h.head` that the bindP
+                                      # fast path would otherwise recurse through directly.
+                                      yield (if remaining == [ ] then pure accTms
                                       else
                                         let
                                           h = builtins.head remaining;
@@ -608,7 +627,7 @@ in
                                           (if certHasValidatedAttestation && ctx.depth == 0
                                            then pure h.head
                                            else self.check ctx h.head h.S)
-                                          (hTm: checkHeads (j + 1) rest (accTms ++ [ hTm ]));
+                                          (hTm: checkHeads (j + 1) rest (accTms ++ [ hTm ])));
                                     tasks = builtins.genList
                                       (j:
                                         {
@@ -665,6 +684,8 @@ in
                   frame = D.captureFrame ctx;
                 };
               });
+        in
+        if isLeaf then body else yield body;
     };
   };
 

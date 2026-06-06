@@ -32,32 +32,85 @@ let
 
   # Flatten nested max into a list of leaf summands, threading a
   # pending outer shift (number of `suc` layers) down to each leaf.
+  #
+  # Depth-flat worklist: a `genericClosure` keyed by a round counter (the
+  # branching lives in the eagerly-forced frontier vector, not the keys), so
+  # the trace is iterative in libnix — O(rounds) C-stack frames, not O(level
+  # depth). Each round forces every frontier node, enqueues `VLevelMax`
+  # children / the `VLevelSuc` predecessor (shift+1), and emits leaf summands
+  # (`VLevelZero`/`VNe`) into the accumulator. Emission order is irrelevant —
+  # `normLevel` sorts the summands by `baseCmp` downstream.
   flattenLevel = shift: v0:
-    let v = E.forceVal v0; in
-    if v.tag == "VLevelMax" then
-      flattenLevel shift v.lhs ++ flattenLevel shift v.rhs
-    else if v.tag == "VLevelSuc" then
-      flattenLevel (shift + 1) v.pred
-    else if v.tag == "VLevelZero" then
-      [{ base = levelZeroBase; inherit shift; }]
-    else if v.tag == "VNe" then
-      [{ base = mkVarBase v; inherit shift; }]
-    else throw "tc: level: unexpected tag '${v.tag}' in flattenLevel";
+    let
+      # One round: force every frontier node, enqueue children/predecessor,
+      # emit THIS round's leaf summands. Carrying only per-round `emitted`
+      # (not a running accumulator) is load-bearing: a threaded `acc ++ emitted`
+      # builds an O(depth) lazy `++` chain that overflows the C-stack when
+      # forced at the end. Instead the trace is materialized by genericClosure
+      # and the summands are gathered once, below, with iterative concatLists.
+      roundStep = frontier:
+        let
+          forced = map (it: { v = E.forceVal it.v; inherit (it) shift; }) frontier;
+          children = builtins.concatLists (map
+            (it:
+              if it.v.tag == "VLevelMax" then
+                [ { v = it.v.lhs; inherit (it) shift; } { v = it.v.rhs; inherit (it) shift; } ]
+              else if it.v.tag == "VLevelSuc" then
+                [ { v = it.v.pred; shift = it.shift + 1; } ]
+              else [ ])
+            forced);
+          emitted = builtins.concatLists (map
+            (it:
+              if it.v.tag == "VLevelZero" then [ { base = levelZeroBase; inherit (it) shift; } ]
+              else if it.v.tag == "VNe" then [ { base = mkVarBase it.v; inherit (it) shift; } ]
+              else if it.v.tag == "VLevelMax" || it.v.tag == "VLevelSuc" then [ ]
+              else throw "tc: level: unexpected tag '${it.v.tag}' in flattenLevel")
+            forced);
+          # Force the frontier list spine AND every child's threaded `shift`
+          # to a concrete int this round. Both are load-bearing: an unforced
+          # spine lazily cascades back through every prior round, and the
+          # threaded `shift + 1` is an O(depth) lazy arithmetic chain that
+          # overflows when a leaf summand's shift is finally read.
+          forceShifts = builtins.foldl' (acc: c: builtins.seq c.shift acc) null children;
+        in
+        {
+          frontier = builtins.seq forceShifts children;
+          inherit emitted;
+        };
+      rounds = builtins.genericClosure {
+        startSet = [{ key = 0; st = roundStep [{ v = v0; inherit shift; }]; }];
+        operator = item:
+          if item.st.frontier == [ ] then [ ]
+          else [{ key = item.key + 1; st = roundStep item.st.frontier; }];
+      };
+    in
+    builtins.concatLists (map (it: it.st.emitted) rounds);
 
-  # Dedup adjacent-or-scattered same-base summands, keeping the max
-  # shift. O(N²) but N is small (bounded by Level expression depth).
+  # Dedup adjacent-or-scattered same-base summands, keeping the max shift.
+  # The accumulator width is the number of DISTINCT bases (small — bounded by
+  # the count of free level variables), but the fold runs once per summand, so
+  # a deep `max` tree drives it N times. The rebuilt `{ base = y.base; shift =
+  # … }` records must have their `base` (to WHNF — not the neutral's spine) and
+  # `shift` forced each step: otherwise they stack into an O(#summands)-deep
+  # lazy indirection chain that overflows the C-stack when a field is finally
+  # read. Forcing per step keeps it O(#summands × #distinct-bases).
   dedupLevel = summands:
     builtins.foldl'
       (acc: s:
-        if builtins.any (y: baseEq y.base s.base) acc
-        then
-          map
-            (y:
-              if baseEq y.base s.base
-              then { base = y.base; shift = if y.shift > s.shift then y.shift else s.shift; }
-              else y)
-            acc
-        else acc ++ [ s ]
+        let
+          next =
+            if builtins.any (y: baseEq y.base s.base) acc
+            then
+              map
+                (y:
+                  if baseEq y.base s.base
+                  then { base = y.base; shift = if y.shift > s.shift then y.shift else s.shift; }
+                  else y)
+                acc
+            else acc ++ [ s ];
+          forceElems = builtins.foldl' (a: e: builtins.seq e.base (builtins.seq e.shift a)) null next;
+        in
+        builtins.seq forceElems next
       ) [ ]
       summands;
 
@@ -173,9 +226,11 @@ let
     then builtins.elemAt closure.env (body.fn.idx - 1)
     else null;
 
-  # -- Main conversion checker --
-  # Returns true if v1 and v2 are definitionally equal at depth d.
-  conv = d: v1raw: v2raw:
+  # -- Conversion step over forced values --
+  # Definitional equality of v1 and v2 at depth d. `runConvF` drives the
+  # structural arms (VPair/VBootSum/VBootInl/VBootInr/Σ-eta) depth-flat and
+  # delegates every other arm here.
+  convStep = d: v1raw: v2raw:
     let
       v1 = E.forceVal v1raw;
       v2 = E.forceVal v2raw;
@@ -624,6 +679,45 @@ let
 
     # §6.5 Catch-all — different constructors are never equal
     else false;
+
+  # Classifies the d-incrementing binder arms (VPi/VLam/eta/VSigma) for `cPeel`
+  # so binder layers peel flat. `a`/`b` already forced. Returns a layer record
+  # (na/nb = spine-next at depth nd), or null to fall through to structural/base.
+  #
+  # Lift guard comes first: a VLam-vs-collapsing-VLift goal collapses via Lift in
+  # convStep, so it returns null here rather than being read as eta.
+  cPeelBinder = d: a: b:
+    let
+      ta = a.tag; tb = b.tag;
+      goal = x: y: { inherit d; a = x; b = y; };
+      layer = goals: na: nb: nd: { kind = "layer"; inherit goals na nb nd; };
+      fv = V.freshVar d;
+    in
+    if (ta == "VLift" && convLevel a.l a.m)
+    || (tb == "VLift" && convLevel b.l b.m)
+    || (ta == "VLiftIntro" && convLevel a.l a.m)
+    || (tb == "VLiftIntro" && convLevel b.l b.m)
+    then null
+    else if ta == "VPi" && tb == "VPi" then
+      layer [ (goal a.domain b.domain) ] (E.instantiate a.closure fv) (E.instantiate b.closure fv) (d + 1)
+    else if ta == "VLam" && tb == "VLam" then
+      layer [ ] (E.instantiate a.closure fv) (E.instantiate b.closure fv) (d + 1)
+    else if ta == "VLam" then
+      let etaFn = etaReducedFn a.closure; in
+      if etaFn != null then layer [ ] etaFn b d
+      else layer [ ] (E.instantiate a.closure fv) (E.vApp b fv) (d + 1)
+    else if tb == "VLam" then
+      let etaFn = etaReducedFn b.closure; in
+      if etaFn != null then layer [ ] a etaFn d
+      else layer [ ] (E.vApp a fv) (E.instantiate b.closure fv) (d + 1)
+    else if ta == "VSigma" && tb == "VSigma" then
+      layer [ (goal a.fst b.fst) ] (E.instantiate a.closure fv) (E.instantiate b.closure fv) (d + 1)
+    else null;
+
+  # Public entry: definitional equality at binding depth d. Structural-spine
+  # arms run on `runConvF`'s goal stack (depth-flat); every other arm delegates
+  # back to `convStep`, whose recursive positions re-enter here.
+  conv = d: v1: v2: E.machine.runConvF E.dispatch.defaultFuel d v1 v2;
 
   # -- Spine conversion --
   convSp = d: sp1: sp2:
@@ -1844,6 +1938,16 @@ api.namespace {
       value = conv;
       description = "conv: definitional equality on values at binding `depth` — purely structural with Σ/Unit/Π-eta; foundation of `Sub` in `check` and the kernel TCB.";
       signature = "conv : Depth -> Val -> Val -> Bool";
+    };
+    convStep = api.leaf {
+      value = convStep;
+      description = "convStep: single conversion step over forced values — the conv dispatch body, called by the `runConvF` machine for non-structural goals.";
+      signature = "convStep : Depth -> Val -> Val -> Bool";
+    };
+    cPeelBinder = api.leaf {
+      value = cPeelBinder;
+      description = "cPeelBinder: binder-arm classifier for `cPeel` — mirrors convStep's VPi/VLam/eta/VSigma arms (and the preceding Lift-collapse guard) so binder layers peel flat. Returns a layer record or null.";
+      signature = "cPeelBinder : Depth -> Val -> Val -> ({ kind; goals; na; nb; nd; } | null)";
     };
     convSp = api.leaf {
       value = convSp;

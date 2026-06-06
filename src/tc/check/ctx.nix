@@ -63,14 +63,14 @@ in
         let
           result = TR.handle
             {
-              handlers.typeError = { param, state }: {
-                abort = {
-                  error = param.error;
-                  msg = param.error.msg;
-                  expected = param.error.detail.expected;
-                  got = param.error.detail.got;
+              state = { blame = self._blame.empty; };
+              handlers = self._blame.handlers // self._yield.handlers // {
+                typeError = { param, state }: {
+                  abort =
+                    let e = self._blame.fold state.blame param.error; in
+                    { error = e; msg = e.msg; expected = e.detail.expected; got = e.detail.got; };
+                  state = null;
                 };
-                state = null;
               };
             }
             comp;

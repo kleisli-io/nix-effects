@@ -2544,6 +2544,84 @@ let
     let driver = mkQuoteDriver fallback; in
     fuel: d: v: driver { mode = "Q-Eval"; inherit fuel d v; kont = null; };
 
+  # Conversion sub-machine — a defunctionalized `d -> Val -> Val -> Bool` checker.
+  #
+  # cPeel decomposes one node into a spine-next pair (na/nb at depth nd) plus
+  # per-layer sibling goals. Binder arms (VPi/VLam/eta/VSigma) descend a layer via
+  # cPeelBinder (nd = d+1, instantiate/vApp); structural arms peel at constant d
+  # (nd = d); anything else is a base goal handed whole to convStep.
+  #
+  #   VPair         spine=.snd        sibling=.fst
+  #   Sigma-eta     spine=.snd/vSnd   sibling=.fst/vFst
+  #   VBootSum      spine=.left       sibling=.right
+  #   VBootInl/Inr  spine=.val        siblings=.left,.right
+  cPeel = d: ga: gb:
+    let
+      a = self.forceVal ga; b = self.forceVal gb;
+      ta = a.tag; tb = b.tag;
+      goal = x: y: { inherit d; a = x; b = y; };
+      binder = fx.tc.conv.cPeelBinder d a b;
+    in
+         if binder != null then binder
+    else if ta == "VPair" && tb == "VPair" then
+      { kind = "layer"; goals = [ (goal a.fst b.fst) ]; na = a.snd; nb = b.snd; nd = d; }
+    else if ta == "VBootSum" && tb == "VBootSum" then
+      { kind = "layer"; goals = [ (goal a.right b.right) ]; na = a.left; nb = b.left; nd = d; }
+    else if ta == "VBootInl" && tb == "VBootInl" then
+      { kind = "layer"; goals = [ (goal a.left b.left) (goal a.right b.right) ]; na = a.val; nb = b.val; nd = d; }
+    else if ta == "VBootInr" && tb == "VBootInr" then
+      { kind = "layer"; goals = [ (goal a.left b.left) (goal a.right b.right) ]; na = a.val; nb = b.val; nd = d; }
+    else if ta == "VPair" && tb == "VNe" then
+      { kind = "layer"; goals = [ (goal a.fst (self.vFst b)) ]; na = a.snd; nb = self.vSnd b; nd = d; }
+    else if ta == "VNe" && tb == "VPair" then
+      { kind = "layer"; goals = [ (goal (self.vFst a) b.fst) ]; na = self.vSnd a; nb = b.snd; nd = d; }
+    else
+      { kind = "base"; goals = [ (goal a b) ]; nd = d; };
+
+  # Walk one goal's spine flat. The genericClosure trace is a materialized
+  # vector, so map/concatLists over it stay iterative (O(1) C-stack). Returns
+  # the per-layer sibling goals plus the spine-terminus base goal.
+  cPeelSpine = fuel: g:
+    let
+      walk = builtins.genericClosure {
+        startSet = [ { key = 0; s = cPeel g.d g.a g.b; } ];
+        operator = item:
+          if item.s.kind == "base" then [ ]
+          else if item.key >= fuel then throw "conv budget exceeded"
+          else [ { key = item.key + 1; s = cPeel item.s.nd item.s.na item.s.nb; } ];
+      };
+    in builtins.concatLists (map (it: it.s.goals) walk);
+
+  # BFS over sibling-turns: each round peels every frontier goal's spine flat,
+  # runs convStep on the non-structural goals, and routes structural goals into
+  # the next frontier — so convStep never recurses on a user-depth value. Flat
+  # because the outer genericClosure is keyed by a round counter (branching is
+  # in the frontier vector, not the keys), the next frontier is eagerly forced
+  # (no lazy frontier cascade), and the verdict is conjoined + branched per
+  # round (never force-walked at the end).
+  runConvF = fuel: d: a: b:
+    let
+      isStruct = g: (cPeel g.d g.a g.b).kind == "layer";
+      roundStep = st:
+        let
+          allGoals = builtins.concatLists (map (cPeelSpine fuel) st.frontier);
+          tagged   = map (g: { inherit g; s = isStruct g; }) allGoals;
+          struct   = map (t: t.g) (builtins.filter (t: t.s) tagged);
+          bases    = map (t: t.g) (builtins.filter (t: !t.s) tagged);
+          ok       = builtins.all (g: fx.tc.conv.convStep g.d g.a g.b) bases;
+          v        = st.verdict && ok;
+          nextFrontier = builtins.seq (builtins.length struct) struct;  # force: break the frontier cascade
+        in builtins.seq v { frontier = nextFrontier; verdict = v; };
+      rounds = builtins.genericClosure {
+        startSet = [ { key = 0; st = roundStep { frontier = [ { inherit d a b; } ]; verdict = true; }; } ];
+        operator = item:
+          if !item.st.verdict then [ ]
+          else if item.st.frontier == [ ] then [ ]
+          else if item.key >= fuel then throw "conv budget exceeded"
+          else [ { key = item.key + 1; st = roundStep item.st; } ];
+      };
+    in builtins.all (it: it.st.verdict) rounds;
+
   T = fx.tc.term;
   H = fx.tc.hoas;
 
@@ -2559,7 +2637,7 @@ in
     inherit runMachineF runMachineAtF
       runDescIndAtF runDescIndLayerAtF
       runInterpDAtF runAllDAtF runEverywhereDAtF
-      runQuoteF;
+      runQuoteF runConvF;
   };
 
   tests = {
@@ -2933,6 +3011,210 @@ in
       expr = (runQuoteF noFallback self.defaultFuel 1
         (vNe 0 [ (eInterpD vLevelZero vUnit vUnit vTt) ])).level.tag;
       expected = "level-zero";
+    };
+
+    # Eliminator depth-flatness regression. Each chain nests N copies of one
+    # eliminator in its scrutinee position over a neutral seed, so the machine
+    # pushes N resume frames during eval descent and the read-back driver walks
+    # an N-element spine. A depth-flat machine processes both in O(1) libnix
+    # call frames; a regression that reintroduces depth-proportional Nix
+    # call-depth overflows `max-call-depth` well before N=1000. `spine` confirms
+    # eval materialised the full stuck spine (lift-elim is idempotent at equal
+    # levels, so it collapses to the bare neutral); `head` confirms read-back is
+    # iterative. The eliminators' non-scrutinee arguments ride on deferred
+    # `VThunkTm` sub-evaluation, forced by the same driver — no per-argument
+    # frame is needed.
+    "machine-elim-depth-lift-elim-1000" = {
+      expr =
+        let
+          lz = T.mkLevelZero; u = T.mkUnit;
+          chain = builtins.foldl' (acc: _: T.mkLiftElim lz lz T.mkBootRefl u acc)
+            (T.mkVar 0) (builtins.genList (i: i) 1000);
+          v = runMachineF self.defaultFuel [ (freshVar 0) ] chain;
+        in { tag = v.tag; spine = builtins.length v.spine;
+             head = (runQuoteF noFallback self.defaultFuel 1 v).tag; };
+      expected = { tag = "VNe"; spine = 0; head = "var"; };
+    };
+    "machine-elim-depth-boot-sum-elim-1000" = {
+      expr =
+        let
+          u = T.mkUnit; mot = T.mkLam "_" u (T.mkVar 0);
+          chain = builtins.foldl' (acc: _: T.mkBootSumElim u u mot mot mot acc)
+            (T.mkVar 0) (builtins.genList (i: i) 1000);
+          v = runMachineF self.defaultFuel [ (freshVar 0) ] chain;
+        in { tag = v.tag; spine = builtins.length v.spine;
+             head = (runQuoteF noFallback self.defaultFuel 1 v).tag; };
+      expected = { tag = "VNe"; spine = 1000; head = "boot-sum-elim"; };
+    };
+    "machine-elim-depth-boot-j-1000" = {
+      expr =
+        let
+          u = T.mkUnit; tt = T.mkTt; mot = T.mkLam "_" u (T.mkVar 0);
+          chain = builtins.foldl' (acc: _: T.mkBootJ u tt mot tt tt acc)
+            (T.mkVar 0) (builtins.genList (i: i) 1000);
+          v = runMachineF self.defaultFuel [ (freshVar 0) ] chain;
+        in { tag = v.tag; spine = builtins.length v.spine;
+             head = (runQuoteF noFallback self.defaultFuel 1 v).tag; };
+      expected = { tag = "VNe"; spine = 1000; head = "boot-j"; };
+    };
+    "machine-elim-depth-squash-elim-1000" = {
+      expr =
+        let
+          u = T.mkUnit; mot = T.mkLam "_" u (T.mkVar 0);
+          chain = builtins.foldl' (acc: _: T.mkSquashElim u u mot acc)
+            (T.mkVar 0) (builtins.genList (i: i) 1000);
+          v = runMachineF self.defaultFuel [ (freshVar 0) ] chain;
+        in { tag = v.tag; spine = builtins.length v.spine;
+             head = (runQuoteF noFallback self.defaultFuel 1 v).tag; };
+      expected = { tag = "VNe"; spine = 1000; head = "squash-elim"; };
+    };
+
+    # conv depth-flatness: N-deep nested values conv'd against themselves;
+    # runConvF walks the spine on its goal stack in O(1) libnix frames. The
+    # recursive `convStep` overflows the OS stack near ~5000, so N=10000 is the
+    # depth sentinel. neq + short-circuit cases guard correctness.
+    "machine-conv-depth-pair-10000" = {
+      expr =
+        let c = builtins.foldl' (acc: _: vPair vTt acc) vTt (builtins.genList (i: i) 10000);
+        in runConvF self.defaultFuel 0 c c;
+      expected = true;
+    };
+    "machine-conv-depth-bootinl-10000" = {
+      expr =
+        let c = builtins.foldl' (acc: _: vBootInl vUnit vUnit acc) vBootRefl (builtins.genList (i: i) 10000);
+        in runConvF self.defaultFuel 0 c c;
+      expected = true;
+    };
+    "machine-conv-depth-bootsum-10000" = {
+      expr =
+        let c = builtins.foldl' (acc: _: vBootSum acc vUnit) vUnit (builtins.genList (i: i) 10000);
+        in runConvF self.defaultFuel 0 c c;
+      expected = true;
+    };
+    "machine-conv-depth-pair-neq" = {
+      expr =
+        let mk = leaf: builtins.foldl' (acc: _: vPair vTt acc) leaf (builtins.genList (i: i) 1000);
+        in runConvF self.defaultFuel 0 (mk vTt) (mk vUnit);
+      expected = false;
+    };
+    "machine-conv-shortcircuit-false" = {
+      expr = runConvF self.defaultFuel 0 (vPair vTt vUnit) (vPair vUnit vUnit);
+      expected = false;
+    };
+
+    # Sibling-direction + balanced depth: these nest away from the spine, so the
+    # spine-peeler bounced them off convStep and overflowed; the BFS frontier
+    # keeps them flat.
+    "machine-conv-depth-pair-left-10000" = {
+      expr =
+        let c = builtins.foldl' (acc: _: vPair acc vTt) vTt (builtins.genList (i: i) 10000);
+        in runConvF self.defaultFuel 0 c c;
+      expected = true;
+    };
+    "machine-conv-depth-bootsum-right-10000" = {
+      expr =
+        let c = builtins.foldl' (acc: _: vBootSum vUnit acc) vUnit (builtins.genList (i: i) 10000);
+        in runConvF self.defaultFuel 0 c c;
+      expected = true;
+    };
+    "machine-conv-depth-bootinl-left-10000" = {
+      expr =
+        let c = builtins.foldl' (acc: _: vBootInl acc vUnit vBootRefl) vBootRefl (builtins.genList (i: i) 10000);
+        in runConvF self.defaultFuel 0 c c;
+      expected = true;
+    };
+    "machine-conv-depth-pair-balanced" = {
+      expr =
+        let t = d: if d == 0 then vTt else (let s = t (d - 1); in vPair s s);
+        in runConvF self.defaultFuel 0 (t 14) (t 14);
+      expected = true;
+    };
+    "machine-conv-depth-pair-left-neq" = {
+      expr =
+        let mk = leaf: builtins.foldl' (acc: _: vPair acc vTt) leaf (builtins.genList (i: i) 10000);
+        in runConvF self.defaultFuel 0 (mk vTt) (mk vUnit);
+      expected = false;
+    };
+
+    # Binder-descent depth-flatness: deep Pi/Lam/Sigma/eta chains conv'd against
+    # themselves descend one binder layer per spine step (instantiate/vApp at d+1)
+    # on runConvF's BFS, staying O(1) in libnix frames. The recursive convStep
+    # binder/eta arms overflow near ~500, so N=10000 is the sentinel.
+    "machine-conv-depth-pi-10000" = {
+      expr =
+        let
+          u = T.mkUnit;
+          t = builtins.foldl' (cod: _: T.mkPi "x" u cod) u (builtins.genList (i: i) 10000);
+          v = runMachineF self.defaultFuel [ ] t;
+        in runConvF self.defaultFuel 0 v v;
+      expected = true;
+    };
+    "machine-conv-depth-lamlam-10000" = {
+      expr =
+        let
+          u = T.mkUnit;
+          t = builtins.foldl' (body: _: T.mkLam "x" u body) T.mkTt (builtins.genList (i: i) 10000);
+          v = runMachineF self.defaultFuel [ ] t;
+        in runConvF self.defaultFuel 0 v v;
+      expected = true;
+    };
+    "machine-conv-depth-eta-10000" = {
+      expr =
+        let
+          u = T.mkUnit;
+          t = builtins.foldl' (body: _: T.mkLam "x" u body) T.mkTt (builtins.genList (i: i) 10000);
+          v = runMachineF self.defaultFuel [ ] t;
+        in runConvF self.defaultFuel 0 v (freshVar 0);
+      expected = true;
+    };
+    "machine-conv-depth-sigma-10000" = {
+      expr =
+        let
+          u = T.mkUnit;
+          t = builtins.foldl' (snd: _: T.mkSigma "x" u snd) u (builtins.genList (i: i) 10000);
+          v = runMachineF self.defaultFuel [ ] t;
+        in runConvF self.defaultFuel 0 v v;
+      expected = true;
+    };
+    # 5000 VPair∘VLam layers = 10000 interleaved structural+binder turns, one spine.
+    "machine-conv-depth-mixed-10000" = {
+      expr =
+        let
+          u = T.mkUnit;
+          t = builtins.foldl' (acc: _: T.mkPair T.mkTt (T.mkLam "x" u acc)) T.mkTt (builtins.genList (i: i) 5000);
+          v = runMachineF self.defaultFuel [ ] t;
+        in runConvF self.defaultFuel 0 v v;
+      expected = true;
+    };
+
+    # Binder-arm correctness.
+    "machine-conv-pi-neq" = {
+      expr =
+        let
+          u = T.mkUnit;
+          v1 = runMachineF self.defaultFuel [ ] (T.mkPi "x" u u);
+          v2 = runMachineF self.defaultFuel [ ] (T.mkPi "x" u (T.mkPi "y" u u));
+        in runConvF self.defaultFuel 0 v1 v2;
+      expected = false;
+    };
+    # λx. f x (syntactic eta) ≡ f via the etaReducedFn shortcut (no fresh-var descent).
+    "machine-conv-eta-shortcut" = {
+      expr =
+        let
+          u = T.mkUnit; f = freshVar 0;
+          v = runMachineF self.defaultFuel [ f ] (T.mkLam "x" u (T.mkApp (T.mkVar 1) (T.mkVar 0)));
+        in runConvF self.defaultFuel 0 v f;
+      expected = true;
+    };
+    "machine-conv-lamlam-neq" = {
+      expr =
+        let
+          u = T.mkUnit;
+          mk = leaf: builtins.foldl' (body: _: T.mkLam "x" u body) leaf (builtins.genList (i: i) 10000);
+        in runConvF self.defaultFuel 0
+          (runMachineF self.defaultFuel [ ] (mk T.mkTt))
+          (runMachineF self.defaultFuel [ ] (mk T.mkUnit));
+      expected = false;
     };
   };
 }

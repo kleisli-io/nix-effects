@@ -2,82 +2,56 @@
 #
 # Signatures:
 #
-#   bindP  : Position -> Computation a -> (a -> Computation b) -> Computation b
-#   bindPR : Position -> String -> Computation a
-#                                  -> (a -> Computation b) -> Computation b
+#   bindP      : Position -> Computation a
+#                          -> (a -> Computation b) -> Computation b
+#   bindPR     : Position -> String -> Computation a
+#                          -> (a -> Computation b) -> Computation b
+#   bindPChain : [Position] -> Computation a
+#                          -> (a -> Computation b) -> Computation b
 #
-# `bindP` sequences two computations like `bind`, but installs a local
-# typeError handler around the inner computation that wraps any emitted
-# diagnostic error under the given Position before re-raising. The
-# wrapping declares the descent coordinate at the caller site —
-# precision that generic downstream paths (the check->infer catch-all
-# fallback, conv failures deep inside a sub-term) cannot supply on
-# their own.
+# `bindP` sequences two computations like `bind`, but brackets the inner
+# computation `m` with a push/pop of a blame frame so any typeError `m`
+# raises is wrapped under the given Position before it reaches the
+# top-level handler. A pure `m` threads its value straight to `k` with no
+# frame (it raises nothing, so push-then-pop is a no-op); an impure `m`
+# emits the push (`tcBlamePush`) outermost — `Impure` in O(1), forcing `m`
+# only to WHNF — so recursion in `m` defers into the trampoline. The wrapping
+# declares the descent coordinate at the caller site — precision that
+# generic downstream paths (the check->infer catch-all fallback, conv
+# failures deep inside a sub-term) cannot supply on their own.
 #
-# `bindPR` extends `bindP` with a rule annotation: the wrapping
-# Position is decorated via `P.withRule rule pos` before nestUnder, so
-# the blame chain records which kernel rule emitted the descent
-# alongside the structural coordinate. Equivalent to
-# `bindP (P.withRule rule pos) m k` modulo handler-install fusion.
+# `bindPR` extends `bindP` with a rule annotation: the wrapping Position
+# is decorated via `P.withRule rule pos` before nestUnder, recording which
+# kernel rule emitted the descent alongside the structural coordinate.
 #
-# If the inner computation succeeds, the continuation `k` is invoked with
-# the success value and the outer computation continues normally. A
-# typeError emitted by `k` itself is not intercepted — the wrapping
-# applies only to errors raised by the inner `m`.
+# `bindPChain` threads a list of positions through ONE composite frame
+# whose wrap nests them outermost-first (`positions[0]` on top),
+# collapsing N sequential bindPs into a single push/pop bracket.
 #
-# Pure fast path: when `m` is `K.pure v`, no handler is installed; the
-# combinator reduces to `k v` directly. This removes handler-install
-# overhead from sub-delegations whose sub-computation has already
-# resolved to a value.
-#
-# bindPChain threads a list of position/computation pairs through a
-# single shared handler, collapsing N sequential bindPs into one
-# handler install with a pre-composed nestUnder chain.
+# The continuation `k` runs AFTER the matching pop, so a typeError it
+# raises is not wrapped by this frame — wrapping applies only to errors
+# raised by `m`. The blame frames live in handler state (see `_blame`);
+# the single top-level typeError handler folds them onto the leaf error
+# to reconstruct the nested trace.
 #
 # Narrow dependencies, satisfying the trust-boundary discipline:
-#   fx.kernel          — send, pure, isPure
-#   fx.trampoline      — handle (for the local interception)
-#   fx.diag.error      — nestUnder
+#   fx.kernel          — send, bind, pure
+#   fx.trampoline      — handle (tests only)
+#   fx.diag.error      — nestUnder, appendTrace
 #   fx.diag.positions  — withRule (rule decoration on Position)
-# No fx.diag.pretty / fx.diag.hints imports; no new effects.
+# No fx.diag.pretty / fx.diag.hints imports.
 { fx, api, ... }:
 
 let
   K = fx.kernel;
-  TR = fx.trampoline;
+  TR = fx.trampoline; # tests only
   D = fx.diag.error;
   P = fx.diag.positions;
   isPure = fx.comp.isPure;
 
-  # Internal sentinel used to smuggle a wrapped diag.Error back out of
-  # the local typeError handler. An attrset carrying `_bindPErr` is not
-  # a value any kernel rule can legitimately produce, so the post-handle
-  # tag-check is unambiguous.
-  bindPErrTag = "_bindPErr";
-
-  # Build the local typeError handler that wraps emitted errors with a
-  # pre-composed wrapping function. `wrapErr : Error -> Error` folds
-  # the relevant nestUnder chain onto the captured leaf.
-  mkHandler = wrapErr: {
-    handlers.typeError = { param, state }: {
-      abort = {
-        "${bindPErrTag}" = wrapErr param.error;
-      };
-      inherit state;
-    };
-  };
-
-  # Discharge an inner computation under a pre-composed wrap. Returns
-  # either the handled success value directly, or a fresh typeError
-  # impure node carrying the wrapped error.
-  runScoped = wrapErr: k: m:
-    let
-      handled = TR.handle (mkHandler wrapErr) m;
-      v = handled.value;
-    in
-    if builtins.isAttrs v && v ? ${bindPErrTag}
-    then K.send "typeError" { error = v.${bindPErrTag}; }
-    else k v;
+  pushEff = "tcBlamePush";
+  popEff = "tcBlamePop";
+  yieldEff = "tcYield";
 
   # Wrap an emitted error: append `{ rule = position.rule, position }`
   # to the Kernel-layer trace (no-op on Generic/Contract), then
@@ -85,67 +59,104 @@ let
   wrapWithTrace = position: err:
     D.nestUnder position (D.appendTrace (position.rule or null) position err);
 
-  bindP = position: m: k:
+  # A pure `m` threads its value straight to `k` (no frame: it raises
+  # nothing, so push-then-pop is a no-op). An impure `m` is bracketed with
+  # push/pop of a wrap frame; `tcBlamePush` is the outermost send, so this
+  # is `Impure` in O(1) and forces `m` only to WHNF — the recursion in `m`
+  # defers into the trampoline. `k` runs after the pop, so an error it
+  # raises escapes this frame. The fast path is forcing-safe only because
+  # recursive checker entries are effect-first at their head (see `_yield`).
+  scoped = wrapErr: m: k:
     if isPure m then k m.value
-    else runScoped (wrapWithTrace position) k m;
+    else
+      K.bind (K.send pushEff wrapErr) (_:
+        K.bind m (v:
+          K.bind (K.send popEff null) (_: k v)));
 
-  # bindPR is `bindP` with the wrapping Position pre-decorated by
-  # `P.withRule rule`. The hint resolver reads only `position.tag`,
-  # so the rule annotation surfaces only in pretty-printed output
-  # and in consumers that read `Position.rule` or `trace[i].rule`.
-  bindPR = position: rule: m: k:
-    if isPure m then k m.value
-    else runScoped (wrapWithTrace (P.withRule rule position)) k m;
+  bindP = position: scoped (wrapWithTrace position);
+
+  bindPR = position: rule: scoped (wrapWithTrace (P.withRule rule position));
 
   reverseList = xs:
     let n = builtins.length xs;
     in builtins.genList (i: builtins.elemAt xs (n - 1 - i)) n;
 
-  # bindPChain positions m k
-  #
-  # Equivalent to the nested composition
-  #   bindP p_1 (bindP p_2 (... (bindP p_n m) k_pure) k_pure) k
-  # when intermediate continuations are pure passthroughs, but installs
-  # only ONE typeError handler whose wrap function is
-  #   err -> foldl' (acc, pos) -> nestUnder pos acc) err (reverse positions)
-  # so the emitted chain has `positions[0]` as the outermost edge.
-  #
-  # Positions must be non-empty; pass [] to fall back to pure bind.
+  # Non-empty `positions` push ONE composite frame nesting them
+  # outermost-first; empty falls back to a plain bind.
   bindPChain = positions: m: k:
-    if positions == [ ] then K.bind m k
-    else if isPure m then k m.value
+    if positions == [ ]
+    then K.bind m k
     else
-      let
-        wrap = err: builtins.foldl'
-          (acc: p: wrapWithTrace p acc)
-          err
-          (reverseList positions);
-      in
-      runScoped wrap k m;
+      scoped
+        (err: builtins.foldl' (acc: p: wrapWithTrace p acc) err (reverseList positions))
+        m k;
+
+  # Blame stack as an opaque cons list: each cell is a closure, so the
+  # trampoline's per-step `deepSeq newState` forces it to WHNF only
+  # (functions are atomic to deepSeq) and never walks the shared tail.
+  # Push is O(1) and structurally shared, so the N retained trampoline
+  # steps cost O(N) total rather than the O(N²) a forced Nix vector
+  # would (vector cons copies the whole spine each push). `emptyBlame`
+  # is the nil; `consBlame` prepends the innermost live frame.
+  emptyBlame = _: null;
+  consBlame = w: rest: (_: { head = w; tail = rest; });
+
+  # Blame-frame stack in handler state (head = innermost live frame).
+  blameHandlers = {
+    "${pushEff}" = { param, state }: {
+      resume = null;
+      state = state // { blame = consBlame param (state.blame or emptyBlame); };
+    };
+    "${popEff}" = { param, state }: {
+      resume = null;
+      state = state // { blame = (state.blame null).tail; };
+    };
+  };
+
+  # Reconstruct the nested-wrapped error. Walk the opaque cons list
+  # ITERATIVELY via a genericClosure worklist (collecting frames
+  # innermost-first) — never a recursive or lazy `[w] ++ rest` walk,
+  # which would re-overflow the host stack at consume on a deep blame
+  # stack — then apply each frame innermost-first so the outermost frame
+  # ends up the top edge. Runs only on the error path, never on a
+  # successful check.
+  foldBlame = blame: err:
+    let
+      steps = builtins.genericClosure {
+        startSet = [{ key = 0; rest = blame; }];
+        operator = s:
+          let cell = s.rest null;
+          in if cell == null then [ ]
+          else [{ key = s.key + 1; rest = cell.tail; w = cell.head; }];
+      };
+      wraps = builtins.map (s: s.w) (builtins.tail steps);
+    in
+    builtins.foldl' (acc: w: w acc) err wraps;
 
 in
 {
   scope = {
     bindP = api.leaf {
-      description = "bindP: position-tagged bind for kernel rule bodies — sequences two computations and wraps any typeError raised by the inner one under the given Position before re-raising.";
+      description = "bindP: position-tagged bind for kernel rule bodies — brackets the inner computation with a push/pop blame frame so any typeError it raises is wrapped under the given Position before reaching the top-level handler.";
       signature = "bindP : Position -> Computation a -> (a -> Computation b) -> Computation b";
       doc = ''
-        Installs a local `typeError` handler around the inner
-        computation `m` that calls `D.nestUnder position` on every
-        emitted `diag.Error` before re-raising. The wrapping records
-        the descent coordinate at the caller site — precision that
-        downstream generic paths (the `check → infer` catch-all,
-        deep conv failures) cannot supply.
+        Brackets an impure inner computation `m` with a
+        `tcBlamePush`/`tcBlamePop` frame whose wrap calls
+        `D.nestUnder position` on every `diag.Error` `m` raises. A pure
+        `m` skips the frame and threads its value to `k` (it raises
+        nothing, so push-then-pop is a no-op). The push is emitted before
+        an impure `m`, so the combinator is `Impure` in O(1) and forces
+        `m` only to WHNF — recursion in `m` defers into the trampoline.
+        The wrapping records the descent coordinate at the caller site —
+        precision that downstream generic paths (the `check → infer`
+        catch-all, deep conv failures) cannot supply.
 
-        The continuation `k` runs unwrapped on success; errors raised
-        by `k` itself are not intercepted. Pure fast-path: when `m`
-        is `K.pure v`, no handler is installed and the combinator
-        reduces to `k v`.
-
+        The continuation `k` runs after the pop, so errors it raises
+        are not wrapped by this frame. Frames are reconstructed onto
+        the leaf error by the single top-level handler (see `_blame`).
         Use over `K.bind` whenever the failing site has a definite
-        positional identity in the surface syntax. Pair with
-        `bindPChain` to thread N positions through a single shared
-        handler.
+        positional identity in the surface syntax; pair with
+        `bindPChain` to thread N positions through one bracket.
       '';
       value = bindP;
     };
@@ -158,9 +169,7 @@ in
         m k`. The hint resolver consults only `position.tag`, so the
         rule annotation never changes hint lookup — it surfaces in
         pretty-printed output and is available to any consumer reading
-        `Position.rule` directly. Pure fast-path matches `bindP`: when
-        `m` is `K.pure v`, the combinator reduces to `k v` with no
-        handler install.
+        `Position.rule` directly.
       '';
       value = bindPR;
     };
@@ -171,12 +180,26 @@ in
       doc = ''
         Equivalent to nested `bindP p_1 (bindP p_2 (... (bindP p_n m)
         k_pure) k_pure) k` when intermediate continuations are pure
-        passthroughs, but installs only one handler with a
-        pre-composed wrap function. Empty `positions` falls back to
-        `K.bind`; pure `m` short-circuits to `k m.value` as in
-        `bindP`.
+        passthroughs, but pushes a single composite frame nesting the
+        positions outermost-first. Empty `positions` falls back to
+        `K.bind`.
       '';
       value = bindPChain;
+    };
+
+    _blame = api.leaf {
+      description = "_blame: shared blame-frame discipline for bindP — { handlers, fold, empty } installed by every trampoline that runs a kernel check Computation so position wrapping is reconstructed at the single top-level typeError handler. `blame` is an opaque cons list (deepSeq-opaque ⇒ O(1)/step, structurally shared); `empty` is its nil for state init.";
+      signature = "_blame : { handlers : Handlers, fold : Blame -> Error -> Error, empty : Blame }";
+      value = { handlers = blameHandlers; fold = foldBlame; empty = emptyBlame; };
+    };
+
+    _yield = api.leaf {
+      description = "_yield: tcYield defer discipline — { handlers, wrap } installed alongside _blame by every trampoline running a kernel check Computation. A head `wrap` makes a recursive checker entry effect-first (O(1) WHNF), so the bindP `isPure` fast path stays flat on recursive arms while leaving syntactic leaves Pure. `tcYield` carries no state and no blame frame — observationally invisible.";
+      signature = "_yield : { handlers : Handlers, wrap : Computation a -> Computation a }";
+      value = {
+        handlers = { "${yieldEff}" = { param, state }: { resume = null; inherit state; }; };
+        wrap = comp: K.bind (K.send yieldEff null) (_: comp);
+      };
     };
   };
 
@@ -184,17 +207,21 @@ in
     let
       P = fx.diag.positions;
 
-      # Discharge a computation with a typeError handler that surfaces the
-      # diag.Error directly. The resulting value is either the success a
-      # (when no typeError fires) or an attrset { __surfacedError = diag.Error }
-      # (when one does). Used by tests to inspect error structure.
+      # Discharge a computation with the blame discipline + a typeError
+      # handler that surfaces the folded diag.Error. The result is either
+      # the success value (when no typeError fires) or an attrset
+      # { __surfacedError = diag.Error } (when one does). Used by tests to
+      # inspect error structure.
       runSurfacing = comp:
         let
           r = TR.handle
             {
-              handlers.typeError = { param, state }: {
-                abort = { __surfacedError = param.error; };
-                inherit state;
+              state = { blame = emptyBlame; };
+              handlers = blameHandlers // {
+                typeError = { param, state }: {
+                  abort = { __surfacedError = foldBlame state.blame param.error; };
+                  inherit state;
+                };
               };
             }
             comp;
@@ -233,23 +260,22 @@ in
         expected = sampleKernelErr;
       };
 
-      # -- Pure fast path: bindP reduces to `k m.value`. The returned
-      # computation is byte-identical to `k m.value` — no wrapper, no
-      # queue changes, no sentinel attrset. Structural equality
-      # pins both paths to the same result shape; distinguishing the
-      # fast from the slow path requires a resource-use probe, not
-      # available from inside a nix-unit test.
-      "bindP-pure-equals-k-applied-directly" = {
-        expr =
-          let k = x: K.pure (x + 1);
-          in (bindP P.DArgSort (K.pure 99) k) == (k 99);
-        expected = true;
+      # -- Pure `m`: the value threads straight to `k` via the fast path
+      # (0 effects); behavior asserted by running rather than byte-identity.
+      "bindP-pure-runs-k-on-value" = {
+        expr = runSurfacing (bindP P.DArgSort (K.pure 99) (x: K.pure (x + 1)));
+        expected = 100;
       };
-      "bindP-pure-threads-to-impure-k" = {
+      # `k` runs after the pop, so the error it raises is not wrapped by
+      # this frame — surfaces as the raw leaf.
+      "bindP-pure-continuation-error-unwrapped" = {
         expr =
-          let c = bindP P.DArgSort (K.pure 5) (_: raiseDiag sampleKernelErr);
-          in c.effect.name;
-        expected = "typeError";
+          let
+            err = runSurfacing (
+              bindP P.DArgSort (K.pure 5) (_: raiseDiag sampleKernelErr));
+          in
+          err.__surfacedError;
+        expected = sampleKernelErr;
       };
 
       # -- Error from m gets wrapped --
@@ -443,8 +469,8 @@ in
           walkToLeaf err.__surfacedError;
         expected = D.appendTrace null P.DArgBody sampleKernelErr;
       };
-      "bindPChain-pure-fast-path" = {
-        expr = (bindPChain [ P.DArgSort P.DArgBody ] (K.pure 3) K.pure).value;
+      "bindPChain-pure-threads-value" = {
+        expr = runSurfacing (bindPChain [ P.DArgSort P.DArgBody ] (K.pure 3) K.pure);
         expected = 3;
       };
       "bindPChain-success-threads-value" = {
@@ -461,11 +487,9 @@ in
           bindPR P.DArgSort "desc-arg" (K.pure 42) (x: K.pure (x + 1)));
         expected = 43;
       };
-      "bindPR-pure-fast-path-equals-k" = {
-        expr =
-          let k = x: K.pure (x + 1);
-          in (bindPR P.DArgSort "r" (K.pure 99) k) == (k 99);
-        expected = true;
+      "bindPR-pure-runs-k-on-value" = {
+        expr = runSurfacing (bindPR P.DArgSort "r" (K.pure 99) (x: K.pure (x + 1)));
+        expected = 100;
       };
       "bindPR-wraps-inner-error-with-rule-decoration" = {
         expr =

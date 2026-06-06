@@ -392,9 +392,6 @@ let
   # wrapping or construct positioned errors directly from `path`;
   # both routes compose because the alphabet is identical.
   #
-  # `isPure` fast-path is inherited from `bindP` — recursing through a
-  # sub-walk that resolves to `K.pure …` installs no handler.
-  #
   # Initial path is the caller-supplied root (typically `[]` for a
   # top-level walk; callers nested under an existing descent pass the
   # outer chain so positions compose end-to-end).
@@ -575,9 +572,6 @@ in
         explicit position wrapping can use the `path` argument and
         `D.nestUnder` directly; both routes compose because the
         alphabet is identical.
-
-        Pure (`K.pure …`) sub-walks short-circuit through `bindP`'s
-        `isPure` fast path — no handler install, no overhead.
 
         Each handler receives the *current* `path` (the chain leading
         to its node, not yet extended by its own descent) and, for
@@ -1198,61 +1192,61 @@ in
 
     "desc-foldDescWithPath-extends-under-plusL" = {
       # The left summand of a plus receives `[DPlusL]` as its path.
-      expr = (self.foldDescWithPath [ ]
+      expr = fx.tc.check.runCheck (self.foldDescWithPath [ ]
         {
           ret = x: K.pure x.path;
           plus = x: K.pure x.left;
           default = _: K.pure null;
         }
-        (H.plus H.descRet H.descRet)).value;
+        (H.plus H.descRet H.descRet));
       expected = [ P.DPlusL ];
     };
 
     "desc-foldDescWithPath-extends-under-plusR" = {
-      expr = (self.foldDescWithPath [ ]
+      expr = fx.tc.check.runCheck (self.foldDescWithPath [ ]
         {
           ret = x: K.pure x.path;
           plus = x: K.pure x.right;
           default = _: K.pure null;
         }
-        (H.plus H.descRet H.descRet)).value;
+        (H.plus H.descRet H.descRet));
       expected = [ P.DPlusR ];
     };
 
     "desc-foldDescWithPath-extends-under-recTail" = {
-      expr = (self.foldDescWithPath [ ]
+      expr = fx.tc.check.runCheck (self.foldDescWithPath [ ]
         {
           ret = x: K.pure x.path;
           "rec" = x: K.pure x.sub;
           default = _: K.pure null;
         }
-        (H.descRec H.descRet)).value;
+        (H.descRec H.descRet));
       expected = [ P.DRecTail ];
     };
 
     "desc-foldDescWithPath-composes-segments-end-to-end" = {
       # plus(rec(ret), ret): walking the leftmost ret produces
       # `[DPlusL, DRecTail]`.
-      expr = (self.foldDescWithPath [ ]
+      expr = fx.tc.check.runCheck (self.foldDescWithPath [ ]
         {
           ret = x: K.pure x.path;
           "rec" = x: K.pure x.sub;
           plus = x: K.pure x.left;
           default = _: K.pure null;
         }
-        (H.plus (H.descRec H.descRet) H.descRet)).value;
+        (H.plus (H.descRec H.descRet) H.descRet));
       expected = [ P.DPlusL P.DRecTail ];
     };
 
     "desc-foldDescWithPath-honours-non-empty-initial-path" = {
       # Caller-supplied root path prefixes every emitted chain.
-      expr = (self.foldDescWithPath [ P.AnnTerm ]
+      expr = fx.tc.check.runCheck (self.foldDescWithPath [ P.AnnTerm ]
         {
           ret = x: K.pure x.path;
           plus = x: K.pure x.left;
           default = _: K.pure null;
         }
-        (H.plus H.descRet H.descRet)).value;
+        (H.plus H.descRet H.descRet));
       expected = [ P.AnnTerm P.DPlusL ];
     };
 
@@ -1264,13 +1258,13 @@ in
         let
           Darg = H.descArg H.unit 0 H.nat (_: H.descRet);
         in
-        (self.foldDescWithPath [ P.MuPayload ]
+        fx.tc.check.runCheck (self.foldDescWithPath [ P.MuPayload ]
           {
             ret = x: K.pure null;
             arg = x: K.pure (x.bodyPath);
             default = _: K.pure null;
           }
-          Darg).value;
+          Darg);
       expected = [ P.MuPayload P.DArgBody ];
     };
 
@@ -1281,13 +1275,13 @@ in
         let
           Darg = H.descArg H.unit 0 H.nat (_: H.descRet);
         in
-        (self.foldDescWithPath [ ]
+        fx.tc.check.runCheck (self.foldDescWithPath [ ]
           {
             ret = x: K.pure x.path;
             arg = x: x.body V.vTt;
             default = _: K.pure null;
           }
-          Darg).value;
+          Darg);
       expected = [ P.DArgBody ];
     };
 
@@ -1307,11 +1301,15 @@ in
           };
           runSurfacing = comp:
             let
+              B = fx.tc.check._blame;
               r = fx.trampoline.handle
                 {
-                  handlers.typeError = { param, state }: {
-                    abort = { __surfacedError = param.error; };
-                    inherit state;
+                  state = { blame = B.empty; };
+                  handlers = B.handlers // {
+                    typeError = { param, state }: {
+                      abort = { __surfacedError = B.fold state.blame param.error; };
+                      inherit state;
+                    };
                   };
                 }
                 comp;
@@ -1342,11 +1340,15 @@ in
           };
           runSurfacing = comp:
             let
+              B = fx.tc.check._blame;
               r = fx.trampoline.handle
                 {
-                  handlers.typeError = { param, state }: {
-                    abort = { __surfacedError = param.error; };
-                    inherit state;
+                  state = { blame = B.empty; };
+                  handlers = B.handlers // {
+                    typeError = { param, state }: {
+                      abort = { __surfacedError = B.fold state.blame param.error; };
+                      inherit state;
+                    };
                   };
                 }
                 comp;
@@ -1379,11 +1381,15 @@ in
           };
           runSurfacing = comp:
             let
+              B = fx.tc.check._blame;
               r = fx.trampoline.handle
                 {
-                  handlers.typeError = { param, state }: {
-                    abort = { __surfacedError = param.error; };
-                    inherit state;
+                  state = { blame = B.empty; };
+                  handlers = B.handlers // {
+                    typeError = { param, state }: {
+                      abort = { __surfacedError = B.fold state.blame param.error; };
+                      inherit state;
+                    };
                   };
                 }
                 comp;
@@ -1418,20 +1424,17 @@ in
       };
     };
 
-    "desc-foldDescWithPath-pure-handlers-stay-on-fast-path" = {
-      # `bindP`'s fast-path discipline carries over: when every
-      # sub-walk resolves to `K.pure …`, the outer computation is
-      # structurally `K.pure …` too — no handler install, no
-      # impure node. Direct structural equality on the result
-      # records pins the fast-path discharge.
-      expr = (self.foldDescWithPath [ ]
+    "desc-foldDescWithPath-pure-handlers-thread-values" = {
+      # All sub-walks pure: the catamorphism threads each handler result
+      # through the descent and yields the combined value.
+      expr = fx.tc.check.runCheck (self.foldDescWithPath [ ]
         {
           ret = _: K.pure 1;
           plus = x: K.pure (x.left + x.right);
           default = _: K.pure 0;
         }
-        (H.plus H.descRet H.descRet)) == K.pure 2;
-      expected = true;
+        (H.plus H.descRet H.descRet));
+      expected = 2;
     };
   };
 

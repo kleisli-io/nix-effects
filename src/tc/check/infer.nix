@@ -37,6 +37,7 @@ let
   bindP = self.bindP;
   bindPR = self.bindPR;
   bindPChain = self.bindPChain;
+  yield = self._yield.wrap;
 
   # Shared `U(0)` / `U(1)` values. Every type former infers at `U(0)`,
   # and `desc I` at I:U(0) infers at `U(1)`; constructing a fresh
@@ -113,9 +114,20 @@ in
         `checkMotive` for motive validation in eliminator rules.
       '';
       value = ctx: tm:
-        let t = tm.tag; in
-
-        if t == "var" then
+        let
+          t = tm.tag;
+          # Leaf tags: arm is `pure …` with no recursion. Left un-yielded
+          # so they stay Pure for the bindP fast path. `U` is included:
+          # `U(k≠0)` recurses into `check(level-*)`, which IS yielded, so
+          # it cannot cascade.
+          isLeaf = builtins.elem t [
+            "var" "U" "level" "unit" "empty" "string" "int" "float"
+            "attrs" "path" "derivation" "function" "any"
+            "string-lit" "int-lit" "float-lit" "attrs-lit" "path-lit"
+            "derivation-lit" "fn-lit" "any-lit"
+          ];
+          body =
+            if t == "var" then
           pure { term = tm; type = self.lookupType ctx tm.idx; }
 
         else if t == "ann" then
@@ -132,11 +144,13 @@ in
               let
                 aVal = E.eval ctx.env aTm;
                 inferParamTerms = params:
-                  if params == [ ] then pure [ ]
+                  # Head-yield: defers the list walk so a run of pure-leaf
+                  # params (whose `infer` is pure) can't cascade at width.
+                  yield (if params == [ ] then pure [ ]
                   else
                     bind (self.infer ctx (builtins.head params)) (pResult:
                       bind (inferParamTerms (builtins.tail params)) (rest:
-                        pure ([ pResult.term ] ++ rest)));
+                        pure ([ pResult.term ] ++ rest))));
                 canonicalDescRef = params:
                   let ref = tm._descRef // { inherit params; }; in
                   if aTm.tag == "desc"
@@ -1009,6 +1023,8 @@ in
               frame = D.captureFrame ctx;
             };
           };
+        in
+        if isLeaf then body else yield body;
     };
   };
 

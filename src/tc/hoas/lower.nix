@@ -115,6 +115,89 @@ let
     }
     else null;
 
+  # When a checked type is a Π-telescope ending in a 3-arg `EqDT sort lhs
+  # rhs` spine, the `vTy` and refl-conv builds in `checkHoas` each
+  # re-derive the same three witness normal forms. Extract them once from
+  # the checked Tm — eval'd under the telescope's neutral-binder env, the
+  # way `extend` introduces binders — and share as lit-vals across both.
+  # Sound: the witnesses are the checked type's own sub-Tms; wf is checked
+  # on the unspliced Tm.
+
+  # Each binder prepends `freshVar depth` (index 0 = innermost), matching
+  # `extend`/`instantiateF`. Returns the terminal node, env, and depth.
+  peelTmTelescope = tm: env: depth:
+    if (tm.tag or null) == "pi"
+    then peelTmTelescope tm.codomain ([ (fx.tc.value.freshVar depth) ] ++ env) (depth + 1)
+    else { node = tm; inherit env depth; };
+
+  # Peel a Tm app-spine left-associatively: `app(app(app h a0) a1) a2`
+  # ⇒ { head = h; args = [a0 a1 a2]; }.
+  peelTmAppSpine = tm: acc:
+    if (tm.tag or null) == "app"
+    then peelTmAppSpine tm.fn ([ tm.arg ] ++ acc)
+    else { head = tm; args = acc; };
+
+  # Descend the HOAS Π-telescope to its body and return the `eqDTView`
+  # (or null): the gate that confirms a checked 3-arg spine really is an
+  # EqDT (head `_dtypeMeta.name == "Eq"`), not some other application.
+  hoasEqBody = node: depth:
+    let wh = hoasWhnf node; in
+    if (wh._htag or null) == "pi"
+    then hoasEqBody (wh.body (self.litVal (fx.tc.value.freshVar depth))) (depth + 1)
+    else eqDTView wh;
+
+  # If the checked `ty` is a Π-telescope ending in a 3-arg spine, eval its
+  # sort/lhs/rhs sub-Tms ONCE under the telescope env; else null.
+  checkedEqWitnesses = ty:
+    let
+      p = peelTmTelescope ty [ ] 0;
+      body = if (p.node.tag or null) == "ann" then p.node.term else p.node;
+      s = peelTmAppSpine body [ ];
+    in
+    if (body.tag or null) == "app" && builtins.length s.args == 3
+    then {
+      sort = E.eval p.env (builtins.elemAt s.args 0);
+      lhs = E.eval p.env (builtins.elemAt s.args 1);
+      rhs = E.eval p.env (builtins.elemAt s.args 2);
+    }
+    else null;
+
+  # Rebuild the checked Π-telescope Tm with the terminal Eq spine's three
+  # args replaced by the shared lit-vals — feeds `vTy` without re-deriving
+  # the NFs (the spine head, carrying the EqDT constructor, is preserved).
+  spliceTmEqWitnesses = ty: w:
+    let
+      go = tm:
+        if (tm.tag or null) == "pi"
+        then tm // { codomain = go tm.codomain; }
+        else
+          let
+            isAnn = (tm.tag or null) == "ann";
+            body = if isAnn then tm.term else tm;
+            s = peelTmAppSpine body [ ];
+            rebuilt = T.mkApp
+              (T.mkApp (T.mkApp s.head (T.mkLitVal w.sort)) (T.mkLitVal w.lhs))
+              (T.mkLitVal w.rhs);
+          in
+          if isAnn then tm // { term = rebuilt; } else rebuilt;
+    in
+    go ty;
+
+  # Rebuild the HOAS Π-telescope with the terminal Eq body replaced by the
+  # shared lit-val witnesses — feeds the refl-conv `elaborateForCheck`.
+  spliceHoasEqWitnesses = h: w:
+    let
+      go = node:
+        let wh = hoasWhnf node; in
+        if (wh._htag or null) == "pi"
+        then wh // { body = v: go (wh.body v); }
+        else
+          let ev = eqDTView wh; in
+          if ev == null then node
+          else self.eq (self.litVal w.sort) (self.litVal w.lhs) (self.litVal w.rhs);
+    in
+    go h;
+
   sameHoas = a: b:
     let r = builtins.tryEval (a == b); in
     r.success && r.value;
@@ -155,12 +238,22 @@ let
     else null;
 
   fieldTyOf = mono: f: prev:
-    if f.kind == "data" then f.type
-    else if f.kind == "dataD" then f.typeFn prev
-    else if f.kind == "recAt" then self.muI mono.I mono.dHoas (f.idxFn prev)
-    else if f.kind == "pi" || f.kind == "piAt" then f.S
-    else if f.kind == "piD" || f.kind == "piDAt" then f.SFn prev
-    else throw "hoas.lower: unknown datatype field kind '${f.kind}'";
+    stripAnnTy (
+      if f.kind == "data" then f.type
+      else if f.kind == "dataD" then f.typeFn prev
+      else if f.kind == "recAt" then self.muI mono.I mono.dHoas (f.idxFn prev)
+      else if f.kind == "pi" || f.kind == "piAt" then f.S
+      else if f.kind == "piD" || f.kind == "piDAt" then f.SFn prev
+      else throw "hoas.lower: unknown datatype field kind '${f.kind}'");
+
+  # Strip `ann` off a field type. Parametric `monoAt` ascribes substituted
+  # params against their kind (`ann (listOf string) (u 0)`), hiding the former
+  # from consumers that inspect it. Applied in `fieldTyOf` so all readers see
+  # through it; never in `hoasWhnf` (conv needs its `ann` boundaries).
+  stripAnnTy = ty:
+    if builtins.isAttrs ty && (ty._htag or null) == "ann"
+    then stripAnnTy ty.term
+    else ty;
 
   fieldMarkers = fields:
     builtins.genList
@@ -519,7 +612,15 @@ let
               else acc)
             { }
             (builtins.genList (x: x) (builtins.length args));
-        payloadArgsOf = args:
+        # Lower each field arg to its payload Tm. data/dataD payloads are
+        # unannotated value-lifts (fieldPayloadValue), so inferring them would
+        # reject checkable-but-not-inferable args (bare cons/nil, unannotated
+        # lambdas): the head would land in the element-type slot. Elaborate them
+        # against the lifted field type so nested type-directed constructors
+        # recover their params. Inferable payloads fall through elaborateForCheck
+        # to plain `lower` (identical Tm); pi payloads are already ann-wrapped by
+        # fieldPayloadValue, so they keep `lower` too.
+        payloadCheckedTms = args:
           let
             go = idx: prev:
               if idx == builtins.length args then [ ]
@@ -528,12 +629,19 @@ let
                   f = builtins.elemAt mono.fields idx;
                   arg = builtins.elemAt args idx;
                   payload = self.fieldPayloadValue I mono.dHoas descLevel f prev arg;
+                  tm =
+                    if f.kind == "data" || f.kind == "dataD"
+                    then elaborateForCheck depth
+                      (self.fieldLiftType f descLevel
+                        (fieldTyOf mono f prev))
+                      payload
+                    else lower depth payload;
                   prev' =
                     if f.kind == "data" || f.kind == "dataD"
                     then prev // { ${f.name} = arg; }
                     else prev;
                 in
-                [ payload ] ++ go (idx + 1) prev';
+                [ tm ] ++ go (idx + 1) prev';
           in
           go 0 { };
         # Under the ⊤-sugar path (`datatype` / `datatypeP`), every
@@ -562,7 +670,7 @@ let
           prev = prevOfArgs fieldArgs;
           targetIdxHoas = mono.targetIdx prev;
           targetIdxTm = lower depth targetIdxHoas;
-          dataTms = map (a: lower depth a) (payloadArgsOf fieldArgs);
+          dataTms = payloadCheckedTms fieldArgs;
           leafTm = lower depth (self.payloadLeafAt I descLevel targetIdxHoas);
           tags = mkTags targetIdxHoas;
           payload = builtins.foldl'
@@ -670,7 +778,7 @@ let
             if !eligible then false
             else
               let
-                preElabPayloadTms = map (a: lower depth a) (payloadArgsOf layer0);
+                preElabPayloadTms = payloadCheckedTms layer0;
                 checks = builtins.genList
                   (j:
                     let
@@ -743,7 +851,7 @@ let
               prev = prevOfArgs nonRecHoasArgs;
               targetIdxHoas = mono.targetIdx prev;
               targetIdxTm = lower depth targetIdxHoas;
-              nonRecTms = map (a: lower depth a) (payloadArgsOf nonRecHoasArgs);
+              nonRecTms = payloadCheckedTms nonRecHoasArgs;
               leafTm = lower depth (self.payloadLeafAt I descLevel targetIdxHoas);
               tags = mkTags targetIdxHoas;
               innerMost = T.mkPair accTm leafTm;
@@ -1541,8 +1649,17 @@ in
           tyResult = CH.runCheck (CH.checkTypeLevel CH.emptyCtx tyRaw);
           tyHasError = builtins.isAttrs tyResult && tyResult ? error;
           ty = if tyHasError then tyRaw else tyResult.term;
-          tm = elaborateForCheck 0 hoasTy hoasTm;
-          vTy = E.eval [ ] ty;
+          # Derive the EqDT sort/lhs/rhs witnesses once from the checked Tm
+          # and share them across the vTy and refl-conv builds, which
+          # otherwise each re-derive them.
+          sharedEq =
+            if tyHasError || hoasEqBody hoasTy 0 == null
+            then null
+            else checkedEqWitnesses ty;
+          ty' = if sharedEq == null then ty else spliceTmEqWitnesses ty sharedEq;
+          hoasTy' = if sharedEq == null then hoasTy else spliceHoasEqWitnesses hoasTy sharedEq;
+          tm = elaborateForCheck 0 hoasTy' hoasTm;
+          vTy = E.eval [ ] ty';
           # Single-track: by conservativity, meta-free elaborator output
           # equals the kernel checker's output. Kernel pass fires only
           # on the elaborator-error fallback for the rigid diagnostic.

@@ -22,7 +22,9 @@
 #   nix-effects/types/{foundation,primitives,...}.md
 #   nix-effects/streams/{core,transform,...}.md
 
-{ pkgs, lib, nix-effects, requiredChecks ? [ ] }:
+# requiredChecks: corpus -> gate derivations. Function-shaped so gates
+# share this rendering instead of importing their own.
+{ pkgs, lib, nix-effects, requiredChecks ? (_corpus: [ ]) }:
 
 let
   docs = nix-effects.extractDocs;
@@ -1060,7 +1062,7 @@ let
 
   checkDeps = lib.concatMapStringsSep "\n"
     (check: "test -e ${check}")
-    requiredChecks;
+    (requiredChecks rawCorpus);
 
 in
 pkgs.runCommand "nix-effects-docs" { } ''

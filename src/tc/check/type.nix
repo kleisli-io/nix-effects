@@ -101,10 +101,6 @@ in
                   || builtins.length descDescRef.params != 3
                 then null
                 else descDescRef.params;
-              refILev =
-                if refParams == null || builtins.length refParams < 3
-                then V.vLevelZero
-                else builtins.elemAt refParams 0;
               refI =
                 if refParams == null || builtins.length refParams < 3
                 then null
@@ -395,7 +391,7 @@ in
                 let
                   vVal = E.eval ctx.env vTm;
                   ctx' = {
-                    env = [ vVal ] ++ ctx.env;
+                    env = V.envCons vVal ctx.env;
                     types = [ aVal ] ++ ctx.types;
                     depth = ctx.depth + 1;
                   };

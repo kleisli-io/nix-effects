@@ -36,7 +36,6 @@ let
   # to a plain variable reference.
   bindP = self.bindP;
   bindPR = self.bindPR;
-  bindPChain = self.bindPChain;
   yield = self._yield.wrap;
 
   # Shared `U(0)` / `U(1)` values. Every type former infers at `U(0)`,
@@ -271,7 +270,7 @@ in
                     # 0:pVal, 1:aVal, 2:bVal. ctx.env follows from idx 3.
                     # Inside the x-binder body (depth+1):
                     # Var 1=pVal, Var 2=aVal, Var 3=bVal.
-                    extEnv = [ pVal aVal bVal ] ++ ctx.env;
+                    extEnv = V.envPrepend [ pVal aVal bVal ] ctx.env;
                     # l : Π(x:A). P(inl x)
                     lTy = V.vPi "x" aVal (V.mkClosure extEnv
                       (T.mkApp (T.mkVar 1)
@@ -660,7 +659,7 @@ in
                       # Inside i+d+_ body: shift +3.
                       stepTy =
                         let
-                          extEnv = [ pVal dVal iTyVal kEff dLevel ] ++ ctx.env;
+                          extEnv = V.envPrepend [ pVal dVal iTyVal kEff dLevel ] ctx.env;
                           # `λj:I. μ I D j` under the i-binder: j adds +1 to
                           # all extEnv refs, so iTyVal is at 4 and dVal at 3.
                           muFamForInterp = T.mkLam "_j"
@@ -995,7 +994,7 @@ in
                 let
                   aVal = E.eval ctx.env aTm;
                   bVal = E.eval ctx.env bTm;
-                  extEnv = [ bVal ] ++ ctx.env;
+                  extEnv = V.envCons bVal ctx.env;
                   fTy = V.vPi "_" aVal
                     (V.mkClosure extEnv (T.mkSquash (T.mkVar 1)));
                   xTy = V.vSquash aVal;

@@ -28,14 +28,14 @@ let
     evalF = E.mkValueF overlaySelf;
 
     instantiateF = fuel: cl: arg:
-      overlaySelf.evalF fuel ([ arg ] ++ cl.env) cl.body;
+      overlaySelf.evalF fuel (V.envCons arg cl.env) cl.body;
 
     vAppF = fuel: fn: arg:
       if isVMeta fn then extendVMeta fn (V.eApp arg)
       else if fn.tag == "VDescViewFn" then
         E.dispatch.applyDescViewFnByKindF fuel fn arg
       else if fn.tag == "VLam" then overlaySelf.instantiateF fuel fn.closure arg
-      else if fn.tag == "VNe" then V.vNe fn.level (fn.spine ++ [ (V.eApp arg) ])
+      else if fn.tag == "VNe" then V.vNeSnoc fn (V.eApp arg)
       else throw "tc.overlay: vApp on non-function (tag=${fn.tag})";
 
     vBootSumElimF = fuel: left: right: motive: onLeft: onRight: scrut:
@@ -44,13 +44,13 @@ let
       else if scrut.tag == "VBootInl" then overlaySelf.vAppF fuel onLeft scrut.val
       else if scrut.tag == "VBootInr" then overlaySelf.vAppF fuel onRight scrut.val
       else if scrut.tag == "VNe"
-      then V.vNe scrut.level (scrut.spine ++ [ (V.eBootSumElim left right motive onLeft onRight) ])
+      then V.vNeSnoc scrut (V.eBootSumElim left right motive onLeft onRight)
       else throw "tc.overlay: vBootSumElim on non-bootstrap-sum (tag=${scrut.tag})";
 
     vSquashElimF = fuel: A: B: f: x:
       if isVMeta x then extendVMeta x (V.eSquashElim A B f)
       else if x.tag == "VSquashIntro" then overlaySelf.vAppF fuel f x.a
-      else if x.tag == "VNe" then V.vNe x.level (x.spine ++ [ (V.eSquashElim A B f) ])
+      else if x.tag == "VNe" then V.vNeSnoc x (V.eSquashElim A B f)
       else throw "tc.overlay: vSquashElim on non-Squash (tag=${x.tag})";
 
     # Remaining eliminators reuse the existing overlay versions from

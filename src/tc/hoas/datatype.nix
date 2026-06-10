@@ -598,10 +598,10 @@ in
           _descRef = descRef;
         };
         # `_descConCert` may carry an optional `validatedFields = { validated
-        # : Bool; fieldTms : [[Tm]]; }`. When `validated`, every non-recursive
-        # field position at every chain layer has been pre-checked by the
-        # elaborator against `classify.profile[j].S` under the same outer
-        # `ctx` the kernel trampoline uses; sound by referential transparency.
+        # : Bool; }`. When `validated`, the carrying layer's non-recursive
+        # field positions have been pre-checked by the elaborator against
+        # `classify.profile[j].S` under the same outer `ctx` the kernel
+        # trampoline uses; sound by referential transparency.
         descConCertified = ctorIndex: fieldCount: targetIdx: payload:
           (descCon D targetIdx payload) // {
             _descConCert = {

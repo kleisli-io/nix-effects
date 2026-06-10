@@ -105,9 +105,18 @@ let
       # alloc-determinism invariant that the gate relies on.
       npkgs="${pkgs.path}"
 
+      # Pin the GC's starting heap. `gc.heapSize` never reads below the
+      # initial heap, so an ambient default (hundreds of MB) floor-clamps
+      # peak-heap for every workload that stays under it — the soft-warn
+      # axis would compare floors, not peaks. 8M keeps real peaks visible;
+      # alloc counts and step counts are GC-independent. Recorded in the
+      # run envelope: runs measured under different pins are not comparable
+      # on the gc axis.
+      gc_heap="8M"
+
       echo "bench-run: name=$name runs=$runs warmup=$warmup tier=$tier filter='$filter'" >&2
       echo "bench-run: bench_dir=$bench_dir history_dir=$history_dir" >&2
-      echo "bench-run: nixpkgs=$npkgs" >&2
+      echo "bench-run: nixpkgs=$npkgs gc_initial_heap=$gc_heap" >&2
 
       # Enumerate workloads. Bench path is inlined as a literal path in the
       # expression — `--argstr` is not applied in `--eval` mode.
@@ -152,6 +161,7 @@ let
         local t0_ns t1_ns wall_ms
         t0_ns=$(date +%s%N)
         NIX_PATH="nixpkgs=$npkgs" NIX_SHOW_STATS=1 NIX_SHOW_STATS_PATH="$stats_file" \
+          GC_INITIAL_HEAP_SIZE="$gc_heap" \
           nix-instantiate --eval --strict --json --expr "$expr" >/dev/null 2>/dev/null
         t1_ns=$(date +%s%N)
         wall_ms=$(( (t1_ns - t0_ns) / 1000000 ))
@@ -201,9 +211,11 @@ let
         --arg ts "$timestamp" \
         --arg nx "$nix_version" \
         --arg sys "$system" \
+        --arg ghs "$gc_heap" \
         --argjson rpw "$runs" \
         --slurpfile ws "$workloads_obj" \
         '{ name: $name, timestamp: $ts, nix: $nx, system: $sys,
+           gcInitialHeapSize: $ghs,
            runsPerWorkload: $rpw, workloads: $ws[0] }' \
         > "$run_envelope"
 

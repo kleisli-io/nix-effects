@@ -86,7 +86,6 @@ let
   # fixpoint; binding once at module init collapses each use site to a
   # plain variable reference, eliminating the repeated lookup in deep
   # rule-descent loops.
-  bindP = self.bindP;
   bindPR = self.bindPR;
   bindPChain = self.bindPChain;
   yield = self._yield.wrap;
@@ -317,7 +316,7 @@ in
                   tVal = E.eval ctx.env tTm;
                   tyF = E.forceVal ty;
                   ctx' = {
-                    env = [ tVal ] ++ ctx.env;
+                    env = V.envCons tVal ctx.env;
                     types = [ aVal ] ++ ctx.types;
                     depth = ctx.depth + 1;
                   };
@@ -403,10 +402,6 @@ in
               dTm = dInfo.term;
               dVal = E.eval ctx.env dTm;
               cert = tm._descConCert or null;
-              certValidatedFields = if cert == null then null else cert.validatedFields or null;
-              certHasValidatedAttestation =
-                certValidatedFields != null
-                && (certValidatedFields.validated or false);
               certRef = if cert == null then null else evalDescRef ctx.env cert.ref;
               certHasTarget = cert != null && (cert ? target);
               certTargetIsIndex =
@@ -613,8 +608,15 @@ in
                                     # (k_iter = 0 → just above base) while the user
                                     # numbers layers top-down (0 = outermost).
                                     layerDepth = n - 1 - k;
+                                    # Per-layer attestation: each chain node carries its
+                                    # own cert, so one unvalidated layer costs one slow
+                                    # layer rather than unvalidating the whole chain.
+                                    layerCert = layer._descConCert or null;
+                                    layerAttested =
+                                      layerCert != null
+                                      && ((layerCert.validatedFields or { }).validated or false);
                                     checkHeads = j: remaining: accTms:
-                                      # Head-yield: re-defers the `cert && depth==0` branch
+                                      # Head-yield: re-defers the `attested && depth==0` branch
                                       # whose `m` is a pure `pure h.head` that the bindP
                                       # fast path would otherwise recurse through directly.
                                       yield (if remaining == [ ] then pure accTms
@@ -624,7 +626,7 @@ in
                                           rest = builtins.tail remaining;
                                         in
                                         bindPChain [ (P.DConLayer layerDepth) (P.Elem j) ]
-                                          (if certHasValidatedAttestation && ctx.depth == 0
+                                          (if layerAttested && ctx.depth == 0
                                            then pure h.head
                                            else self.check ctx h.head h.S)
                                           (hTm: checkHeads (j + 1) rest (accTms ++ [ hTm ])));

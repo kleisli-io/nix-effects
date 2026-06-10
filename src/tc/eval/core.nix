@@ -17,12 +17,13 @@
 let
   val = fx.tc.value;
   inherit (val) mkClosure
+    envCons envNth envLen envFromList
     vLam vPi vSigma vPair
-    vUnit vTt vEmpty vBootSum vBootInl vBootInr vBootEq vBootRefl vFunext vU vNe
+    vUnit vTt vEmpty vBootSum vBootInl vBootInr vBootEq vBootRefl vFunext vU vNe vNeSnoc
     vSquash vSquashIntro
     vLevel vLevelZero vLevelSuc vLevelMax
     vLift vLiftIntro
-    vDesc vMu vDescCon vDescConChain
+    vMu vDescCon vDescConChain
     vString vInt vFloat vAttrs vPath vDerivation vFunction vAny
     vStringLit vIntLit vFloatLit vAttrsLit vPathLit vDerivationLit vFnLit vAnyLit
     eApp eFst eSnd eBootSumElim eBootJ eStrEq eAbsurd eLiftElim
@@ -56,12 +57,12 @@ let
   # `self` never sees VMeta. Closure bodies whose env contains a
   # `VMeta` must be evaluated through the overlay self, never through
   # the kernel self.
-  mkValueF = self_: fuel: env: tm:
+  mkValueF = self_: fuel: envIn: tm:
     if fuel <= 0 then throw "normalization budget exceeded"
     else
-      let t = tm.tag; f = fuel - 1; ev = self_.evalF f env; in
-      if t == "var" then builtins.elemAt env tm.idx
-      else if t == "let" then self_.evalF f ([ (ev tm.val) ] ++ env) tm.body
+      let env = envFromList envIn; t = tm.tag; f = fuel - 1; ev = self_.evalF f env; in
+      if t == "var" then envNth env tm.idx
+      else if t == "let" then self_.evalF f (envCons (ev tm.val) env) tm.body
       else if t == "ann" then
         let
           v = ev tm.term;
@@ -245,7 +246,7 @@ let
           nFields =
             if classify == null then 0
             else classify.fieldCount or (builtins.length profile);
-          depth = builtins.length env;
+          depth = envLen env;
           sameD = node:
             if classify ? certified then
               let nodeCert = node._descConCert or null; in
@@ -511,21 +512,25 @@ in
   scope = {
     defaultFuel = 10000000;
 
-    instantiateF = fuel: cl: arg: self.evalF fuel ([ arg ] ++ cl.env) cl.body;
+    instantiateF = fuel: cl: arg: self.evalF fuel (envCons arg cl.env) cl.body;
 
     # Re-export the outer-`let` chain-`_layers` slicer as a self member so
     # `machine.nix` (`self.effLayers`) and `conv.nix` (`E.effLayers`) share
     # one definition.
     effLayers = effLayers;
 
-    # Force a `VThunkTm` to its underlying Val. Stepwise tail-recursive
+    # Force a `VThunkTm` to its underlying Val. Prefers the record's
+    # memoized `forced` field (attached by the machine's `ev`), so
+    # repeated forces of the same record share one machine run; the
+    # fallback covers raw `vThunkTm` records. Stepwise tail-recursive
     # against the (already-enforced) invariant that `runMachineF` Done is
     # never a `VThunkTm`: the second call is a no-op, kept defensive.
     # Non-`VThunkTm` inputs pass through. Use at every external-API entry
     # point that reads a stored sub-Val's `.tag`.
     forceVal = v:
       if (v.tag or "") != "VThunkTm" then v
-      else self.forceVal (self.runMachineF self.defaultFuel v.env v.tm);
+      else self.forceVal
+        (v.forced or (self.runMachineF self.defaultFuel v.env v.tm));
 
     # Canonical linearChain normal form. Force-peels a Val along its
     # recursive spine and recursively flattens nested chain-form bases
@@ -618,7 +623,7 @@ in
       let fn = self.forceVal fn0; in
       if fn.tag == "VDescViewFn" then self.applyDescViewFnByKindF fuel fn arg
       else if fn.tag == "VLam" then self.instantiateF fuel fn.closure arg
-      else if fn.tag == "VNe" then vNe fn.level (fn.spine ++ [ (eApp arg) ])
+      else if fn.tag == "VNe" then vNeSnoc fn (eApp arg)
       else throw "tc: vApp on non-function (tag=${fn.tag})";
 
     vFst = api.leaf {
@@ -626,7 +631,7 @@ in
       signature = "vFst : Val -> Val";
       value = p:
         if p.tag == "VPair" then p.fst
-        else if p.tag == "VNe" then vNe p.level (p.spine ++ [ eFst ])
+        else if p.tag == "VNe" then vNeSnoc p eFst
         else throw "tc: vFst on non-pair (tag=${p.tag})";
     };
 
@@ -635,7 +640,7 @@ in
       signature = "vSnd : Val -> Val";
       value = p:
         if p.tag == "VPair" then p.snd
-        else if p.tag == "VNe" then vNe p.level (p.spine ++ [ eSnd ])
+        else if p.tag == "VNe" then vNeSnoc p eSnd
         else throw "tc: vSnd on non-pair (tag=${p.tag})";
     };
 
@@ -654,16 +659,16 @@ in
       if lhs.tag == "VStringLit" && rhs.tag == "VStringLit" then
         if lhs.value == rhs.value then vBoolTrue else vBoolFalse
       else if lhs.tag == "VNe" then
-        vNe lhs.level (lhs.spine ++ [ (eStrEq rhs) ])
+        vNeSnoc lhs (eStrEq rhs)
       else if rhs.tag == "VNe" then
-        vNe rhs.level (rhs.spine ++ [ (eStrEq lhs) ])
+        vNeSnoc rhs (eStrEq lhs)
       else throw "tc: vStrEq on non-string (tags=${lhs.tag}, ${rhs.tag})";
 
     vBootSumElimF = fuel: left: right: motive: onLeft: onRight: scrut:
       if scrut.tag == "VBootInl" then self.vAppF fuel onLeft scrut.val
       else if scrut.tag == "VBootInr" then self.vAppF fuel onRight scrut.val
       else if scrut.tag == "VNe" then
-        vNe scrut.level (scrut.spine ++ [ (eBootSumElim left right motive onLeft onRight) ])
+        vNeSnoc scrut (eBootSumElim left right motive onLeft onRight)
       else throw "tc: vBootSumElim on non-bootstrap-sum (tag=${scrut.tag})";
 
     vBootJ = api.leaf {
@@ -680,14 +685,14 @@ in
       value = type: lhs: motive: base: rhs: eq:
         if eq.tag == "VBootRefl" then base
         else if eq.tag == "VNe" then
-          vNe eq.level (eq.spine ++ [ (eBootJ type lhs motive base rhs) ])
+          vNeSnoc eq (eBootJ type lhs motive base rhs)
         else throw "tc: vBootJ on non-eq (tag=${eq.tag})";
     };
 
     # Empty has no canonical inhabitants — non-VNe is a soundness bug.
     vAbsurd = type: x:
       if x.tag == "VNe"
-      then vNe x.level (x.spine ++ [ (eAbsurd type) ])
+      then vNeSnoc x (eAbsurd type)
       else throw "tc: vAbsurd on non-neutral (tag=${x.tag}) — Empty has no canonical inhabitant";
 
     # `recTrunc A B f x` for `x : Squash A` returning `Squash B`.
@@ -697,7 +702,7 @@ in
     vSquashElimF = fuel: A: B: f: x:
       if x.tag == "VSquashIntro" then self.vAppF fuel f x.a
       else if x.tag == "VNe"
-      then vNe x.level (x.spine ++ [ (eSquashElim A B f) ])
+      then vNeSnoc x (eSquashElim A B f)
       else throw "tc: vSquashElim on non-Squash (tag=${x.tag})";
 
     vLiftF = api.leaf {
@@ -752,7 +757,7 @@ in
         if fx.tc.conv.convLevel l m then x
         else if x.tag == "VLiftIntro" then x.a
         else if x.tag == "VNe"
-        then vNe x.level (x.spine ++ [ (eLiftElim l m eq A) ])
+        then vNeSnoc x (eLiftElim l m eq A)
         else throw "tc: vLiftElim on non-Lift (tag=${x.tag})";
     };
 
@@ -763,9 +768,9 @@ in
     };
 
     evalF = api.leaf {
-      description = "evalF: kernel-term evaluator. Routes through the CEK machine in `tc/eval/machine.nix` so every Tm-structural dispatch participates in the same driver loop that knows machine-internal Val tags (notably `VLazyDescIndAccLayer`). `mkValueF` remains exported for overlays (notably `tc/elaborate/eval-overlay.nix`) that compose their own self-table with VMeta-aware dispatch.";
+      description = "evalF: kernel-term evaluator. Routes through the depth-budgeted hybrid in `tc/eval/direct.nix`: direct `mkValueF` recursion for shallow structural terms, the CEK machine (`tc/eval/machine.nix`) at budget exhaustion and for the tags that must see machine-internal Val tags (notably `VLazyDescIndAccLayer`). `mkValueF` remains exported for overlays (notably `tc/elaborate/eval-overlay.nix`) that compose their own self-table with VMeta-aware dispatch.";
       signature = "evalF : Int -> Env -> Tm -> Val";
-      value = fuel: env: tm: self.runMachineF fuel env tm;
+      value = fuel: env: tm: self.evalHybridF fuel (envFromList env) tm;
     };
 
     eval = api.leaf {
@@ -802,7 +807,7 @@ in
       H = fx.tc.hoas;
       HI = fx.tc.hoas._internal._indexed;
       inherit (val) freshVar;
-      inherit (self) eval evalF instantiate;
+      inherit (self) eval instantiate;
 
       idTm = T.mkLam "x" T.mkUnit (T.mkVar 0);
       appIdTt = T.mkApp idTm T.mkTt;
@@ -1150,6 +1155,28 @@ in
           in
           (eval [ ] (T.mkDescInd D P step T.mkTt scrut)).tag;
         expected = "VTt";
+      };
+      # A computed motive (here behind an identity application) reaches the
+      # machine as a deferred Tm; the VDescCon arm must force it through the
+      # driver before reading its domain. Exercised through quote of a stuck
+      # everywhere-d spine over a neutral desc — the spine embeds muFam/ihVal
+      # whose binder domains read motive.domain.
+      "eval-desc-ind-deferred-motive-nf" = {
+        expr =
+          let
+            D = encRet;
+            P = T.mkLam "i" T.mkUnit (T.mkLam "_" (T.mkMu T.mkUnit D T.mkTt) T.mkUnit);
+            deferredP = T.mkApp (T.mkLam "p" T.mkUnit (T.mkVar 0)) P;
+            step = T.mkLam "i" T.mkUnit
+              (T.mkLam "d" T.mkUnit
+                (T.mkLam "ih" T.mkUnit (T.mkVar 0)));
+            scrut = T.mkDescCon (T.mkVar 0) T.mkTt T.mkBootRefl;
+            run = motive:
+              (fx.tc.quote.nf [ (freshVar 0) ]
+                (T.mkDescInd (T.mkVar 0) motive step T.mkTt scrut)).tag;
+          in
+          { control = run P; probe = run deferredP; };
+        expected = { control = "everywhere-d"; probe = "everywhere-d"; };
       };
 
       # Lift primitive — type-former, introducer, eliminator.

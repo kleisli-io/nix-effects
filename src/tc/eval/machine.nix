@@ -19,10 +19,11 @@ let
   val = fx.tc.value;
   term = fx.tc.term;
   inherit (val) mkClosure freshVar
-    vTt vUnit vEmpty vNe vLam vPi vSigma vPair
+    envCons envNth envLen envFromList
+    vTt vUnit vEmpty vNe vNeSnoc vLam vPi vSigma vPair
     vBootSum vBootInl vBootInr vBootEq vBootRefl vFunext
     vSquash vSquashIntro
-    vDescAt vMu vDescCon vDescConChain vU vLazyDescIndAccLayer vThunkTm
+    vDescAt vMu vDescCon vDescConChain vU vLazyDescIndAccLayer
     vLevel vLevelZero vLevelSuc vLevelMax vLiftIntro
     vString vInt vFloat vAttrs vPath vDerivation vFunction vAny
     vStringLit vIntLit vFloatLit vAttrsLit vPathLit vDerivationLit vFnLit vAnyLit
@@ -94,7 +95,6 @@ let
   # `stepApply`'s top-level VThunkTm peek transitions to Eval inside the same
   # driver; on return the resume handler rebuilds H with the forced field
   # substituted and re-delivers the consumed val. No fresh `runMachineF`.
-  kForceFor       = { tag = "KForceFor"; };
   # Q→Eval→Q transition: forced val lands as state.val; resume pops itself
   # and switches state back to Q-Eval at binder depth `d`.
   kqResumeQuote   = d:               { tag = "KQResumeQuote";        inherit d; };
@@ -102,8 +102,6 @@ let
     { tag = "KResume_KAllD_d";        inherit L I K X M i D; };
   kResume_KEverywhereD_d = L: I: K: X: M: ih: i: D:
     { tag = "KResume_KEverywhereD_d"; inherit L I K X M ih i D; };
-  kResume_KDescInd_motive = D: step: i: scrut:
-    { tag = "KResume_KDescInd_motive"; inherit D step i scrut; };
 
   # Helper dispatchers. Each runs the corresponding `desc.nix` helper under
   # the unified driver and delivers the result to the paired `*_Got*` resume
@@ -111,15 +109,8 @@ let
   # value flows through `state.val` (forced by `stepApply`'s top-level peek
   # if needed); only `kPeelLiftIntroVal` carries an accumulator field.
   kDescView         = { tag = "KDescView";         };
-  kqDescView        = { tag = "KQDescView";        };
   kSumPayloadView   = { tag = "KSumPayloadView";   };
   kPeelLiftIntroVal = rb: { tag = "KPeelLiftIntroVal"; rebuildAcc = rb; };
-
-  # Iterative walker frames over descCon chains.
-  kCollectPairs = nFields: ii: acc: payload:
-    { tag = "KCollectPairs"; inherit nFields ii acc payload; };
-  kPeel = D: linear: payloadTag: nFields:
-    { tag = "KPeel"; inherit D linear payloadTag nFields; };
 
   # Continuations paired with `kDescView`: forced view arrives as state.val
   # (sentinel-wrapped); the resume restores the original handler context.
@@ -148,33 +139,6 @@ let
     { tag = "KResume_KAllD_view4_GotSV";        inherit L I K X M i viewA viewB d; };
   kResume_KEverywhereD_view4_GotSV = L: I: K: X: M: ih: i: viewA: viewB: d:
     { tag = "KResume_KEverywhereD_view4_GotSV"; inherit L I K X M ih i viewA viewB d; };
-
-  # Continuations for the `vFst` / `vSnd` chain at each handler branch:
-  # `kFst d → *_GotFstD → kSnd d → *_GotSndD → original consumer push`.
-  kResume_KAllD_view1_GotFstD = L: I: K: X: M: i: d: tFn:
-    { tag = "KResume_KAllD_view1_GotFstD"; inherit L I K X M i d tFn; };
-  kResume_KAllD_view1_GotSndD = L: I: K: X: M: i: fstD: tFn:
-    { tag = "KResume_KAllD_view1_GotSndD"; inherit L I K X M i fstD tFn; };
-  kResume_KAllD_view2_GotFstD = L: I: K: X: M: i: d: sub: j:
-    { tag = "KResume_KAllD_view2_GotFstD"; inherit L I K X M i d sub j; };
-  kResume_KAllD_view2_GotSndD = L: I: K: X: M: i: fstD: sub: j:
-    { tag = "KResume_KAllD_view2_GotSndD"; inherit L I K X M i fstD sub j; };
-  kResume_KAllD_view3_GotFstD = L: I: K: X: M: i: d: sTy: sub: fn:
-    { tag = "KResume_KAllD_view3_GotFstD"; inherit L I K X M i d sTy sub fn; };
-  kResume_KAllD_view3_GotSndD = L: I: K: X: M: i: fstD: sTy: sub: fn:
-    { tag = "KResume_KAllD_view3_GotSndD"; inherit L I K X M i fstD sTy sub fn; };
-  kResume_KEverywhereD_view1_GotFstD = L: I: K: X: M: ih: i: d: tFn:
-    { tag = "KResume_KEverywhereD_view1_GotFstD"; inherit L I K X M ih i d tFn; };
-  kResume_KEverywhereD_view1_GotSndD = L: I: K: X: M: ih: i: fstD: tFn:
-    { tag = "KResume_KEverywhereD_view1_GotSndD"; inherit L I K X M ih i fstD tFn; };
-  kResume_KEverywhereD_view2_GotFstD = L: I: K: X: M: ih: i: d: sub: j:
-    { tag = "KResume_KEverywhereD_view2_GotFstD"; inherit L I K X M ih i d sub j; };
-  kResume_KEverywhereD_view2_GotSndD = L: I: K: X: M: ih: i: fstD: sub: j:
-    { tag = "KResume_KEverywhereD_view2_GotSndD"; inherit L I K X M ih i fstD sub j; };
-  kResume_KEverywhereD_view3_GotFstD = L: I: K: X: M: ih: i: d: sTy: sub: fn:
-    { tag = "KResume_KEverywhereD_view3_GotFstD"; inherit L I K X M ih i d sTy sub fn; };
-  kResume_KEverywhereD_view3_GotSndD = L: I: K: X: M: ih: i: fstD: sTy: sub: fn:
-    { tag = "KResume_KEverywhereD_view3_GotSndD"; inherit L I K X M ih i fstD sTy sub fn; };
 
   # Self-pushing walker over an inr/inl spine. Each VBootInr step pushes
   # `kDecodeWalk (depth+1)` and re-enters with `node.val`; VBootInl delivers
@@ -239,12 +203,6 @@ let
   kResume_KSumPayloadView_GotField = d: dD: pairSnd:
     { tag = "KResume_KSumPayloadView_GotField"; inherit d dD pairSnd; };
 
-  # Eval-lift frames for `KDescConPeel_BaseD` layer/head evaluation and
-  # `KDescConPeel_Start` sameD comparison.
-  kEvalLayerI    = env: layerTm:                { tag = "KEvalLayerI";    inherit env layerTm; };
-  kEvalLayerHead = env: heads: idx: layerAccum: { tag = "KEvalLayerHead"; inherit env heads idx layerAccum; };
-  kEvalForConv   = depth: dVal:                 { tag = "KEvalForConv";   inherit depth dVal; };
-
   # Each step pays one fuel.
   mkApply = kont: fuel: v:       { mode = "Apply"; val = v; inherit kont; fuel = fuel - 1; };
   mkEval  = kont: fuel: env: tm: { mode = "Eval"; inherit env tm kont; fuel = fuel - 1; };
@@ -306,9 +264,19 @@ let
     "desc-ind" = true; "interp-d" = true; "all-d" = true;
     "everywhere-d" = true;
   };
+  # Deferred-Tm record with a memoized force: `forced` is a lazy field,
+  # so every external read-site force of the SAME record (core.nix
+  # `forceVal`) shares one machine run instead of re-evaluating per
+  # touch. In-driver consumption (`stepApply`/`stepIf` peeks) stays
+  # frame-based for fuel accounting.
+  deferTm = env: tm: {
+    tag = "VThunkTm"; inherit env tm;
+    forced = self.runMachineF self.defaultFuel env tm;
+  };
+
   ev = env: tm:
     let t = tm.tag; in
-         if t == "var"            then builtins.elemAt env tm.idx
+         if t == "var"            then envNth env tm.idx
     else if t == "lit-val"        then tm.val
     else if t == "level-zero"     then vLevelZero
     # The level sub-language is evaluated strictly: a Level Val must never
@@ -341,8 +309,8 @@ let
     else if t == "fn-lit"         then vFnLit
     else if t == "any-lit"        then vAnyLit
     else if t == "U" && tm.level.tag == "level-zero" then vUZero
-    else if evDeferTags ? ${t} then vThunkTm env tm
-    else self.forceVal (vThunkTm env tm);
+    else if evDeferTags ? ${t} then deferTm env tm
+    else self.forceVal (deferTm env tm);
 
   # Lazy `_descRef` finalizer: mirrors `core.nix:428-433`'s `evalDescRef`.
   # All fields stay as Nix thunks; consumers (typechecker) force on demand.
@@ -353,7 +321,7 @@ let
   };
 
   evalDispatch = {
-    "var" = c: c.apply (builtins.elemAt c.env c.tm.idx);
+    "var" = c: c.apply (envNth c.env c.tm.idx);
 
     "unit"           = c: c.apply vUnit;
     "tt"             = c: c.apply vTt;
@@ -385,7 +353,7 @@ let
     # evaluation of body in-place; the let's Val IS the body's Val.
     # `ann`: HEAD merges sidecars onto a thunk-Val via `//`; no field is
     # forced at eval time (typechecker reads `_descRef` etc. later).
-    "let"   = c: mkEval c.kont c.fuel ([ (c.lazy c.tm.val) ] ++ c.env) c.tm.body;
+    "let"   = c: mkEval c.kont c.fuel (envCons (c.lazy c.tm.val) c.env) c.tm.body;
     "ann"   = c:
       let
         # Meta-bearing anns wrap descriptions (shallow, always inspected).
@@ -559,7 +527,15 @@ let
       evalThen = frame: nextTm: mkEval (push frame kont) fuel env nextTm;
       lazy = subTm: ev env subTm;
       ctx = { inherit tm env kont fuel apply evalThen lazy; };
-    in evalDispatch.${tm.tag} ctx;
+    in
+    # `env` and `kont` are threaded into the next Eval state by reference; a
+    # descent that never reads them (e.g. a deep application spine, whose env
+    # is untouched until the head variable and whose kont is consumed only on
+    # the return apply) leaves `state.env`/`state.kont` as an N-deep chain of
+    # attribute-select thunks, forced all at once at the leaf — N-deep native
+    # recursion that overflows the C stack. Forcing each to WHNF per step keeps
+    # them flat (O(1)); the select chain never accumulates.
+    builtins.seq env (builtins.seq kont (evalDispatch.${tm.tag} ctx));
 
   applyDispatch = {
     # `KApp1` subsumes the former two-step `evalThen-fn → KApp2`. fn is
@@ -572,28 +548,28 @@ let
       else
         let argThunk = ev c.k.env c.k.argTm; in
         if fn.tag == "VDescViewFn" then applyDescViewFnArm c fn argThunk
-        else if fn.tag == "VLam" then c.evalRest ([ argThunk ] ++ fn.closure.env) fn.closure.body
-        else if fn.tag == "VNe"  then c.apply (vNe fn.level (fn.spine ++ [ (eApp argThunk) ]))
+        else if fn.tag == "VLam" then c.evalRest (envCons argThunk fn.closure.env) fn.closure.body
+        else if fn.tag == "VNe"  then c.apply (vNeSnoc fn (eApp argThunk))
         else throw "tc: vApp on non-function (tag=${fn.tag})";
 
     "KApp_VV" = c:
       let fn = c.v; arg = c.k.arg; in
       if fn.tag == "VLazyDescIndAccLayer" then forceLazyLayer c
       else if fn.tag == "VDescViewFn" then applyDescViewFnArm c fn arg
-      else if fn.tag == "VLam" then c.evalRest ([ arg ] ++ fn.closure.env) fn.closure.body
-      else if fn.tag == "VNe"  then c.apply (vNe fn.level (fn.spine ++ [ (eApp arg) ]))
+      else if fn.tag == "VLam" then c.evalRest (envCons arg fn.closure.env) fn.closure.body
+      else if fn.tag == "VNe"  then c.apply (vNeSnoc fn (eApp arg))
       else throw "tc: vApp on non-function (tag=${fn.tag})";
 
     "KFst" = c:
       if c.v.tag == "VLazyDescIndAccLayer" then forceLazyLayer c
       else if c.v.tag == "VPair" then c.apply c.v.fst
-      else if c.v.tag == "VNe" then c.apply (vNe c.v.level (c.v.spine ++ [ eFst ]))
+      else if c.v.tag == "VNe" then c.apply (vNeSnoc c.v eFst)
       else throw "tc: vFst on non-pair (tag=${c.v.tag})";
 
     "KSnd" = c:
       if c.v.tag == "VLazyDescIndAccLayer" then forceLazyLayer c
       else if c.v.tag == "VPair" then c.apply c.v.snd
-      else if c.v.tag == "VNe" then c.apply (vNe c.v.level (c.v.spine ++ [ eSnd ]))
+      else if c.v.tag == "VNe" then c.apply (vNeSnoc c.v eSnd)
       else throw "tc: vSnd on non-pair (tag=${c.v.tag})";
 
     # Eliminator-scrutinee resumes: each forces the scrut for tag dispatch,
@@ -608,14 +584,13 @@ let
       else if c.v.tag == "VBootInr" then
         mkEval (push (kAppVV c.v.val) c.rest) c.fuel env tm.onRight
       else if c.v.tag == "VNe" then
-        c.apply (vNe c.v.level (c.v.spine ++ [
+        c.apply (vNeSnoc c.v
           (eBootSumElim
             (ev env tm.left)
             (ev env tm.right)
             (ev env tm.motive)
             (ev env tm.onLeft)
-            (ev env tm.onRight))
-        ]))
+            (ev env tm.onRight)))
       else throw "tc: vBootSumElim on non-bootstrap-sum (tag=${c.v.tag})";
 
     "KBootJ_Scrut" = c:
@@ -623,14 +598,13 @@ let
       if c.v.tag == "VLazyDescIndAccLayer" then forceLazyLayer c
       else if c.v.tag == "VBootRefl" then c.evalRest env tm.base
       else if c.v.tag == "VNe" then
-        c.apply (vNe c.v.level (c.v.spine ++ [
+        c.apply (vNeSnoc c.v
           (eBootJ
             (ev env tm.type)
             (ev env tm.lhs)
             (ev env tm.motive)
             (ev env tm.base)
-            (ev env tm.rhs))
-        ]))
+            (ev env tm.rhs)))
       else throw "tc: vBootJ on non-eq (tag=${c.v.tag})";
 
     "KLiftElim_X"   = c:
@@ -661,9 +635,8 @@ let
       else if scrut.tag == "VBootInr" then
         mkApply (push (kAppVV scrut.val) c.rest) c.fuel k.onRight
       else if scrut.tag == "VNe" then
-        c.apply (vNe scrut.level (scrut.spine ++ [
-          (eBootSumElim k.left k.right k.motive k.onLeft k.onRight)
-        ]))
+        c.apply (vNeSnoc scrut
+          (eBootSumElim k.left k.right k.motive k.onLeft k.onRight))
       else throw "tc: vBootSumElim on non-bootstrap-sum (tag=${scrut.tag})";
 
     "KInterpD" = c:
@@ -673,7 +646,7 @@ let
         L = k.L; I = k.I; X = k.X; i = k.i;
       in
       if D.tag == "VNe" then
-        c.apply (vNe D.level (D.spine ++ [ (eInterpD L I X i) ]))
+        c.apply (vNeSnoc D (eInterpD L I X i))
       else
         mkApply
           (push kDescView
@@ -697,7 +670,7 @@ let
         L = k.L; I = k.I; K = k.K; X = k.X; M = k.M; i = k.i; d = k.d;
       in
       if D.tag == "VNe" then
-        c.apply (vNe D.level (D.spine ++ [ (eAllD L I K X M i d) ]))
+        c.apply (vNeSnoc D (eAllD L I K X M i d))
       else
         mkApply
           (push kDescView
@@ -753,7 +726,7 @@ let
         L = k.L; I = k.I; K = k.K; X = k.X; M = k.M; ih = k.ih; i = k.i; d = k.d;
       in
       if D.tag == "VNe" then
-        c.apply (vNe D.level (D.spine ++ [ (eEverywhereD L I K X M ih i d) ]))
+        c.apply (vNeSnoc D (eEverywhereD L I K X M ih i d))
       else
         mkApply
           (push kDescView
@@ -814,12 +787,19 @@ let
       in
       if scrut.tag == "VLazyDescIndAccLayer" then forceLazyLayer c
       else if scrut.tag == "VNe" then
-        c.apply (vNe scrut.level (scrut.spine ++ [ (eDescInd D motive step i) ]))
+        c.apply (vNeSnoc scrut (eDescInd D motive step i))
       else if scrut.tag == "VDescCon" then
         let
-          I = if motive.tag != "VLam"
-              then throw "tc: vDescInd on VDescCon requires VLam motive (got ${motive.tag})"
-              else motive.domain;
+          # A computed motive arrives as a deferred Tm; force at the point of
+          # demand (the memoized `forced` field makes this one shared machine
+          # run). `I` stays lazy, so entries that never read the domain —
+          # the cert path, undemanded ihVal/muFam binders — pay nothing.
+          # Eager frame-level forcing here measured +2…3.8‰ envs/functionCalls
+          # on desc-ind-heavy workloads.
+          I = let m = self.forceVal motive; in
+              if m.tag != "VLam"
+              then throw "tc: vDescInd on VDescCon requires VLam motive (got ${m.tag})"
+              else m.domain;
           ihValRaw = vLam "j" I
             (mkClosure [ step motive D I ]
               (term.mkLam "x"
@@ -848,57 +828,6 @@ let
               (kk: kk == "recAt" || kk == "pi" || kk == "piAt" || kk == "piD" || kk == "piDAt")
               (ctorMeta.fieldKinds or [ ]);
           certApplies = ctorMeta != null && !hasIH;
-          # Linear path: walk descCon chain via peel; same-D classifier mirrors desc.nix.
-          dRef = D._descRef or null;
-          linear = if dRef == null then null else dRef.linearChain or null;
-          sameLinearDesc = desc:
-            let other = desc._descRef or null; in
-            dRef != null
-            && linear != null
-            && other != null
-            && (other.kind or null) == (dRef.kind or null)
-            && (other.name or null) == (dRef.name or null)
-            && (other.arity or null) == (dRef.arity or null)
-            && (other.indexed or null) == (dRef.indexed or null)
-            && builtins.length (other.params or [ ]) == builtins.length (dRef.params or [ ])
-            && (other.linearChain or null) == linear;
-          payloadTag =
-            if linear == null then null
-            else if linear.side == "inl" then "VBootInl"
-            else "VBootInr";
-          nFields = if linear == null then 0 else linear.dataFieldCount;
-          isRetLeaf = p:
-            p.tag == "VBootRefl"
-            || (p.tag == "VLiftIntro" && p.a.tag == "VBootRefl");
-          collectPairs = inner:
-            let
-              collect = ii: p:
-                if ii == nFields then
-                  if p.tag != "VPair" then null
-                  else if !(isRetLeaf p.snd) then null
-                  else if p.fst.tag != "VDescCon" then null
-                  else { tail = p.fst; }
-                else if p.tag != "VPair" then null
-                else collect (ii + 1) p.snd;
-            in collect 0 inner;
-          walkPayload = payload:
-            if payload.tag == payloadTag
-            then collectPairs payload.val
-            else null;
-          peel = node:
-            if node.tag != "VDescCon" then null
-            else if !(sameLinearDesc node.D) then null
-            else
-              let payload = walkPayload node.d; in
-              if payload == null then null else payload.tail;
-          chain = builtins.genericClosure {
-            startSet = [{ key = 0; val = scrut; tail = peel scrut; }];
-            operator = item:
-              if item.tail == null then [ ]
-              else [{ key = item.key + 1; val = item.tail; tail = peel item.tail; }];
-          };
-          n = builtins.length chain - 1;
-          base = (builtins.elemAt chain n).val;
         in
         if certApplies then
           # vAppF (vAppF (vAppF step scrut.i) scrut.d) vTt
@@ -908,7 +837,7 @@ let
                 (push (kAppVV vTt) c.rest)))
             c.fuel step
         # Chain-form: synthesize the per-layer chain directly from
-        # `_layers`/`_base`; reuse the lazy-build kont below. Per-layer
+        # `_layers`/`_base` via the lazy-build kont. Per-layer
         # `.d` references the next item lazily — never forced unless
         # step recurses into the rec position (atypical; IH covers it).
         else if (scrut._shape or null) == "linearChain" then
@@ -981,19 +910,6 @@ let
               (push (kEverywhereD vLevelZero I vLevelZero muFam motive ihVal chainBase.i chainBase.d)
                 (push (kDescIndLayer_GotEvResult step chainBase.i chainBase.d)
                   (push (kDescIndLinear_LazyBuild synthChainFn nLay step) c.rest)))
-              c.fuel D
-        else if linear != null && n >= 1 then
-          if n > f then throw "normalization budget exceeded"
-          else
-            # baseResult via vDescIndFLayer(base.i, base.d); then build a
-            # chain of `vLazyDescIndAccLayer` Vals bottom-up. The chain is
-            # DATA (O(n) attrset allocations, zero body work). Forcing the
-            # topmost layer fires the cascade through the driver's kont
-            # stack via `forceLazyLayer`, not through libnix recursion.
-            mkApply
-              (push (kEverywhereD vLevelZero I vLevelZero muFam motive ihVal base.i base.d)
-                (push (kDescIndLayer_GotEvResult step base.i base.d)
-                  (push (kDescIndLinear_LazyBuild (idx: builtins.elemAt chain idx) n step) c.rest)))
               c.fuel D
         else
           # Fallback: vDescIndFLayer(D, motive, step, ihVal, muFam, I, i, scrut.d).
@@ -1094,7 +1010,7 @@ let
         nFields =
           if classify == null then 0
           else classify.fieldCount or (builtins.length profile);
-        depth = builtins.length env;
+        depth = envLen env;
         # Sub-driver re-entry.
         sameD = node:
           if classify ? certified then
@@ -1233,10 +1149,6 @@ let
       let k = c.k; forcedD = c.v; in
       mkApply (push (kEverywhereD k.L k.I k.K k.X k.M k.ih k.i forcedD) c.rest)
               c.fuel k.D;
-
-    "KResume_KDescInd_motive" = c:
-      let k = c.k; forcedMotive = c.v; in
-      mkApply (push (kDescInd k.D forcedMotive k.step k.i) c.rest) c.fuel k.scrut;
 
     # Continuation of `KAllD` / `KEverywhereD` view.idx == 4 after the
     # `kSumPayloadView` dispatcher has run on a (pre-forced) `d`.
@@ -1879,18 +1791,29 @@ let
         else qApplyDispatch.${state.kont.head.tag} state
       else state;
 
-  step = mkStep evalDefaultFallback;
-
   # Trace-eliding driver: a chunked `foldl'` threads only the current state,
   # so intermediate states GC immediately (the driver retains no trace).
-  # `driverChunkSize` is the SEED chunk length — small enough that shallow
-  # eliminator calls (`ev`'s tier-3, typically <10 steps) waste only a handful
-  # of post-Done iterations per `foldl'` pass. The driver's outer iteration
-  # doubles the chunk length each level (see `driver`), so its libnix-stack
-  # depth is log2(totalSteps / driverChunkSize) — bounded by ~19 at the fuel
-  # ceiling, i.e. O(1) regardless of user-level recursion depth N.
-  driverChunkSize = 32;
-  driverChunkList = builtins.genList (n: n) driverChunkSize;
+  # The chunk ladder is a linked chain of SHARED CONSTANT index lists of
+  # doubling length (4 … 32768): the loop walks `next` to reach the
+  # bigger chunk without allocating per run. The small seed keeps
+  # shallow machine entries (`ev`'s eager forces and hybrid punts,
+  # typically <5 steps) from wasting post-Done iterations; the shared
+  # constants avoid the O(steps) list cells a per-level `chunk ++
+  # chunk` doubling would allocate per entry. The top node links to
+  # itself, so past the cap the loop consumes fuel in 32768-step
+  # chunks: native loop depth is ladder height + steps/32768 — ~320
+  # frames at the 1e7 fuel ceiling, far inside the libnix stack
+  # budget. A fixed-size loop at the seed length would instead accrue
+  # steps/4 frames (Nix has no TCO) and overflow the 8 MiB stack.
+  driverChunkLadder =
+    let
+      cap = 32768;
+      build = size:
+        let chunk = builtins.genList (n: n) size; in
+        if size >= cap
+        then let top = { inherit chunk; next = top; }; in top
+        else { inherit chunk; next = build (size * 2); };
+    in build 4;
 
   # When the driver reaches `Done` with a `VLazyDescIndAccLayer` Val, transform
   # to `Apply` with the three force-frames pushed — the cascade resolves in
@@ -1922,18 +1845,13 @@ let
 
   driver = initState:
     let
-      # The outer iteration is iterative-in-libnix via chunk-length doubling:
-      # each level runs an iterative `foldl'` chunk of length |chunkList|, then
-      # doubles the chunk for the next level. Recursion depth is therefore
-      # log2(totalSteps / driverChunkSize) — ~19 at the fuel ceiling — so the
-      # libnix C++ stack stays O(1) in the user-level recursion depth N. A
-      # fixed-size recursive loop would accrue totalSteps/driverChunkSize frames
-      # (Nix has no TCO) and overflow the 8 MiB stack near N=500. The chunk list
-      # carries only iteration counters (`stepIf` ignores them), so doubling by
-      # `++` is sound; threading a single state keeps peak heap independent of
-      # step count.
-      loop = chunkList: state:
-        let after = builtins.foldl' stepIf state chunkList; in
+      # Each level runs an iterative `foldl'` over the ladder node's
+      # chunk (`stepIf` ignores the index elements), then advances to
+      # `lad.next`; threading a single state keeps peak heap
+      # independent of step count. See `driverChunkLadder` for the
+      # depth bound.
+      loop = lad: state:
+        let after = builtins.foldl' stepIf state lad.chunk; in
         # Only exit on `Done` if the returned Val is fully forced. A
         # `VLazyDescIndAccLayer` at the boundary gets transformed back to
         # `Apply` by `stepIf` on the next chunk iteration, ensuring the
@@ -1946,11 +1864,33 @@ let
         then after.tm
         else if after.mode == "__exhausted__"
         then throw "normalization budget exceeded"
-        else loop (chunkList ++ chunkList) after;
-    in loop driverChunkList initState;
+        else loop lad.next after;
+    in loop driverChunkLadder initState;
+
+  # Identical per-step work to `driver` (shares stepIf/driverChunkLadder);
+  # differs only at the exit, retaining `after.fuel` for step counting.
+  driverCounted = initState:
+    let
+      loop = lad: state:
+        let after = builtins.foldl' stepIf state lad.chunk; in
+        if after.mode == "Done"
+           && (after.val.tag or "") != "VLazyDescIndAccLayer"
+           && (after.val.tag or "") != "VThunkTm"
+        then { val = after.val; fuel = after.fuel; }
+        else if after.mode == "Q-Done"
+        then { tm = after.tm; fuel = after.fuel; }
+        else if after.mode == "__exhausted__"
+        then throw "normalization budget exceeded"
+        else loop lad.next after;
+    in loop driverChunkLadder initState;
 
   runMachineF = fuel: env: tm:
-    driver { mode = "Eval"; inherit env tm fuel; kont = null; };
+    driver { mode = "Eval"; env = envFromList env; inherit tm fuel; kont = null; };
+
+  # steps = Eval/Apply transitions for one run (each pays one fuel; Done does not).
+  runMachineCountedF = fuel: env: tm:
+    let r = driverCounted { mode = "Eval"; env = envFromList env; inherit tm fuel; kont = null; };
+    in { val = r.val; steps = fuel - r.fuel; };
 
   # Apply-mode entry: resume the machine with `val` ready to be consumed by
   # `kont`'s top frame. Used by `desc.nix`'s helper wrappers, which preload
@@ -2203,7 +2143,7 @@ let
         domTm = state.tm;
       in
         { mode = "Eval";
-          env  = [ (freshVar k.outerD) ] ++ k.closure.env;
+          env  = envCons (freshVar k.outerD) k.closure.env;
           tm   = k.closure.body;
           fuel = state.fuel - 1;
           kont = push (kqResumeQuote (k.outerD + 1))
@@ -2511,8 +2451,9 @@ let
 
   # The quote driver shares `mkStepIf` with the eval driver, parameterized by
   # the caller's `fallback` so Q-Eval's leaf dispatch routes correctly. The
-  # outer `genericClosure` advances by `driverChunkSize` per operator call;
-  # `[]` terminates on Q-Done or exhaustion.
+  # outer `genericClosure` advances by |quoteChunkList| steps per operator
+  # call; `[]` terminates on Q-Done or exhaustion.
+  quoteChunkList = builtins.genList (n: n) 32;
   mkQuoteDriver = fallback:
     let qStepIf = mkStepIf fallback; in
     initState:
@@ -2525,7 +2466,7 @@ let
             then [ ]
             else
               let after = builtins.foldl'
-                qStepIf item.state driverChunkList;
+                qStepIf item.state quoteChunkList;
               in [ { key = item.key + 1; state = after; } ];
         };
         final = builtins.foldl'
@@ -2622,6 +2563,35 @@ let
       };
     in builtins.all (it: it.st.verdict) rounds;
 
+  # Counted sibling of runConvF (shares cPeel/cPeelSpine): identical BFS,
+  # differs only in carrying the per-round goal count. steps = Σ |allGoals| —
+  # conv obligations dispatched, the work scalar gated by the bench step axis.
+  runConvCountedF = fuel: d: a: b:
+    let
+      isStruct = g: (cPeel g.d g.a g.b).kind == "layer";
+      roundStep = st:
+        let
+          allGoals = builtins.concatLists (map (cPeelSpine fuel) st.frontier);
+          tagged   = map (g: { inherit g; s = isStruct g; }) allGoals;
+          struct   = map (t: t.g) (builtins.filter (t: t.s) tagged);
+          bases    = map (t: t.g) (builtins.filter (t: !t.s) tagged);
+          ok       = builtins.all (g: fx.tc.conv.convStep g.d g.a g.b) bases;
+          v        = st.verdict && ok;
+          nextFrontier = builtins.seq (builtins.length struct) struct;
+        in builtins.seq v { frontier = nextFrontier; verdict = v; goals = builtins.length allGoals; };
+      rounds = builtins.genericClosure {
+        startSet = [ { key = 0; st = roundStep { frontier = [ { inherit d a b; } ]; verdict = true; }; } ];
+        operator = item:
+          if !item.st.verdict then [ ]
+          else if item.st.frontier == [ ] then [ ]
+          else if item.key >= fuel then throw "conv budget exceeded"
+          else [ { key = item.key + 1; st = roundStep item.st; } ];
+      };
+    in {
+      ok = builtins.all (it: it.st.verdict) rounds;
+      steps = builtins.foldl' (acc: it: acc + it.st.goals) 0 rounds;
+    };
+
   T = fx.tc.term;
   H = fx.tc.hoas;
 
@@ -2634,10 +2604,10 @@ let
 in
 {
   scope = {
-    inherit runMachineF runMachineAtF
+    inherit runMachineF runMachineCountedF runMachineAtF
       runDescIndAtF runDescIndLayerAtF
       runInterpDAtF runAllDAtF runEverywhereDAtF
-      runQuoteF runConvF;
+      runQuoteF runConvF runConvCountedF;
   };
 
   tests = {
@@ -2664,6 +2634,61 @@ in
       expr = (runMachineF self.defaultFuel [ ]
         (T.mkApp (T.mkLam "x" T.mkUnit (T.mkVar 0)) T.mkTt)).tag;
       expected = "VTt";
+    };
+
+    # Deep let/beta chains build an N-deep cons environment in the
+    # iterative machine. Body variants exercise distinct env accesses:
+    # tt (no lookup), var 0 (newest binding), var (n-1) (deepest binding,
+    # full envNth descent). The chain itself never consumes native stack
+    # and the result stays a shallow `.tag`. Regression for the cons-env
+    # representation: a Nix-list env (`++` extension) is O(N^2) memory and
+    # a cached `depth` field overflows max-call-depth at this depth.
+    "machine-let-chain-tt-10000" = {
+      expr = (runMachineF self.defaultFuel [ ]
+        (builtins.foldl' (acc: _: T.mkLet "x" T.mkUnit T.mkTt acc)
+          T.mkTt (builtins.genList (i: i) 10000))).tag;
+      expected = "VTt";
+    };
+    "machine-let-chain-var0-10000" = {
+      expr = (runMachineF self.defaultFuel [ ]
+        (builtins.foldl' (acc: _: T.mkLet "x" T.mkUnit T.mkTt acc)
+          (T.mkVar 0) (builtins.genList (i: i) 10000))).tag;
+      expected = "VTt";
+    };
+    "machine-let-chain-deep-10000" = {
+      expr = (runMachineF self.defaultFuel [ ]
+        (builtins.foldl' (acc: _: T.mkLet "x" T.mkUnit T.mkTt acc)
+          (T.mkVar 9999) (builtins.genList (i: i) 10000))).tag;
+      expected = "VTt";
+    };
+    "machine-beta-chain-10000" = {
+      expr = (runMachineF self.defaultFuel [ ]
+        (builtins.foldl' (acc: _: T.mkApp (T.mkLam "x" T.mkUnit acc) T.mkTt)
+          T.mkTt (builtins.genList (i: i) 10000))).tag;
+      expected = "VTt";
+    };
+    "machine-beta-chain-deep-10000" = {
+      expr = (runMachineF self.defaultFuel [ ]
+        (builtins.foldl' (acc: _: T.mkApp (T.mkLam "x" T.mkUnit acc) T.mkTt)
+          (T.mkVar 9999) (builtins.genList (i: i) 10000))).tag;
+      expected = "VTt";
+    };
+
+    # A Val that captures a deep environment internally (a VLam closure
+    # over a 10000-deep env) quotes to a shallow, env-erased Tm: the deep
+    # env lives only inside the machine and is never reachable by an
+    # external deep-force. Quoting instantiates the body under the deep
+    # env (single O(1) index-0 read) and the result carries no env.
+    "machine-deep-env-quote-erased" = {
+      expr =
+        let
+          deepLam = runMachineF self.defaultFuel [ ]
+            (builtins.foldl' (acc: _: T.mkLet "x" T.mkUnit T.mkTt acc)
+              (T.mkLam "y" T.mkUnit (T.mkVar 0))
+              (builtins.genList (i: i) 10000));
+          q = runQuoteF noFallback self.defaultFuel 0 deepLam;
+        in { tag = q.tag; body = q.body.tag; };
+      expected = { tag = "lam"; body = "var"; };
     };
 
     "machine-eval-lam-closure" = {
@@ -3069,6 +3094,25 @@ in
       expected = { tag = "VNe"; spine = 1000; head = "squash-elim"; };
     };
 
+    # Deep application spine: a free variable applied to N arguments. The
+    # machine descends N application frames (threading env/kont by reference)
+    # then snocs N frames onto the neutral; `spine` forces full in-order
+    # materialisation. N is set above the libnix coroutine-stack ceiling
+    # (~17000 frames at the 8 MiB default) so the test fails if the eval
+    # descent reintroduces an N-deep attribute-select chain on the threaded
+    # env/kont, or the spine reverts to an O(N) `++` snoc whose flattening
+    # recurses N-deep. The shallower elim-depth chains above do not reach this
+    # ceiling; this is the spine representation's depth sentinel.
+    "machine-app-spine-depth-20000" = {
+      expr =
+        let
+          chain = builtins.foldl' (acc: _: T.mkApp acc T.mkTt)
+            (T.mkVar 0) (builtins.genList (i: i) 20000);
+          v = runMachineF self.defaultFuel [ (freshVar 0) ] chain;
+        in { tag = v.tag; spine = builtins.length v.spine; };
+      expected = { tag = "VNe"; spine = 20000; };
+    };
+
     # conv depth-flatness: N-deep nested values conv'd against themselves;
     # runConvF walks the spine on its goal stack in O(1) libnix frames. The
     # recursive `convStep` overflows the OS stack near ~5000, so N=10000 is the
@@ -3100,6 +3144,29 @@ in
     "machine-conv-shortcircuit-false" = {
       expr = runConvF self.defaultFuel 0 (vPair vTt vUnit) (vPair vUnit vUnit);
       expected = false;
+    };
+
+    # Counted conv: steps = goals dispatched (Σ |allGoals| per round). A spine
+    # chain emits one sibling goal per layer plus the terminus base (n+1);
+    # bootInl emits two sibling goals per layer (2n+1). Goal count is a law of
+    # the value pair — the neq chain dispatches the same goals.
+    "machine-conv-counted-pair-1000" = {
+      expr =
+        let c = builtins.foldl' (acc: _: vPair vTt acc) vTt (builtins.genList (i: i) 1000);
+        in runConvCountedF self.defaultFuel 0 c c;
+      expected = { ok = true; steps = 1001; };
+    };
+    "machine-conv-counted-bootinl-1000" = {
+      expr =
+        let c = builtins.foldl' (acc: _: vBootInl vUnit vUnit acc) vBootRefl (builtins.genList (i: i) 1000);
+        in runConvCountedF self.defaultFuel 0 c c;
+      expected = { ok = true; steps = 2001; };
+    };
+    "machine-conv-counted-neq" = {
+      expr =
+        let mk = leaf: builtins.foldl' (acc: _: vPair vTt acc) leaf (builtins.genList (i: i) 1000);
+        in runConvCountedF self.defaultFuel 0 (mk vTt) (mk vUnit);
+      expected = { ok = false; steps = 1001; };
     };
 
     # Sibling-direction + balanced depth: these nest away from the spine, so the

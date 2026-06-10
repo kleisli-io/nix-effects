@@ -88,31 +88,34 @@ let
       let edge = builtins.elemAt err.children 0;
       in chainFast (acc ++ [ edge.position ]) edge.error (depth + 1);
 
-  # Slow path: genericClosure worklist. `key` forces WHNF of `nextErr`
-  # and `newAcc` so the chain does not rebuild thunks at result time.
-  # `deepSeq` would cascade through the remaining descendants held by
-  # `children` and overflow.
+  # Slow path: genericClosure worklist. Each step records only its own
+  # `edge.position`; `key` forces WHNF of `nextErr` so the worklist
+  # advances iteratively without rebuilding a thunk chain at result
+  # time. The positions are materialised once at the end via a single
+  # `map` + concat — O(N) total. Threading the accumulator through the
+  # worklist instead would copy an O(N) list at every step, making the
+  # walk O(N^2) in chain depth (which scales with data depth, so it is
+  # unbounded). `deepSeq` is still avoided: it would cascade through the
+  # remaining descendants held by `children` and overflow.
   chainSlow = acc0: err0:
     let
       steps = builtins.genericClosure {
-        startSet = [{ key = 0; _acc = acc0; _err = err0; }];
+        startSet = [{ key = 0; _err = err0; }];
         operator = st:
           if builtins.length st._err.children != 1 then [ ]
           else
             let
               edge = builtins.elemAt st._err.children 0;
               nextErr = edge.error;
-              newAcc = st._acc ++ [ edge.position ];
             in
             [{
-              key = builtins.seq nextErr
-                (builtins.seq newAcc (st.key + 1));
-              _acc = newAcc;
+              key = builtins.seq nextErr (st.key + 1);
               _err = nextErr;
+              _pos = edge.position;
             }];
       };
     in
-    (lib.last steps)._acc;
+    acc0 ++ builtins.map (st: st._pos) (builtins.tail steps);
 
   # Back-map an Error's blame to a HOAS origin through a SourceMap.
   # Null if the chain leaves the mapped sub-tree.
@@ -386,6 +389,23 @@ in
           let positions = chainPositions deepErr;
           in (builtins.elemAt positions 4999).tag;
         expected = "DArgSort";
+      };
+      # Distinct-position chain crossing the fast/slow boundary (depth
+      # 1000 > fastPathLimit 500). Each hop carries a unique layer index,
+      # so this pins ordering, the fast-path prefix carried into the slow
+      # path, and the absence of any worklist dedup-drop — none of which
+      # the uniform-tag 5000-deep chain above can detect. `nestUnder`
+      # wraps outermost-first, so root-to-leaf descent yields the layer
+      # indices in descending order.
+      "chainPositions-1000-deep-distinct-ordered" = {
+        expr =
+          let
+            distinctErr = builtins.foldl'
+              (err: i: D.nestUnder (P.DConLayer i) err)
+              leafErr
+              (lib.range 1 1000);
+          in map (p: p.layer) (chainPositions distinctErr);
+        expected = builtins.genList (j: 1000 - j) 1000;
       };
     };
 }

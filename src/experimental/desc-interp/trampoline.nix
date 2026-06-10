@@ -52,17 +52,28 @@ let
   inherit (D) impureCon qIdentity qLeaf qNode;
   inherit (K) pure send bind qSnoc;
 
-  # `pinVal v` forces the outer WHNF marker plus payload scalar of a
-  # running value, returning `v.value or 0` (so callers can `seq` it).
-  # HOAS carriers expose `._htag` (+ `.value` for lits); kernel `Val`s
-  # expose `.tag`. Fallbacks let Nix-side carriers (e.g. raw attrsets
-  # used as `state` by some handlers) pass through harmlessly.
-  # Limited to scalar fields — never walks closure environments, since
-  # `Val.right.closure` and friends are shared cyclically with their
-  # carrier descriptions and overflow under `deepSeq`. Used by `qApp`
-  # to break the N-deep `_val` thunk chain across the queue walk, and
-  # by `run` to break the analogous N-deep `_state` chain across the
-  # outer Impure-step loop.
+  # `pinVal v` forces the outer WHNF marker plus a top-level `.value`
+  # scalar of a running value, returning `v.value or 0` (so callers can
+  # `seq` it). HOAS carriers expose `._htag` (+ `.value` for lits);
+  # kernel `Val`s expose `.tag`. It collapses an accumulator ONLY when
+  # the growth lives in that top-level `.value` scalar: that is the case
+  # it is used for — breaking the N-deep `_val` thunk chain across
+  # `qApp`'s queue walk and the analogous `_state` chain across `run`'s
+  # outer Impure-step loop for scalar-payload carriers (e.g. intLit
+  # accumulators like `pureN (x.value + 1)`). For carriers whose growth
+  # lives in nested constructor or attrset fields (e.g. an accumulating
+  # Nix-side PlanState with no top-level `.value`) the `or 0` fallbacks
+  # make it force only the outer marker — it is a no-op on the
+  # accumulation, NOT a guarantee that such carriers "pass through
+  # harmlessly". Those carriers rely on the `genericClosure` worklist
+  # alone for stack safety, and must arrange their own forcing if they
+  # need eager error surfacing. Deliberately limited to scalar fields:
+  # it never walks closure environments, since `Val.right.closure` and
+  # friends are shared cyclically with their carrier descriptions and
+  # overflow under `deepSeq`. A `forceState`-style deep pin is
+  # intentionally absent — `genericClosure` already gives the
+  # stack-safety guarantee, and an effective deep force would only bound
+  # peak memory, not reduce a carrier's own accumulation cost.
   pinVal = v: builtins.seq (v.tag or v._htag or 0) (v.value or 0);
 
   freeLevelTm = H.levelSuc H.levelZero;
@@ -749,6 +760,38 @@ in
                 in
                 r.state.tag;
               expected = "VDescCon";
+            };
+
+            # The `run` analogue of `qApp-deep-pure-chain-10K`: drive an
+            # N-deep left-nested `bind` chain of `modify succ` from `H.zero`.
+            # Each step threads a fresh `newState` (a Nat VDescCon — growth in
+            # nested constructor fields, NOT a top-level `.value` scalar, the
+            # case `pinVal` is partially inert for), so the outer Impure-step
+            # loop's completion rests on the `genericClosure` worklist rather
+            # than the per-step pin. Reaching the final state proves the loop
+            # drove all N steps without host-stack overflow; `tryEval`
+            # surfaces an overflow as success=false. The state is forced only
+            # to WHNF (`.tag`), not deep-walked — this exercises run-loop
+            # depth, not force-time recursion over the succ-nesting.
+            "run-state-deep-modify-chain-10K-completes" = {
+              expr =
+                let
+                  n = 10000;
+                  bindD = bind stateAtNat.eff stateAtNat.resp H.nat H.nat;
+                  pureD = pure stateAtNat.eff stateAtNat.resp H.nat;
+                  step = stateAtNat.modify (H.lam "n" H.nat (n: H.succ n));
+                  prog = builtins.foldl'
+                    (acc: _: bindD acc (_: step))
+                    (pureD (H.intLit 0))
+                    (builtins.genList (i: i) n);
+                  r = runState
+                    { inherit (stateAtNat) handler dispatch; }
+                    prog
+                    H.zero;
+                  cmp = builtins.tryEval (r.state.tag == "VDescCon");
+                in
+                cmp.success && cmp.value;
+              expected = true;
             };
 
             # ---- handlerShortcut behavioural parity ---------------------

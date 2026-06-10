@@ -10,7 +10,7 @@
 # caught by the bench gate.
 #
 # A 5000-deep `nestUnder` chain is the canonical stress target from
-# the kernel spec; all three workloads share it so alloc deltas are
+# the kernel spec; all workloads share it so alloc deltas are
 # directly comparable. The chain is built inside the workload
 # expression so the builder's allocation cost is included in the
 # measurement — matching real use, where walkers run on errors
@@ -22,6 +22,7 @@ let
   P = fx.src.diag.positions;
   Pr = fx.src.diag.pretty;
   H = fx.src.diag.hints;
+  SM = fx.tc.check.diag.sourceMap;
 
   idxs = builtins.genList (x: x) 5000;
 
@@ -56,4 +57,13 @@ in
   hint-resolve-5000 =
     let r = H.resolve deepErr;
     in if r == null then 0 else builtins.stringLength r.text;
+
+  # Error-blame back-map walker (`src/tc/check/diag/source_map.nix`),
+  # distinct from the `src/diag/{pretty,hints}` walkers above: it shares
+  # their fast/slow split but its slow path materialises the full
+  # `Position` list. Sharing `deepErr` keeps alloc deltas comparable.
+  # Threading the accumulator through the `genericClosure` worklist would
+  # copy an O(N) list per step (O(N^2) in chain depth); this workload's
+  # list-allocation count is the gate that catches such a regression.
+  error-chain-backmap-5000 = builtins.length (SM.chainPositions deepErr);
 }

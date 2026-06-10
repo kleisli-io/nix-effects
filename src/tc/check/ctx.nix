@@ -21,14 +21,14 @@ in
     emptyCtx = api.leaf {
       description = "emptyCtx: empty typing context `{ env = []; types = []; names = []; depth = 0; }` — the zero of `extend`; starting point for top-level `check`/`infer` invocations.";
       signature = "emptyCtx : Ctx";
-      value = { env = [ ]; types = [ ]; names = [ ]; depth = 0; };
+      value = { env = V.envNil; types = [ ]; names = [ ]; depth = 0; };
     };
 
     extend = api.leaf {
       description = "extend: append a binding to a typing context — pushes a fresh de Bruijn variable at depth `ctx.depth`, the new type at index 0, and the name at index 0 of `names`; depth increments by one.";
       signature = "extend : Ctx -> String -> Val -> Ctx";
       value = ctx: name: ty: {
-        env = [ (V.freshVar ctx.depth) ] ++ ctx.env;
+        env = V.envCons (V.freshVar ctx.depth) ctx.env;
         types = [ ty ] ++ ctx.types;
         names = [ name ] ++ (ctx.names or [ ]);
         depth = ctx.depth + 1;

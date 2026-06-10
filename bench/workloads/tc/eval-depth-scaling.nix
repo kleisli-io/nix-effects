@@ -29,48 +29,21 @@
 { fx }:
 
 let
-  H = fx.types.hoas;
+  terms = import ./eval-depth-terms.nix { inherit fx; };
+  inherit (terms) H depths vAppElab descIndElab;
   Q = fx.src.tc.quote;
 
-  depths = [ 10 100 1000 5000 10000 ];
-
   # --- desc-ind chain (vDescIndF) ---
-  # `decElim` against a constant-Nat motive maps `yes` to `zero`;
-  # forcing `Q.nf` and comparing to the elaborated `zero` forces the
-  # full depth-n step-induction spine.
+  # `decElim` against a constant-Nat motive maps `yes` to `zero`; forcing
+  # `Q.nf` and comparing to the elaborated `zero` forces the full depth-n
+  # step-induction spine.
   yesSentinel = Q.nf [ ] (H.elab H.zero);
-  descIndAtDepth = n:
-    let
-      nv = H.natLit n;
-      d = H.app (H.app H.decideLeNat nv) nv;
-      P = H.le nv nv;
-      probe = H.decElim P
-        (H.lam "_" (H.dec P) (_: H.nat))
-        (H.lam "_" P (_: H.zero))
-        (H.lam "_" (H.not P) (_: H.succ H.zero))
-        d;
-    in
-    (Q.nf [ ] (H.elab probe)) == yesSentinel;
+  descIndAtDepth = n: (Q.nf [ ] (descIndElab n)) == yesSentinel;
 
   # --- vAppF chain ---
-  # A fixed `Nat → Nat` identity reapplied n times. Normalizing the
-  # spine fires n `vAppF` redexes, one per layer, each O(1).
-  #
-  # The spine is annotated with its type so `H.elab`'s outer tag is `ann`,
-  # not `app`. An `app`-headed term routes `H.elab` through the meta-aware
-  # `elabInfer` inference walk (lower.nix:1493) — a recursive, super-linear
-  # structural pass over the n-deep spine that is OUT OF SCOPE for the
-  # evaluator (it lives in tc/elaborate, not tc/eval) and would dominate the
-  # measurement, masking the vAppF depth-flatness this leaf exists to detect.
-  # With the annotation, `H.elab` does the cheap iterative `lower` only, and
-  # `Q.nf` measures the n defunctionalized vAppF beta-reductions.
-  idFn = H.ann (H.lam "x" H.nat (x: x)) (H.forall "_" H.nat (_: H.nat));
-  vAppAtDepth = n:
-    let
-      term = builtins.foldl' (acc: _: H.app idFn acc) H.zero
-        (builtins.genList (i: i) n);
-    in
-    builtins.seq (Q.nf [ ] (H.elab (H.ann term H.nat))) "ok";
+  # A fixed `Nat → Nat` identity reapplied n times; normalizing the spine fires
+  # n `vAppF` redexes, one per layer, each O(1).
+  vAppAtDepth = n: builtins.seq (Q.nf [ ] (vAppElab n)) "ok";
 
   # --- conv chain ---
   # Checking an n-deep `Nat` literal walks per-level conv against the

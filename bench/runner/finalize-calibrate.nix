@@ -47,6 +47,20 @@ let
   noiseLimited = existing.noiseLimited or [ ];
   allocNoiseLimited = existing.allocNoiseLimited or [ ];
 
+  # Hand-reviewed policy scalars round-trip like the exclusion arrays — a
+  # recalibration must not silently drop them. Rationale comments live in the
+  # committed budgets.toml.
+  carriedScalars = builtins.concatStringsSep ""
+    (map
+      (k:
+        if existing ? ${k}
+        then "${k} = ${toString existing.${k}}\n"
+        else "")
+      [ "allocAbsoluteFloor" "allocBytesAggregateTolerancePermille" "peakHeapWarnPct" ]);
+
+  # Work-axis contract, measured from the live step probes.
+  stepBudgets = import ./step-budgets.nix { inherit benchPath; };
+
   # Both exclusion arrays must name known bench workloads. A typo or
   # stale name (post-rename) would otherwise silently suppress nothing;
   # fail loudly instead.
@@ -67,7 +81,7 @@ let
       in
       if r > 0 then q + 1 else q;
 
-  budgetFor = w: r:
+  budgetFor = r:
     let
       p50ms = builtins.floor (r.cpu.p50 * 1000);
       p95ms = builtins.floor (r.cpu.p95 * 1000);
@@ -83,7 +97,7 @@ let
   cpuBody =
     let
       lines = map
-        (w: ''"${w}" = ${toString (budgetFor w run.results.${w})}'')
+        (w: ''"${w}" = ${toString (budgetFor run.results.${w})}'')
         cpuEntries;
     in
     builtins.concatStringsSep "\n" lines;
@@ -133,7 +147,8 @@ let
     # Timestamp: ${run.timestamp}
 
     allocTolerancePermille = 5
-    ${noiseLimitedBlock}${allocNoiseLimitedBlock}
+    ${carriedScalars}${noiseLimitedBlock}${allocNoiseLimitedBlock}
+    ${stepBudgets.toml}
     [cpu]
     ${cpuBody}
   '';
@@ -146,7 +161,7 @@ let
             r = run.results.${w};
             p50 = builtins.floor (r.cpu.p50 * 1000);
             p95 = builtins.floor (r.cpu.p95 * 1000);
-            b = budgetFor w r;
+            b = budgetFor r;
           in
           "  ${w}: p50=${toString p50}ms p95=${toString p95}ms budget=${toString b}%")
         cpuEntries;

@@ -53,7 +53,7 @@ api.mk {
     machine = api.namespace {
       description = "fx.tc.eval.machine: CEK abstract machine. `runMachineF` is the defunctionalized form of `evalF`; `runQuoteF` is the symmetric read-back driver consumed by `tc/quote.nix`.";
       value = {
-        inherit (self) runMachineF runQuoteF runConvF;
+        inherit (self) runMachineF runMachineCountedF runQuoteF runConvF runConvCountedF;
       };
     };
 

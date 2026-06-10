@@ -18,6 +18,7 @@ let
 
   benchLib = import ./lib { inherit lib; };
   workloads = import ./workloads { inherit fx; };
+  stepProbes = import ./step-probes.nix { inherit fx; };
   meta = import ./workloads/meta.nix { };
 
   # Runners depend on pkgs (they're `writeShellApplication` derivations).
@@ -28,7 +29,7 @@ let
     else import ./runner { inherit lib pkgs; };
 in
 {
-  inherit workloads meta runner;
+  inherit workloads meta runner stepProbes;
   inherit (benchLib) measure gate format;
   tests = builtins.deepSeq fx.tests.nix-unit true;
 }

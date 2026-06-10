@@ -81,15 +81,12 @@ let
     let n = builtins.length xs;
     in builtins.genList (i: builtins.elemAt xs (n - 1 - i)) n;
 
-  # Non-empty `positions` push ONE composite frame nesting them
-  # outermost-first; empty falls back to a plain bind.
+  # ONE composite frame nesting the positions outermost-first (empty:
+  # identity frame). `positions` is forced only on the error path.
   bindPChain = positions: m: k:
-    if positions == [ ]
-    then K.bind m k
-    else
-      scoped
-        (err: builtins.foldl' (acc: p: wrapWithTrace p acc) err (reverseList positions))
-        m k;
+    scoped
+      (err: builtins.foldl' (acc: p: wrapWithTrace p acc) err (reverseList positions))
+      m k;
 
   # Blame stack as an opaque cons list: each cell is a closure, so the
   # trampoline's per-step `deepSeq newState` forces it to WHNF only
@@ -181,8 +178,8 @@ in
         Equivalent to nested `bindP p_1 (bindP p_2 (... (bindP p_n m)
         k_pure) k_pure) k` when intermediate continuations are pure
         passthroughs, but pushes a single composite frame nesting the
-        positions outermost-first. Empty `positions` falls back to
-        `K.bind`.
+        positions outermost-first. `positions` is forced only on the
+        error path; empty `positions` push an identity frame.
       '';
       value = bindPChain;
     };

@@ -95,11 +95,22 @@ records, and lists of scalars satisfy this trivially. Functions are also
 safe — `deepSeq` on a closure forces it to WHNF and stops, never recursing
 into the captured environment.
 
-The contract breaks on values with cyclic structure. Nix derivations are the
-canonical example: `drv.passthru.foo.drv` cycles back through the same drv,
-and `deepSeq` has no cycle detection. A raw drv in handler state hangs the
-evaluator, and `tryEval` cannot recover — only `throw` and `assert false`
-are catchable.
+`builtins.deepSeq` detects cycles by object identity: `forceValueDeep` keeps a
+seen-set of already-forced values, so a self-referential attrset terminates.
+That guard has two gaps. A lazy graph that regenerates a fresh object on each
+force — as a derivation's `passthru` can — is never recognized as seen and
+overflows. And a traversal that keeps no seen-set at all — `builtins.toJSON`,
+or the `api.extractValue` walker — descends any cyclic value until the
+evaluator overflows. Deep-forcing a real derivation's full attribute closure at
+every step is also prohibitively expensive even where it terminates. None of
+these failures is recoverable: a stack overflow and `toJSON`'s "cannot convert
+a function to JSON" both escape `tryEval`; only `throw` and `assert false` are
+catchable, which is why a fuel-bounded walker that throws on exhaustion is the
+one usable divergence signal.
+
+This behavior is identical on every evaluator probed — Nix 2.3.18, 2.18.8,
+2.24.8, Lix 2.91.1, and 2.35pre — so the contract rests on stable language
+semantics, not an evaluator-specific quirk.
 
 For this case the library ships `fx.state.mkThunk` / `forceThunk`
 (`src/state/thunk.nix`). The carrier wraps any value as

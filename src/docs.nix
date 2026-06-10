@@ -369,11 +369,14 @@ let
     , sourceUrl ? null
     , sections
     , index ? "index.md"
+    , draft ? false
     }:
     builtins.toJSON ({
       inherit id name description index sections;
     } // lib.optionalAttrs (sourceUrl != null) {
       source-url = sourceUrl;
+    } // lib.optionalAttrs draft {
+      inherit draft;
     });
 
   mkSimpleApiDocsContent =

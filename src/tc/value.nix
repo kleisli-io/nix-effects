@@ -8,10 +8,42 @@
 # Spec reference: kernel-spec.md §3
 { api, ... }:
 let
-  # -- Closures --
-  mkClosure = env: body: { inherit env body; };
+  # -- Environments: singly-linked cons cells (de Bruijn). --
+  # envNil = null; head = index 0 (most-recently-bound). Extension
+  # (envCons) is O(1) — no list copy, no cached field. Both length
+  # (envLen) and lookup (envNth) walk the spine ITERATIVELY (genericClosure
+  # / foldl' over a range) so deep environments clear BOTH the native
+  # C-stack and Nix's max-call-depth. A cached `depth` field is rejected:
+  # `depth = tail.depth + 1` is an N-deep recursion whether forced lazily
+  # (at envLen) or strictly (the evaluator threads env as nested envCons
+  # thunks, so `seq`-ing depth forces the whole tail chain) — either way
+  # it overflows at ~10000, the very bug this representation fixes.
+  # envFromList is idempotent on cons (isList guard) so normalizing at
+  # evaluator entry points is O(1) on already-normalized environments.
+  envNil = null;
+  envCons = x: e: { head = x; tail = e; };
+  envLen = e:
+    if e == null then 0
+    else builtins.length (builtins.genericClosure {
+      startSet = [ { key = 0; cur = e; } ];
+      operator = item:
+        if item.cur.tail == null then [ ]
+        else [ { key = item.key + 1; cur = item.cur.tail; } ];
+    });
+  envNth = e: i: (builtins.foldl' (acc: _: acc.tail) e (builtins.genList (x: x) i)).head;
+  envReverse = xs: builtins.foldl' (acc: x: [ x ] ++ acc) [ ] xs;
+  envFromList = xs:
+    if builtins.isList xs
+    then builtins.foldl' (acc: x: envCons x acc) envNil (envReverse xs)
+    else xs;
+  envPrepend = xs: e: builtins.foldl' (acc: x: envCons x acc) e (envReverse xs);
 
-  # Instantiate: eval(env ++ [arg], body) — caller provides eval function
+  # -- Closures --
+  # `env` is normalized to cons cells so the ~30 explicit-list
+  # `mkClosure [ … ]` eliminator sites need no change.
+  mkClosure = env: body: { env = envFromList env; inherit body; };
+
+  # Instantiate: eval(envCons arg env, body) — caller provides eval function
   # This module only defines the data; eval.nix provides instantiation.
 
   # -- Value constructors --
@@ -111,13 +143,16 @@ let
   # Stored sub-Val readers force via a peek helper; the driver's `Done`
   # handler forces any top-level `VThunkTm` before returning by
   # transitioning back to `Eval` (mirrors `VLazyDescIndAccLayer`).
+  # The machine's `ev` constructs the record with an extra memoized
+  # `forced` field (`machine.nix` `deferTm`); this raw constructor is
+  # the field-shape reference and test seam.
   #
   # Invariant: this tag is MACHINE-INTERNAL. External code (conv,
   # quote, pretty, elaborate) never observes a top-level `VThunkTm`;
   # only stored sub-Val fields may carry it, and those are forced at
   # read sites.
   vThunkTm = env: tm:
-    { tag = "VThunkTm"; inherit env tm; };
+    { tag = "VThunkTm"; env = envFromList env; inherit tm; };
 
   # `interpD` / `allD` / `everywhereD` — kernel-primitive interpretation
   # / All-witness / everywhere-recursion over Desc. Carry the same slots
@@ -188,9 +223,66 @@ let
   # nixFn derived from fnBox for extractInner access. piTy is the evaluated VPi.
   vOpaqueLam = fnBox: piTy: { tag = "VOpaqueLam"; _fnBox = fnBox; nixFn = fnBox._fn; inherit piTy; };
 
+  # -- Neutral spines: skew-binary random-access list (Okasaki). --
+  # A spine is snoc-extended one frame at a time (deep) and read back in
+  # full (quote / conv / unify). A Nix-list `spine ++ [frame]` is O(len)
+  # per snoc → O(N²) memory and an N-deep force. The RAL gives O(1) snoc
+  # and O(log N) index; `.spine` materializes in-order via `genList` to a
+  # list byte-identical to the old `++` form, so readers are unchanged.
+  # trees: cons of { w; t; next } (length O(log N), newest at front);
+  # t: complete binary tree { leaf } | { node; l; r } (size 2^k-1). No
+  # cached size: it is summed over the O(log N) trees iteratively, never
+  # N-deep (the env-spine lesson). ralCons inspects the previous front to
+  # decide a carry, so each extension must be forced as it is built
+  # (`vNeSnoc` seqs the result; the machine forces each neutral to
+  # dispatch on its tag) — else the cons chain is N-deep to force.
+  ralCons = x: ts:
+    if ts != null && ts.next != null && ts.w == ts.next.w
+    then {
+      w = ts.w + ts.next.w + 1;
+      t = { node = x; l = ts.t; r = ts.next.t; };
+      next = ts.next.next;
+    }
+    else { w = 1; t = { leaf = x; }; next = ts; };
+  ralCount = ts:
+    if ts == null then 0
+    else builtins.foldl' (acc: item: acc + item.cur.w) 0
+      (builtins.genericClosure {
+        startSet = [ { key = 0; cur = ts; } ];
+        operator = item:
+          if item.cur.next == null then [ ]
+          else [ { key = item.key + 1; cur = item.cur.next; } ];
+      });
+  ralLookup = ts: i0:
+    let
+      goTree = t: w: i:
+        if t ? leaf then t.leaf
+        else if i == 0 then t.node
+        else
+          let hw = (w - 1) / 2; in
+          if i <= hw then goTree t.l hw (i - 1)
+          else goTree t.r hw (i - 1 - hw);
+      goList = c: i:
+        if i < c.w then goTree c.t c.w i
+        else goList c.next (i - c.w);
+    in goList ts i0;
+  ralFromList = xs: builtins.foldl' (acc: x: ralCons x acc) null xs;
+  ralToList = ts:
+    let n = ralCount ts;
+    in builtins.genList (j: ralLookup ts (n - 1 - j)) n;
+
   # -- Neutrals (stuck computations) --
-  # A neutral is a variable (identified by level) applied to a spine of eliminators.
-  vNe = level: spine: { tag = "VNe"; inherit level spine; };
+  # A neutral is a variable (identified by level) applied to a spine of
+  # eliminators. `_ral` carries the spine as a RAL for O(1) snoc; `.spine`
+  # is the materialized in-order list every reader consumes.
+  vNe = level: spine: { tag = "VNe"; inherit level spine; _ral = ralFromList spine; };
+
+  # Extend a neutral's spine by one frame in O(1). Reads `_ral` (never
+  # `.spine`, which would re-materialize O(N) per snoc) and seqs the new
+  # RAL so the machine forces the cons chain incrementally.
+  vNeSnoc = neu: frame:
+    let r = ralCons frame neu._ral;
+    in builtins.seq r { tag = "VNe"; inherit (neu) level; _ral = r; spine = ralToList r; };
 
   # Fresh variable at depth d: neutral with empty spine
   freshVar = depth: vNe depth [ ];
@@ -277,11 +369,21 @@ api.namespace {
     # Closures
     "closure-env" = {
       expr = (mkClosure [ vTt ] { tag = "var"; idx = 0; }).env;
-      expected = [ vTt ];
+      expected = { head = vTt; tail = null; };
     };
     "closure-body" = {
       expr = (mkClosure [ ] { tag = "var"; idx = 0; }).body.tag;
       expected = "var";
+    };
+
+    # Environments
+    # envLen must walk the spine iteratively — a cached `depth = tail.depth
+    # + 1` field recurses N-deep (lazily at read or strictly at build) and
+    # overflows max-call-depth at ~10000 on a deep environment.
+    "env-deep-len" = {
+      expr = envLen (builtins.foldl' (acc: _: envCons vTt acc) envNil
+        (builtins.genList (i: i) 20000));
+      expected = 20000;
     };
 
     # Values
@@ -356,6 +458,27 @@ api.namespace {
     "freshvar-level" = { expr = (freshVar 5).level; expected = 5; };
     "freshvar-empty-spine" = { expr = (freshVar 5).spine; expected = [ ]; };
 
+    # Spine RAL. ralToList ∘ ralFromList round-trips in order; the size
+    # walk is iterative so a 20000-deep RAL counts without overflow; and
+    # vNeSnoc materializes a `.spine` byte-identical to a naive `++` snoc.
+    "ral-roundtrip" = {
+      expr = let xs = builtins.genList (i: i) 64; in ralToList (ralFromList xs) == xs;
+      expected = true;
+    };
+    "ral-deep-count" = {
+      expr = ralCount (ralFromList (builtins.genList (i: i) 20000));
+      expected = 20000;
+    };
+    "vne-snoc-parity" = {
+      expr =
+        let
+          xs = builtins.genList (i: eApp (vIntLit i)) 64;
+          snocced = builtins.foldl' vNeSnoc (vNe 0 [ ]) xs;
+          naive = builtins.foldl' (acc: f: acc ++ [ f ]) [ ] xs;
+        in snocced.spine == naive;
+      expected = true;
+    };
+
     # Elimination frames
     "eapp-tag" = { expr = (eApp vTt).tag; expected = "EApp"; };
     "efst-tag" = { expr = eFst.tag; expected = "EFst"; };
@@ -421,7 +544,7 @@ api.namespace {
       expr = builtins.length
         (vDescConChain (freshVar 0) vTt "VBootInr" vUnit vUnit
           (builtins.genList
-            (n: { i = vTt; heads = [ vTt ]; cert = null; }) 5)
+            (_: { i = vTt; heads = [ vTt ]; cert = null; }) 5)
           (vDescCon (freshVar 0) vTt vBootRefl))._layers;
       expected = 5;
     };
@@ -436,7 +559,7 @@ api.namespace {
       # only in `_layers`/`_base`; non-chain-aware code reading `.d.fst`
       # crashes loudly rather than silently observing a 2-step view.
       expr = (vDescConChain (freshVar 0) vTt "VBootInr" vUnit vUnit
-        (builtins.genList (n: { i = vTt; heads = [ vTt ]; cert = null; }) 100)
+        (builtins.genList (_: { i = vTt; heads = [ vTt ]; cert = null; }) 100)
         (vDescConTagged (freshVar 0) vTt vBootRefl
           { id = "nil"; params = [ ]; })).d.tag;
       expected = "VTt";
@@ -472,7 +595,7 @@ api.namespace {
     };
     "vthunktm-env" = {
       expr = (vThunkTm [ vTt ] { tag = "var"; idx = 0; }).env;
-      expected = [ vTt ];
+      expected = { head = vTt; tail = null; };
     };
     "vthunktm-tm" = {
       expr = (vThunkTm [ ] { tag = "tt"; }).tm.tag;
@@ -562,6 +685,36 @@ api.namespace {
       value = mkClosure;
       description = "mkClosure: defunctionalised closure `{ env, body }` — captures the evaluation environment and the kernel `Tm` body; instantiated by `eval.instantiate` without Nix lambdas in the TCB.";
       signature = "mkClosure : Env -> Tm -> Closure";
+    };
+
+    envNil = api.leaf {
+      value = envNil;
+      description = "envNil: empty de Bruijn environment (the cons-cell nil).";
+    };
+    envCons = api.leaf {
+      value = envCons;
+      description = "envCons: O(1) environment extension — prepend a value as index 0; no list copy, no cached field.";
+      signature = "envCons : Val -> Env -> Env";
+    };
+    envLen = api.leaf {
+      value = envLen;
+      description = "envLen: environment length (binder depth) via an iterative genericClosure spine walk — O(N) time, O(1) stack (overflow-free); no cached field, which would recurse N-deep at read or build.";
+      signature = "envLen : Env -> Int";
+    };
+    envNth = api.leaf {
+      value = envNth;
+      description = "envNth: iterative de Bruijn lookup (foldl' over a range) — clears the C-stack and max-call-depth on deep environments.";
+      signature = "envNth : Env -> Int -> Val";
+    };
+    envFromList = api.leaf {
+      value = envFromList;
+      description = "envFromList: normalize a Nix-list environment to cons cells (index 0 = list head); idempotent on cons (isList guard) so evaluator entry points normalize in O(1) on already-cons inputs.";
+      signature = "envFromList : [Val] | Env -> Env";
+    };
+    envPrepend = api.leaf {
+      value = envPrepend;
+      description = "envPrepend: prepend a short Nix list of values (index 0 first) onto an environment.";
+      signature = "envPrepend : [Val] -> Env -> Env";
     };
 
     vLam = api.leaf {
@@ -828,6 +981,11 @@ api.namespace {
       value = freshVar;
       description = "freshVar: introduce a fresh neutral variable at the given depth — used during type-checking to bind a fresh witness under Π / Σ / let binders.";
       signature = "freshVar : Int -> Val  -- depth";
+    };
+    vNeSnoc = api.leaf {
+      value = vNeSnoc;
+      description = "vNeSnoc: O(1) neutral-spine extension — append one elimination frame via the skew-binary RAL backing `_ral`, keeping `.spine` a materialized in-order list. Use in place of `vNe lvl (n.spine ++ [frame])` to avoid the O(N²)/overflow-prone Nix-list snoc.";
+      signature = "vNeSnoc : Val -> SpineEntry -> Val  -- neutral, frame";
     };
 
     eApp = api.leaf {

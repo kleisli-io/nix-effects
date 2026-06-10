@@ -2,9 +2,10 @@
 #
 # Handler state threaded through `fx.run` / `fx.handle` is `builtins.deepSeq`-
 # forced at each trampoline step (see `src/trampoline.nix:20-22,124`) to break
-# thunk chains that would stack-overflow on the final force. Real Nix
-# derivations (and other cyclic attrsets) send `deepSeq` into infinite
-# recursion; `tryEval` cannot recover.
+# thunk chains that would stack-overflow on the final force. `deepSeq` detects
+# pointer cycles, so a cyclic attrset terminates; the carrier instead keeps
+# force-heavy values out of the per-step deep force and out of `api.extractValue`
+# (`src/api.nix:45-49`), a plain recursive walk with no cycle guard.
 #
 # The carrier wraps a value as `{ _tag = "Thunk"; _force = _: value; }`.
 # Nix never recurses into a closure's captured environment, so `deepSeq` sees
@@ -78,6 +79,18 @@ in
                 in
                 (builtins.tryEval (builtins.deepSeq state null)).success;
               expected = true;
+            };
+
+            "deepSeq-detects-raw-pointer-cycle" = {
+              expr =
+                let c = { a = 1; } // { self = c; };
+                in (builtins.tryEval (builtins.deepSeq c true)).success;
+              expected = true;
+            };
+
+            "deepSeq-propagates-catchable-throw" = {
+              expr = (builtins.tryEval (builtins.deepSeq (throw "exhausted") true)).success;
+              expected = false;
             };
 
             "force-recovers-value" = {

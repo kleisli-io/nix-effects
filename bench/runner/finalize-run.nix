@@ -6,7 +6,7 @@
 # gate + compare) while I/O lives in bash.
 #
 # Input samples JSON schema:
-#   { name, timestamp, nix, system, runsPerWorkload,
+#   { name, timestamp, nix, system, gcInitialHeapSize, runsPerWorkload,
 #     workloads = { <dotted-path> = [ { stats = <NIX_SHOW_STATS json>;
 #                                       wallMs = <int>; }, ... ]; ... }; }
 #
@@ -33,8 +33,10 @@ let
     input.workloads;
 
   run = {
-    inherit (input) name timestamp nix system runsPerWorkload;
+    inherit (input) name timestamp nix system gcInitialHeapSize runsPerWorkload;
     inherit results;
+    # Deterministic CEK step counts, archived for audit; the gate reads live probes.
+    steps = bench.stepProbes;
   };
 in
 {

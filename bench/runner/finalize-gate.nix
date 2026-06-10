@@ -152,6 +152,8 @@ let
 
   gateResult = builtins.seq guards (bench.gate.gate {
     inherit baseline current budgets trailers allocNoiseLimited;
+    # Live probes (the evaluator under test) vs the declared [stepSlopes] contract.
+    stepProbes = bench.stepProbes;
   });
 
   markdown = bench.format.emitGateMarkdown {

@@ -59,6 +59,7 @@ let
       fail_allocs = "FAIL allocs";
       fail_cpu = "FAIL cpu";
       warn_cpu = "WARN cpu";
+      warn_heap = "WARN heap";
     }.${status} or status;
 
   auditStatusSym = status:
@@ -137,6 +138,57 @@ let
         + leftAlignSep (reasonWidth + 2) + "|";
       rows = map row classifications;
 
+      # Per-failing-workload blame: top ± counters with base→cur (±‰),
+      # decreases included, so a relocation reads at a glance.
+      blameOf = c:
+        let
+          movers = lib.take 6 (c.blame or [ ]);
+          fmt = m:
+            "- `${m.field}`: ${toString m.baseline} → ${toString m.current} (${signed m.deltaPermille}‰)"
+            + (lib.optionalString m.codeSize "  [code-size]");
+        in
+        if movers == [ ]
+        then null
+        else "**${c.workload}**\n" + builtins.concatStringsSep "\n" (map fmt movers);
+
+      blameBlocks = builtins.filter (b: b != null) (map blameOf gateResult.hardFails);
+      blameSection =
+        if blameBlocks == [ ]
+        then ""
+        else "\n## Blame (top ± movers per failing workload)\n\n"
+          + builtins.concatStringsSep "\n\n" blameBlocks + "\n";
+
+      # Work axis: per-probe step slope vs the declared contract. Omitted
+      # entirely when no probes are gated.
+      stepResults = gateResult.stepResults or [ ];
+      stepStatusSym = status:
+        { pass = "PASS"; fail_steps = "FAIL steps"; }.${status} or status;
+      stepSection =
+        if stepResults == [ ]
+        then ""
+        else
+          let
+            probeWidth = maxLen (builtins.stringLength "Probe") (map (s: s.probe) stepResults);
+            contractWidth = maxLen (builtins.stringLength "Contract") (map (s: toString s.contractSlope) stepResults);
+            measuredWidth = maxLen (builtins.stringLength "Measured") (map (s: toString s.measuredSlope) stepResults);
+            deltaWidth = maxLen (builtins.stringLength "Delta") (map (s: signed s.deltaPermille) stepResults);
+            sStatusWidth = maxLen (builtins.stringLength "Status") (map (s: stepStatusSym s.status) stepResults);
+            sRow = s:
+              "| ${padRight probeWidth s.probe} | ${padLeft contractWidth (toString s.contractSlope)} | ${padLeft measuredWidth (toString s.measuredSlope)} | ${padLeft deltaWidth (signed s.deltaPermille)} | ${padRight sStatusWidth (stepStatusSym s.status)} |";
+            sHeader = "| ${padRight probeWidth "Probe"} | ${padLeft contractWidth "Contract"} | ${padLeft measuredWidth "Measured"} | ${padLeft deltaWidth "Delta"} | ${padRight sStatusWidth "Status"} |";
+            sSep = "|" + leftAlignSep (probeWidth + 2) + "|"
+              + rightAlignSep (contractWidth + 2) + "|" + rightAlignSep (measuredWidth + 2) + "|"
+              + rightAlignSep (deltaWidth + 2) + "|" + leftAlignSep (sStatusWidth + 2) + "|";
+          in
+          "\n## Step axis (work)\n\n"
+          + "Per-level CEK transition slope vs the declared contract (delta in ‰).\n\n"
+          + sHeader + "\n" + sSep + "\n"
+          + builtins.concatStringsSep "\n" (map sRow stepResults) + "\n";
+
+      stepFailsLine =
+        lib.optionalString (stepResults != [ ])
+          "- **Step-axis fails**: ${toString (builtins.length (gateResult.stepFails or [ ]))}\n";
+
       summary = ''
         # Bench gate: ${baselineName} → ${currentName}
 
@@ -145,11 +197,11 @@ let
         - **Soft warns**: ${toString (builtins.length gateResult.softWarns)}
         - **New workloads (no baseline)**: ${toString (builtins.length gateResult.newWorkloads)}
         - **Retired workloads (absent from current)**: ${toString (builtins.length gateResult.retiredWorkloads)}
-        - **Verdict**: ${if gateResult.pass then "PASS" else "FAIL"}
+        ${stepFailsLine}- **Verdict**: ${if gateResult.pass then "PASS" else "FAIL"}
 
       '';
     in
-    summary + header + "\n" + sep + "\n" + builtins.concatStringsSep "\n" rows + "\n";
+    summary + header + "\n" + sep + "\n" + builtins.concatStringsSep "\n" rows + "\n" + stepSection + blameSection;
 
   # ---- Open-regressions audit ----
 

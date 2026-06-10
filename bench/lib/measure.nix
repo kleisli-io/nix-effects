@@ -89,6 +89,12 @@ let
     if baseline == 0 then (if current == 0 then 0 else 10000000)
     else ((current - baseline) * 1000) / baseline;
 
+  # Per-level slope Δsteps/Δn of a step probe `{ lo = {n;steps}; hi = {n;steps} }`.
+  # Intercept-free: constant per-run setup cost cancels.
+  stepSlope = probe:
+    if probe.hi.n == probe.lo.n then 0
+    else (probe.hi.steps - probe.lo.steps) / (probe.hi.n - probe.lo.n);
+
   # True iff every allocation record in the list is attrset-equal to the first.
   # Deterministic expressions produce identical alloc records on the same Nix
   # version; divergence indicates evaluation-order sensitivity (e.g., GC-timing-
@@ -107,6 +113,9 @@ let
       cpus = map (s: s.cpu) samples;
       walls = map (s: s.wall or 0) samples;
       deterministic = allocsIdentical allAllocs;
+      gcAgg = f:
+        let xs = map (s: f (s.gc or { })) samples;
+        in { p50 = median xs; p95 = p95 xs; };
     in
     {
       alloc_deterministic = deterministic;
@@ -122,6 +131,13 @@ let
         p50 = median walls;
         p95 = p95 walls;
       };
+      # GC-timing-dependent (heapSize is the peak signal) — informational +
+      # soft-warn only, never hard-gated.
+      gc = {
+        heapSize = gcAgg (g: g.heapSize or 0);
+        bytes = gcAgg (g: g.bytes or 0);
+        cycles = gcAgg (g: g.cycles or 0);
+      };
       runs = builtins.length samples;
     };
 
@@ -129,5 +145,5 @@ in
 {
   inherit pickAllocs pickCpu pickGc;
   inherit median p95 pctDelta permilleDelta;
-  inherit allocsIdentical summarize;
+  inherit allocsIdentical summarize stepSlope;
 }

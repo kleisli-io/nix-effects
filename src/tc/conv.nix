@@ -222,8 +222,8 @@ let
       && body.fn.idx >= 1
       && body.arg.tag == "var"
       && body.arg.idx == 0
-      && (body.fn.idx - 1) < (builtins.length closure.env)
-    then builtins.elemAt closure.env (body.fn.idx - 1)
+      && (body.fn.idx - 1) < (V.envLen closure.env)
+    then V.envNth closure.env (body.fn.idx - 1)
     else null;
 
   # -- Conversion step over forced values --
@@ -504,7 +504,6 @@ let
            || (v2._shape or null) == "linearChain" then
         let
           v1IsChain = (v1._shape or null) == "linearChain";
-          v2IsChain = (v2._shape or null) == "linearChain";
           chainSide = if v1IsChain then v1 else v2;
           payloadTag = chainSide._payloadTag;
           nFields =
@@ -714,10 +713,28 @@ let
       layer [ (goal a.fst b.fst) ] (E.instantiate a.closure fv) (E.instantiate b.closure fv) (d + 1)
     else null;
 
-  # Public entry: definitional equality at binding depth d. Structural-spine
-  # arms run on `runConvF`'s goal stack (depth-flat); every other arm delegates
-  # back to `convStep`, whose recursive positions re-enter here.
-  conv = d: v1: v2: E.machine.runConvF E.dispatch.defaultFuel d v1 v2;
+  # Public entry and recursion knot: definitional equality at binding depth d.
+  # Structural-spine and binder goals run on `runConvF`'s goal stack
+  # (depth-flat); every other goal dispatches `convStep` directly — the
+  # machine sandwich per sub-goal (two genericClosure setups + double cPeel)
+  # costs more than the dispatch it wraps. Same stack envelope as before:
+  # non-structural chains recursed natively through `runConvF` bases too.
+  # Classification stays allocation-light: `cPeelBinder`'s layer fields are
+  # thunks, never forced by the null test.
+  conv = d: v1: v2:
+    let
+      a = E.forceVal v1; b = E.forceVal v2;
+      ta = a.tag; tb = b.tag;
+      structural =
+        (ta == "VPair" && (tb == "VPair" || tb == "VNe"))
+        || (ta == "VNe" && tb == "VPair")
+        || (ta == "VBootSum" && tb == "VBootSum")
+        || (ta == "VBootInl" && tb == "VBootInl")
+        || (ta == "VBootInr" && tb == "VBootInr")
+        || cPeelBinder d a b != null;
+    in
+    if structural then E.machine.runConvF E.dispatch.defaultFuel d a b
+    else convStep d a b;
 
   # -- Spine conversion --
   convSp = d: sp1: sp2:

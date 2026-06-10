@@ -319,6 +319,7 @@ let
   };
 
   integrationTests = import ./tests { inherit lib fx api; };
+  benchGateTests = import ./bench/lib/gate-tests.nix { inherit lib; };
   examplesModule = import ./examples { inherit lib fx api; };
   inlineTests = api.extractTests internals.raw;
   examplesDocs = api.extractDocs examplesModule.module;
@@ -346,9 +347,34 @@ let
     inline = prefixTests inlineTests;
     # Integration tests: module metadata extracted by tests/default.nix
     integration = prefixTests (integrationTests.tree // { examples = examplesModule.tree; });
+    # Pure regression-gate fixtures ({ expr; expected; }).
+    bench = prefixTests benchGateTests;
   };
 
   extractDocs = api.extractDocs internals.raw;
+
+  nix-effects-for-docs = fx // { inherit extractDocs src examplesDocs; raw = internals.raw; };
+
+  # Corpus gates shared by mkDocsContent and `tests`.
+  docsCorpusChecks = pkgs: corpus: [
+    (import ./tests/anchors-schema.nix {
+      inherit pkgs lib src corpus;
+    })
+    (import ./tests/anchors-golden.nix {
+      inherit pkgs lib;
+      bookSrc = ./book/src;
+      goldenFile = ./tests/anchors-golden.txt;
+    })
+    (import ./tests/routing-coverage.nix {
+      inherit pkgs lib corpus;
+    })
+  ];
+
+  # Rendered once and shared — corpus rendering is expensive.
+  docsCorpus = import ./book/gen/docs-content.nix {
+    inherit pkgs lib;
+    nix-effects = nix-effects-for-docs;
+  };
 
   bench = import ./bench { inherit lib pkgs; };
 
@@ -361,32 +387,12 @@ fx // {
   # Returns a directory of markdown files with front matter, structured as
   # nix-effects/{section}/{page}.md. No hub-specific assumptions live in
   # the producer beyond the layout contract.
+  # Anchor/routing gates are embedded — the result builds only if they pass.
   mkDocsContent = pkgs:
-    let
-      nix-effects-for-docs = fx // { inherit extractDocs src examplesDocs; raw = internals.raw; };
-      rawCorpus = import ./book/gen/docs-content.nix {
-        inherit pkgs lib;
-        nix-effects = nix-effects-for-docs;
-      };
-      requiredChecks = [
-        (import ./tests/anchors-schema.nix {
-          inherit pkgs lib src;
-          corpus = rawCorpus;
-        })
-        (import ./tests/anchors-golden.nix {
-          inherit pkgs lib;
-          bookSrc = ./book/src;
-          goldenFile = ./tests/anchors-golden.txt;
-        })
-        (import ./tests/routing-coverage.nix {
-          inherit pkgs lib;
-          corpus = rawCorpus;
-        })
-      ];
-    in
     import ./book/gen/docs-content.nix {
-      inherit pkgs lib requiredChecks;
+      inherit pkgs lib;
       nix-effects = nix-effects-for-docs;
+      requiredChecks = docsCorpusChecks pkgs;
     };
 
   # Maintenance tool: regenerate the heading-anchor golden file consumed
@@ -414,10 +420,7 @@ fx // {
       # (see file header).
       anchors-schema = import ./tests/anchors-schema.nix {
         inherit pkgs lib src;
-        corpus = import ./book/gen/docs-content.nix {
-          inherit pkgs lib;
-          nix-effects = fx // { inherit extractDocs src examplesDocs; raw = internals.raw; };
-        };
+        corpus = docsCorpus;
       };
       # Golden-file gate for hand-written book chapters: any H2/H3
       # heading rename or addition fails the build until the golden
@@ -431,10 +434,7 @@ fx // {
       # path shape the consumer's route table can serve (see file header).
       routing-coverage = import ./tests/routing-coverage.nix {
         inherit pkgs lib;
-        corpus = import ./book/gen/docs-content.nix {
-          inherit pkgs lib;
-          nix-effects = fx // { inherit extractDocs src examplesDocs; raw = internals.raw; };
-        };
+        corpus = docsCorpus;
       };
     };
 } // lib.optionalAttrs exposeInternals {

@@ -27,23 +27,12 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
           lib = nixpkgs.lib;
-          # Per-module API markdown generated from extractDocs mk wrappers.
           apiDocsSrc = import ./book/gen { inherit pkgs lib nix-effects; };
-          # bench runners need pkgs at import time to produce shell
-          # derivations. Re-import the root with pkgs here so `bench.runner`
-          # resolves to the non-null attrset.
           nix-effects-with-pkgs = import ./. { inherit pkgs lib; };
         in
         {
-          # Raw generated API markdown (one .md per module).
           api-docs-src = apiDocsSrc;
-
-          # Markdown content for an external documentation hub.
-          # nix build .#docs-content && ls result/nix-effects/
           docs-content = nix-effects-with-pkgs.mkDocsContent pkgs;
-
-          # Bench harness. Binary stem is `nix-effects-bench-*`; the
-          # `apps` outputs below alias these for `nix run .#bench-* -- …`.
           bench-run = nix-effects-with-pkgs.bench.runner.run;
           bench-compare = nix-effects-with-pkgs.bench.runner.compare;
           bench-gate = nix-effects-with-pkgs.bench.runner.gate;
@@ -75,8 +64,6 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
           lib = nixpkgs.lib;
-          # Pinned nix-unit (2.34.0), shared with `shell.nix` via `pins.nix`
-          # so `nix flake check` and `just test` run the same binary.
           nix-unit-pkg = (import ./pins.nix).nix-unit pkgs;
           nix-effects-with-pkgs = import ./. { inherit pkgs lib; };
         in

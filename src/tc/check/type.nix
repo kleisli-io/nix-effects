@@ -50,6 +50,31 @@ let
     else if a == b then a
     else V.vLevelMax a b;
 
+  # Entry-yield budget for non-leaf `checkTypeLevel` heads — same
+  # discipline and soundness argument as `check.nix` (see the table
+  # there). Budgeting this helper removes the segment break its
+  # per-entry yields used to provide, so it must divide its grant
+  # through its own fanout table: the recursive invariant (Σ child
+  # budgets ≤ b − 1 at every budgeted entry) then bounds un-yielded
+  # entries per native segment by `entryBudget` across `check`/`infer`/
+  # `checkTypeLevel` mixtures. Fanout = max number of checker
+  # sub-computations any branch of that tag's arm starts. The fallback
+  # arm's only sub-computation is one `infer`, so the default is 1.
+  # `checkDescAtAnyLevel` is budgeted as a fanout-2 head at its own
+  # definition; the Σ-child-budgets invariant covers `mu`'s third child.
+  entryBudget = 64;
+  entryFanout = {
+    "U" = 1;
+    "boot-sum" = 2;
+    "pi" = 2;
+    "sigma" = 2;
+    "boot-eq" = 3;
+    "squash" = 1;
+    "desc" = 2;
+    "mu" = 3;
+    "let" = 3;
+  };
+
 in
 {
   scope = {
@@ -81,11 +106,20 @@ in
       # Strategy: a primitive `VDesc` result carries its level directly.
       # An encoded description has type `VMu Unit (descDescAt iLev I k)
       # tt`; recover `iLev/I/k` only from that canonical stamp.
-      value = ctx: dTm: iTyVal:
-        # Always-yield: cold, non-trivial recursion; head defer flattens
-        # the descent.
-        yield (
+      value = ctx0: dTm: iTyVal:
+        # Budgeted like a fanout-2 `check` head (cf. `checkMotive`): a
+        # budget-left entry skips its head yield so trusted-description
+        # validation threads the bindP fast path; an exhausted or
+        # budget-less entry yields, resetting the window. Each branch
+        # starts at most two sequential checker children (e.g. the index
+        # check plus the canonical-term build), so Σ child budgets
+        # ≤ b − 1. The param-list walk below keeps its own head-yield
+        # (unbounded width).
         let
+          b = ctx0.eb or 0;
+          ctx = ctx0 // { eb = ((if b > 0 then b else entryBudget) - 1) / 2; };
+          body =
+            let
           checkInferredDesc = dResult:
             let
               dTy = dResult.type;
@@ -237,7 +271,9 @@ in
                   (term:
                     pure { inherit term; level = kVal; })
               else inferDesc)
-        else inferDesc);
+        else inferDesc;
+        in
+        if b > 0 then body else yield body;
     };
 
     checkTypeLevel = api.leaf {
@@ -255,15 +291,22 @@ in
         that case `.type.level` is already a Level value and is
         forwarded verbatim.
       '';
-      value = ctx: tm:
+      value = ctx0: tm:
         let
           t = tm.tag;
           # Leaf tags: arm is `pure { …; level = vLevelZero }`. Left
           # un-yielded for the bindP fast path. Every recursive type-former
-          # (U, pi, sigma, …) is excluded → yielded → flat descent (flips ckPi).
+          # (U, pi, sigma, …) is excluded → budgeted like `check`/`infer`
+          # heads; an exhausted entry yields → flat descent (flips ckPi).
           isLeaf = builtins.elem t [
             "unit" "string" "int" "float" "attrs" "path" "function" "any" "level"
           ];
+          b = ctx0.eb or 0;
+          fan = entryFanout.${t} or 1;
+          childEb =
+            if fan == 0 then 0
+            else ((if b > 0 then b else entryBudget) - 1) / fan;
+          ctx = if isLeaf || childEb == b then ctx0 else ctx0 // { eb = childEb; };
           body =
             if t == "unit" then pure { term = T.mkUnit; level = V.vLevelZero; }
         else if t == "string" then pure { term = T.mkString; level = V.vLevelZero; }
@@ -394,6 +437,7 @@ in
                     env = V.envCons vVal ctx.env;
                     types = [ aVal ] ++ ctx.types;
                     depth = ctx.depth + 1;
+                    eb = ctx.eb or 0;
                   };
                 in
                 bind (self.checkTypeLevel ctx' tm.body) (r:
@@ -415,7 +459,9 @@ in
                 };
               });
         in
-        if isLeaf then body else yield body;
+        if isLeaf then body
+        else if b > 0 then body
+        else yield body;
     };
 
     checkType = api.leaf {

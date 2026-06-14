@@ -162,19 +162,57 @@ let
 
   summandEq = x: y: x.shift == y.shift && baseEq x.base y.base;
 
+  # Closed-level fast path: nat denotation of a Level value containing no
+  # neutrals, under a node budget. Returns { n; fuel; } or null (neutral
+  # hit, foreign tag, or budget exhausted). A closed Level normalises to
+  # the single summand [{ base = zero; shift = n }] with n exactly this
+  # denotation, so two in-budget closed levels are conv-equal iff their
+  # denotations agree — skipping the flatten/dedup/sort pipeline entirely
+  # (the Lift smart constructors run that comparison on every collapse
+  # check). The budget bounds both native recursion depth and the lazy
+  # `n + 1` chains, so deep adversarial levels fall back to the depth-flat
+  # pipeline instead of risking the C stack.
+  closedLevelNat = fuel: v0:
+    if fuel <= 0 then null
+    else
+      let v = E.forceVal v0; t = v.tag; in
+      if t == "VLevelZero" then { n = 0; fuel = fuel - 1; }
+      else if t == "VLevelSuc" then
+        let r = closedLevelNat (fuel - 1) v.pred; in
+        if r == null then null else { n = r.n + 1; inherit (r) fuel; }
+      else if t == "VLevelMax" then
+        let
+          rl = closedLevelNat (fuel - 1) v.lhs;
+          rr = if rl == null then null else closedLevelNat rl.fuel v.rhs;
+        in
+        if rr == null then null
+        else { n = if rl.n > rr.n then rl.n else rr.n; inherit (rr) fuel; }
+      else null;
+
+  # General comparison — both sides through the full normaliser.
+  convLevelSpines = a: b:
+    let sa = normLevel a; sb = normLevel b; in
+    builtins.length sa == builtins.length sb
+    && builtins.all (i: summandEq (builtins.elemAt sa i) (builtins.elemAt sb i))
+      (builtins.genList (i: i) (builtins.length sa));
+
   # Syntactic-equality fast-path: two Level values that are the same
   # Nix value are trivially conv-equal. Skips the normLevel allocations
   # in the common case where both sides come from the same elaboration
   # site (e.g. `kVal` and `ty.level` for a homogeneous-L description).
   # Sound: Nix `==` on values is structural; structural equality of
   # Level values implies their canonical spines agree element-wise.
+  # Closed-level fast path next: when both sides denote closed nats
+  # within budget, compare the ints; otherwise the full spine pipeline.
   convLevel = a: b:
     a == b
     || (
-      let sa = normLevel a; sb = normLevel b; in
-      builtins.length sa == builtins.length sb
-      && builtins.all (i: summandEq (builtins.elemAt sa i) (builtins.elemAt sb i))
-        (builtins.genList (i: i) (builtins.length sa))
+      let na = closedLevelNat 64 a; in
+      if na == null then convLevelSpines a b
+      else
+        let nb = closedLevelNat 64 b; in
+        if nb == null then convLevelSpines a b
+        else na.n == nb.n
     );
 
   listConv = d: xs: ys:
@@ -229,11 +267,15 @@ let
   # -- Conversion step over forced values --
   # Definitional equality of v1 and v2 at depth d. `runConvF` drives the
   # structural arms (VPair/VBootSum/VBootInl/VBootInr/Σ-eta) depth-flat and
-  # delegates every other arm here.
-  convStep = d: v1raw: v2raw:
+  # delegates every other arm here. `convStepForced` requires both sides
+  # already WHNF (never `VThunkTm`); `convStep` is the forcing wrapper for
+  # callers holding possibly-deferred values (`runConvF` base goals carry
+  # lazy spine fields). `conv` forces at entry, so its dispatch skips the
+  # wrapper — forceVal is idempotent but each call costs an application.
+  convStep = d: v1raw: v2raw: convStepForced d (E.forceVal v1raw) (E.forceVal v2raw);
+
+  convStepForced = d: v1: v2:
     let
-      v1 = E.forceVal v1raw;
-      v2 = E.forceVal v2raw;
       t1 = v1.tag; t2 = v2.tag;
     in
 
@@ -715,12 +757,16 @@ let
 
   # Public entry and recursion knot: definitional equality at binding depth d.
   # Structural-spine and binder goals run on `runConvF`'s goal stack
-  # (depth-flat); every other goal dispatches `convStep` directly — the
+  # (depth-flat); every other goal dispatches `convStepForced` directly — the
   # machine sandwich per sub-goal (two genericClosure setups + double cPeel)
   # costs more than the dispatch it wraps. Same stack envelope as before:
   # non-structural chains recursed natively through `runConvF` bases too.
-  # Classification stays allocation-light: `cPeelBinder`'s layer fields are
-  # thunks, never forced by the null test.
+  # The `cPeelBinder` try is gated behind an inline binder-tag test: every
+  # non-null cPeelBinder arm requires VPi/VLam/VSigma on at least one side
+  # (the Lift-guard arms return null), so the gate routes identically while
+  # base goals — the dominant class — skip the classifier call and its let
+  # allocations entirely. The tag tests stay inline: a let-bound flag would
+  # cost a thunk per goal.
   conv = d: v1: v2:
     let
       a = E.forceVal v1; b = E.forceVal v2;
@@ -731,10 +777,12 @@ let
         || (ta == "VBootSum" && tb == "VBootSum")
         || (ta == "VBootInl" && tb == "VBootInl")
         || (ta == "VBootInr" && tb == "VBootInr")
-        || cPeelBinder d a b != null;
+        || ((ta == "VPi" || ta == "VLam" || ta == "VSigma"
+             || tb == "VPi" || tb == "VLam" || tb == "VSigma")
+            && cPeelBinder d a b != null);
     in
     if structural then E.machine.runConvF E.dispatch.defaultFuel d a b
-    else convStep d a b;
+    else convStepForced d a b;
 
   # -- Spine conversion --
   convSp = d: sp1: sp2:
@@ -1010,6 +1058,40 @@ api.namespace {
         expr = conv 0
           (V.vLevelSuc (V.vLevelSuc V.vLevelZero))
           (V.vLevelSuc V.vLevelZero);
+        expected = false;
+      };
+
+      # Closed levels beyond the fast-path node budget fall back to the
+      # spine pipeline. `max (suc^100 zero) zero` defeats the syntactic
+      # `==` shortcut against `suc^100 zero` while staying equal.
+      "level-deep-closed-budget-fallback-eq" = {
+        expr =
+          let
+            suc100 = builtins.foldl' (v: _: V.vLevelSuc v) V.vLevelZero
+              (builtins.genList (i: i) 100);
+          in
+          conv 0 (V.vLevelMax suc100 V.vLevelZero) suc100;
+        expected = true;
+      };
+      "level-deep-closed-budget-fallback-neq" = {
+        expr =
+          let
+            sucN = n: builtins.foldl' (v: _: V.vLevelSuc v) V.vLevelZero
+              (builtins.genList (i: i) n);
+          in
+          conv 0 (sucN 100) (sucN 101);
+        expected = false;
+      };
+      # Neutral-containing levels skip the closed fast path; idempotent
+      # max over a level variable still equates via the spine pipeline.
+      "level-neutral-max-idempotent" = {
+        expr =
+          let x = V.freshVar 0; in
+          conv 1 (vU (V.vLevelMax x x)) (vU x);
+        expected = true;
+      };
+      "level-closed-vs-neutral-rejects" = {
+        expr = conv 1 (vU V.vLevelZero) (vU (V.freshVar 0));
         expected = false;
       };
 

@@ -90,6 +90,46 @@ let
   bindPChain = self.bindPChain;
   yield = self._yield.wrap;
 
+  # Stride for the homogeneous-chain head-yield (power of two, tested via
+  # bitAnd): layer k yields only when k is a stride multiple. One tcYield
+  # transit per stride keeps the foldl' bind tower deferring into the
+  # trampoline, while the intervening attested layers stay Pure and thread
+  # through the bindP fast path with no per-layer queue transit. Native
+  # depth between yields is O(stride × ctor arity): the driver applies
+  # queued layer continuations iteratively, so consecutive Pure layers
+  # never nest host frames.
+  chainYieldStride = 64;
+
+  # Entry-yield budget for non-leaf `check` heads. An entry with budget
+  # left (`ctx.eb > 0`) skips its head yield, so a success-path subtree
+  # stays Pure and threads through the bindP `isPure` fast path — no
+  # queue, blame, or trampoline traffic for the whole window. The
+  # budget divides among children through a static per-tag fanout (max
+  # number of checker sub-computations any arm of that tag starts), so
+  # Σ child budgets ≤ b − 1 and at most `entryBudget` un-yielded
+  # entries can nest in one native segment regardless of term shape.
+  # The division (not a per-path depth counter) is load-bearing:
+  # sibling pure binds nest natively in EXECUTION order, so a depth
+  # counter would admit arity^budget native frames on bushy terms. An
+  # exhausted (or budget-less) entry yields as before and resets the
+  # window for its children. Tags with unbounded (list) fanout map to
+  # 0: their children yield at entry — the conservative status quo.
+  # Tags without a table entry fall through to the Sub arm, whose only
+  # sub-computation is one `infer`. Error behavior is unchanged: a
+  # typeError leaves every enclosing bind Impure, so blame brackets
+  # fire identically; the bypass affects success paths only.
+  entryBudget = 64;
+  entryFanout = {
+    "lam" = 1;
+    "pair" = 2;
+    "boot-inl" = 1;
+    "boot-inr" = 1;
+    "squash-intro" = 1;
+    "let" = 3;
+    "opaque-lam" = 1;
+    "desc-con" = 0;
+  };
+
 in
 {
   scope = {
@@ -136,11 +176,17 @@ in
         unary-chain helper, `infer` for the synthesis fallback,
         `checkTypeLevel` for the innermost-universe leaf.
       '';
-      value = ctx: motTm: chain:
-        # Always-yield: cold path, self-recursive; head defer keeps the
-        # motive descent off the host stack.
-        yield (
-        if chain == null then
+      value = ctx0: motTm: chain:
+        # Budgeted like a fanout-1 `check` head: each layer starts one
+        # checker sub-computation (lam self-recursion, innermost
+        # `checkTypeLevel`, or the `infer` fallback). An exhausted or
+        # budget-less entry yields, resetting the window and keeping a
+        # cold motive descent off the host stack.
+        let
+          b = ctx0.eb or 0;
+          ctx = ctx0 // { eb = (if b > 0 then b else entryBudget) - 1; };
+          body =
+            if chain == null then
         # Innermost body: must inhabit some universe — delegate to
         # `checkTypeLevel` which accepts any universe level and carries
         # the level back out. The level threads up through the lam
@@ -204,7 +250,9 @@ in
                   in
                   go codVal (ch.tail freshV) (d + 1);
             in
-            go result.type chain ctx.depth));
+            go result.type chain ctx.depth);
+        in
+        if b > 0 then body else yield body;
     };
 
     check = api.leaf {
@@ -241,17 +289,32 @@ in
         diagnostic renderer. Cross-ref: `infer` for the synthesis side,
         `checkMotive` for eliminator motive validation.
       '';
-      value = ctx: tm: ty0:
+      value = ctx0: tm: ty0:
         let
           t = tm.tag;
-          # Leaf tags: arm is `pure …` with no recursion. Left un-yielded
-          # so they stay Pure and the bindP `isPure` fast path fires. A
-          # mistagged recursive arm only over-forces — caught loudly by the
-          # depth probe, never silent.
+          # Leaf tags: the arm runs no checker recursion — either `pure …`
+          # directly, bounded non-checker work (`boot-refl`: conv only),
+          # or the Sub fallthrough whose `infer` child is itself a leaf
+          # (`var`, `unit`, `level-zero`: pure lookup plus host-flat
+          # conv). Left un-yielded so they stay Pure and the bindP
+          # `isPure` fast path fires. A mistagged recursive arm only
+          # over-forces — caught loudly by the depth probe, never silent.
+          # Leaves skip the budget machinery entirely (no consumption,
+          # no grant): a guard-miss leaf reaches Sub with the parent's
+          # budget intact, but its `infer` child is itself a leaf, so
+          # pass-through cannot extend a native segment beyond a
+          # constant factor.
           isLeaf = builtins.elem t [
             "tt" "lit-val" "string-lit" "int-lit" "float-lit"
             "attrs-lit" "path-lit" "derivation-lit" "fn-lit" "any-lit"
+            "var" "unit" "level-zero" "boot-refl"
           ];
+          b = ctx0.eb or 0;
+          fan = entryFanout.${t} or 1;
+          childEb =
+            if fan == 0 then 0
+            else ((if b > 0 then b else entryBudget) - 1) / fan;
+          ctx = if isLeaf || childEb == b then ctx0 else ctx0 // { eb = childEb; };
           body =
             let ty = E.forceVal ty0; in
             if t == "lam" && ty.tag == "VPi" then
@@ -319,6 +382,7 @@ in
                     env = V.envCons tVal ctx.env;
                     types = [ aVal ] ++ ctx.types;
                     depth = ctx.depth + 1;
+                    eb = ctx.eb or 0;
                   };
                 in
                 builtins.seq tyF
@@ -615,11 +679,19 @@ in
                                     layerAttested =
                                       layerCert != null
                                       && ((layerCert.validatedFields or { }).validated or false);
+                                    # Strided head-yield: a stride-multiple layer
+                                    # re-defers via tcYield so the bind tower stays
+                                    # Impure; other layers return Pure and are
+                                    # applied iteratively from the queue. Pure
+                                    # layers (attested heads, tt index) raise
+                                    # nothing, so skipping their blame-free transit
+                                    # is observationally invisible.
+                                    layerYield =
+                                      if builtins.bitAnd k (chainYieldStride - 1) == 0
+                                      then yield
+                                      else (c: c);
                                     checkHeads = j: remaining: accTms:
-                                      # Head-yield: re-defers the `attested && depth==0` branch
-                                      # whose `m` is a pure `pure h.head` that the bindP
-                                      # fast path would otherwise recurse through directly.
-                                      yield (if remaining == [ ] then pure accTms
+                                      layerYield (if remaining == [ ] then pure accTms
                                       else
                                         let
                                           h = builtins.head remaining;
@@ -643,6 +715,21 @@ in
                                         T.mkPair (builtins.head hTms)
                                           (buildInner (builtins.tail hTms) innerTail);
                                   in
+                                  # Error-free layer: the index elaborates to mkTt
+                                  # and every head is either absent (no non-rec
+                                  # fields) or attested as its own checked term —
+                                  # build the term directly. The kernel bind fast
+                                  # path threads a Pure acc with no queue transit
+                                  # and no blame frame; both are observationally
+                                  # invisible on a layer that cannot raise.
+                                  if iTyVal.tag == "VUnit" && layer.i.tag == "tt"
+                                    && (nFields == 0 || (layerAttested && ctx.depth == 0))
+                                  then
+                                    bind accComp (acc:
+                                      pure (T.mkDescCon dTm T.mkTt
+                                        (wrapPayload
+                                          (buildInner heads (T.mkPair acc peeled.leaf)))))
+                                  else
                                   bind accComp (acc:
                                     bindPChain [ (P.DConLayer layerDepth) P.MuIndex ]
                                       (
@@ -687,7 +774,9 @@ in
                 };
               });
         in
-        if isLeaf then body else yield body;
+        if isLeaf then body
+        else if b > 0 then body
+        else yield body;
     };
   };
 

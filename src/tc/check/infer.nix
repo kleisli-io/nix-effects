@@ -38,6 +38,53 @@ let
   bindPR = self.bindPR;
   yield = self._yield.wrap;
 
+  # Entry-yield budget for non-leaf `infer` heads — same discipline and
+  # soundness argument as `check.nix` (see the table there): budget-left
+  # entries skip the head yield so success-path windows stay Pure on the
+  # bindP fast path; the budget divides among children via static
+  # per-tag fanout, bounding un-yielded entries per native segment by
+  # `entryBudget`. Default fanout here is 0 (children yield at entry —
+  # the status quo): the only unlisted arms with children are
+  # `canon-app`, whose param-list walk has unbounded fanout, and the
+  # childless error fallback. `U` is a leaf (its `U(k≠0)` arm passes
+  # the budget through to one `check(level-*)` child unchanged); level
+  # terms cannot contain `U`, so pass-through cannot re-grant budget
+  # within a native segment. Type formers (fanout 1) delegate to
+  # `checkTypeLevel`, which divides the grant through its own table —
+  # see `type.nix`.
+  entryBudget = 64;
+  entryFanout = {
+    "ann" = 2;
+    "app" = 2;
+    "fst" = 1;
+    "snd" = 1;
+    "boot-sum-elim" = 6;
+    "boot-j" = 6;
+    "level-suc" = 1;
+    "level-max" = 2;
+    "absurd" = 2;
+    "lift" = 4;
+    "lift-intro" = 5;
+    "lift-elim" = 5;
+    "desc" = 2;
+    "desc-con" = 3;
+    "desc-ind" = 6;
+    "interp-d" = 5;
+    "all-d" = 8;
+    "everywhere-d" = 9;
+    "desc-desc-app" = 2;
+    "str-eq" = 2;
+    "squash-elim" = 4;
+    "opaque-lam" = 1;
+    "pi" = 1;
+    "sigma" = 1;
+    "list" = 1;
+    "boot-sum" = 1;
+    "boot-eq" = 1;
+    "mu" = 1;
+    "squash" = 1;
+  };
+
   # Shared `U(0)` / `U(1)` values. Every type former infers at `U(0)`,
   # and `desc I` at I:U(0) infers at `U(1)`; constructing a fresh
   # attrset per call was a hot-path allocation. The level field is the
@@ -112,19 +159,27 @@ in
         side, `checkTypeLevel` for type-former level extraction,
         `checkMotive` for motive validation in eliminator rules.
       '';
-      value = ctx: tm:
+      value = ctx0: tm:
         let
           t = tm.tag;
           # Leaf tags: arm is `pure …` with no recursion. Left un-yielded
           # so they stay Pure for the bindP fast path. `U` is included:
-          # `U(k≠0)` recurses into `check(level-*)`, which IS yielded, so
-          # it cannot cascade.
+          # `U(k≠0)` recurses into `check(level-*)`, which consumes budget
+          # or yields at its own head, so it cannot cascade. Leaves skip
+          # the budget machinery entirely (no consumption, no grant).
           isLeaf = builtins.elem t [
-            "var" "U" "level" "unit" "empty" "string" "int" "float"
-            "attrs" "path" "derivation" "function" "any"
+            "var" "U" "level" "level-zero" "unit" "empty" "funext"
+            "string" "int" "float" "attrs" "path" "derivation"
+            "function" "any"
             "string-lit" "int-lit" "float-lit" "attrs-lit" "path-lit"
             "derivation-lit" "fn-lit" "any-lit"
           ];
+          b = ctx0.eb or 0;
+          fan = entryFanout.${t} or 0;
+          childEb =
+            if fan == 0 then 0
+            else ((if b > 0 then b else entryBudget) - 1) / fan;
+          ctx = if isLeaf || childEb == b then ctx0 else ctx0 // { eb = childEb; };
           body =
             if t == "var" then
           pure { term = tm; type = self.lookupType ctx tm.idx; }
@@ -1023,7 +1078,9 @@ in
             };
           };
         in
-        if isLeaf then body else yield body;
+        if isLeaf then body
+        else if b > 0 then body
+        else yield body;
     };
   };
 

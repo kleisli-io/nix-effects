@@ -1556,6 +1556,116 @@ let
           })
 
       else throw "hoas.lower: unknown tag: ${t}";
+
+  # ---- Meta-free elaboration pre-scan (`elab` / `checkHoas` /
+  # ---- `inferHoas` fast paths) ----
+  #
+  # `elab` discards the elaborator result unless the run created
+  # metavariables: `delta == {}` falls through to the rigid Tm, and
+  # elaborator errors fall through before the delta check. On this path
+  # the only freshMeta producer is `insertImplicits`
+  # (tc/elaborate/insertion.nix), reached from
+  #   - elabInferApp: explicit app whose fn type forces to an implicit
+  #     VPi (tc/elaborate/infer.nix), and
+  #   - elabSub: app/ann argument whose inferred type forces to an
+  #     implicit VPi (tc/elaborate/check.nix).
+  # The rigid kernel checker cannot create metas, and the meta layer
+  # never descends into binders (elabInfer routes only app/meta heads to
+  # the meta path; rigidOrSub routes only app/ann/meta arguments), so a
+  # syntactic walk of the app-spine skeleton — spine fns plus arguments
+  # that are themselves app/ann, transitively — suffices to prove delta
+  # stays empty. Scan-clean terms return the rigid Tm without running
+  # the elaborator at all: bit-identical to the fall-through result.
+  #
+  # `checkHoas` / `inferHoas` use the same scan with a stronger payoff:
+  # they consume the elaborator output even when `delta == {}`, relying
+  # on the conservativity claim that a meta-free elaborator run equals
+  # the kernel rule (both sides build the result through the same
+  # kernel sub-checks and the identical `T.mkApp`/`T.mkAnn`
+  # reconstruction; the rigid routes inside the elaborator ARE direct
+  # `checkTm`/`inferTm` calls). Scan-clean terms there route straight
+  # to the kernel rule. The checking direction needs one extra
+  # condition: the expected type's head must not force to an implicit
+  # Pi, else `descendImplicitPi` would rewrite the term (meta-free, but
+  # not the kernel's output) and `elabSub` would skip its insertion
+  # gate asymmetrically.
+  #
+  # sig(tm) approximates the plicity prefix of tm's type as
+  # { pre : [Plicity]; open : Bool }. `open` marks an unknown tail:
+  # anything not provably explicit makes the enclosing consumption dirty
+  # (run the elaborator — never wrong, only slower). A closed empty
+  # prefix is a type former that can never force to a VPi, so
+  # insertImplicits cannot fire on it.
+
+  # Type formers whose values are canonical and never a VPi. Must stay
+  # minimal: a wrong entry here is a soundness hole, not a perf loss.
+  scanSafeEnd = {
+    U = true; mu = true; sigma = true; "boot-sum" = true; unit = true;
+    lift = true;
+    string = true; int = true; float = true; attrs = true; path = true;
+    derivation = true; function = true; any = true;
+  };
+
+  # Plicity prefix of a syntactic pi tower.
+  scanPrefixOf = ty:
+    let t = if builtins.isAttrs ty then ty.tag or null else null; in
+    if t == "pi" then
+      let rest = scanPrefixOf ty.codomain; in
+      { pre = [ (ty._plicity or "explicit") ] ++ rest.pre; inherit (rest) open; }
+    else { pre = [ ]; open = !(builtins.isString t && scanSafeEnd ? ${t}); };
+
+  # sig of a rigid (non-app) term in fn position. lam plicity
+  # miscalibration is safe in both directions: the kernel never invents
+  # implicit VPis, so a wrong sidecar can only over-dirty the scan.
+  scanSigOf = tm:
+    let t = if builtins.isAttrs tm then tm.tag or null else null; in
+    if t == "ann" then scanPrefixOf tm.type
+    else if t == "lam" then { pre = [ (tm._plicity or "explicit") ]; open = true; }
+    else { pre = [ ]; open = true; };
+
+  # The type may force to an implicit VPi: implicit head or unknown
+  # prefix. Drives the elabSub argument condition.
+  scanHeadRisky = sig:
+    if sig.pre != [ ] then builtins.head sig.pre == "implicit"
+    else sig.open;
+
+  # Argument (checking) position: only app/ann/meta arguments reach
+  # elabSub, which runs insertImplicits on the argument's inferred type;
+  # everything else is rigid-checked and cannot create metas.
+  scanArgClean = tm:
+    let t = if builtins.isAttrs tm then tm.tag or null else null; in
+    if t == "meta" then false
+    else if t == "app" then
+      let sig = scanInferSig tm; in
+      sig != null && !(scanHeadRisky sig)
+    else if t == "ann" then !(scanHeadRisky (scanPrefixOf tm.type))
+    else true;
+
+  # Infer-mode skeleton walk. Returns the consumed sig, or null when the
+  # elaborator must run. Implicit apps consume a binder without
+  # insertion regardless of its plicity (userExplicit = false skips
+  # insertImplicits). Host recursion: skeleton depth is bounded by
+  # literal app towers, not binder chains.
+  scanInferSig = tm:
+    let t = if builtins.isAttrs tm then tm.tag or null else null; in
+    if t == "meta" then null
+    else if t == "app" then
+      let fnSig = scanInferSig tm.fn; in
+      if fnSig == null then null
+      else
+        let explicitApp = (tm._plicity or "explicit") == "explicit"; in
+        if fnSig.pre != [ ] then
+          (if explicitApp && builtins.head fnSig.pre != "explicit" then null
+           else if scanArgClean tm.arg
+           then { pre = builtins.tail fnSig.pre; inherit (fnSig) open; }
+           else null)
+        # Consuming a closed empty prefix is a guaranteed "expected
+        # function type" error (errors fall through to the rigid Tm
+        # anyway), but stay conservative: run the elaborator.
+        else if !fnSig.open || explicitApp then null
+        else if scanArgClean tm.arg then fnSig
+        else null
+    else scanSigOf tm;
 in
 {
   scope = {
@@ -1593,6 +1703,11 @@ in
         # recursive structural walk — wasted work that also blows the
         # call stack on deep Tms. Return the rigid Tm directly.
         if outerTag != "app" && outerTag != "meta"
+        then tmRaw
+        # Skeleton pre-scan: a clean app spine provably creates no
+        # metas, so the elaborator run below would fall through to
+        # tmRaw — skip it. (`meta` outer tags scan dirty.)
+        else if scanInferSig tmRaw != null
         then tmRaw
         else
           let r = meta.runElab self.unit (meta.elabInfer CH.emptyCtx tmRaw); in
@@ -1655,17 +1770,26 @@ in
           tm = elaborateForCheck 0 hoasTy' hoasTm;
           vTy = E.eval [ ] ty';
           # Single-track: by conservativity, meta-free elaborator output
-          # equals the kernel checker's output. Kernel pass fires only
-          # on the elaborator-error fallback for the rigid diagnostic.
+          # equals the kernel checker's output. Kernel pass fires on the
+          # elaborator-error fallback for the rigid diagnostic — and
+          # directly when the pre-scan proves the run meta-free up
+          # front: a scan-clean term against an expected type whose
+          # head is not an implicit Pi (`descendImplicitPi` cannot
+          # rewrite, `elabSub` cannot insert) makes the elaborator a
+          # kernel run in costume. The forced head is shared with the
+          # kernel run that follows.
+          scanFast =
+            scanArgClean tm
+            && !(meta.isImplicitPi (E.forceVal vTy));
           metaRun =
-            if tyHasError then null
+            if tyHasError || scanFast then null
             else meta.runElab self.unit (meta.elabCheck CH.emptyCtx tm vTy);
           metaErr =
             metaRun != null
             && builtins.isAttrs metaRun.value && metaRun.value ? error;
           r =
             if tyHasError then tyResult
-            else if metaErr then CH.runCheck (CH.check CH.emptyCtx tm vTy)
+            else if scanFast || metaErr then CH.runCheck (CH.check CH.emptyCtx tm vTy)
             else if metaRun.state.delta == { } then metaRun.value
             else
               let zonked = meta.zonkTm 0 metaRun.state metaRun.value; in
@@ -1705,7 +1829,13 @@ in
           outerTag = tmRaw.tag or null;
           # See H.elab for the structural rationale: only `app` / `meta`
           # heads can drive new meta allocation through `elabInferApp`.
-          metaCandidate = outerTag == "app" || outerTag == "meta";
+          # Scan-provably meta-free spines skip the elaborator the same
+          # way: meta-free synthesis equals the kernel rule (the
+          # conservativity claim in `checkHoas`), so the rigid branch
+          # below returns the same result without the elaborator run.
+          metaCandidate =
+            (outerTag == "app" || outerTag == "meta")
+            && scanInferSig tmRaw == null;
           metaRun =
             if metaCandidate
             then meta.runElab self.unit (meta.elabInfer CH.emptyCtx tmRaw)

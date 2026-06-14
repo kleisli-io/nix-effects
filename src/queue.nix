@@ -59,13 +59,15 @@ let
     else viewlGo q.left q.right;
 
   # Rotate the tree leftward to find the leftmost Leaf (amortized O(1)).
-  # Fast-path: if left is already a Leaf, return immediately without
-  # entering genericClosure. This handles the common case (queues built
-  # by a single snoc) with zero overhead.
-  # For deeper trees, genericClosure provides stack-safe iteration.
+  # Fast paths: a Leaf left child returns immediately, and a depth-2
+  # left nesting (the steady-state shape of bind-then-append transit
+  # queues) performs the single rotation directly. Both skip the
+  # genericClosure machinery; deeper trees iterate stack-safely.
   viewlGo = left: right:
     if left._variant == "Leaf"
     then { head = left.fn; tail = right; }
+    else if left.left._variant == "Leaf"
+    then { head = left.left.fn; tail = node left.right right; }
     else
       let
         steps = builtins.genericClosure {

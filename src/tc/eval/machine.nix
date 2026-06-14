@@ -30,10 +30,14 @@ let
     eApp eFst eSnd eBootSumElim eBootJ eInterpD eAllD eEverywhereD eDescInd;
   vUZero = vU vLevelZero;
 
-  push = frame: kont: { head = frame; tail = kont; };
+  # Kont cells are `{ head = frame; tail = kont; }` literals at every push
+  # site, and machine states are `{ mode; ...; kont; fuel }` literals at every
+  # transition: a named constructor would cost one curried application (Env +
+  # call) per argument per step, which at ~1M machine steps per heavy workload
+  # is a measurable share of the evaluator's allocation floor.
 
-  # Force-required frames: each resume needs `c.v` forced to dispatch on `.tag`.
-  # All other sub-Tm propagation goes through Nix-lazy thunks via `c.lazy` /
+  # Force-required frames: each resume needs `state.val` forced to dispatch
+  # on `.tag`. All other sub-Tm propagation goes through Nix-lazy thunks via
   # the local `ev` handle, mirroring HEAD's `mkValueF` byte-for-byte.
   kApp1              = env: argTm: { tag = "KApp1";              inherit env argTm; };
   kAppVV             = arg:        { tag = "KApp_VV";            inherit arg; };
@@ -91,8 +95,8 @@ let
 
   # Force-and-resume frames. When a handler needs `.tag` of a stored sub-Val,
   # it pushes a `kResume_<H>_<field>` capturing every other field of its
-  # context plus the originally-consumed val, then `mkApply` on the sub-Val.
-  # `stepApply`'s top-level VThunkTm peek transitions to Eval inside the same
+  # context plus the originally-consumed val, then Apply-modes on the sub-Val.
+  # the driver step's Apply-mode VThunkTm peek transitions to Eval inside the same
   # driver; on return the resume handler rebuilds H with the forced field
   # substituted and re-delivers the consumed val. No fresh `runMachineF`.
   # Q→Eval→Q transition: forced val lands as state.val; resume pops itself
@@ -106,7 +110,7 @@ let
   # Helper dispatchers. Each runs the corresponding `desc.nix` helper under
   # the unified driver and delivers the result to the paired `*_Got*` resume
   # frame structurally seated immediately above on the kont. The inspected
-  # value flows through `state.val` (forced by `stepApply`'s top-level peek
+  # value flows through `state.val` (forced by the driver step's Apply-mode peek
   # if needed); only `kPeelLiftIntroVal` carries an accumulator field.
   kDescView         = { tag = "KDescView";         };
   kSumPayloadView   = { tag = "KSumPayloadView";   };
@@ -155,7 +159,7 @@ let
     { tag = "KResume_KDescView_GotDecode"; inherit meta; };
 
   # Per-idx peek chains replicating `descViewF`'s body. Each step forces the
-  # next sub-Val via `mkApply` (stepApply's top-level VThunkTm peek does the
+  # next sub-Val via an Apply state (the driver step's Apply-mode VThunkTm peek does the
   # actual force); successors read `.tag` / `.fst` / `.snd` of the forced
   # value. lowerMeta calls go through `kLiftElim_X` pushes per the
   # public-leaf forcing rule.
@@ -203,27 +207,17 @@ let
   kResume_KSumPayloadView_GotField = d: dD: pairSnd:
     { tag = "KResume_KSumPayloadView_GotField"; inherit d dD pairSnd; };
 
-  # Each step pays one fuel.
-  mkApply = kont: fuel: v:       { mode = "Apply"; val = v; inherit kont; fuel = fuel - 1; };
-  mkEval  = kont: fuel: env: tm: { mode = "Eval"; inherit env tm kont; fuel = fuel - 1; };
-  mkDone  = fuel: v:             { mode = "Done"; val = v; inherit fuel; };
-
   # Force a `VLazyDescIndAccLayer` Val by expanding into three kAppVV frames
-  # plus re-pushing the current dispatch frame on top of c.rest. After the
-  # three force-apps consume — applying step to (layer.i, layer.d,
-  # vPair prevAcc vTt) — the layer's accumulator value (a VLam, or another
-  # VLazyDescIndAccLayer that this same helper re-fires) lands as `c.v` on
-  # the original frame, which then re-dispatches with the resolved value.
-  # The cascade lives entirely in the driver's kont stack; libnix sees
-  # one frame regardless of chain depth.
-  forceLazyLayer = c:
-    let fn = c.v; in
-    mkApply
-      (push (kAppVV fn.i)
-        (push (kAppVV fn.d)
-          (push (kAppVV (vPair fn.prevAcc vTt))
-            (push c.k c.rest))))
-      c.fuel fn.step;
+  # on top of the unchanged kont (the current dispatch frame stays at the
+  # head). After the three force-apps consume — applying step to (layer.i,
+  # layer.d, vPair prevAcc vTt) — the layer's accumulator value (a VLam, or
+  # another VLazyDescIndAccLayer that this same helper re-fires) lands as
+  # `state.val` on the original frame, which then re-dispatches with the
+  # resolved value. The cascade lives entirely in the driver's kont stack;
+  # libnix sees one frame regardless of chain depth.
+  forceLazyLayer = state:
+    let fn = state.val; in
+    { mode = "Apply"; val = fn.step; kont = ({ head = (kAppVV fn.i); tail = ({ head = (kAppVV fn.d); tail = ({ head = (kAppVV (vPair fn.prevAcc vTt)); tail = state.kont; }); }); }); fuel = state.fuel - 1; };
 
   # Defunctionalised VDescViewFn dispatch from `KApp1` / `KApp_VV`.
   # The "vapp" kind — the only shape whose body re-enters `runMachineF`
@@ -232,31 +226,42 @@ let
   # keeping the cascade inside the same driver. Other kinds are pure
   # value-constructor composition; resolve them synchronously through
   # the shared `applyDescViewFnByKindF` helper.
-  applyDescViewFnArm = c: fn: arg:
+  applyDescViewFnArm = state: fn: arg:
     if fn.kind == "vapp" then
       let liftedArg =
         if fn.noLift then arg
         else self.vLiftIntroF fn.liftK fn.liftDDescL vBootRefl fn.liftSTy arg;
-      in mkApply (push (kAppVV liftedArg) c.rest) c.fuel fn.tPayload
-    else c.apply (self.applyDescViewFnByKindF c.fuel fn arg);
+      in { mode = "Apply"; val = fn.tPayload; kont = ({ head = (kAppVV liftedArg); tail = state.kont.tail; }); fuel = state.fuel - 1; }
+    else { mode = "Apply"; val = (self.applyDescViewFnByKindF state.fuel fn arg); kont = state.kont.tail; fuel = state.fuel - 1; };
 
   # Sub-evaluator handle for lazy sub-Tm thunks at introduction-form
-  # call sites. Two tiers:
+  # call sites. Three tiers:
   #
   #   1. Atomic tags (literals, singletons, var lookup, `U(0)`) — Val
   #      produced inline; no driver, no recursion.
-  #   2. Everything else — wrapped as a deferred `VThunkTm { env; tm }`.
-  #      Forced lazily at the consumer (eval-side `stepApply` peek,
-  #      quote-side `mkQEvalStep` peek, or `forceVal` outside the
-  #      machine). Top-level results are forced by the driver's `Done`
-  #      arm in `stepIf`, so external callers see non-VThunkTm Vals.
-  # Tags whose evaluation recurses through `eval` (application, let, the
-  # eliminator and desc-ind families) stay deferred, so the single driver
-  # loop handles their recursion iteratively and libnix stack depth stays
-  # independent of user-recursion depth. Every other tag holds a bounded
-  # type/description/constructor position and is forced to a concrete Val,
-  # so Nix thunk-memoization classifies each description once rather than
-  # re-deriving it on every force.
+  #   2. Tags whose evaluation recurses through `eval` (application, let,
+  #      the eliminator and desc-ind families) — wrapped as a deferred
+  #      `VThunkTm { env; tm }`. Forced lazily at the consumer (eval-side
+  #      driver-step Apply peek, quote-side `mkQEvalStep` peek, or
+  #      `forceVal` outside the machine). Top-level results are forced by
+  #      the driver's `Done` arm in `stepIf`, so external callers see
+  #      non-VThunkTm Vals. The single driver loop handles their
+  #      recursion iteratively, so libnix stack depth stays independent
+  #      of user-recursion depth.
+  #   3. Every other tag holds a bounded type/description/constructor
+  #      position: its Val is built directly by the shared `eval*V`
+  #      builders (the exact expressions the evalDispatch arms emit), so
+  #      the result is concrete — Nix thunk-memoization classifies each
+  #      description once — without paying a 2-step machine entry
+  #      (transient `deferTm` record, `envFromList`, state sets, driver
+  #      prologue) per force. `ann`'s passthrough case and the
+  #      WHNF-inspected positions of `lift`/`lift-intro` force explicitly
+  #      to preserve this tier's forced-to-concrete contract. `desc-con`
+  #      stays on the machine — its peel cascade and cert handling live
+  #      on the single driver path (cf. the measured rejection of a
+  #      direct peel in eval/direct.nix) — except for the statically
+  #      recognizable subsets handled by `evalDescConFastV` /
+  #      `evalDescConPlainV` below.
   evDeferTags = {
     "app" = true; "let" = true; "fst" = true; "snd" = true;
     "absurd" = true; "boot-sum-elim" = true; "boot-j" = true;
@@ -267,7 +272,7 @@ let
   # Deferred-Tm record with a memoized force: `forced` is a lazy field,
   # so every external read-site force of the SAME record (core.nix
   # `forceVal`) shares one machine run instead of re-evaluating per
-  # touch. In-driver consumption (`stepApply`/`stepIf` peeks) stays
+  # touch. In-driver consumption (driver-step Apply/Done peeks) stays
   # frame-based for fuel accounting.
   deferTm = env: tm: {
     tag = "VThunkTm"; inherit env tm;
@@ -276,7 +281,17 @@ let
 
   ev = env: tm:
     let t = tm.tag; in
-         if t == "var"            then envNth env tm.idx
+         if t == "var"            then
+           # inlined envNth i≤7 — frame-cut, see value.nix; do not re-wrap
+           (if tm.idx == 0 then env.head
+            else if tm.idx == 1 then env.tail.head
+            else if tm.idx == 2 then env.tail.tail.head
+            else if tm.idx == 3 then env.tail.tail.tail.head
+            else if tm.idx == 4 then env.tail.tail.tail.tail.head
+            else if tm.idx == 5 then env.tail.tail.tail.tail.tail.head
+            else if tm.idx == 6 then env.tail.tail.tail.tail.tail.tail.head
+            else if tm.idx == 7 then env.tail.tail.tail.tail.tail.tail.tail.head
+            else envNth env tm.idx)
     else if t == "lit-val"        then tm.val
     else if t == "level-zero"     then vLevelZero
     # The level sub-language is evaluated strictly: a Level Val must never
@@ -310,7 +325,9 @@ let
     else if t == "any-lit"        then vAnyLit
     else if t == "U" && tm.level.tag == "level-zero" then vUZero
     else if evDeferTags ? ${t} then deferTm env tm
-    else self.forceVal (deferTm env tm);
+    else if t == "ann" then self.forceVal (evalAnnV env tm)
+    else if t == "desc-con" then self.forceVal (deferTm env tm)
+    else evDirectArms.${t} env tm;
 
   # Lazy `_descRef` finalizer: mirrors `core.nix:428-433`'s `evalDescRef`.
   # All fields stay as Nix thunks; consumers (typechecker) force on demand.
@@ -320,388 +337,529 @@ let
     params = map (ev env) (ref.params or [ ]);
   };
 
-  evalDispatch = {
-    "var" = c: c.apply (envNth c.env c.tm.idx);
+  # Bounded-tier Val builders, shared by the evalDispatch arms below and
+  # `ev`'s tier-3 routing: one expression per tag, closed over (env, tm)
+  # only, so the in-driver and direct paths cannot drift. Each is exactly
+  # the Val the 2-step machine run (Eval → Apply → Done) for that tag
+  # produces.
+  evalAnnV = env: tm:
+    let
+      hasMeta = tm ? _descRef || tm ? _label || tm ? _conLabel;
+      v  = if hasMeta then self.forceVal (ev env tm.term) else ev env tm.term;
+      v1 = if tm ? _descRef then v // { _descRef = evalDescRefLazy env tm._descRef; } else v;
+      v2 = if tm ? _label    then v1 // { _label    = tm._label;    } else v1;
+      v3 = if tm ? _conLabel then v2 // { _conLabel = tm._conLabel; } else v2;
+    in v3;
+  evalPiV = env: tm:
+    let v = vPi tm.name (ev env tm.domain) (mkClosure env tm.codomain); in
+    if tm ? _plicity then v // { _plicity = tm._plicity; } else v;
+  evalLamV = env: tm:
+    let v = vLam tm.name (ev env tm.domain) (mkClosure env tm.body); in
+    if tm ? _plicity then v // { _plicity = tm._plicity; } else v;
+  evalSigmaV = env: tm: vSigma tm.name (ev env tm.fst) (mkClosure env tm.snd);
+  evalPairV = env: tm: vPair (ev env tm.fst) (ev env tm.snd);
+  evalBootSumV = env: tm: vBootSum (ev env tm.left) (ev env tm.right);
+  evalBootInlV = env: tm: vBootInl (ev env tm.left) (ev env tm.right) (ev env tm.term);
+  evalBootInrV = env: tm: vBootInr (ev env tm.left) (ev env tm.right) (ev env tm.term);
+  evalBootEqV = env: tm: vBootEq (ev env tm.type) (ev env tm.lhs) (ev env tm.rhs);
+  evalSquashV = env: tm: vSquash (ev env tm.A);
+  evalSquashIntroV = env: tm: vSquashIntro (ev env tm.a);
+  evalMuV = env: tm: vMu (ev env tm.I) (ev env tm.D) (ev env tm.i);
+  evalUV = env: tm:
+    if tm.level.tag == "level-zero" then vUZero
+    else vU (ev env tm.level);
+  evalDescAtV = env: tm:
+    let
+      iLevV = if tm.iLev.tag == "level-zero" then vLevelZero else ev env tm.iLev;
+      kV    = if tm.k.tag    == "level-zero" then vLevelZero else ev env tm.k;
+    in vDescAt kV iLevV (ev env tm.I);
+  evalOpaqueLamV = env: tm: val.vOpaqueLam tm._fnBox (ev env tm.piTy);
+  evalDescDescAppV = env: tm:
+    let iLevV = if tm.iLev.tag == "level-zero" then vLevelZero else ev env tm.iLev;
+    in self.mkDescDescAppVF self.defaultFuel iLevV (ev env tm.I) (ev env tm.L);
+  evalCanonAppV = env: tm:
+    self.mkCanonAppVF self.defaultFuel tm.id (map (ev env) tm.params) (ev env tm.body);
+  evalDescConChainV = env: tm:
+    let
+      outerDV  = ev env tm.outerD;
+      leftV    = ev env tm.payloadLeft;
+      rightV   = ev env tm.payloadRight;
+      baseDV   = ev env tm.base.D;
+      baseIV   = if tm.base.i.tag == "tt" then vTt else ev env tm.base.i;
+      baseDdV  = ev env tm.base.d;
+      baseVal  = vDescCon baseDV baseIV baseDdV;
+      layerVals = map (l: {
+        i     = if l.i.tag == "tt" then vTt else ev env l.i;
+        heads = map (ev env) l.heads;
+        cert  = null;
+      }) tm.layers;
+      finalOuterI =
+        if layerVals == [ ] then baseIV
+        else (builtins.head layerVals).i;
+    in vDescConChain outerDV finalOuterI tm.payloadTag
+      leftV rightV layerVals baseVal;
+  # Certified desc-con chain-prepend fast path, gated once in the
+  # `evalDispatch` desc-con arm — the funnel every desc-con eval path
+  # reaches (`ev` tier-3 and the hybrid front end's punt both enter the
+  # driver, whose dispatch arm tries it; gating those callers directly
+  # was measured and rejected: the redundant guard call taxes every
+  # non-firing desc-con eval, double-guarding the ev route, for ~2
+  # saved entry steps per firing). For the statically recognizable safe subset —
+  # certified linearChain ctor whose payload Tm is literally the
+  # cert-side boot-inl/inr over its nFields pair spine ending in
+  # (lit-val tail, boot-refl), with the forced tail already chain-form
+  # under the matching payload tag — the peel cascade's output is one
+  # layer prepended onto the tail's layers, fully determined without
+  # running the machine. Mirrors the KDescConPeel_Start → BaseD output
+  # exactly: the Tm-level peel cannot extend past a lit-val tail (n=0),
+  # `forceAndPeelChainV`'s peel1 trusts payload shape alone (no D-compat
+  # check), layer heads are the same lazy `ev` thunks the payload's
+  # VPair fields would carry, payloadTag/left/right are reused from the
+  # tail (denotationally equal to the view sides, view-free), and the D
+  # slot defers as a memoized VThunkTm (legal for stored sub-Vals —
+  # read sites force), skipping the per-layer D eval and the
+  # descView/`_descRef` forces entirely. Returns null outside the
+  # subset; callers fall through to the machine path.
+  # Spine walkers for `evalDescConFastV`, hoisted so the per-eval guard
+  # allocates no closures. `descConSpineTail` hops `k` pair-snd links to
+  # the terminal pair and returns its lit-val tail Tm (or null);
+  # `descConSpineField` reads the j-th data-field Tm of the same spine.
+  descConSpineTail = k: p:
+    if p.tag != "pair" then null
+    else if k == 0 then
+      if p.snd.tag == "boot-refl" && p.fst.tag == "lit-val" then p.fst else null
+    else descConSpineTail (k - 1) p.snd;
+  descConSpineField = j: p:
+    if j == 0 then p.fst else descConSpineField (j - 1) p.snd;
 
-    "unit"           = c: c.apply vUnit;
-    "tt"             = c: c.apply vTt;
-    "empty"          = c: c.apply vEmpty;
-    "boot-refl"      = c: c.apply vBootRefl;
-    "funext"         = c: c.apply vFunext;
-    "level"          = c: c.apply vLevel;
-    "level-zero"     = c: c.apply vLevelZero;
-    "string"         = c: c.apply vString;
-    "int"            = c: c.apply vInt;
-    "float"          = c: c.apply vFloat;
-    "attrs"          = c: c.apply vAttrs;
-    "path"           = c: c.apply vPath;
-    "derivation"     = c: c.apply vDerivation;
-    "function"       = c: c.apply vFunction;
-    "any"            = c: c.apply vAny;
-    "string-lit"     = c: c.apply (vStringLit c.tm.value);
-    "int-lit"        = c: c.apply (vIntLit c.tm.value);
-    "float-lit"      = c: c.apply (vFloatLit c.tm.value);
-    "attrs-lit"      = c: c.apply vAttrsLit;
-    "path-lit"       = c: c.apply vPathLit;
-    "derivation-lit" = c: c.apply vDerivationLit;
-    "fn-lit"         = c: c.apply vFnLit;
-    "any-lit"        = c: c.apply vAnyLit;
-    "lit-val"        = c: c.apply c.tm.val;
+  # Guard structure: cascaded early exits, cheapest reads first, each
+  # `let` entered only when the previous guard passed — the common
+  # rejection paths allocate nothing beyond the call itself.
+  evalDescConFastV = env: tm:
+    if tm.i.tag != "tt" || !(tm ? _descConCert) then null
+    else
+      let certLinear = tm._descConCert.ref.linearChain or null; in
+      if certLinear == null then null
+      else if tm.d.tag != (if certLinear.side == "inl" then "boot-inl" else "boot-inr") then null
+      else
+        let tailTm = descConSpineTail certLinear.dataFieldCount tm.d.term; in
+        if tailTm == null then null
+        else
+          let tailV = self.forceVal tailTm.val; in
+          if (tailV._shape or null) != "linearChain"
+             || (tailV._payloadTag or null)
+                != (if certLinear.side == "inl" then "VBootInl" else "VBootInr")
+          then null
+          else
+            vDescConChain (deferTm env tm.D) vTt
+              tailV._payloadTag tailV._payloadLeft tailV._payloadRight
+              ([{
+                i = vTt;
+                heads = builtins.genList
+                  (j: ev env (descConSpineField j tm.d.term))
+                  certLinear.dataFieldCount;
+                cert = tm._descConCert;
+              }] ++ self.effLayers tailV)
+              tailV._base;
+
+  # Nocert `descDesc`-headed plain build, the second statically
+  # recognizable subset gated in the dispatch arm (same funnel rationale
+  # as `evalDescConFastV` above; the arm tries it after the
+  # chain-prepend rejects, behind a `D.tag` guard).
+  # When the head Tm is literally `desc-desc-app`, its Val is
+  # `mkDescDescAppVF`'s `_canonRef` shell (eval/desc.nix) — never
+  # `_descRef` — so the peel cascade's classify has no ref source;
+  # absent a certified linearChain it falls back to `linearProfileF`
+  # over `descDesc`'s own view sides, which is not a linear profile
+  # (multiple constructors, mixed recursive positions — a fixed
+  # property of the desc universe encoding). classify is therefore
+  # null, the peel cannot walk (n = 0, chain form off), and the
+  # cascade's output is exactly the plain cert-preserving `vDescCon` —
+  # fully determined without the machine entry, `kDescView`, profile
+  # walks, or peel. The D slot is `evalDescDescAppV`'s shell — the same
+  # concrete `_canonRef` record the cascade's D eval produces (readers
+  # peek `.D` fields without a force, so a deferred slot is NOT legal
+  # here; the shell itself is one record with lazy fields). `i`/`d`
+  # force to WHNF as the machine runs would have, with sub-fields
+  # staying lazy; nested desc-cons in the payload re-enter this arm on
+  # force. Certified-linearChain Tms keep a non-null classify (chain
+  # territory) and stay on the cascade. Returns null outside the
+  # subset.
+  evalDescConPlainV = env: tm:
+    if (tm._descConCert.ref.linearChain or null) != null then null
+    else
+      let
+        v = vDescCon (evalDescDescAppV env tm.D)
+          (if tm.i.tag == "tt" then vTt else self.forceVal (ev env tm.i))
+          (self.forceVal (ev env tm.d));
+      in
+      if tm ? _descConCert then v // { _descConCert = tm._descConCert; } else v;
+
+  # `vLiftF` reads `A.tag` and `vLiftIntroF` reads `a.tag`/`a.spine`; the
+  # kont appliers receive those positions machine-driven to WHNF, so the
+  # direct arms force them explicitly (same leaves, same forcing depth).
+  evalLiftV = env: tm:
+    let
+      lV = if tm.l.tag == "level-zero" then vLevelZero else ev env tm.l;
+      mV = if tm.m.tag == "level-zero" then vLevelZero else ev env tm.m;
+    in self.vLiftF lV mV (ev env tm.eq) (self.forceVal (ev env tm.A));
+  evalLiftIntroV = env: tm:
+    let
+      lV = if tm.l.tag == "level-zero" then vLevelZero else ev env tm.l;
+      mV = if tm.m.tag == "level-zero" then vLevelZero else ev env tm.m;
+    in self.vLiftIntroF lV mV (ev env tm.eq) (ev env tm.A)
+      (self.forceVal (ev env tm.a));
+
+  # `ev` tier-3 routing table. `ann` is routed separately in `ev` (its
+  # passthrough case needs a forceVal the in-driver arm must not pay);
+  # `lift`/`lift-intro` appear here only — their in-driver dispatch arms
+  # keep the kont path so a sub-descent stays inside the running driver.
+  evDirectArms = {
+    "pi" = evalPiV; "lam" = evalLamV; "sigma" = evalSigmaV;
+    "pair" = evalPairV; "boot-sum" = evalBootSumV;
+    "boot-inl" = evalBootInlV; "boot-inr" = evalBootInrV;
+    "boot-eq" = evalBootEqV; "squash" = evalSquashV;
+    "squash-intro" = evalSquashIntroV; "mu" = evalMuV;
+    "U" = evalUV; "desc" = evalDescAtV; "opaque-lam" = evalOpaqueLamV;
+    "desc-desc-app" = evalDescDescAppV; "canon-app" = evalCanonAppV;
+    "desc-con-chain" = evalDescConChainV;
+    "lift" = evalLiftV; "lift-intro" = evalLiftIntroV;
+  };
+
+  evalDispatch = {
+    # `var`: inlined envNth i≤7 (frame-cut, see value.nix); do not re-wrap.
+    "var" = state: { mode = "Apply"; val =
+      (if state.tm.idx == 0 then state.env.head
+       else if state.tm.idx == 1 then state.env.tail.head
+       else if state.tm.idx == 2 then state.env.tail.tail.head
+       else if state.tm.idx == 3 then state.env.tail.tail.tail.head
+       else if state.tm.idx == 4 then state.env.tail.tail.tail.tail.head
+       else if state.tm.idx == 5 then state.env.tail.tail.tail.tail.tail.head
+       else if state.tm.idx == 6 then state.env.tail.tail.tail.tail.tail.tail.head
+       else if state.tm.idx == 7 then state.env.tail.tail.tail.tail.tail.tail.tail.head
+       else envNth state.env state.tm.idx); kont = state.kont; fuel = state.fuel - 1; };
+
+    "unit"           = state: { mode = "Apply"; val = vUnit; kont = state.kont; fuel = state.fuel - 1; };
+    "tt"             = state: { mode = "Apply"; val = vTt; kont = state.kont; fuel = state.fuel - 1; };
+    "empty"          = state: { mode = "Apply"; val = vEmpty; kont = state.kont; fuel = state.fuel - 1; };
+    "boot-refl"      = state: { mode = "Apply"; val = vBootRefl; kont = state.kont; fuel = state.fuel - 1; };
+    "funext"         = state: { mode = "Apply"; val = vFunext; kont = state.kont; fuel = state.fuel - 1; };
+    "level"          = state: { mode = "Apply"; val = vLevel; kont = state.kont; fuel = state.fuel - 1; };
+    "level-zero"     = state: { mode = "Apply"; val = vLevelZero; kont = state.kont; fuel = state.fuel - 1; };
+    "string"         = state: { mode = "Apply"; val = vString; kont = state.kont; fuel = state.fuel - 1; };
+    "int"            = state: { mode = "Apply"; val = vInt; kont = state.kont; fuel = state.fuel - 1; };
+    "float"          = state: { mode = "Apply"; val = vFloat; kont = state.kont; fuel = state.fuel - 1; };
+    "attrs"          = state: { mode = "Apply"; val = vAttrs; kont = state.kont; fuel = state.fuel - 1; };
+    "path"           = state: { mode = "Apply"; val = vPath; kont = state.kont; fuel = state.fuel - 1; };
+    "derivation"     = state: { mode = "Apply"; val = vDerivation; kont = state.kont; fuel = state.fuel - 1; };
+    "function"       = state: { mode = "Apply"; val = vFunction; kont = state.kont; fuel = state.fuel - 1; };
+    "any"            = state: { mode = "Apply"; val = vAny; kont = state.kont; fuel = state.fuel - 1; };
+    "string-lit"     = state: { mode = "Apply"; val = (vStringLit state.tm.value); kont = state.kont; fuel = state.fuel - 1; };
+    "int-lit"        = state: { mode = "Apply"; val = (vIntLit state.tm.value); kont = state.kont; fuel = state.fuel - 1; };
+    "float-lit"      = state: { mode = "Apply"; val = (vFloatLit state.tm.value); kont = state.kont; fuel = state.fuel - 1; };
+    "attrs-lit"      = state: { mode = "Apply"; val = vAttrsLit; kont = state.kont; fuel = state.fuel - 1; };
+    "path-lit"       = state: { mode = "Apply"; val = vPathLit; kont = state.kont; fuel = state.fuel - 1; };
+    "derivation-lit" = state: { mode = "Apply"; val = vDerivationLit; kont = state.kont; fuel = state.fuel - 1; };
+    "fn-lit"         = state: { mode = "Apply"; val = vFnLit; kont = state.kont; fuel = state.fuel - 1; };
+    "any-lit"        = state: { mode = "Apply"; val = vAnyLit; kont = state.kont; fuel = state.fuel - 1; };
+    "lit-val"        = state: { mode = "Apply"; val = state.tm.val; kont = state.kont; fuel = state.fuel - 1; };
 
     # `let` and `ann` are propagating-only dispatchers — no kont frame.
     # `let`: HEAD threads the binding as a thunk into env[0] and continues
     # evaluation of body in-place; the let's Val IS the body's Val.
     # `ann`: HEAD merges sidecars onto a thunk-Val via `//`; no field is
     # forced at eval time (typechecker reads `_descRef` etc. later).
-    "let"   = c: mkEval c.kont c.fuel (envCons (c.lazy c.tm.val) c.env) c.tm.body;
-    "ann"   = c:
-      let
-        # Meta-bearing anns wrap descriptions (shallow, always inspected).
-        # Force to WHNF before gluing the sidecar so it lands on the real
-        # Val, not a VThunkTm wrapper — `forceVal`/`stepApply` discard
-        # wrapper attrs when unwrapping a thunk, which would silently drop
-        # `_descRef`/`_label`/`_conLabel` the typechecker reads later.
-        hasMeta = c.tm ? _descRef || c.tm ? _label || c.tm ? _conLabel;
-        v  = if hasMeta then self.forceVal (c.lazy c.tm.term) else c.lazy c.tm.term;
-        v1 = if c.tm ? _descRef then v // { _descRef = evalDescRefLazy c.env c.tm._descRef; } else v;
-        v2 = if c.tm ? _label    then v1 // { _label    = c.tm._label;    } else v1;
-        v3 = if c.tm ? _conLabel then v2 // { _conLabel = c.tm._conLabel; } else v2;
-      in c.apply v3;
+    "let"   = state: { mode = "Eval"; env = ({ head = (ev state.env) state.tm.val; tail = state.env; }); tm = state.tm.body; kont = state.kont; fuel = state.fuel - 1; };
+    # Meta-bearing anns wrap descriptions (shallow, always inspected).
+    # The builder forces to WHNF before gluing the sidecar so it lands on
+    # the real Val, not a VThunkTm wrapper — `forceVal`/the driver step
+    # discard wrapper attrs when unwrapping a thunk, which would silently
+    # drop `_descRef`/`_label`/`_conLabel` the typechecker reads later.
+    "ann"   = state: { mode = "Apply"; val = (evalAnnV state.env state.tm); kont = state.kont; fuel = state.fuel - 1; };
     # Binder domains/fst and pair components are all propagated as lazy
     # thunks: their consumers (closure body, projection, conv) force on
     # demand. Matches HEAD's `vLam tm.name (ev tm.domain) (mkClosure ...)`.
-    "pi"    = c:
-      let v = vPi c.tm.name (c.lazy c.tm.domain) (mkClosure c.env c.tm.codomain); in
-      c.apply (if c.tm ? _plicity then v // { _plicity = c.tm._plicity; } else v);
-    "lam"   = c:
-      let v = vLam c.tm.name (c.lazy c.tm.domain) (mkClosure c.env c.tm.body); in
-      c.apply (if c.tm ? _plicity then v // { _plicity = c.tm._plicity; } else v);
-    "sigma" = c:
-      c.apply (vSigma c.tm.name (c.lazy c.tm.fst) (mkClosure c.env c.tm.snd));
+    "pi"    = state: { mode = "Apply"; val = (evalPiV state.env state.tm); kont = state.kont; fuel = state.fuel - 1; };
+    "lam"   = state: { mode = "Apply"; val = (evalLamV state.env state.tm); kont = state.kont; fuel = state.fuel - 1; };
+    "sigma" = state: { mode = "Apply"; val = (evalSigmaV state.env state.tm); kont = state.kont; fuel = state.fuel - 1; };
     # `app` forces fn (need .tag for dispatch); arg is propagated as a
     # caller-env thunk into VLam closure / VDescViewFn / VNe spine.
-    "app"   = c: c.evalThen (kApp1  c.env c.tm.arg) c.tm.fn;
-    "fst"   = c: c.evalThen kFst c.tm.pair;
-    "snd"   = c: c.evalThen kSnd c.tm.pair;
+    "app"   = state: { mode = "Eval"; env = state.env; tm = state.tm.fn; kont = { head = (kApp1  state.env state.tm.arg); tail = state.kont; }; fuel = state.fuel - 1; };
+    "fst"   = state: { mode = "Eval"; env = state.env; tm = state.tm.pair; kont = { head = kFst; tail = state.kont; }; fuel = state.fuel - 1; };
+    "snd"   = state: { mode = "Eval"; env = state.env; tm = state.tm.pair; kont = { head = kSnd; tail = state.kont; }; fuel = state.fuel - 1; };
 
-    "boot-sum-elim" = c: c.evalThen (kBootSumElim_Scrut c.env c.tm) c.tm.scrut;
-    "boot-j"        = c: c.evalThen (kBootJ_Scrut       c.env c.tm) c.tm.eq;
+    "boot-sum-elim" = state: { mode = "Eval"; env = state.env; tm = state.tm.scrut; kont = { head = (kBootSumElim_Scrut state.env state.tm); tail = state.kont; }; fuel = state.fuel - 1; };
+    "boot-j"        = state: { mode = "Eval"; env = state.env; tm = state.tm.eq; kont = { head = (kBootJ_Scrut       state.env state.tm); tail = state.kont; }; fuel = state.fuel - 1; };
 
-    "pair"         = c: c.apply (vPair (c.lazy c.tm.fst) (c.lazy c.tm.snd));
-    "boot-sum"     = c: c.apply (vBootSum (c.lazy c.tm.left) (c.lazy c.tm.right));
-    "boot-inl"     = c: c.apply (vBootInl (c.lazy c.tm.left) (c.lazy c.tm.right) (c.lazy c.tm.term));
-    "boot-inr"     = c: c.apply (vBootInr (c.lazy c.tm.left) (c.lazy c.tm.right) (c.lazy c.tm.term));
-    "boot-eq"      = c: c.apply (vBootEq (c.lazy c.tm.type) (c.lazy c.tm.lhs) (c.lazy c.tm.rhs));
-    "squash"       = c: c.apply (vSquash (c.lazy c.tm.A));
-    "squash-intro" = c: c.apply (vSquashIntro (c.lazy c.tm.a));
-    "level-suc"    = c: c.apply (vLevelSuc (c.lazy c.tm.pred));
-    "level-max"    = c: c.apply (vLevelMax (c.lazy c.tm.lhs) (c.lazy c.tm.rhs));
-    "mu"           = c: c.apply (vMu (c.lazy c.tm.I) (c.lazy c.tm.D) (c.lazy c.tm.i));
+    "pair"         = state: { mode = "Apply"; val = (evalPairV state.env state.tm); kont = state.kont; fuel = state.fuel - 1; };
+    "boot-sum"     = state: { mode = "Apply"; val = (evalBootSumV state.env state.tm); kont = state.kont; fuel = state.fuel - 1; };
+    "boot-inl"     = state: { mode = "Apply"; val = (evalBootInlV state.env state.tm); kont = state.kont; fuel = state.fuel - 1; };
+    "boot-inr"     = state: { mode = "Apply"; val = (evalBootInrV state.env state.tm); kont = state.kont; fuel = state.fuel - 1; };
+    "boot-eq"      = state: { mode = "Apply"; val = (evalBootEqV state.env state.tm); kont = state.kont; fuel = state.fuel - 1; };
+    "squash"       = state: { mode = "Apply"; val = (evalSquashV state.env state.tm); kont = state.kont; fuel = state.fuel - 1; };
+    "squash-intro" = state: { mode = "Apply"; val = (evalSquashIntroV state.env state.tm); kont = state.kont; fuel = state.fuel - 1; };
+    "level-suc"    = state: { mode = "Apply"; val = (vLevelSuc ((ev state.env) state.tm.pred)); kont = state.kont; fuel = state.fuel - 1; };
+    "level-max"    = state: { mode = "Apply"; val = (vLevelMax ((ev state.env) state.tm.lhs) ((ev state.env) state.tm.rhs)); kont = state.kont; fuel = state.fuel - 1; };
+    "mu"           = state: { mode = "Apply"; val = (evalMuV state.env state.tm); kont = state.kont; fuel = state.fuel - 1; };
 
-    "U" = c:
-      if c.tm.level.tag == "level-zero" then c.apply vUZero
-      else c.apply (vU (c.lazy c.tm.level));
+    "U" = state: { mode = "Apply"; val = (evalUV state.env state.tm); kont = state.kont; fuel = state.fuel - 1; };
 
-    "desc" = c:
+    "desc" = state: { mode = "Apply"; val = (evalDescAtV state.env state.tm); kont = state.kont; fuel = state.fuel - 1; };
+
+    "lift" = state:
       let
-        iLevV = if c.tm.iLev.tag == "level-zero" then vLevelZero else c.lazy c.tm.iLev;
-        kV    = if c.tm.k.tag    == "level-zero" then vLevelZero else c.lazy c.tm.k;
-      in c.apply (vDescAt kV iLevV (c.lazy c.tm.I));
+        lV = if state.tm.l.tag == "level-zero" then vLevelZero else (ev state.env) state.tm.l;
+        mV = if state.tm.m.tag == "level-zero" then vLevelZero else (ev state.env) state.tm.m;
+      in { mode = "Eval"; env = state.env; tm = state.tm.A; kont = { head = (kLift_X lV mV ((ev state.env) state.tm.eq)); tail = state.kont; }; fuel = state.fuel - 1; };
 
-    "lift" = c:
+    "lift-intro" = state:
       let
-        lV = if c.tm.l.tag == "level-zero" then vLevelZero else c.lazy c.tm.l;
-        mV = if c.tm.m.tag == "level-zero" then vLevelZero else c.lazy c.tm.m;
-      in c.evalThen (kLift_X lV mV (c.lazy c.tm.eq)) c.tm.A;
+        lV = if state.tm.l.tag == "level-zero" then vLevelZero else (ev state.env) state.tm.l;
+        mV = if state.tm.m.tag == "level-zero" then vLevelZero else (ev state.env) state.tm.m;
+      in { mode = "Eval"; env = state.env; tm = state.tm.a; kont = { head = (kLiftIntro_X lV mV ((ev state.env) state.tm.eq) ((ev state.env) state.tm.A)); tail = state.kont; }; fuel = state.fuel - 1; };
 
-    "lift-intro" = c:
-      let
-        lV = if c.tm.l.tag == "level-zero" then vLevelZero else c.lazy c.tm.l;
-        mV = if c.tm.m.tag == "level-zero" then vLevelZero else c.lazy c.tm.m;
-      in c.evalThen (kLiftIntro_X lV mV (c.lazy c.tm.eq) (c.lazy c.tm.A)) c.tm.a;
-
-    "opaque-lam" = c: c.apply (val.vOpaqueLam c.tm._fnBox (c.lazy c.tm.piTy));
+    "opaque-lam" = state: { mode = "Apply"; val = (evalOpaqueLamV state.env state.tm); kont = state.kont; fuel = state.fuel - 1; };
     # `vStrEq` forces both operands to WHNF internally before reading their
     # tag/level, so passing lazy thunks here is safe (string operands are
     # atomic — forcing is O(1) in user-recursion depth).
-    "str-eq" = c: c.apply (self.vStrEq (c.lazy c.tm.lhs) (c.lazy c.tm.rhs));
+    "str-eq" = state: { mode = "Apply"; val = (self.vStrEq ((ev state.env) state.tm.lhs) ((ev state.env) state.tm.rhs)); kont = state.kont; fuel = state.fuel - 1; };
 
-    "lift-elim" = c:
+    "lift-elim" = state:
       let
-        lV = if c.tm.l.tag == "level-zero" then vLevelZero else c.lazy c.tm.l;
-        mV = if c.tm.m.tag == "level-zero" then vLevelZero else c.lazy c.tm.m;
-      in c.evalThen (kLiftElim_X lV mV (c.lazy c.tm.eq) (c.lazy c.tm.A)) c.tm.x;
+        lV = if state.tm.l.tag == "level-zero" then vLevelZero else (ev state.env) state.tm.l;
+        mV = if state.tm.m.tag == "level-zero" then vLevelZero else (ev state.env) state.tm.m;
+      in { mode = "Eval"; env = state.env; tm = state.tm.x; kont = { head = (kLiftElim_X lV mV ((ev state.env) state.tm.eq) ((ev state.env) state.tm.A)); tail = state.kont; }; fuel = state.fuel - 1; };
 
-    "squash-elim" = c:
-      c.evalThen (kSquashElim_X (c.lazy c.tm.A) (c.lazy c.tm.B) (c.lazy c.tm.f)) c.tm.x;
+    "squash-elim" = state:
+      { mode = "Eval"; env = state.env; tm = state.tm.x; kont = { head = (kSquashElim_X ((ev state.env) state.tm.A) ((ev state.env) state.tm.B) ((ev state.env) state.tm.f)); tail = state.kont; }; fuel = state.fuel - 1; };
 
-    "absurd" = c: c.evalThen (kAbsurd_Term (c.lazy c.tm.type)) c.tm.term;
+    "absurd" = state: { mode = "Eval"; env = state.env; tm = state.tm.term; kont = { head = (kAbsurd_Term ((ev state.env) state.tm.type)); tail = state.kont; }; fuel = state.fuel - 1; };
 
-    "interp-d" = c:
+    "interp-d" = state:
       let
-        levelV = if c.tm.level.tag == "level-zero" then vLevelZero else c.lazy c.tm.level;
-        IV = c.lazy c.tm.I;
-        XV = c.lazy c.tm.X;
-        iV = c.lazy c.tm.i;
-      in c.evalThen (kInterpD levelV IV XV iV) c.tm.D;
+        levelV = if state.tm.level.tag == "level-zero" then vLevelZero else (ev state.env) state.tm.level;
+        IV = (ev state.env) state.tm.I;
+        XV = (ev state.env) state.tm.X;
+        iV = (ev state.env) state.tm.i;
+      in { mode = "Eval"; env = state.env; tm = state.tm.D; kont = { head = (kInterpD levelV IV XV iV); tail = state.kont; }; fuel = state.fuel - 1; };
 
-    "all-d" = c:
+    "all-d" = state:
       let
-        LV = if c.tm.level.tag == "level-zero" then vLevelZero else c.lazy c.tm.level;
-        KV = if c.tm.K.tag     == "level-zero" then vLevelZero else c.lazy c.tm.K;
-        IV = c.lazy c.tm.I;
-        XV = c.lazy c.tm.X;
-        MV = c.lazy c.tm.M;
-        iV = c.lazy c.tm.i;
-        dV = c.lazy c.tm.d;
-      in c.evalThen (kAllD LV IV KV XV MV iV dV) c.tm.D;
+        LV = if state.tm.level.tag == "level-zero" then vLevelZero else (ev state.env) state.tm.level;
+        KV = if state.tm.K.tag     == "level-zero" then vLevelZero else (ev state.env) state.tm.K;
+        IV = (ev state.env) state.tm.I;
+        XV = (ev state.env) state.tm.X;
+        MV = (ev state.env) state.tm.M;
+        iV = (ev state.env) state.tm.i;
+        dV = (ev state.env) state.tm.d;
+      in { mode = "Eval"; env = state.env; tm = state.tm.D; kont = { head = (kAllD LV IV KV XV MV iV dV); tail = state.kont; }; fuel = state.fuel - 1; };
 
-    "everywhere-d" = c:
+    "everywhere-d" = state:
       let
-        LV = if c.tm.level.tag == "level-zero" then vLevelZero else c.lazy c.tm.level;
-        KV = if c.tm.K.tag     == "level-zero" then vLevelZero else c.lazy c.tm.K;
-        IV  = c.lazy c.tm.I;
-        XV  = c.lazy c.tm.X;
-        MV  = c.lazy c.tm.M;
-        ihV = c.lazy c.tm.ih;
-        iV  = c.lazy c.tm.i;
-        dV  = c.lazy c.tm.d;
-      in c.evalThen (kEverywhereD LV IV KV XV MV ihV iV dV) c.tm.D;
+        LV = if state.tm.level.tag == "level-zero" then vLevelZero else (ev state.env) state.tm.level;
+        KV = if state.tm.K.tag     == "level-zero" then vLevelZero else (ev state.env) state.tm.K;
+        IV  = (ev state.env) state.tm.I;
+        XV  = (ev state.env) state.tm.X;
+        MV  = (ev state.env) state.tm.M;
+        ihV = (ev state.env) state.tm.ih;
+        iV  = (ev state.env) state.tm.i;
+        dV  = (ev state.env) state.tm.d;
+      in { mode = "Eval"; env = state.env; tm = state.tm.D; kont = { head = (kEverywhereD LV IV KV XV MV ihV iV dV); tail = state.kont; }; fuel = state.fuel - 1; };
 
-    "desc-ind" = c:
+    "desc-ind" = state:
       let
-        DV    = c.lazy c.tm.D;
-        motV  = c.lazy c.tm.motive;
-        stepV = c.lazy c.tm.step;
-        iV    = c.lazy c.tm.i;
-      in c.evalThen (kDescInd DV motV stepV iV) c.tm.scrut;
+        DV    = (ev state.env) state.tm.D;
+        motV  = (ev state.env) state.tm.motive;
+        stepV = (ev state.env) state.tm.step;
+        iV    = (ev state.env) state.tm.i;
+      in { mode = "Eval"; env = state.env; tm = state.tm.scrut; kont = { head = (kDescInd DV motV stepV iV); tail = state.kont; }; fuel = state.fuel - 1; };
 
-    "desc-desc-app" = c:
-      let
-        iLevV = if c.tm.iLev.tag == "level-zero" then vLevelZero else c.lazy c.tm.iLev;
-        IV    = c.lazy c.tm.I;
-        LV    = c.lazy c.tm.L;
-      in c.apply (self.mkDescDescAppVF self.defaultFuel iLevV IV LV);
+    "desc-desc-app" = state: { mode = "Apply"; val = (evalDescDescAppV state.env state.tm); kont = state.kont; fuel = state.fuel - 1; };
 
-    "canon-app" = c:
-      let
-        paramVals = map c.lazy c.tm.params;
-        bodyV     = c.lazy c.tm.body;
-      in c.apply (self.mkCanonAppVF self.defaultFuel c.tm.id paramVals bodyV);
+    "canon-app" = state: { mode = "Apply"; val = (evalCanonAppV state.env state.tm); kont = state.kont; fuel = state.fuel - 1; };
 
-    "desc-con" = c: c.evalThen (kDescConPeel_Start c.env c.tm) c.tm.D;
+    # Fast-subset order matters: `evalDescConFastV`'s guards read only
+    # `i.tag` and cert presence — its firing case never forces the D Tm
+    # (the chain output defers it), so the `D.tag` read for the plain
+    # build must come after its rejection. The plain build forces the D
+    # Tm anyway (it builds the head shell), and rejected entries pay
+    # the read the cascade's own D eval subsumes. The plain try's `let`
+    # is entered only behind the `D.tag` guard, so the chain-prepend
+    # and cascade routes allocate exactly one binding, as before.
+    "desc-con" = state:
+      let fast = evalDescConFastV state.env state.tm; in
+      if fast != null
+      then { mode = "Apply"; val = fast; kont = state.kont; fuel = state.fuel - 1; }
+      else if state.tm.D.tag == "desc-desc-app"
+      then
+        let plain = evalDescConPlainV state.env state.tm; in
+        if plain != null
+        then { mode = "Apply"; val = plain; kont = state.kont; fuel = state.fuel - 1; }
+        else { mode = "Eval"; env = state.env; tm = state.tm.D; kont = { head = (kDescConPeel_Start state.env state.tm); tail = state.kont; }; fuel = state.fuel - 1; }
+      else { mode = "Eval"; env = state.env; tm = state.tm.D; kont = { head = (kDescConPeel_Start state.env state.tm); tail = state.kont; }; fuel = state.fuel - 1; };
 
     # Canonical flat-form chain. No peel — the Tm IS the canonical
     # form. Layers iterate via `map` (libnix-iterative); sub-Val
-    # evals are lazy thunks (`c.lazy`), so the machine emits this
+    # evals are lazy thunks (`ev env`), so the machine emits this
     # in a single apply step with O(1) frame depth.
-    "desc-con-chain" = c:
-      let
-        tm       = c.tm;
-        outerDV  = c.lazy tm.outerD;
-        leftV    = c.lazy tm.payloadLeft;
-        rightV   = c.lazy tm.payloadRight;
-        baseDV   = c.lazy tm.base.D;
-        baseIV   = if tm.base.i.tag == "tt" then vTt else c.lazy tm.base.i;
-        baseDdV  = c.lazy tm.base.d;
-        baseVal  = vDescCon baseDV baseIV baseDdV;
-        layerVals = map (l: {
-          i     = if l.i.tag == "tt" then vTt else c.lazy l.i;
-          heads = map c.lazy l.heads;
-          cert  = null;
-        }) tm.layers;
-        finalOuterI =
-          if layerVals == [ ] then baseIV
-          else (builtins.head layerVals).i;
-      in c.apply (vDescConChain outerDV finalOuterI tm.payloadTag
-        leftV rightV layerVals baseVal);
+    "desc-con-chain" = state: { mode = "Apply"; val = (evalDescConChainV state.env state.tm); kont = state.kont; fuel = state.fuel - 1; };
   };
-
-  stepEval = state:
-    let
-      tm   = state.tm;
-      env  = state.env;
-      kont = state.kont;
-      fuel = state.fuel;
-      apply = mkApply kont fuel;
-      evalThen = frame: nextTm: mkEval (push frame kont) fuel env nextTm;
-      lazy = subTm: ev env subTm;
-      ctx = { inherit tm env kont fuel apply evalThen lazy; };
-    in
-    # `env` and `kont` are threaded into the next Eval state by reference; a
-    # descent that never reads them (e.g. a deep application spine, whose env
-    # is untouched until the head variable and whose kont is consumed only on
-    # the return apply) leaves `state.env`/`state.kont` as an N-deep chain of
-    # attribute-select thunks, forced all at once at the leaf — N-deep native
-    # recursion that overflows the C stack. Forcing each to WHNF per step keeps
-    # them flat (O(1)); the select chain never accumulates.
-    builtins.seq env (builtins.seq kont (evalDispatch.${tm.tag} ctx));
 
   applyDispatch = {
     # `KApp1` subsumes the former two-step `evalThen-fn → KApp2`. fn is
     # forced (needed for dispatch); arg stays as a caller-env Nix thunk and
     # is threaded into VLam closure env / VDescViewFn dispatch / VNe spine
     # without forcing — matches the value-level `vAppF` byte-for-byte.
-    "KApp1" = c:
-      let fn = c.v; in
-      if fn.tag == "VLazyDescIndAccLayer" then forceLazyLayer c
+    "KApp1" = state:
+      let fn = state.val; in
+      if fn.tag == "VLazyDescIndAccLayer" then forceLazyLayer state
       else
-        let argThunk = ev c.k.env c.k.argTm; in
-        if fn.tag == "VDescViewFn" then applyDescViewFnArm c fn argThunk
-        else if fn.tag == "VLam" then c.evalRest (envCons argThunk fn.closure.env) fn.closure.body
-        else if fn.tag == "VNe"  then c.apply (vNeSnoc fn (eApp argThunk))
+        let argThunk = ev state.kont.head.env state.kont.head.argTm; in
+        if fn.tag == "VDescViewFn" then applyDescViewFnArm state fn argThunk
+        else if fn.tag == "VLam" then { mode = "Eval"; env = ({ head = argThunk; tail = fn.closure.env; }); tm = fn.closure.body; kont = state.kont.tail; fuel = state.fuel - 1; }
+        else if fn.tag == "VNe"  then { mode = "Apply"; val = (vNeSnoc fn (eApp argThunk)); kont = state.kont.tail; fuel = state.fuel - 1; }
         else throw "tc: vApp on non-function (tag=${fn.tag})";
 
-    "KApp_VV" = c:
-      let fn = c.v; arg = c.k.arg; in
-      if fn.tag == "VLazyDescIndAccLayer" then forceLazyLayer c
-      else if fn.tag == "VDescViewFn" then applyDescViewFnArm c fn arg
-      else if fn.tag == "VLam" then c.evalRest (envCons arg fn.closure.env) fn.closure.body
-      else if fn.tag == "VNe"  then c.apply (vNeSnoc fn (eApp arg))
+    "KApp_VV" = state:
+      let fn = state.val; arg = state.kont.head.arg; in
+      if fn.tag == "VLazyDescIndAccLayer" then forceLazyLayer state
+      else if fn.tag == "VDescViewFn" then applyDescViewFnArm state fn arg
+      else if fn.tag == "VLam" then { mode = "Eval"; env = ({ head = arg; tail = fn.closure.env; }); tm = fn.closure.body; kont = state.kont.tail; fuel = state.fuel - 1; }
+      else if fn.tag == "VNe"  then { mode = "Apply"; val = (vNeSnoc fn (eApp arg)); kont = state.kont.tail; fuel = state.fuel - 1; }
       else throw "tc: vApp on non-function (tag=${fn.tag})";
 
-    "KFst" = c:
-      if c.v.tag == "VLazyDescIndAccLayer" then forceLazyLayer c
-      else if c.v.tag == "VPair" then c.apply c.v.fst
-      else if c.v.tag == "VNe" then c.apply (vNeSnoc c.v eFst)
-      else throw "tc: vFst on non-pair (tag=${c.v.tag})";
+    "KFst" = state:
+      if state.val.tag == "VLazyDescIndAccLayer" then forceLazyLayer state
+      else if state.val.tag == "VPair" then { mode = "Apply"; val = state.val.fst; kont = state.kont.tail; fuel = state.fuel - 1; }
+      else if state.val.tag == "VNe" then { mode = "Apply"; val = (vNeSnoc state.val eFst); kont = state.kont.tail; fuel = state.fuel - 1; }
+      else throw "tc: vFst on non-pair (tag=${state.val.tag})";
 
-    "KSnd" = c:
-      if c.v.tag == "VLazyDescIndAccLayer" then forceLazyLayer c
-      else if c.v.tag == "VPair" then c.apply c.v.snd
-      else if c.v.tag == "VNe" then c.apply (vNeSnoc c.v eSnd)
-      else throw "tc: vSnd on non-pair (tag=${c.v.tag})";
+    "KSnd" = state:
+      if state.val.tag == "VLazyDescIndAccLayer" then forceLazyLayer state
+      else if state.val.tag == "VPair" then { mode = "Apply"; val = state.val.snd; kont = state.kont.tail; fuel = state.fuel - 1; }
+      else if state.val.tag == "VNe" then { mode = "Apply"; val = (vNeSnoc state.val eSnd); kont = state.kont.tail; fuel = state.fuel - 1; }
+      else throw "tc: vSnd on non-pair (tag=${state.val.tag})";
 
     # Eliminator-scrutinee resumes: each forces the scrut for tag dispatch,
     # then on the stuck-VNe path threads the remaining sub-Tms into the
     # spine as Nix-lazy thunks (mirrors HEAD's `vBootSumElimF`/`vBootJ` on
     # `VNe`, which pass thunk args into `eBootSumElim`/`eBootJ` directly).
-    "KBootSumElim_Scrut" = c:
-      let tm = c.k.tm; env = c.k.env; in
-      if c.v.tag == "VLazyDescIndAccLayer" then forceLazyLayer c
-      else if c.v.tag == "VBootInl" then
-        mkEval (push (kAppVV c.v.val) c.rest) c.fuel env tm.onLeft
-      else if c.v.tag == "VBootInr" then
-        mkEval (push (kAppVV c.v.val) c.rest) c.fuel env tm.onRight
-      else if c.v.tag == "VNe" then
-        c.apply (vNeSnoc c.v
+    "KBootSumElim_Scrut" = state:
+      let tm = state.kont.head.tm; env = state.kont.head.env; in
+      if state.val.tag == "VLazyDescIndAccLayer" then forceLazyLayer state
+      else if state.val.tag == "VBootInl" then
+        { mode = "Eval"; env = env; tm = tm.onLeft; kont = ({ head = (kAppVV state.val.val); tail = state.kont.tail; }); fuel = state.fuel - 1; }
+      else if state.val.tag == "VBootInr" then
+        { mode = "Eval"; env = env; tm = tm.onRight; kont = ({ head = (kAppVV state.val.val); tail = state.kont.tail; }); fuel = state.fuel - 1; }
+      else if state.val.tag == "VNe" then
+        { mode = "Apply"; val = (vNeSnoc state.val
           (eBootSumElim
             (ev env tm.left)
             (ev env tm.right)
             (ev env tm.motive)
             (ev env tm.onLeft)
-            (ev env tm.onRight)))
-      else throw "tc: vBootSumElim on non-bootstrap-sum (tag=${c.v.tag})";
+            (ev env tm.onRight))); kont = state.kont.tail; fuel = state.fuel - 1; }
+      else throw "tc: vBootSumElim on non-bootstrap-sum (tag=${state.val.tag})";
 
-    "KBootJ_Scrut" = c:
-      let tm = c.k.tm; env = c.k.env; in
-      if c.v.tag == "VLazyDescIndAccLayer" then forceLazyLayer c
-      else if c.v.tag == "VBootRefl" then c.evalRest env tm.base
-      else if c.v.tag == "VNe" then
-        c.apply (vNeSnoc c.v
+    "KBootJ_Scrut" = state:
+      let tm = state.kont.head.tm; env = state.kont.head.env; in
+      if state.val.tag == "VLazyDescIndAccLayer" then forceLazyLayer state
+      else if state.val.tag == "VBootRefl" then { mode = "Eval"; env = env; tm = tm.base; kont = state.kont.tail; fuel = state.fuel - 1; }
+      else if state.val.tag == "VNe" then
+        { mode = "Apply"; val = (vNeSnoc state.val
           (eBootJ
             (ev env tm.type)
             (ev env tm.lhs)
             (ev env tm.motive)
             (ev env tm.base)
-            (ev env tm.rhs)))
-      else throw "tc: vBootJ on non-eq (tag=${c.v.tag})";
+            (ev env tm.rhs))); kont = state.kont.tail; fuel = state.fuel - 1; }
+      else throw "tc: vBootJ on non-eq (tag=${state.val.tag})";
 
-    "KLiftElim_X"   = c:
-      if c.v.tag == "VLazyDescIndAccLayer" then forceLazyLayer c
-      else c.apply (self.vLiftElimF c.k.lV c.k.mV c.k.eqV c.k.AV c.v);
+    "KLiftElim_X"   = state:
+      if state.val.tag == "VLazyDescIndAccLayer" then forceLazyLayer state
+      else { mode = "Apply"; val = (self.vLiftElimF state.kont.head.lV state.kont.head.mV state.kont.head.eqV state.kont.head.AV state.val); kont = state.kont.tail; fuel = state.fuel - 1; };
     # `vLiftF` reads `A.tag` for the inner-Lift composition rule and
     # `vLiftIntroF` reads `a.tag`/`a.spine` for the η-collapse; the inspected
-    # argument is driven to WHNF here (delivered as `c.v`) before the leaf,
+    # argument is driven to WHNF here (delivered as `state.val`) before the leaf,
     # per the public-leaf forcing rule.
-    "KLift_X"       = c:
-      if c.v.tag == "VLazyDescIndAccLayer" then forceLazyLayer c
-      else c.apply (self.vLiftF c.k.lV c.k.mV c.k.eqV c.v);
-    "KLiftIntro_X"  = c:
-      if c.v.tag == "VLazyDescIndAccLayer" then forceLazyLayer c
-      else c.apply (self.vLiftIntroF c.k.lV c.k.mV c.k.eqV c.k.AV c.v);
-    "KSquashElim_X" = c:
-      if c.v.tag == "VLazyDescIndAccLayer" then forceLazyLayer c
-      else c.apply (self.vSquashElimF self.defaultFuel c.k.AV c.k.BV c.k.fV c.v);
-    "KAbsurd_Term"  = c:
-      if c.v.tag == "VLazyDescIndAccLayer" then forceLazyLayer c
-      else c.apply (self.vAbsurd c.k.tyV c.v);
+    "KLift_X"       = state:
+      if state.val.tag == "VLazyDescIndAccLayer" then forceLazyLayer state
+      else { mode = "Apply"; val = (self.vLiftF state.kont.head.lV state.kont.head.mV state.kont.head.eqV state.val); kont = state.kont.tail; fuel = state.fuel - 1; };
+    "KLiftIntro_X"  = state:
+      if state.val.tag == "VLazyDescIndAccLayer" then forceLazyLayer state
+      else { mode = "Apply"; val = (self.vLiftIntroF state.kont.head.lV state.kont.head.mV state.kont.head.eqV state.kont.head.AV state.val); kont = state.kont.tail; fuel = state.fuel - 1; };
+    "KSquashElim_X" = state:
+      if state.val.tag == "VLazyDescIndAccLayer" then forceLazyLayer state
+      else { mode = "Apply"; val = (self.vSquashElimF self.defaultFuel state.kont.head.AV state.kont.head.BV state.kont.head.fV state.val); kont = state.kont.tail; fuel = state.fuel - 1; };
+    "KAbsurd_Term"  = state:
+      if state.val.tag == "VLazyDescIndAccLayer" then forceLazyLayer state
+      else { mode = "Apply"; val = (self.vAbsurd state.kont.head.tyV state.val); kont = state.kont.tail; fuel = state.fuel - 1; };
 
-    "KBootSumElim_ScrutV" = c:
-      let k = c.k; scrut = c.v; in
-      if scrut.tag == "VLazyDescIndAccLayer" then forceLazyLayer c
+    "KBootSumElim_ScrutV" = state:
+      let k = state.kont.head; scrut = state.val; in
+      if scrut.tag == "VLazyDescIndAccLayer" then forceLazyLayer state
       else if scrut.tag == "VBootInl" then
-        mkApply (push (kAppVV scrut.val) c.rest) c.fuel k.onLeft
+        { mode = "Apply"; val = k.onLeft; kont = ({ head = (kAppVV scrut.val); tail = state.kont.tail; }); fuel = state.fuel - 1; }
       else if scrut.tag == "VBootInr" then
-        mkApply (push (kAppVV scrut.val) c.rest) c.fuel k.onRight
+        { mode = "Apply"; val = k.onRight; kont = ({ head = (kAppVV scrut.val); tail = state.kont.tail; }); fuel = state.fuel - 1; }
       else if scrut.tag == "VNe" then
-        c.apply (vNeSnoc scrut
-          (eBootSumElim k.left k.right k.motive k.onLeft k.onRight))
+        { mode = "Apply"; val = (vNeSnoc scrut
+          (eBootSumElim k.left k.right k.motive k.onLeft k.onRight)); kont = state.kont.tail; fuel = state.fuel - 1; }
       else throw "tc: vBootSumElim on non-bootstrap-sum (tag=${scrut.tag})";
 
-    "KInterpD" = c:
+    "KInterpD" = state:
       let
-        k = c.k;
-        D = c.v;
+        k = state.kont.head;
+        D = state.val;
         L = k.L; I = k.I; X = k.X; i = k.i;
       in
       if D.tag == "VNe" then
-        c.apply (vNeSnoc D (eInterpD L I X i))
+        { mode = "Apply"; val = (vNeSnoc D (eInterpD L I X i)); kont = state.kont.tail; fuel = state.fuel - 1; }
+      else if D.tag == "VDescCon" then
+        { mode = "Apply"; val = (self.interpDDirectF state.fuel L I D X i); kont = state.kont.tail; fuel = state.fuel - 1; }
       else
-        mkApply
-          (push kDescView
-            (push (kResume_KInterpD_GotView L I X i) c.rest))
-          c.fuel D;
+        { mode = "Apply"; val = D; kont = ({ head = kDescView; tail = ({ head = (kResume_KInterpD_GotView L I X i); tail = state.kont.tail; }); }); fuel = state.fuel - 1; };
 
-    "KInterpD_PlusGotA" = c:
-      let k = c.k; AInterp = c.v; in
-      mkApply
-        (push (kInterpD k.L k.I k.X k.i)
-          (push (kInterpD_PlusCombine AInterp) c.rest))
-        c.fuel k.B;
+    "KInterpD_PlusGotA" = state:
+      let k = state.kont.head; AInterp = state.val; in
+      { mode = "Apply"; val = k.B; kont = ({ head = (kInterpD k.L k.I k.X k.i); tail = ({ head = (kInterpD_PlusCombine AInterp); tail = state.kont.tail; }); }); fuel = state.fuel - 1; };
 
-    "KInterpD_PlusCombine" = c:
-      c.apply (vBootSum c.k.AInterp c.v);
+    "KInterpD_PlusCombine" = state:
+      { mode = "Apply"; val = (vBootSum state.kont.head.AInterp state.val); kont = state.kont.tail; fuel = state.fuel - 1; };
 
-    "KAllD" = c:
+    "KAllD" = state:
       let
-        k = c.k;
-        D = c.v;
+        k = state.kont.head;
+        D = state.val;
         L = k.L; I = k.I; K = k.K; X = k.X; M = k.M; i = k.i; d = k.d;
       in
       if D.tag == "VNe" then
-        c.apply (vNeSnoc D (eAllD L I K X M i d))
+        { mode = "Apply"; val = (vNeSnoc D (eAllD L I K X M i d)); kont = state.kont.tail; fuel = state.fuel - 1; }
       else
-        mkApply
-          (push kDescView
-            (push (kResume_KAllD_GotView L I K X M i d) c.rest))
-          c.fuel D;
+        { mode = "Apply"; val = D; kont = ({ head = kDescView; tail = ({ head = (kResume_KAllD_GotView L I K X M i d); tail = state.kont.tail; }); }); fuel = state.fuel - 1; };
 
-    "KAllD_ArgGotSubD" = c:
-      let k = c.k; in
-      mkApply (push (kAllD k.L k.I k.K k.X k.M k.i k.sndD) c.rest) c.fuel c.v;
+    "KAllD_ArgGotSubD" = state:
+      let k = state.kont.head; in
+      { mode = "Apply"; val = state.val; kont = ({ head = (kAllD k.L k.I k.K k.X k.M k.i k.sndD); tail = state.kont.tail; }); fuel = state.fuel - 1; };
 
-    "KAllD_RecCombine" = c:
+    "KAllD_RecCombine" = state:
       let
-        k = c.k;
-        Mjfd = c.v;
+        k = state.kont.head;
+        Mjfd = state.val;
         ihClosure = mkClosure [ k.L k.I k.K k.X k.M k.i k.sndD k.sub ]
           (term.mkAllD (term.mkVar 1) (term.mkVar 2) (term.mkVar 8)
             (term.mkVar 3) (term.mkVar 4) (term.mkVar 5)
             (term.mkVar 6) (term.mkVar 7));
-      in c.apply (vSigma "_" Mjfd ihClosure);
+      in { mode = "Apply"; val = (vSigma "_" Mjfd ihClosure); kont = state.kont.tail; fuel = state.fuel - 1; };
 
-    "KAllD_PlusStuck_GotAInterp" = c:
-      let k = c.k; AInterp = c.v; in
-      mkApply
-        (push (kInterpD k.L k.I k.X k.i)
-          (push (kAllD_PlusStuck_GotBInterp k.L k.I k.K k.X k.M k.i k.d k.viewA k.viewB AInterp) c.rest))
-        c.fuel k.viewB;
+    "KAllD_PlusStuck_GotAInterp" = state:
+      let k = state.kont.head; AInterp = state.val; in
+      { mode = "Apply"; val = k.viewB; kont = ({ head = (kInterpD k.L k.I k.X k.i); tail = ({ head = (kAllD_PlusStuck_GotBInterp k.L k.I k.K k.X k.M k.i k.d k.viewA k.viewB AInterp); tail = state.kont.tail; }); }); fuel = state.fuel - 1; };
 
-    "KAllD_PlusStuck_GotBInterp" = c:
+    "KAllD_PlusStuck_GotBInterp" = state:
       let
-        k = c.k;
-        BInterp = c.v;
+        k = state.kont.head;
+        BInterp = state.val;
         AInterp = k.AInterp;
         motive = vLam "_" (vBootSum AInterp BInterp) (mkClosure [ k.K ]
           (term.mkU (term.mkVar 1)));
@@ -715,52 +873,41 @@ let
             (term.mkAllD (term.mkVar 1) (term.mkVar 2) (term.mkVar 7)
               (term.mkVar 3) (term.mkVar 4) (term.mkVar 5)
               (term.mkVar 6) (term.mkVar 0)));
-      in mkApply
-           (push (kBootSumElim_ScrutV AInterp BInterp motive onLeftLam onRightLam) c.rest)
-           c.fuel k.d;
+      in { mode = "Apply"; val = k.d; kont = ({ head = (kBootSumElim_ScrutV AInterp BInterp motive onLeftLam onRightLam); tail = state.kont.tail; }); fuel = state.fuel - 1; };
 
-    "KEverywhereD" = c:
+    "KEverywhereD" = state:
       let
-        k = c.k;
-        D = c.v;
+        k = state.kont.head;
+        D = state.val;
         L = k.L; I = k.I; K = k.K; X = k.X; M = k.M; ih = k.ih; i = k.i; d = k.d;
       in
       if D.tag == "VNe" then
-        c.apply (vNeSnoc D (eEverywhereD L I K X M ih i d))
+        { mode = "Apply"; val = (vNeSnoc D (eEverywhereD L I K X M ih i d)); kont = state.kont.tail; fuel = state.fuel - 1; }
       else
-        mkApply
-          (push kDescView
-            (push (kResume_KEverywhereD_GotView L I K X M ih i d) c.rest))
-          c.fuel D;
+        { mode = "Apply"; val = D; kont = ({ head = kDescView; tail = ({ head = (kResume_KEverywhereD_GotView L I K X M ih i d); tail = state.kont.tail; }); }); fuel = state.fuel - 1; };
 
-    "KEverywhereD_ArgGotSubD" = c:
-      let k = c.k; in
-      mkApply (push (kEverywhereD k.L k.I k.K k.X k.M k.ih k.i k.sndD) c.rest) c.fuel c.v;
+    "KEverywhereD_ArgGotSubD" = state:
+      let k = state.kont.head; in
+      { mode = "Apply"; val = state.val; kont = ({ head = (kEverywhereD k.L k.I k.K k.X k.M k.ih k.i k.sndD); tail = state.kont.tail; }); fuel = state.fuel - 1; };
 
-    "KEverywhereD_RecGotIhHere" = c:
-      let k = c.k; ihHere = c.v; in
-      mkApply
-        (push (kEverywhereD k.L k.I k.K k.X k.M k.ih k.i k.sndD)
-          (push (kEverywhereD_RecCombine ihHere) c.rest))
-        c.fuel k.sub;
+    "KEverywhereD_RecGotIhHere" = state:
+      let k = state.kont.head; ihHere = state.val; in
+      { mode = "Apply"; val = k.sub; kont = ({ head = (kEverywhereD k.L k.I k.K k.X k.M k.ih k.i k.sndD); tail = ({ head = (kEverywhereD_RecCombine ihHere); tail = state.kont.tail; }); }); fuel = state.fuel - 1; };
 
-    "KEverywhereD_RecCombine" = c:
-      c.apply (vPair c.k.ihHere c.v);
+    "KEverywhereD_RecCombine" = state:
+      { mode = "Apply"; val = (vPair state.kont.head.ihHere state.val); kont = state.kont.tail; fuel = state.fuel - 1; };
 
-    "KEverywhereD_PiCombine" = c:
-      c.apply (vPair c.k.piLam c.v);
+    "KEverywhereD_PiCombine" = state:
+      { mode = "Apply"; val = (vPair state.kont.head.piLam state.val); kont = state.kont.tail; fuel = state.fuel - 1; };
 
-    "KEverywhereD_PlusStuck_GotAInterp" = c:
-      let k = c.k; AInterp = c.v; in
-      mkApply
-        (push (kInterpD k.L k.I k.X k.i)
-          (push (kEverywhereD_PlusStuck_GotBInterp k.L k.I k.K k.X k.M k.ih k.i k.d k.viewA k.viewB AInterp) c.rest))
-        c.fuel k.viewB;
+    "KEverywhereD_PlusStuck_GotAInterp" = state:
+      let k = state.kont.head; AInterp = state.val; in
+      { mode = "Apply"; val = k.viewB; kont = ({ head = (kInterpD k.L k.I k.X k.i); tail = ({ head = (kEverywhereD_PlusStuck_GotBInterp k.L k.I k.K k.X k.M k.ih k.i k.d k.viewA k.viewB AInterp); tail = state.kont.tail; }); }); fuel = state.fuel - 1; };
 
-    "KEverywhereD_PlusStuck_GotBInterp" = c:
+    "KEverywhereD_PlusStuck_GotBInterp" = state:
       let
-        k = c.k;
-        BInterp = c.v;
+        k = state.kont.head;
+        BInterp = state.val;
         AInterp = k.AInterp;
         motive = vLam "_" (vBootSum AInterp BInterp) (mkClosure [ k.K ]
           (term.mkU (term.mkVar 1)));
@@ -774,20 +921,18 @@ let
             (term.mkEverywhereD (term.mkVar 1) (term.mkVar 2) (term.mkVar 8)
               (term.mkVar 3) (term.mkVar 4) (term.mkVar 5)
               (term.mkVar 6) (term.mkVar 7) (term.mkVar 0)));
-      in mkApply
-           (push (kBootSumElim_ScrutV AInterp BInterp motive onLeftLam onRightLam) c.rest)
-           c.fuel k.d;
+      in { mode = "Apply"; val = k.d; kont = ({ head = (kBootSumElim_ScrutV AInterp BInterp motive onLeftLam onRightLam); tail = state.kont.tail; }); fuel = state.fuel - 1; };
 
-    "KDescInd" = c:
+    "KDescInd" = state:
       let
-        k = c.k;
-        scrut = c.v;
+        k = state.kont.head;
+        scrut = state.val;
         D = k.D; motive = k.motive; step = k.step; i = k.i;
-        f = c.fuel;
+        f = state.fuel;
       in
-      if scrut.tag == "VLazyDescIndAccLayer" then forceLazyLayer c
+      if scrut.tag == "VLazyDescIndAccLayer" then forceLazyLayer state
       else if scrut.tag == "VNe" then
-        c.apply (vNeSnoc scrut (eDescInd D motive step i))
+        { mode = "Apply"; val = (vNeSnoc scrut (eDescInd D motive step i)); kont = state.kont.tail; fuel = state.fuel - 1; }
       else if scrut.tag == "VDescCon" then
         let
           # A computed motive arrives as a deferred Tm; force at the point of
@@ -831,11 +976,7 @@ let
         in
         if certApplies then
           # vAppF (vAppF (vAppF step scrut.i) scrut.d) vTt
-          mkApply
-            (push (kAppVV scrut.i)
-              (push (kAppVV scrut.d)
-                (push (kAppVV vTt) c.rest)))
-            c.fuel step
+          { mode = "Apply"; val = step; kont = ({ head = (kAppVV scrut.i); tail = ({ head = (kAppVV scrut.d); tail = ({ head = (kAppVV vTt); tail = state.kont.tail; }); }); }); fuel = state.fuel - 1; }
         # Chain-form: synthesize the per-layer chain directly from
         # `_layers`/`_base` via the lazy-build kont. Per-layer
         # `.d` references the next item lazily — never forced unless
@@ -900,36 +1041,22 @@ let
                      }; };
           in
           if nLay == 0 then
-            mkApply
-              (push (kEverywhereD vLevelZero I vLevelZero muFam motive ihVal chainBase.i chainBase.d)
-                (push (kDescIndLayer_GotEvResult step chainBase.i chainBase.d) c.rest))
-              c.fuel D
+            { mode = "Apply"; val = D; kont = ({ head = (kEverywhereD vLevelZero I vLevelZero muFam motive ihVal chainBase.i chainBase.d); tail = ({ head = (kDescIndLayer_GotEvResult step chainBase.i chainBase.d); tail = state.kont.tail; }); }); fuel = state.fuel - 1; }
           else if nLay > f then throw "normalization budget exceeded"
           else
-            mkApply
-              (push (kEverywhereD vLevelZero I vLevelZero muFam motive ihVal chainBase.i chainBase.d)
-                (push (kDescIndLayer_GotEvResult step chainBase.i chainBase.d)
-                  (push (kDescIndLinear_LazyBuild synthChainFn nLay step) c.rest)))
-              c.fuel D
+            { mode = "Apply"; val = D; kont = ({ head = (kEverywhereD vLevelZero I vLevelZero muFam motive ihVal chainBase.i chainBase.d); tail = ({ head = (kDescIndLayer_GotEvResult step chainBase.i chainBase.d); tail = ({ head = (kDescIndLinear_LazyBuild synthChainFn nLay step); tail = state.kont.tail; }); }); }); fuel = state.fuel - 1; }
         else
           # Fallback: vDescIndFLayer(D, motive, step, ihVal, muFam, I, i, scrut.d).
-          mkApply
-            (push (kEverywhereD vLevelZero I vLevelZero muFam motive ihVal i scrut.d)
-              (push (kDescIndLayer_GotEvResult step i scrut.d) c.rest))
-            c.fuel D
+          { mode = "Apply"; val = D; kont = ({ head = (kEverywhereD vLevelZero I vLevelZero muFam motive ihVal i scrut.d); tail = ({ head = (kDescIndLayer_GotEvResult step i scrut.d); tail = state.kont.tail; }); }); fuel = state.fuel - 1; }
       else throw "tc: vDescInd on non-mu (tag=${scrut.tag})";
 
-    "KDescIndLayer_GotEvResult" = c:
+    "KDescIndLayer_GotEvResult" = state:
       # vAppF (vAppF (vAppF step i) d) evResult — fires layer.i first.
-      let k = c.k; evResult = c.v; in
-      mkApply
-        (push (kAppVV k.i)
-          (push (kAppVV k.d)
-            (push (kAppVV evResult) c.rest)))
-        c.fuel k.step;
+      let k = state.kont.head; evResult = state.val; in
+      { mode = "Apply"; val = k.step; kont = ({ head = (kAppVV k.i); tail = ({ head = (kAppVV k.d); tail = ({ head = (kAppVV evResult); tail = state.kont.tail; }); }); }); fuel = state.fuel - 1; };
 
-    "KDescIndLinear_LazyBuild" = c:
-      # `c.v` is `baseResult` — the deepest layer's already-forced accumulator,
+    "KDescIndLinear_LazyBuild" = state:
+      # `state.val` is `baseResult` — the deepest layer's already-forced accumulator,
       # produced by the preceding KDescIndLayer_GotEvResult. Build the chain
       # top-down with a LAZY spine: `vLazyDescIndAccLayer` stores `prevAcc`
       # unforced, so `buildFrom 0` allocates only the topmost layer; deeper
@@ -940,30 +1067,27 @@ let
       # instead of O(depth). Each layer's body — `step layer.i layer.d
       # (vPair prevAcc vTt)` — is never fired here.
       let
-        k = c.k;
-        baseResult = c.v;
+        k = state.kont.head;
+        baseResult = state.val;
         buildFrom = idx:
           if idx == k.n then baseResult
           else
             let layer = (k.chainFn idx).val; in
             vLazyDescIndAccLayer k.step layer.i layer.d (buildFrom (idx + 1));
       in
-      c.apply (buildFrom 0);
+      { mode = "Apply"; val = (buildFrom 0); kont = state.kont.tail; fuel = state.fuel - 1; };
 
     # dVal arrives via tm.D through the machine. classify/chain/peel
     # are pure Tm/Val walks. sameD's conv fallback and LayerI's
     # wrapPayload evalTm are sub-driver re-entries.
-    "KDescConPeel_Start" = c:
-      mkApply
-        (push kDescView
-          (push (kResume_KDescConPeel_GotView { env = c.k.env; tm = c.k.tm; }) c.rest))
-        c.fuel c.v;
+    "KDescConPeel_Start" = state:
+      { mode = "Apply"; val = state.val; kont = ({ head = kDescView; tail = ({ head = (kResume_KDescConPeel_GotView { env = state.kont.head.env; tm = state.kont.head.tm; }); tail = state.kont.tail; }); }); fuel = state.fuel - 1; };
 
-    "KResume_KDescConPeel_GotView" = c:
+    "KResume_KDescConPeel_GotView" = state:
       let
-        env  = c.k.state.env;
-        tm   = c.k.state.tm;
-        dVal = c.v.D;
+        env  = state.kont.head.state.env;
+        tm   = state.kont.head.state.tm;
+        dVal = state.val.D;
         f    = self.defaultFuel;
         cert       = tm._descConCert or null;
         certRef    = if cert    == null then null else cert.ref;
@@ -989,7 +1113,7 @@ let
           (certRef != null && certLinear == null)
           || (dRef != null && dLinear == null);
         plusSides =
-          let view = c.v.view; in
+          let view = state.val.view; in
           if view != null && view.idx == 4
           then { A = view.A; B = view.B; }
           else null;
@@ -1078,23 +1202,25 @@ let
             left = plusSides.A;
             right = plusSides.B;
           };
-        state = {
+        # `peelState`, not `state`: a let-rec binding named `state` would
+        # shadow the machine-state arm parameter across the whole let body.
+        peelState = {
           inherit env tm chain n base topPeel withCert dVal chainForm payloadInfo nFields;
         };
       in
         if n > f then throw "normalization budget exceeded"
         else if base.i.tag == "tt"
-        then mkEval (push (kDescConPeel_BaseD state vTt) c.rest) c.fuel env base.d
-        else mkEval (push (kDescConPeel_BaseI state) c.rest) c.fuel env base.i;
+        then { mode = "Eval"; env = env; tm = base.d; kont = ({ head = (kDescConPeel_BaseD peelState vTt); tail = state.kont.tail; }); fuel = state.fuel - 1; }
+        else { mode = "Eval"; env = env; tm = base.i; kont = ({ head = (kDescConPeel_BaseI peelState); tail = state.kont.tail; }); fuel = state.fuel - 1; };
 
-    "KDescConPeel_BaseI" = c:
-      let s = c.k.state; in
-      mkEval (push (kDescConPeel_BaseD s c.v) c.rest) c.fuel s.env s.base.d;
+    "KDescConPeel_BaseI" = state:
+      let s = state.kont.head.state; in
+      { mode = "Eval"; env = s.env; tm = s.base.d; kont = ({ head = (kDescConPeel_BaseD s state.val); tail = state.kont.tail; }); fuel = state.fuel - 1; };
 
-    "KDescConPeel_BaseD" = c:
+    "KDescConPeel_BaseD" = state:
       let
-        s = c.k.state;
-        baseVal = s.withCert s.base c.k.baseI c.v;
+        s = state.kont.head.state;
+        baseVal = s.withCert s.base state.kont.head.baseI state.val;
       in
         if s.chainForm then
           let
@@ -1127,68 +1253,59 @@ let
               if allLayers == [ ] then finalBase.i
               else (builtins.head allLayers).i;
           in
-            c.apply (vDescConChain s.dVal finalOuterI
+            { mode = "Apply"; val = (vDescConChain s.dVal finalOuterI
               s.payloadInfo.tag s.payloadInfo.left s.payloadInfo.right
-              allLayers finalBase)
+              allLayers finalBase); kont = state.kont.tail; fuel = state.fuel - 1; }
         # When `classify != null` (peel can walk) but `chainForm` is false
         # (`plusSides == null` — Desc has no sum-shaped descView even though
         # cert/ref says linearChain), `n` cannot exceed 0 in practice. The
         # full suite empirically confirms this invariant; the assert documents
         # it and traps any future regression.
-        else if s.n == 0 then c.apply baseVal
+        else if s.n == 0 then { mode = "Apply"; val = baseVal; kont = state.kont.tail; fuel = state.fuel - 1; }
         else throw "tc: KDescConPeel_BaseD non-chainForm n>=1 path reached (n=${toString s.n})";
 
     # Resume handlers: rebuild the original frame with the previously-forced
     # sub-Val substituted in, then deliver the captured originally-consumed
     # val. The handler above re-fires with the field now non-VThunkTm.
-    "KResume_KAllD_d" = c:
-      let k = c.k; forcedD = c.v; in
-      mkApply (push (kAllD k.L k.I k.K k.X k.M k.i forcedD) c.rest) c.fuel k.D;
+    "KResume_KAllD_d" = state:
+      let k = state.kont.head; forcedD = state.val; in
+      { mode = "Apply"; val = k.D; kont = ({ head = (kAllD k.L k.I k.K k.X k.M k.i forcedD); tail = state.kont.tail; }); fuel = state.fuel - 1; };
 
-    "KResume_KEverywhereD_d" = c:
-      let k = c.k; forcedD = c.v; in
-      mkApply (push (kEverywhereD k.L k.I k.K k.X k.M k.ih k.i forcedD) c.rest)
-              c.fuel k.D;
+    "KResume_KEverywhereD_d" = state:
+      let k = state.kont.head; forcedD = state.val; in
+      { mode = "Apply"; val = k.D; kont = ({ head = (kEverywhereD k.L k.I k.K k.X k.M k.ih k.i forcedD); tail = state.kont.tail; }); fuel = state.fuel - 1; };
 
     # Continuation of `KAllD` / `KEverywhereD` view.idx == 4 after the
     # `kSumPayloadView` dispatcher has run on a (pre-forced) `d`.
-    # `c.v` is the VRawSV wrapper; `k.d` is the forced sum value used
+    # `state.val` is the VRawSV wrapper; `k.d` is the forced sum value used
     # for the VNe fallback spine and the throw-tag diagnostic.
-    "KResume_KAllD_view4_GotSV" = c:
-      let k = c.k; sv = c.v.sv; in
+    "KResume_KAllD_view4_GotSV" = state:
+      let k = state.kont.head; sv = state.val.sv; in
       if sv != null then
         if sv.side == "inl"
-        then mkApply (push (kAllD k.L k.I k.K k.X k.M k.i sv.value) c.rest) c.fuel k.viewA
-        else mkApply (push (kAllD k.L k.I k.K k.X k.M k.i sv.value) c.rest) c.fuel k.viewB
+        then { mode = "Apply"; val = k.viewA; kont = ({ head = (kAllD k.L k.I k.K k.X k.M k.i sv.value); tail = state.kont.tail; }); fuel = state.fuel - 1; }
+        else { mode = "Apply"; val = k.viewB; kont = ({ head = (kAllD k.L k.I k.K k.X k.M k.i sv.value); tail = state.kont.tail; }); fuel = state.fuel - 1; }
       else if k.d.tag == "VNe" then
-        mkApply
-          (push (kInterpD k.L k.I k.X k.i)
-            (push (kAllD_PlusStuck_GotAInterp k.L k.I k.K k.X k.M k.i k.d k.viewA k.viewB)
-              c.rest))
-          c.fuel k.viewA
+        { mode = "Apply"; val = k.viewA; kont = ({ head = (kInterpD k.L k.I k.X k.i); tail = ({ head = (kAllD_PlusStuck_GotAInterp k.L k.I k.K k.X k.M k.i k.d k.viewA k.viewB); tail = state.kont.tail; }); }); fuel = state.fuel - 1; }
       else throw "tc: vAllD on plus with non-sum d (tag=${k.d.tag})";
 
-    "KResume_KEverywhereD_view4_GotSV" = c:
-      let k = c.k; sv = c.v.sv; in
+    "KResume_KEverywhereD_view4_GotSV" = state:
+      let k = state.kont.head; sv = state.val.sv; in
       if sv != null then
         if sv.side == "inl"
-        then mkApply (push (kEverywhereD k.L k.I k.K k.X k.M k.ih k.i sv.value) c.rest) c.fuel k.viewA
-        else mkApply (push (kEverywhereD k.L k.I k.K k.X k.M k.ih k.i sv.value) c.rest) c.fuel k.viewB
+        then { mode = "Apply"; val = k.viewA; kont = ({ head = (kEverywhereD k.L k.I k.K k.X k.M k.ih k.i sv.value); tail = state.kont.tail; }); fuel = state.fuel - 1; }
+        else { mode = "Apply"; val = k.viewB; kont = ({ head = (kEverywhereD k.L k.I k.K k.X k.M k.ih k.i sv.value); tail = state.kont.tail; }); fuel = state.fuel - 1; }
       else if k.d.tag == "VNe" then
-        mkApply
-          (push (kInterpD k.L k.I k.X k.i)
-            (push (kEverywhereD_PlusStuck_GotAInterp k.L k.I k.K k.X k.M k.ih k.i k.d k.viewA k.viewB)
-              c.rest))
-          c.fuel k.viewA
+        { mode = "Apply"; val = k.viewA; kont = ({ head = (kInterpD k.L k.I k.X k.i); tail = ({ head = (kEverywhereD_PlusStuck_GotAInterp k.L k.I k.K k.X k.M k.ih k.i k.d k.viewA k.viewB); tail = state.kont.tail; }); }); fuel = state.fuel - 1; }
       else throw "tc: vEverywhereD on plus with non-sum d (tag=${k.d.tag})";
 
     # Continuation of `KInterpD` after `kDescView` has run on the original
-    # descriptor. `c.v` is the VRawView wrapper carrying `view` and the
+    # descriptor. `state.val` is the VRawView wrapper carrying `view` and the
     # (forced) `D` used in the throw diagnostic.
-    "KResume_KInterpD_GotView" = c:
+    "KResume_KInterpD_GotView" = state:
       let
-        k = c.k;
-        view = c.v.view; D = c.v.D;
+        k = state.kont.head;
+        view = state.val.view; D = state.val.D;
         L = k.L; I = k.I; X = k.X; i = k.i;
       in
       if view == null then throw "tc: vInterpD on non-desc or malformed desc (tag=${D.tag})"
@@ -1196,7 +1313,7 @@ let
         let
           iLev = view.iLev or vLevelZero;
           retLevel = self.levelMaxOpt L iLev;
-        in c.apply (self.vLiftF iLev retLevel vBootRefl (vBootEq I view.j i))
+        in { mode = "Apply"; val = (self.vLiftF iLev retLevel vBootRefl (vBootEq I view.j i)); kont = state.kont.tail; fuel = state.fuel - 1; }
       else if view.idx == 1 then
         let
           ihClosure = mkClosure [ view.tFn L I X i ]
@@ -1204,12 +1321,9 @@ let
               (term.mkApp (term.mkVar 1) (term.mkVar 0))
               (term.mkVar 4)
               (term.mkVar 5));
-        in c.apply (vSigma "s" view.sTy ihClosure)
+        in { mode = "Apply"; val = (vSigma "s" view.sTy ihClosure); kont = state.kont.tail; fuel = state.fuel - 1; }
       else if view.idx == 2 then
-        mkApply
-          (push (kAppVV view.j)
-            (push (kResume_KInterpD_view2_GotXj L I X i view.sub) c.rest))
-          c.fuel X
+        { mode = "Apply"; val = X; kont = ({ head = (kAppVV view.j); tail = ({ head = (kResume_KInterpD_view2_GotXj L I X i view.sub); tail = state.kont.tail; }); }); fuel = state.fuel - 1; }
       else if view.idx == 3 then
         let
           piTy = vPi "s" view.sTy (mkClosure [ X view.fn ]
@@ -1219,71 +1333,52 @@ let
             (term.mkInterpD (term.mkVar 1) (term.mkVar 2) (term.mkVar 5)
               (term.mkVar 3)
               (term.mkVar 4));
-        in c.apply (vSigma "_" piTy ihClosure)
+        in { mode = "Apply"; val = (vSigma "_" piTy ihClosure); kont = state.kont.tail; fuel = state.fuel - 1; }
       else
-        mkApply
-          (push (kInterpD L I X i)
-            (push (kInterpD_PlusGotA L I X i view.B) c.rest))
-          c.fuel view.A;
+        { mode = "Apply"; val = view.A; kont = ({ head = (kInterpD L I X i); tail = ({ head = (kInterpD_PlusGotA L I X i view.B); tail = state.kont.tail; }); }); fuel = state.fuel - 1; };
 
-    "KResume_KInterpD_view2_GotXj" = c:
+    "KResume_KInterpD_view2_GotXj" = state:
       let
-        k = c.k;
-        Xj = c.v;
+        k = state.kont.head;
+        Xj = state.val;
         ihClosure = mkClosure [ k.L k.I k.X k.i k.sub ]
           (term.mkInterpD (term.mkVar 1) (term.mkVar 2) (term.mkVar 5)
             (term.mkVar 3)
             (term.mkVar 4));
-      in c.apply (vSigma "_" Xj ihClosure);
+      in { mode = "Apply"; val = (vSigma "_" Xj ihClosure); kont = state.kont.tail; fuel = state.fuel - 1; };
 
-    "KResume_KAllD_GotView" = c:
+    "KResume_KAllD_GotView" = state:
       let
-        k = c.k;
-        view = c.v.view; D = c.v.D;
+        k = state.kont.head;
+        view = state.val.view; D = state.val.D;
         L = k.L; I = k.I; K = k.K; X = k.X; M = k.M; i = k.i; d = k.d;
       in
       if view == null then throw "tc: vAllD on non-desc or malformed desc (tag=${D.tag})"
       else if view.idx == 0 then
-        c.apply (self.vLiftF vLevelZero K vBootRefl vUnit)
+        { mode = "Apply"; val = (self.vLiftF vLevelZero K vBootRefl vUnit); kont = state.kont.tail; fuel = state.fuel - 1; }
       else if view.idx == 1 || view.idx == 2 || view.idx == 3 then
-        mkApply
-          (push kFst
-            (push (kResume_KAllD_GotFstD L I K X M i d view) c.rest))
-          c.fuel d
+        { mode = "Apply"; val = d; kont = ({ head = kFst; tail = ({ head = (kResume_KAllD_GotFstD L I K X M i d view); tail = state.kont.tail; }); }); fuel = state.fuel - 1; }
       else
         if (d.tag or "") == "VThunkTm" then
-          mkApply (push (kResume_KAllD_d L I K X M i D) c.rest) c.fuel d
+          { mode = "Apply"; val = d; kont = ({ head = (kResume_KAllD_d L I K X M i D); tail = state.kont.tail; }); fuel = state.fuel - 1; }
         else
-          mkApply
-            (push kSumPayloadView
-              (push (kResume_KAllD_view4_GotSV L I K X M i view.A view.B d) c.rest))
-            c.fuel d;
+          { mode = "Apply"; val = d; kont = ({ head = kSumPayloadView; tail = ({ head = (kResume_KAllD_view4_GotSV L I K X M i view.A view.B d); tail = state.kont.tail; }); }); fuel = state.fuel - 1; };
 
-    "KResume_KAllD_GotFstD" = c:
-      let k = c.k; fstD = c.v; in
-      mkApply
-        (push kSnd
-          (push (kResume_KAllD_GotSndD k.L k.I k.K k.X k.M k.i fstD k.view) c.rest))
-        c.fuel k.d;
+    "KResume_KAllD_GotFstD" = state:
+      let k = state.kont.head; fstD = state.val; in
+      { mode = "Apply"; val = k.d; kont = ({ head = kSnd; tail = ({ head = (kResume_KAllD_GotSndD k.L k.I k.K k.X k.M k.i fstD k.view); tail = state.kont.tail; }); }); fuel = state.fuel - 1; };
 
-    "KResume_KAllD_GotSndD" = c:
+    "KResume_KAllD_GotSndD" = state:
       let
-        k = c.k;
-        sndD = c.v;
+        k = state.kont.head;
+        sndD = state.val;
         fstD = k.fstD; view = k.view;
         L = k.L; I = k.I; K = k.K; X = k.X; M = k.M; i = k.i;
       in
       if view.idx == 1 then
-        mkApply
-          (push (kAppVV fstD)
-            (push (kAllD_ArgGotSubD L I K X M i sndD) c.rest))
-          c.fuel view.tFn
+        { mode = "Apply"; val = view.tFn; kont = ({ head = (kAppVV fstD); tail = ({ head = (kAllD_ArgGotSubD L I K X M i sndD); tail = state.kont.tail; }); }); fuel = state.fuel - 1; }
       else if view.idx == 2 then
-        mkApply
-          (push (kAppVV view.j)
-            (push (kAppVV fstD)
-              (push (kAllD_RecCombine sndD view.sub L I K X M i) c.rest)))
-          c.fuel M
+        { mode = "Apply"; val = M; kont = ({ head = (kAppVV view.j); tail = ({ head = (kAppVV fstD); tail = ({ head = (kAllD_RecCombine sndD view.sub L I K X M i); tail = state.kont.tail; }); }); }); fuel = state.fuel - 1; }
       else
         let
           piTy = vPi "s" view.sTy (mkClosure [ M view.fn fstD ]
@@ -1295,50 +1390,38 @@ let
             (term.mkAllD (term.mkVar 1) (term.mkVar 2) (term.mkVar 8)
               (term.mkVar 3) (term.mkVar 4) (term.mkVar 5)
               (term.mkVar 6) (term.mkVar 7));
-        in c.apply (vSigma "_" piTy ihClosure);
+        in { mode = "Apply"; val = (vSigma "_" piTy ihClosure); kont = state.kont.tail; fuel = state.fuel - 1; };
 
-    "KResume_KEverywhereD_GotView" = c:
+    "KResume_KEverywhereD_GotView" = state:
       let
-        k = c.k;
-        view = c.v.view; D = c.v.D;
+        k = state.kont.head;
+        view = state.val.view; D = state.val.D;
         L = k.L; I = k.I; K = k.K; X = k.X; M = k.M; ih = k.ih; i = k.i; d = k.d;
       in
       if view == null then throw "tc: vEverywhereD on non-desc or malformed desc (tag=${D.tag})"
       else if view.idx == 0 then
-        c.apply (self.vLiftIntroF vLevelZero K vBootRefl vUnit vTt)
+        { mode = "Apply"; val = (self.vLiftIntroF vLevelZero K vBootRefl vUnit vTt); kont = state.kont.tail; fuel = state.fuel - 1; }
       else if view.idx == 1 || view.idx == 2 || view.idx == 3 then
-        mkApply
-          (push kFst
-            (push (kResume_KEverywhereD_GotFstD L I K X M ih i d view) c.rest))
-          c.fuel d
+        { mode = "Apply"; val = d; kont = ({ head = kFst; tail = ({ head = (kResume_KEverywhereD_GotFstD L I K X M ih i d view); tail = state.kont.tail; }); }); fuel = state.fuel - 1; }
       else
         if (d.tag or "") == "VThunkTm" then
-          mkApply (push (kResume_KEverywhereD_d L I K X M ih i D) c.rest) c.fuel d
+          { mode = "Apply"; val = d; kont = ({ head = (kResume_KEverywhereD_d L I K X M ih i D); tail = state.kont.tail; }); fuel = state.fuel - 1; }
         else
-          mkApply
-            (push kSumPayloadView
-              (push (kResume_KEverywhereD_view4_GotSV L I K X M ih i view.A view.B d) c.rest))
-            c.fuel d;
+          { mode = "Apply"; val = d; kont = ({ head = kSumPayloadView; tail = ({ head = (kResume_KEverywhereD_view4_GotSV L I K X M ih i view.A view.B d); tail = state.kont.tail; }); }); fuel = state.fuel - 1; };
 
-    "KResume_KEverywhereD_GotFstD" = c:
-      let k = c.k; fstD = c.v; in
-      mkApply
-        (push kSnd
-          (push (kResume_KEverywhereD_GotSndD k.L k.I k.K k.X k.M k.ih k.i fstD k.view) c.rest))
-        c.fuel k.d;
+    "KResume_KEverywhereD_GotFstD" = state:
+      let k = state.kont.head; fstD = state.val; in
+      { mode = "Apply"; val = k.d; kont = ({ head = kSnd; tail = ({ head = (kResume_KEverywhereD_GotSndD k.L k.I k.K k.X k.M k.ih k.i fstD k.view); tail = state.kont.tail; }); }); fuel = state.fuel - 1; };
 
-    "KResume_KEverywhereD_GotSndD" = c:
+    "KResume_KEverywhereD_GotSndD" = state:
       let
-        k = c.k;
-        sndD = c.v;
+        k = state.kont.head;
+        sndD = state.val;
         fstD = k.fstD; view = k.view;
         L = k.L; I = k.I; K = k.K; X = k.X; M = k.M; ih = k.ih; i = k.i;
       in
       if view.idx == 1 then
-        mkApply
-          (push (kAppVV fstD)
-            (push (kEverywhereD_ArgGotSubD L I K X M ih i sndD) c.rest))
-          c.fuel view.tFn
+        { mode = "Apply"; val = view.tFn; kont = ({ head = (kAppVV fstD); tail = ({ head = (kEverywhereD_ArgGotSubD L I K X M ih i sndD); tail = state.kont.tail; }); }); fuel = state.fuel - 1; }
       else if view.idx == 2 then
         # `ih._ihShortcut` + canonical fstD bypass the
         # `vAppF ∘ vAppF ∘ evalF` roundtrip via the reduction core's frame
@@ -1346,17 +1429,9 @@ let
         if ih ? _ihShortcut && fstD.tag == "VDescCon"
         then
           let s = ih._ihShortcut; in
-          mkApply
-            (push (kEverywhereD vLevelZero s.I vLevelZero s.muFam s.motive ih view.j fstD.d)
-              (push (kDescIndLayer_GotEvResult s.step view.j fstD.d)
-                (push (kEverywhereD_RecGotIhHere L I K X M ih i sndD view.sub) c.rest)))
-            c.fuel s.D
+          { mode = "Apply"; val = s.D; kont = ({ head = (kEverywhereD vLevelZero s.I vLevelZero s.muFam s.motive ih view.j fstD.d); tail = ({ head = (kDescIndLayer_GotEvResult s.step view.j fstD.d); tail = ({ head = (kEverywhereD_RecGotIhHere L I K X M ih i sndD view.sub); tail = state.kont.tail; }); }); }); fuel = state.fuel - 1; }
         else
-          mkApply
-            (push (kAppVV view.j)
-              (push (kAppVV fstD)
-                (push (kEverywhereD_RecGotIhHere L I K X M ih i sndD view.sub) c.rest)))
-            c.fuel ih
+          { mode = "Apply"; val = ih; kont = ({ head = (kAppVV view.j); tail = ({ head = (kAppVV fstD); tail = ({ head = (kEverywhereD_RecGotIhHere L I K X M ih i sndD view.sub); tail = state.kont.tail; }); }); }); fuel = state.fuel - 1; }
       else
         let
           piLam = vLam "s" view.sTy (mkClosure [ ih view.fn fstD ]
@@ -1364,22 +1439,19 @@ let
               (term.mkApp (term.mkVar 1)
                 (term.mkApp (term.mkVar 2) (term.mkVar 0)))
               (term.mkApp (term.mkVar 3) (term.mkVar 0))));
-        in mkApply
-             (push (kEverywhereD L I K X M ih i sndD)
-               (push (kEverywhereD_PiCombine piLam) c.rest))
-             c.fuel view.sub;
+        in { mode = "Apply"; val = view.sub; kont = ({ head = (kEverywhereD L I K X M ih i sndD); tail = ({ head = (kEverywhereD_PiCombine piLam); tail = state.kont.tail; }); }); fuel = state.fuel - 1; };
 
     # Quote-side resume. mkQEvalStep pushes `kqResumeQuote d` and switches
     # to Eval when it meets a VThunkTm; once Eval reaches Apply with a forced
     # val, this handler restores Q-Eval at binder depth `d` so the original
     # quote kont resumes.
-    "KQResumeQuote" = c:
-      { mode = "Q-Eval"; v = c.v; d = c.k.d; fuel = c.fuel; kont = c.rest; };
+    "KQResumeQuote" = state:
+      { mode = "Q-Eval"; v = state.val; d = state.kont.head.d; fuel = state.fuel; kont = state.kont.tail; };
 
     # Helper dispatchers — step-by-step replications of `desc.nix`'s
     # `descViewF` and `sumPayloadValView` bodies via machine frames. Every
-    # sub-Val tag read happens on a forced Val (stepApply's top-level peek
-    # force-routes any VThunkTm c.v through Eval before the dispatcher body
+    # sub-Val tag read happens on a forced Val (the driver step's Apply-mode peek
+    # force-routes any VThunkTm state.val through Eval before the dispatcher body
     # runs). Every `vLiftElimF` call goes through a `kLiftElim_X` push per
     # the public-leaf forcing rule. The helpers in `desc.nix` stay for
     # external callers but are no longer reachable from a handler.
@@ -1387,15 +1459,15 @@ let
     # VRaw* sentinels (VRawView / VRawSV / VRawDecode / VRawPeel) never
     # reach the tag-dispatch fallthrough because they appear only between
     # consecutive paired frames structurally placed by the call-site push.
-    "KDescView" = c:
-      let D = c.v; in
+    "KDescView" = state:
+      let D = state.val; in
       let
         isDViewTag = D.tag == "DViewRet" || D.tag == "DViewArg"
                   || D.tag == "DViewRec" || D.tag == "DViewPi"
                   || D.tag == "DViewPlus";
       in
       if isDViewTag then
-        mkApply c.rest c.fuel { tag = "VRawView"; view = D; inherit D; }
+        { mode = "Apply"; val = { tag = "VRawView"; view = D; inherit D; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else if D.tag == "VDescCon" && D ? _canonRef then
         if D._canonRef.id == "descDesc" then
           let
@@ -1407,9 +1479,9 @@ let
             iLev_arg = builtins.elemAt params 0;
             I_arg = builtins.elemAt params 1;
             L_arg = builtins.elemAt params 2;
-            view = self.descDescCanonicalViewF (c.fuel - 1) iLev_arg I_arg L_arg;
-          in mkApply c.rest c.fuel { tag = "VRawView"; inherit view; inherit D; }
-        else mkApply c.rest c.fuel { tag = "VRawView"; view = null; inherit D; }
+            view = self.descDescCanonicalViewF (state.fuel - 1) iLev_arg I_arg L_arg;
+          in { mode = "Apply"; val = { tag = "VRawView"; inherit view; inherit D; }; kont = state.kont.tail; fuel = state.fuel - 1; }
+        else { mode = "Apply"; val = { tag = "VRawView"; view = null; inherit D; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else if D.tag == "VDescCon" then
         let
           hasDescDescRef =
@@ -1433,28 +1505,25 @@ let
                     label_val conLabel_val;
           };
         in
-        mkApply
-          (push (kDecodeWalk 0)
-            (push (kResume_KDescView_GotDecode meta) c.rest))
-          c.fuel D.d
+        { mode = "Apply"; val = D.d; kont = ({ head = (kDecodeWalk 0); tail = ({ head = (kResume_KDescView_GotDecode meta); tail = state.kont.tail; }); }); fuel = state.fuel - 1; }
       else
-        mkApply c.rest c.fuel { tag = "VRawView"; view = null; inherit D; };
+        { mode = "Apply"; val = { tag = "VRawView"; view = null; inherit D; }; kont = state.kont.tail; fuel = state.fuel - 1; };
 
-    "KDecodeWalk" = c:
-      let node = c.v; depth = c.k.depth; in
+    "KDecodeWalk" = state:
+      let node = state.val; depth = state.kont.head.depth; in
       if depth >= 4 then
-        mkApply c.rest c.fuel { tag = "VRawDecode"; idx = 4; payload = node; }
+        { mode = "Apply"; val = { tag = "VRawDecode"; idx = 4; payload = node; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else if node.tag == "VBootInl" then
-        mkApply c.rest c.fuel { tag = "VRawDecode"; idx = depth; payload = node.val; }
+        { mode = "Apply"; val = { tag = "VRawDecode"; idx = depth; payload = node.val; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else if node.tag == "VBootInr" then
-        mkApply (push (kDecodeWalk (depth + 1)) c.rest) c.fuel node.val
+        { mode = "Apply"; val = node.val; kont = ({ head = (kDecodeWalk (depth + 1)); tail = state.kont.tail; }); fuel = state.fuel - 1; }
       else
-        mkApply c.rest c.fuel { tag = "VRawDecode"; idx = null; payload = null; };
+        { mode = "Apply"; val = { tag = "VRawDecode"; idx = null; payload = null; }; kont = state.kont.tail; fuel = state.fuel - 1; };
 
-    "KResume_KDescView_GotDecode" = c:
-      let info = c.v; meta = c.k.meta; in
+    "KResume_KDescView_GotDecode" = state:
+      let info = state.val; meta = state.kont.head.meta; in
       if info.idx == null then
-        mkApply c.rest c.fuel { tag = "VRawView"; view = null; D = meta.D; }
+        { mode = "Apply"; val = { tag = "VRawView"; view = null; D = meta.D; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else
         let
           gotPayloadFrame =
@@ -1463,24 +1532,24 @@ let
             else if info.idx == 2 then kResume_KDescView_Idx2_GotPayload meta
             else if info.idx == 3 then kResume_KDescView_Idx3_GotPayload meta
             else                       kResume_KDescView_Idx4_GotPayload meta;
-        in mkApply (push gotPayloadFrame c.rest) c.fuel info.payload;
+        in { mode = "Apply"; val = info.payload; kont = ({ head = gotPayloadFrame; tail = state.kont.tail; }); fuel = state.fuel - 1; };
 
     # Idx 0: payload → (optional vLiftElim) → j → view.
 
-    "KResume_KDescView_Idx0_GotPayload" = c:
-      let payload = c.v; meta = c.k.meta; in
+    "KResume_KDescView_Idx0_GotPayload" = state:
+      let payload = state.val; meta = state.kont.head.meta; in
       if payload.tag != "VPair" then
-        mkApply c.rest c.fuel { tag = "VRawView"; view = null; D = meta.D; }
+        { mode = "Apply"; val = { tag = "VRawView"; view = null; D = meta.D; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else
-        let chainToJ = push (kResume_KDescView_Idx0_GotJ meta) c.rest;
+        let chainToJ = { head = (kResume_KDescView_Idx0_GotJ meta); tail = state.kont.tail; };
             chainBefore =
               if meta.hasDescDescRef
-              then push (kLiftElim_X meta.iLev_val meta.dDescL_val vBootRefl meta.I_val) chainToJ
+              then { head = (kLiftElim_X meta.iLev_val meta.dDescL_val vBootRefl meta.I_val); tail = chainToJ; }
               else chainToJ;
-        in mkApply chainBefore c.fuel payload.fst;
+        in { mode = "Apply"; val = payload.fst; kont = chainBefore; fuel = state.fuel - 1; };
 
-    "KResume_KDescView_Idx0_GotJ" = c:
-      let j = c.v; meta = c.k.meta; in
+    "KResume_KDescView_Idx0_GotJ" = state:
+      let j = state.val; meta = state.kont.head.meta; in
       let view = {
             idx = 0;
             inherit j;
@@ -1490,34 +1559,32 @@ let
             label = meta.label_val;
             conLabel = meta.conLabel_val;
           };
-      in mkApply c.rest c.fuel { tag = "VRawView"; inherit view; D = meta.D; };
+      in { mode = "Apply"; val = { tag = "VRawView"; inherit view; D = meta.D; }; kont = state.kont.tail; fuel = state.fuel - 1; };
 
     # Idx 1: payload → payload.snd → sMeta (vLiftElim) → view.
 
-    "KResume_KDescView_Idx1_GotPayload" = c:
-      let payload = c.v; meta = c.k.meta; in
+    "KResume_KDescView_Idx1_GotPayload" = state:
+      let payload = state.val; meta = state.kont.head.meta; in
       if payload.tag != "VPair" then
-        mkApply c.rest c.fuel { tag = "VRawView"; view = null; D = meta.D; }
+        { mode = "Apply"; val = { tag = "VRawView"; view = null; D = meta.D; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else
-        mkApply
-          (push (kResume_KDescView_Idx1_GotSnd meta payload) c.rest)
-          c.fuel payload.snd;
+        { mode = "Apply"; val = payload.snd; kont = ({ head = (kResume_KDescView_Idx1_GotSnd meta payload); tail = state.kont.tail; }); fuel = state.fuel - 1; };
 
-    "KResume_KDescView_Idx1_GotSnd" = c:
-      let payloadSnd = c.v; payload = c.k.payload; meta = c.k.meta; in
+    "KResume_KDescView_Idx1_GotSnd" = state:
+      let payloadSnd = state.val; payload = state.kont.head.payload; meta = state.kont.head.meta; in
       if payloadSnd.tag != "VPair" then
-        mkApply c.rest c.fuel { tag = "VRawView"; view = null; D = meta.D; }
+        { mode = "Apply"; val = { tag = "VRawView"; view = null; D = meta.D; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else
         let tPayload = payloadSnd.fst;
-            chainToSMeta = push (kResume_KDescView_Idx1_GotSMeta meta tPayload) c.rest;
+            chainToSMeta = { head = (kResume_KDescView_Idx1_GotSMeta meta tPayload); tail = state.kont.tail; };
             chainBefore =
               if meta.hasDescDescRef
-              then push (kLiftElim_X (vLevelSuc meta.k_val) meta.dDescL_val vBootRefl (vU meta.k_val)) chainToSMeta
+              then { head = (kLiftElim_X (vLevelSuc meta.k_val) meta.dDescL_val vBootRefl (vU meta.k_val)); tail = chainToSMeta; }
               else chainToSMeta;
-        in mkApply chainBefore c.fuel payload.fst;
+        in { mode = "Apply"; val = payload.fst; kont = chainBefore; fuel = state.fuel - 1; };
 
-    "KResume_KDescView_Idx1_GotSMeta" = c:
-      let sMeta = c.v; tPayload = c.k.tPayload; meta = c.k.meta; in
+    "KResume_KDescView_Idx1_GotSMeta" = state:
+      let sMeta = state.val; tPayload = state.kont.head.tPayload; meta = state.kont.head.meta; in
       let tFn = {
             tag = "VDescViewFn"; kind = "vapp";
             inherit tPayload;
@@ -1541,34 +1608,32 @@ let
             conLabel = meta.conLabel_val;
             inherit (lift) l eq sTyRaw;
           };
-      in mkApply c.rest c.fuel { tag = "VRawView"; inherit view; D = meta.D; };
+      in { mode = "Apply"; val = { tag = "VRawView"; inherit view; D = meta.D; }; kont = state.kont.tail; fuel = state.fuel - 1; };
 
     # Idx 2: payload → payload.snd → (optional vLiftElim) → j → view.
 
-    "KResume_KDescView_Idx2_GotPayload" = c:
-      let payload = c.v; meta = c.k.meta; in
+    "KResume_KDescView_Idx2_GotPayload" = state:
+      let payload = state.val; meta = state.kont.head.meta; in
       if payload.tag != "VPair" then
-        mkApply c.rest c.fuel { tag = "VRawView"; view = null; D = meta.D; }
+        { mode = "Apply"; val = { tag = "VRawView"; view = null; D = meta.D; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else
-        mkApply
-          (push (kResume_KDescView_Idx2_GotSnd meta payload) c.rest)
-          c.fuel payload.snd;
+        { mode = "Apply"; val = payload.snd; kont = ({ head = (kResume_KDescView_Idx2_GotSnd meta payload); tail = state.kont.tail; }); fuel = state.fuel - 1; };
 
-    "KResume_KDescView_Idx2_GotSnd" = c:
-      let payloadSnd = c.v; payload = c.k.payload; meta = c.k.meta; in
+    "KResume_KDescView_Idx2_GotSnd" = state:
+      let payloadSnd = state.val; payload = state.kont.head.payload; meta = state.kont.head.meta; in
       if payloadSnd.tag != "VPair" then
-        mkApply c.rest c.fuel { tag = "VRawView"; view = null; D = meta.D; }
+        { mode = "Apply"; val = { tag = "VRawView"; view = null; D = meta.D; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else
         let sub = payloadSnd.fst;
-            chainToJ = push (kResume_KDescView_Idx2_GotJ meta sub) c.rest;
+            chainToJ = { head = (kResume_KDescView_Idx2_GotJ meta sub); tail = state.kont.tail; };
             chainBefore =
               if meta.hasDescDescRef
-              then push (kLiftElim_X meta.iLev_val meta.dDescL_val vBootRefl meta.I_val) chainToJ
+              then { head = (kLiftElim_X meta.iLev_val meta.dDescL_val vBootRefl meta.I_val); tail = chainToJ; }
               else chainToJ;
-        in mkApply chainBefore c.fuel payload.fst;
+        in { mode = "Apply"; val = payload.fst; kont = chainBefore; fuel = state.fuel - 1; };
 
-    "KResume_KDescView_Idx2_GotJ" = c:
-      let j = c.v; sub = c.k.sub; meta = c.k.meta; in
+    "KResume_KDescView_Idx2_GotJ" = state:
+      let j = state.val; sub = state.kont.head.sub; meta = state.kont.head.meta; in
       let view = {
             idx = 2;
             inherit j sub;
@@ -1578,57 +1643,53 @@ let
             label = meta.label_val;
             conLabel = meta.conLabel_val;
           };
-      in mkApply c.rest c.fuel { tag = "VRawView"; inherit view; D = meta.D; };
+      in { mode = "Apply"; val = { tag = "VRawView"; inherit view; D = meta.D; }; kont = state.kont.tail; fuel = state.fuel - 1; };
 
     # Idx 3: payload → payload.snd → payload.snd.snd → sMeta (vLiftElim)
     #     → fn (vLiftElim) → view.
 
-    "KResume_KDescView_Idx3_GotPayload" = c:
-      let payload = c.v; meta = c.k.meta; in
+    "KResume_KDescView_Idx3_GotPayload" = state:
+      let payload = state.val; meta = state.kont.head.meta; in
       if payload.tag != "VPair" then
-        mkApply c.rest c.fuel { tag = "VRawView"; view = null; D = meta.D; }
+        { mode = "Apply"; val = { tag = "VRawView"; view = null; D = meta.D; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else
-        mkApply
-          (push (kResume_KDescView_Idx3_GotSnd meta payload) c.rest)
-          c.fuel payload.snd;
+        { mode = "Apply"; val = payload.snd; kont = ({ head = (kResume_KDescView_Idx3_GotSnd meta payload); tail = state.kont.tail; }); fuel = state.fuel - 1; };
 
-    "KResume_KDescView_Idx3_GotSnd" = c:
-      let payloadSnd = c.v; payload = c.k.payload; meta = c.k.meta; in
+    "KResume_KDescView_Idx3_GotSnd" = state:
+      let payloadSnd = state.val; payload = state.kont.head.payload; meta = state.kont.head.meta; in
       if payloadSnd.tag != "VPair" then
-        mkApply c.rest c.fuel { tag = "VRawView"; view = null; D = meta.D; }
+        { mode = "Apply"; val = { tag = "VRawView"; view = null; D = meta.D; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else
-        mkApply
-          (push (kResume_KDescView_Idx3_GotSndSnd meta payload payloadSnd) c.rest)
-          c.fuel payloadSnd.snd;
+        { mode = "Apply"; val = payloadSnd.snd; kont = ({ head = (kResume_KDescView_Idx3_GotSndSnd meta payload payloadSnd); tail = state.kont.tail; }); fuel = state.fuel - 1; };
 
-    "KResume_KDescView_Idx3_GotSndSnd" = c:
-      let payloadSndSnd = c.v;
-          payload = c.k.payload; psnd = c.k.psnd; meta = c.k.meta;
+    "KResume_KDescView_Idx3_GotSndSnd" = state:
+      let payloadSndSnd = state.val;
+          payload = state.kont.head.payload; psnd = state.kont.head.psnd; meta = state.kont.head.meta;
       in
       if payloadSndSnd.tag != "VPair" then
-        mkApply c.rest c.fuel { tag = "VRawView"; view = null; D = meta.D; }
+        { mode = "Apply"; val = { tag = "VRawView"; view = null; D = meta.D; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else
         let sub = payloadSndSnd.fst;
             psndFst = psnd.fst;
-            chainToSMeta = push (kResume_KDescView_Idx3_GotSMeta meta psndFst sub) c.rest;
+            chainToSMeta = { head = (kResume_KDescView_Idx3_GotSMeta meta psndFst sub); tail = state.kont.tail; };
             chainBefore =
               if meta.hasDescDescRef
-              then push (kLiftElim_X (vLevelSuc meta.k_val) meta.dDescL_val vBootRefl (vU meta.k_val)) chainToSMeta
+              then { head = (kLiftElim_X (vLevelSuc meta.k_val) meta.dDescL_val vBootRefl (vU meta.k_val)); tail = chainToSMeta; }
               else chainToSMeta;
-        in mkApply chainBefore c.fuel payload.fst;
+        in { mode = "Apply"; val = payload.fst; kont = chainBefore; fuel = state.fuel - 1; };
 
-    "KResume_KDescView_Idx3_GotSMeta" = c:
-      let sMeta = c.v; psndFst = c.k.psndFst; sub = c.k.sub; meta = c.k.meta; in
+    "KResume_KDescView_Idx3_GotSMeta" = state:
+      let sMeta = state.val; psndFst = state.kont.head.psndFst; sub = state.kont.head.sub; meta = state.kont.head.meta; in
       let fTy = vPi "_" sMeta (mkClosure [ meta.I_val ] (term.mkVar 1));
-          chainToFn = push (kResume_KDescView_Idx3_GotFn meta sMeta sub) c.rest;
+          chainToFn = { head = (kResume_KDescView_Idx3_GotFn meta sMeta sub); tail = state.kont.tail; };
           chainBefore =
             if meta.hasDescDescRef
-            then push (kLiftElim_X (self.levelMaxOpt meta.k_val meta.iLev_val) meta.dDescL_val vBootRefl fTy) chainToFn
+            then { head = (kLiftElim_X (self.levelMaxOpt meta.k_val meta.iLev_val) meta.dDescL_val vBootRefl fTy); tail = chainToFn; }
             else chainToFn;
-      in mkApply chainBefore c.fuel psndFst;
+      in { mode = "Apply"; val = psndFst; kont = chainBefore; fuel = state.fuel - 1; };
 
-    "KResume_KDescView_Idx3_GotFn" = c:
-      let fn = c.v; sMeta = c.k.sMeta; sub = c.k.sub; meta = c.k.meta; in
+    "KResume_KDescView_Idx3_GotFn" = state:
+      let fn = state.val; sMeta = state.kont.head.sMeta; sub = state.kont.head.sub; meta = state.kont.head.meta; in
       let lift =
             if (sMeta.tag or null) == "VLift"
             then { l = sMeta.l; eq = sMeta.eq; sTyRaw = sMeta.A; }
@@ -1644,23 +1705,21 @@ let
             conLabel = meta.conLabel_val;
             inherit (lift) l eq sTyRaw;
           };
-      in mkApply c.rest c.fuel { tag = "VRawView"; inherit view; D = meta.D; };
+      in { mode = "Apply"; val = { tag = "VRawView"; inherit view; D = meta.D; }; kont = state.kont.tail; fuel = state.fuel - 1; };
 
     # Idx 4: payload → payload.snd → view.
 
-    "KResume_KDescView_Idx4_GotPayload" = c:
-      let payload = c.v; meta = c.k.meta; in
+    "KResume_KDescView_Idx4_GotPayload" = state:
+      let payload = state.val; meta = state.kont.head.meta; in
       if payload.tag != "VPair" then
-        mkApply c.rest c.fuel { tag = "VRawView"; view = null; D = meta.D; }
+        { mode = "Apply"; val = { tag = "VRawView"; view = null; D = meta.D; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else
-        mkApply
-          (push (kResume_KDescView_Idx4_GotSnd meta payload) c.rest)
-          c.fuel payload.snd;
+        { mode = "Apply"; val = payload.snd; kont = ({ head = (kResume_KDescView_Idx4_GotSnd meta payload); tail = state.kont.tail; }); fuel = state.fuel - 1; };
 
-    "KResume_KDescView_Idx4_GotSnd" = c:
-      let payloadSnd = c.v; payload = c.k.payload; meta = c.k.meta; in
+    "KResume_KDescView_Idx4_GotSnd" = state:
+      let payloadSnd = state.val; payload = state.kont.head.payload; meta = state.kont.head.meta; in
       if payloadSnd.tag != "VPair" then
-        mkApply c.rest c.fuel { tag = "VRawView"; view = null; D = meta.D; }
+        { mode = "Apply"; val = { tag = "VRawView"; view = null; D = meta.D; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else
         let view = {
               idx = 4;
@@ -1672,62 +1731,57 @@ let
               label = meta.label_val;
               conLabel = meta.conLabel_val;
             };
-        in mkApply c.rest c.fuel { tag = "VRawView"; inherit view; D = meta.D; };
+        in { mode = "Apply"; val = { tag = "VRawView"; inherit view; D = meta.D; }; kont = state.kont.tail; fuel = state.fuel - 1; };
 
     # Step-by-step replication of `sumPayloadValView`.
 
-    "KSumPayloadView" = c:
-      let d = c.v; in
+    "KSumPayloadView" = state:
+      let d = state.val; in
       if d.tag == "VBootInl" then
         let sv = {
               side = "inl";
               value = d.val;
               rebuild = payload: vBootInl d.left d.right payload;
             };
-        in mkApply c.rest c.fuel { tag = "VRawSV"; inherit sv; }
+        in { mode = "Apply"; val = { tag = "VRawSV"; inherit sv; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else if d.tag == "VBootInr" then
         let sv = {
               side = "inr";
               value = d.val;
               rebuild = payload: vBootInr d.left d.right payload;
             };
-        in mkApply c.rest c.fuel { tag = "VRawSV"; inherit sv; }
+        in { mode = "Apply"; val = { tag = "VRawSV"; inherit sv; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else if d.tag == "VDescCon" then
-        mkApply (push (kResume_KSumPayloadView_GotDDesc d) c.rest) c.fuel d.D
+        { mode = "Apply"; val = d.D; kont = ({ head = (kResume_KSumPayloadView_GotDDesc d); tail = state.kont.tail; }); fuel = state.fuel - 1; }
       else
-        mkApply c.rest c.fuel { tag = "VRawSV"; sv = null; };
+        { mode = "Apply"; val = { tag = "VRawSV"; sv = null; }; kont = state.kont.tail; fuel = state.fuel - 1; };
 
-    "KResume_KSumPayloadView_GotDDesc" = c:
-      let dD = c.v; d = c.k.d; in
+    "KResume_KSumPayloadView_GotDDesc" = state:
+      let dD = state.val; d = state.kont.head.d; in
       if !(dD ? _descRef) then
-        mkApply c.rest c.fuel { tag = "VRawSV"; sv = null; }
+        { mode = "Apply"; val = { tag = "VRawSV"; sv = null; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else if !(self.isSumDescRef dD._descRef) then
-        mkApply c.rest c.fuel { tag = "VRawSV"; sv = null; }
+        { mode = "Apply"; val = { tag = "VRawSV"; sv = null; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else
-        mkApply (push (kResume_KSumPayloadView_GotDD d) c.rest) c.fuel d.d;
+        { mode = "Apply"; val = d.d; kont = ({ head = (kResume_KSumPayloadView_GotDD d); tail = state.kont.tail; }); fuel = state.fuel - 1; };
 
-    "KResume_KSumPayloadView_GotDD" = c:
-      let dDInner = c.v; d = c.k.d; in
+    "KResume_KSumPayloadView_GotDD" = state:
+      let dDInner = state.val; d = state.kont.head.d; in
       if dDInner.tag != "VBootInl" && dDInner.tag != "VBootInr" then
-        mkApply c.rest c.fuel { tag = "VRawSV"; sv = null; }
+        { mode = "Apply"; val = { tag = "VRawSV"; sv = null; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else
-        mkApply
-          (push (kResume_KSumPayloadView_GotDDVal d dDInner) c.rest)
-          c.fuel dDInner.val;
+        { mode = "Apply"; val = dDInner.val; kont = ({ head = (kResume_KSumPayloadView_GotDDVal d dDInner); tail = state.kont.tail; }); fuel = state.fuel - 1; };
 
-    "KResume_KSumPayloadView_GotDDVal" = c:
-      let dDValForced = c.v; d = c.k.d; dD = c.k.dD; in
+    "KResume_KSumPayloadView_GotDDVal" = state:
+      let dDValForced = state.val; d = state.kont.head.d; dD = state.kont.head.dD; in
       if dDValForced.tag != "VPair" then
-        mkApply c.rest c.fuel { tag = "VRawSV"; sv = null; }
+        { mode = "Apply"; val = { tag = "VRawSV"; sv = null; }; kont = state.kont.tail; fuel = state.fuel - 1; }
       else
         let pair = dDValForced; pairSnd = pair.snd; in
-        mkApply
-          (push (kPeelLiftIntroVal (payload: payload))
-            (push (kResume_KSumPayloadView_GotField d dD pairSnd) c.rest))
-          c.fuel pair.fst;
+        { mode = "Apply"; val = pair.fst; kont = ({ head = (kPeelLiftIntroVal (payload: payload)); tail = ({ head = (kResume_KSumPayloadView_GotField d dD pairSnd); tail = state.kont.tail; }); }); fuel = state.fuel - 1; };
 
-    "KResume_KSumPayloadView_GotField" = c:
-      let field = c.v; d = c.k.d; dD = c.k.dD; pairSnd = c.k.pairSnd; in
+    "KResume_KSumPayloadView_GotField" = state:
+      let field = state.val; d = state.kont.head.d; dD = state.kont.head.dD; pairSnd = state.kont.head.pairSnd; in
       let side = if dD.tag == "VBootInl" then "inl" else "inr";
           sv = {
             inherit side;
@@ -1738,58 +1792,25 @@ let
                 then vBootInl dD.left dD.right (vPair (field.rebuild payload) pairSnd)
                 else vBootInr dD.left dD.right (vPair (field.rebuild payload) pairSnd));
           };
-      in mkApply c.rest c.fuel { tag = "VRawSV"; inherit sv; };
+      in { mode = "Apply"; val = { tag = "VRawSV"; inherit sv; }; kont = state.kont.tail; fuel = state.fuel - 1; };
 
     # Iterative walker over VLiftIntro layers, accumulating the rebuild fn
-    # into the frame. Non-VLiftIntro `c.v` terminates with a VRawPeel
+    # into the frame. Non-VLiftIntro `state.val` terminates with a VRawPeel
     # carrying `{ value, rebuild }`.
-    "KPeelLiftIntroVal" = c:
-      let v = c.v; rb = c.k.rebuildAcc; in
+    "KPeelLiftIntroVal" = state:
+      let v = state.val; rb = state.kont.head.rebuildAcc; in
       if v.tag == "VLiftIntro" then
         let newRb = payload: rb (vLiftIntro v.l v.m v.eq v.A payload);
-        in mkApply (push (kPeelLiftIntroVal newRb) c.rest) c.fuel v.a
+        in { mode = "Apply"; val = v.a; kont = ({ head = (kPeelLiftIntroVal newRb); tail = state.kont.tail; }); fuel = state.fuel - 1; }
       else
-        mkApply c.rest c.fuel { tag = "VRawPeel"; value = v; rebuild = rb; };
+        { mode = "Apply"; val = { tag = "VRawPeel"; value = v; rebuild = rb; }; kont = state.kont.tail; fuel = state.fuel - 1; };
   };
-
-  stepApply = state:
-    if state.kont == null then mkDone state.fuel state.val
-    else if (state.val.tag or "") == "VThunkTm" then
-      # Force a deferred Tm before letting the active frame consume it. The
-      # current kont is preserved; the frame fires once Eval produces a forced
-      # Val. Keeps the cascade inside the driver — no fresh runMachineF entry.
-      mkEval state.kont state.fuel state.val.env state.val.tm
-    else
-      let
-        k = state.kont.head; rest = state.kont.tail;
-        v = state.val; fuel = state.fuel;
-        apply = mkApply rest fuel;
-        evalRest = mkEval rest fuel;
-        ctx = { inherit k rest v fuel apply evalRest; };
-      in applyDispatch.${k.tag} ctx;
 
   # Sentinel for the eval-only entry: any flow that lands a Q-Apply frame
   # with `qApplyDispatch.${tag}` invoking `fallback` is a routing bug — the
   # eval driver should never reach a Q-fallback path.
   evalDefaultFallback = _d: v:
     throw "tc.eval: Q-fallback reached from eval-only path (val.tag=${v.tag or "?"})";
-
-  # Unified step dispatch shared between the eval driver and the quote driver.
-  # Modes: Eval/Apply use the eval-side dispatchers; Q-Eval delegates to a
-  # `mkQEvalStep`-built closure; Q-Apply hands the state to `qApplyDispatch`
-  # or completes via `mkQDone` when the kont is empty. The `fallback`
-  # parameter is the quote-side leaf fallback consumed by Q-Eval.
-  mkStep = fallback:
-    let qEvalStep = mkQEvalStep fallback; in
-    state:
-           if state.mode == "Eval"    then stepEval  state
-      else if state.mode == "Apply"   then stepApply state
-      else if state.mode == "Q-Eval"  then qEvalStep state
-      else if state.mode == "Q-Apply" then
-        if state.kont == null
-        then mkQDone state.fuel state.tm
-        else qApplyDispatch.${state.kont.head.tag} state
-      else state;
 
   # Trace-eliding driver: a chunked `foldl'` threads only the current state,
   # so intermediate states GC immediately (the driver retains no trace).
@@ -1805,6 +1826,9 @@ let
   # frames at the 1e7 fuel ceiling, far inside the libnix stack
   # budget. A fixed-size loop at the seed length would instead accrue
   # steps/4 frames (Nix has no TCO) and overflow the 8 MiB stack.
+  # Starts at 8: the driver steps the first four transitions inline (see
+  # `driver`), so the cumulative chunk boundaries (4, 12, 28, 60, …) match a
+  # plain 4-start ladder while tiny entries never reach the foldl' at all.
   driverChunkLadder =
     let
       cap = 32768;
@@ -1813,25 +1837,44 @@ let
         if size >= cap
         then let top = { inherit chunk; next = top; }; in top
         else { inherit chunk; next = build (size * 2); };
-    in build 4;
+    in build 8;
 
+  # The complete per-iteration step: Done/Q-Done absorption, fuel check, and
+  # the unified mode dispatch fused into one lambda (the driver loop applies
+  # it once per chunk element, so every extra function layer here costs an
+  # Env + call per machine step).
+  #
   # When the driver reaches `Done` with a `VLazyDescIndAccLayer` Val, transform
   # to `Apply` with the three force-frames pushed — the cascade resolves in
   # the same driver loop (the kont stack absorbs the depth; libnix sees one
   # frame). Similarly, a `VThunkTm` at Done transitions to Eval to force the
   # deferred Tm. `Q-Done` is terminal: the quote driver consumes `state.tm`.
   # The invariant `runMachineAtF returns only forced Vals` is enforced here.
+  #
+  # Eval seq-forces `state.env`/`state.kont`: they are threaded into the next
+  # Eval state by reference, and a descent that never reads them (e.g. a deep
+  # application spine, whose env is untouched until the head variable and
+  # whose kont is consumed only on the return apply) would leave them as an
+  # N-deep chain of attribute-select thunks, forced all at once at the leaf —
+  # N-deep native recursion that overflows the C stack. Forcing each to WHNF
+  # per step keeps them flat (O(1)); the select chain never accumulates.
+  #
+  # Apply peeks for a `VThunkTm` val and forces the deferred Tm before
+  # letting the active frame consume it (kont preserved; the frame fires once
+  # Eval produces a forced Val) — the cascade stays inside the driver, no
+  # fresh runMachineF entry. Q-Eval delegates to a `mkQEvalStep`-built
+  # closure; the `fallback` parameter is the quote-side leaf fallback it
+  # consumes. Q-Apply hands the state to `qApplyDispatch` or completes via
+  # a terminal Q-Done state when the kont is empty.
   mkStepIf = fallback:
-    let unifiedStep = mkStep fallback; in
+    let qEvalStep = mkQEvalStep fallback; in
     state: _i:
       if state.mode == "Done" then
         if (state.val.tag or "") == "VLazyDescIndAccLayer" then
           let fn = state.val; in
           {
             mode = "Apply"; val = fn.step; fuel = state.fuel;
-            kont = push (kAppVV fn.i)
-              (push (kAppVV fn.d)
-                (push (kAppVV (vPair fn.prevAcc vTt)) null));
+            kont = { head = (kAppVV fn.i); tail = ({ head = (kAppVV fn.d); tail = ({ head = (kAppVV (vPair fn.prevAcc vTt)); tail = null; }); }); };
           }
         else if (state.val.tag or "") == "VThunkTm" then
           { mode = "Eval"; env = state.val.env; tm = state.val.tm;
@@ -1839,9 +1882,31 @@ let
         else state
       else if state.mode == "Q-Done" then state
       else if state.fuel <= 0 then state // { mode = "__exhausted__"; }
-      else unifiedStep state;
+      else if state.mode == "Eval" then
+        builtins.seq state.env
+          (builtins.seq state.kont (evalDispatch.${state.tm.tag} state))
+      else if state.mode == "Apply" then
+        if state.kont == null then { mode = "Done"; val = state.val; fuel = state.fuel; }
+        else if (state.val.tag or "") == "VThunkTm" then
+          { mode = "Eval"; env = state.val.env; tm = state.val.tm; kont = state.kont; fuel = state.fuel - 1; }
+        else applyDispatch.${state.kont.head.tag} state
+      else if state.mode == "Q-Eval" then qEvalStep state
+      else if state.mode == "Q-Apply" then
+        if state.kont == null
+        then { mode = "Q-Done"; fuel = state.fuel; tm = state.tm; }
+        else qApplyDispatch.${state.kont.head.tag} state
+      else state;
 
   stepIf = mkStepIf evalDefaultFallback;
+
+  # Exit predicate shared by the drivers' unrolled prefix: Done with a fully
+  # forced Val (a `VLazyDescIndAccLayer`/`VThunkTm` at Done is transformed
+  # back to work by `stepIf` on the next iteration), or a terminal Q-Done.
+  stepExited = s:
+    (s.mode == "Done"
+      && (s.val.tag or "") != "VLazyDescIndAccLayer"
+      && (s.val.tag or "") != "VThunkTm")
+    || s.mode == "Q-Done";
 
   driver = initState:
     let
@@ -1865,7 +1930,19 @@ let
         else if after.mode == "__exhausted__"
         then throw "normalization budget exceeded"
         else loop lad.next after;
-    in loop driverChunkLadder initState;
+      # Most entries are external `VThunkTm` forces finishing within a few
+      # transitions: step the first four inline, exiting at Done exactly,
+      # instead of padding them out to a full foldl' chunk.
+      s1 = stepIf initState 0;
+      s2 = stepIf s1 0;
+      s3 = stepIf s2 0;
+      s4 = stepIf s3 0;
+    in
+    if stepExited s1 then (if s1.mode == "Q-Done" then s1.tm else s1.val)
+    else if stepExited s2 then (if s2.mode == "Q-Done" then s2.tm else s2.val)
+    else if stepExited s3 then (if s3.mode == "Q-Done" then s3.tm else s3.val)
+    else if stepExited s4 then (if s4.mode == "Q-Done" then s4.tm else s4.val)
+    else loop driverChunkLadder s4;
 
   # Identical per-step work to `driver` (shares stepIf/driverChunkLadder);
   # differs only at the exit, retaining `after.fuel` for step counting.
@@ -1882,7 +1959,20 @@ let
         else if after.mode == "__exhausted__"
         then throw "normalization budget exceeded"
         else loop lad.next after;
-    in loop driverChunkLadder initState;
+      exit = s:
+        if s.mode == "Q-Done"
+        then { tm = s.tm; fuel = s.fuel; }
+        else { val = s.val; fuel = s.fuel; };
+      s1 = stepIf initState 0;
+      s2 = stepIf s1 0;
+      s3 = stepIf s2 0;
+      s4 = stepIf s3 0;
+    in
+    if stepExited s1 then exit s1
+    else if stepExited s2 then exit s2
+    else if stepExited s3 then exit s3
+    else if stepExited s4 then exit s4
+    else loop driverChunkLadder s4;
 
   runMachineF = fuel: env: tm:
     driver { mode = "Eval"; env = envFromList env; inherit tm fuel; kont = null; };
@@ -1899,22 +1989,21 @@ let
     driver { mode = "Apply"; inherit val kont fuel; };
 
   runDescIndAtF = fuel: D: motive: step: i: scrut:
-    runMachineAtF fuel (push (kDescInd D motive step i) null) scrut;
+    runMachineAtF fuel ({ head = (kDescInd D motive step i); tail = null; }) scrut;
 
   runDescIndLayerAtF = fuel: D: motive: step: ihVal: muFam: I: i: d:
     runMachineAtF fuel
-      (push (kEverywhereD vLevelZero I vLevelZero muFam motive ihVal i d)
-        (push (kDescIndLayer_GotEvResult step i d) null))
+      ({ head = (kEverywhereD vLevelZero I vLevelZero muFam motive ihVal i d); tail = ({ head = (kDescIndLayer_GotEvResult step i d); tail = null; }); })
       D;
 
   runInterpDAtF = fuel: L: I: X: i: D:
-    runMachineAtF fuel (push (kInterpD L I X i) null) D;
+    runMachineAtF fuel ({ head = (kInterpD L I X i); tail = null; }) D;
 
   runAllDAtF = fuel: L: I: K: X: M: i: d: D:
-    runMachineAtF fuel (push (kAllD L I K X M i d) null) D;
+    runMachineAtF fuel ({ head = (kAllD L I K X M i d); tail = null; }) D;
 
   runEverywhereDAtF = fuel: L: I: K: X: M: ih: i: d: D:
-    runMachineAtF fuel (push (kEverywhereD L I K X M ih i d) null) D;
+    runMachineAtF fuel ({ head = (kEverywhereD L I K X M ih i d); tail = null; }) D;
 
   # Quote sub-machine — defunctionalized read-back `Val -> Tm`.
   #
@@ -1931,8 +2020,6 @@ let
   # Tm` for Val tags whose dispatch is not (yet) inlined into
   # `qEvalStep`.
 
-  kqApp = pending: mkTm: acc:
-    { tag = "KQ_App"; inherit pending mkTm acc; };
   # `outerD` records the binder's own depth — the depth at which the
   # binder opens. The handler uses it to compute `freshVar` and the
   # body's start depth, and `KQ_Binder_Done` restores it on pop so
@@ -1955,7 +2042,7 @@ let
     { tag = "KQ_Spine_Step"; inherit spine idx; };
 
   # Chain-form VDescCon → flat-form `mkDescConChain` Tm. The setup
-  # `kqApp` quotes the 6 fixed sub-Vals (outerD + payload left/right
+  # The `KQ_App` frame quotes the 6 fixed sub-Vals (outerD + payload left/right
   # + base.{D,i,d}) as an attrset; `KQ_DescConChain_Build` then
   # receives the bundle via `state.tm`, materialises the `layers`
   # field via `genList (idx: { i = runQuoteF …; heads = map runQuoteF …; })`
@@ -2110,13 +2197,6 @@ let
     }
     else throw "qmachine: quoteElimSpec unknown elim tag: ${t}";
 
-  mkQApply = kont: fuel: d: tm:
-    { mode = "Q-Apply"; inherit kont fuel d tm; };
-  mkQEval  = kont: fuel: d: v:
-    { mode = "Q-Eval";  inherit kont fuel d v; };
-  mkQDone  = fuel: tm:
-    { mode = "Q-Done"; inherit fuel tm; };
-
   qApplyDispatch = {
     "KQ_App" = state:
       let
@@ -2125,12 +2205,10 @@ let
         acc' = k.acc ++ [ state.tm ];
       in
       if k.pending == [ ]
-      then mkQApply rest state.fuel state.d (k.mkTm acc')
+      then { mode = "Q-Apply"; kont = rest; fuel = state.fuel; d = state.d; tm = (k.mkTm acc'); }
       else
         let next = builtins.head k.pending; in
-        mkQEval
-          (push (kqApp (builtins.tail k.pending) k.mkTm acc') rest)
-          state.fuel next.d next.v;
+        { mode = "Q-Eval"; kont = ({ head = ({ tag = "KQ_App"; pending = (builtins.tail k.pending); mkTm = k.mkTm; acc = acc'; }); tail = rest; }); fuel = state.fuel; d = next.d; v = next.v; };
 
     # Materialise the binder body via a mode switch onto the shared driver:
     # Eval on `(freshVar :: closure.env, closure.body)`, with `kqResumeQuote
@@ -2143,11 +2221,10 @@ let
         domTm = state.tm;
       in
         { mode = "Eval";
-          env  = envCons (freshVar k.outerD) k.closure.env;
+          env  = { head = freshVar k.outerD; tail = k.closure.env; };
           tm   = k.closure.body;
           fuel = state.fuel - 1;
-          kont = push (kqResumeQuote (k.outerD + 1))
-            (push (kqBinderDone k.name domTm k.ctor k.outerD) rest); };
+          kont = { head = (kqResumeQuote (k.outerD + 1)); tail = ({ head = (kqBinderDone k.name domTm k.ctor k.outerD); tail = rest; }); }; };
 
     "KQ_Binder_Done" = state:
       let
@@ -2158,7 +2235,7 @@ let
           else if k.ctor == "lam"   then term.mkLam   k.name k.domTm bodyTm
           else if k.ctor == "sigma" then term.mkSigma k.name k.domTm bodyTm
           else throw "qmachine: bad binder ctor: ${k.ctor}";
-      in mkQApply rest state.fuel k.outerD tm;
+      in { mode = "Q-Apply"; kont = rest; fuel = state.fuel; d = k.outerD; tm = tm; };
 
     "KQ_Spine_Step" = state:
       let
@@ -2167,20 +2244,18 @@ let
         n = builtins.length k.spine;
       in
       if k.idx == n
-      then mkQApply rest state.fuel state.d headTm
+      then { mode = "Q-Apply"; kont = rest; fuel = state.fuel; d = state.d; tm = headTm; }
       else
         let
           e = builtins.elemAt k.spine k.idx;
           spec = quoteElimSpec state.d headTm e;
-          restAfter = push (kqSpineStep k.spine (k.idx + 1)) rest;
+          restAfter = { head = (kqSpineStep k.spine (k.idx + 1)); tail = rest; };
         in
           if spec.pending == [ ]
-          then mkQApply restAfter state.fuel state.d (spec.mkTm [ ])
+          then { mode = "Q-Apply"; kont = restAfter; fuel = state.fuel; d = state.d; tm = (spec.mkTm [ ]); }
           else
             let first = builtins.head spec.pending; in
-            mkQEval
-              (push (kqApp (builtins.tail spec.pending) spec.mkTm [ ]) restAfter)
-              state.fuel first.d first.v;
+            { mode = "Q-Eval"; kont = ({ head = ({ tag = "KQ_App"; pending = (builtins.tail spec.pending); mkTm = spec.mkTm; acc = [ ]; }); tail = restAfter; }); fuel = state.fuel; d = first.d; v = first.v; };
 
     # Builds the layers field by direct-recursive `quote` on each
     # layer's sub-Vals. Trivial Vals short-circuit at the `quote`
@@ -2208,7 +2283,7 @@ let
           payloadLeft  = setup.leftTm;
           payloadRight = setup.rightTm;
         };
-      in mkQApply rest state.fuel k.d chainTm;
+      in { mode = "Q-Apply"; kont = rest; fuel = state.fuel; d = k.d; tm = chainTm; };
   };
 
   mkQEvalStep = fallback: state:
@@ -2220,53 +2295,47 @@ let
     # the captured binder depth. No fresh `runMachineF` entry.
          if t == "VThunkTm"        then
            { mode = "Eval"; env = v.env; tm = v.tm;
-             fuel = fuel - 1; kont = push (kqResumeQuote d) kont; }
-    else if t == "VUnit"          then mkQApply kont fuel d term.mkUnit
-    else if t == "VTt"            then mkQApply kont fuel d term.mkTt
-    else if t == "VEmpty"         then mkQApply kont fuel d term.mkEmpty
-    else if t == "VBootRefl"      then mkQApply kont fuel d term.mkBootRefl
-    else if t == "VFunext"        then mkQApply kont fuel d term.mkFunext
-    else if t == "VLevel"         then mkQApply kont fuel d term.mkLevel
-    else if t == "VLevelZero"     then mkQApply kont fuel d term.mkLevelZero
-    else if t == "VString"        then mkQApply kont fuel d term.mkString
-    else if t == "VInt"           then mkQApply kont fuel d term.mkInt
-    else if t == "VFloat"         then mkQApply kont fuel d term.mkFloat
-    else if t == "VAttrs"         then mkQApply kont fuel d term.mkAttrs
-    else if t == "VPath"          then mkQApply kont fuel d term.mkPath
-    else if t == "VDerivation"    then mkQApply kont fuel d term.mkDerivation
-    else if t == "VFunction"      then mkQApply kont fuel d term.mkFunction
-    else if t == "VAny"           then mkQApply kont fuel d term.mkAny
-    else if t == "VStringLit"     then mkQApply kont fuel d (term.mkStringLit v.value)
-    else if t == "VIntLit"        then mkQApply kont fuel d (term.mkIntLit v.value)
-    else if t == "VFloatLit"      then mkQApply kont fuel d (term.mkFloatLit v.value)
-    else if t == "VAttrsLit"      then mkQApply kont fuel d term.mkAttrsLit
-    else if t == "VPathLit"       then mkQApply kont fuel d term.mkPathLit
-    else if t == "VDerivationLit" then mkQApply kont fuel d term.mkDerivationLit
-    else if t == "VFnLit"         then mkQApply kont fuel d term.mkFnLit
-    else if t == "VAnyLit"        then mkQApply kont fuel d term.mkAnyLit
+             fuel = fuel - 1; kont = { head = (kqResumeQuote d); tail = kont; }; }
+    else if t == "VUnit"          then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = term.mkUnit; }
+    else if t == "VTt"            then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = term.mkTt; }
+    else if t == "VEmpty"         then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = term.mkEmpty; }
+    else if t == "VBootRefl"      then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = term.mkBootRefl; }
+    else if t == "VFunext"        then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = term.mkFunext; }
+    else if t == "VLevel"         then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = term.mkLevel; }
+    else if t == "VLevelZero"     then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = term.mkLevelZero; }
+    else if t == "VString"        then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = term.mkString; }
+    else if t == "VInt"           then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = term.mkInt; }
+    else if t == "VFloat"         then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = term.mkFloat; }
+    else if t == "VAttrs"         then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = term.mkAttrs; }
+    else if t == "VPath"          then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = term.mkPath; }
+    else if t == "VDerivation"    then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = term.mkDerivation; }
+    else if t == "VFunction"      then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = term.mkFunction; }
+    else if t == "VAny"           then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = term.mkAny; }
+    else if t == "VStringLit"     then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = (term.mkStringLit v.value); }
+    else if t == "VIntLit"        then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = (term.mkIntLit v.value); }
+    else if t == "VFloatLit"      then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = (term.mkFloatLit v.value); }
+    else if t == "VAttrsLit"      then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = term.mkAttrsLit; }
+    else if t == "VPathLit"       then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = term.mkPathLit; }
+    else if t == "VDerivationLit" then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = term.mkDerivationLit; }
+    else if t == "VFnLit"         then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = term.mkFnLit; }
+    else if t == "VAnyLit"        then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = term.mkAnyLit; }
 
     else if t == "VPair" then
-      let fr = kqApp
-        [ { inherit d; v = v.snd; } ]
-        (ts: term.mkPair (builtins.elemAt ts 0) (builtins.elemAt ts 1))
-        [ ];
-      in mkQEval (push fr kont) fuel d v.fst
+      let fr = { tag = "KQ_App"; pending = [ { inherit d; v = v.snd; } ]; mkTm = (ts: term.mkPair (builtins.elemAt ts 0) (builtins.elemAt ts 1)); acc = [ ]; };
+      in { mode = "Q-Eval"; kont = ({ head = fr; tail = kont; }); fuel = fuel; d = d; v = v.fst; }
 
     else if t == "VPi" then
-      mkQEval (push (kqBinderDomain v.name v.closure "pi" d) kont)
-        fuel d v.domain
+      { mode = "Q-Eval"; kont = ({ head = (kqBinderDomain v.name v.closure "pi" d); tail = kont; }); fuel = fuel; d = d; v = v.domain; }
     else if t == "VLam" then
-      mkQEval (push (kqBinderDomain v.name v.closure "lam" d) kont)
-        fuel d v.domain
+      { mode = "Q-Eval"; kont = ({ head = (kqBinderDomain v.name v.closure "lam" d); tail = kont; }); fuel = fuel; d = d; v = v.domain; }
     else if t == "VSigma" then
-      mkQEval (push (kqBinderDomain v.name v.closure "sigma" d) kont)
-        fuel d v.fst
+      { mode = "Q-Eval"; kont = ({ head = (kqBinderDomain v.name v.closure "sigma" d); tail = kont; }); fuel = fuel; d = d; v = v.fst; }
 
     else if t == "VNe" then
       let headTm = term.mkVar (d - v.level - 1); in
       if v.spine == [ ]
-      then mkQApply kont fuel d headTm
-      else mkQApply (push (kqSpineStep v.spine 0) kont) fuel d headTm
+      then { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = headTm; }
+      else { mode = "Q-Apply"; kont = ({ head = (kqSpineStep v.spine 0); tail = kont; }); fuel = fuel; d = d; tm = headTm; }
 
     # VDescCon: `_canonRef` short-circuits to the canonical-app Tm
     # without forcing `.D`; `linearChain` iterates `_layers`; the
@@ -2284,14 +2353,11 @@ let
           if builtins.length params != 3
           then throw "quote: descDesc canonical reference expects three params"
           else
-            let fr = kqApp
-              [ { inherit d; v = builtins.elemAt params 1; }
+            let fr = { tag = "KQ_App"; pending = [ { inherit d; v = builtins.elemAt params 1; }
                 { inherit d; v = builtins.elemAt params 2; }
-              ]
-              (ts: term.mkDescDescAppAt
-                (builtins.elemAt ts 0) (builtins.elemAt ts 1) (builtins.elemAt ts 2))
-              [ ];
-            in mkQEval (push fr kont) fuel d (builtins.elemAt params 0)
+              ]; mkTm = (ts: term.mkDescDescAppAt
+                (builtins.elemAt ts 0) (builtins.elemAt ts 1) (builtins.elemAt ts 2)); acc = [ ]; };
+            in { mode = "Q-Eval"; kont = ({ head = fr; tail = kont; }); fuel = fuel; d = d; v = (builtins.elemAt params 0); }
         else
           if !(ref ? body)
           then throw "quote: canonical reference '${ref.id}' missing body (synthetic stamp?)"
@@ -2305,8 +2371,8 @@ let
                     bodyTm   = builtins.elemAt ts nParams; in
                 term.mkCanonApp ref.id paramTms bodyTm;
               first = builtins.head allPending;
-              fr    = kqApp (builtins.tail allPending) mkTm [ ];
-            in mkQEval (push fr kont) fuel first.d first.v
+              fr    = { tag = "KQ_App"; pending = (builtins.tail allPending); mkTm = mkTm; acc = [ ]; };
+            in { mode = "Q-Eval"; kont = ({ head = fr; tail = kont; }); fuel = fuel; d = first.d; v = first.v; }
 
       else if (v._shape or null) == "linearChain" then
         let
@@ -2318,14 +2384,11 @@ let
           # n=0 chain-form Val is conv-equal to its plain base; emit
           # plain `mkDescCon` so consumers pattern-matching `.d.tag`
           # keep working.
-          let fr = kqApp
-            [ { inherit d; v = base.i; }
+          let fr = { tag = "KQ_App"; pending = [ { inherit d; v = base.i; }
               { inherit d; v = base.d; }
-            ]
-            (ts: term.mkDescCon
-              (builtins.elemAt ts 0) (builtins.elemAt ts 1) (builtins.elemAt ts 2))
-            [ ];
-          in mkQEval (push fr kont) fuel d base.D
+            ]; mkTm = (ts: term.mkDescCon
+              (builtins.elemAt ts 0) (builtins.elemAt ts 1) (builtins.elemAt ts 2)); acc = [ ]; };
+          in { mode = "Q-Eval"; kont = ({ head = fr; tail = kont; }); fuel = fuel; d = d; v = base.D; }
         else if n == 1 then
           # Single layer — emit plain `mkDescCon` so consumers
           # pattern-matching `.d.tag` keep working. Payload:
@@ -2349,9 +2412,9 @@ let
               else throw "qmachine chain-form n=1: bad payloadTag ${v._payloadTag}";
             payloadTm = payloadCtor (qf v._payloadLeft) (qf v._payloadRight) innerTm;
             outerTm   = term.mkDescCon (qf v.D) (qf v.i) payloadTm;
-          in mkQApply kont fuel d outerTm
+          in { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = outerTm; }
         else
-          # Chain-form Val (n≥2) → `mkDescConChain` Tm. Setup `kqApp`
+          # Chain-form Val (n≥2) → `mkDescConChain` Tm. Setup a `KQ_App` frame
           # quotes the 6 chain-wide sub-Vals (outerD + payload
           # left/right + base.{D,i,d}); the `KQ_DescConChain_Build`
           # terminal frame materialises per-layer Tms via recursive
@@ -2380,10 +2443,8 @@ let
             };
             first      = builtins.head sixSubVals;
             buildFrame = kqDescConChainBuild fallback layers n d payloadTag;
-            setupApp   = kqApp (builtins.tail sixSubVals) setupMkTm [ ];
-          in mkQEval
-            (push setupApp (push buildFrame kont))
-            fuel first.d first.v
+            setupApp   = { tag = "KQ_App"; pending = (builtins.tail sixSubVals); mkTm = setupMkTm; acc = [ ]; };
+          in { mode = "Q-Eval"; kont = ({ head = setupApp; tail = ({ head = buildFrame; tail = kont; }); }); fuel = fuel; d = first.d; v = first.v; }
 
       else
         # Raw recursive VDescCon node → canonicalize via the shared
@@ -2408,14 +2469,11 @@ let
           # the outer `v` directly as plain `mkDescCon` so consumers
           # pattern-matching `.d.tag` keep working; `quote v.d`
           # recursively packages the layer payload.
-          let fr = kqApp
-            [ { inherit d; v = v.i; }
+          let fr = { tag = "KQ_App"; pending = [ { inherit d; v = v.i; }
               { inherit d; v = v.d; }
-            ]
-            (ts: term.mkDescCon
-              (builtins.elemAt ts 0) (builtins.elemAt ts 1) (builtins.elemAt ts 2))
-            [ ];
-          in mkQEval (push fr kont) fuel d v.D
+            ]; mkTm = (ts: term.mkDescCon
+              (builtins.elemAt ts 0) (builtins.elemAt ts 1) (builtins.elemAt ts 2)); acc = [ ]; };
+          in { mode = "Q-Eval"; kont = ({ head = fr; tail = kont; }); fuel = fuel; d = d; v = v.D; }
         else
           # Deeper canonical-fallback (n≥2) → `mkDescConChain` Tm via
           # the same Build pathway as chain-form. Peel guarantees the
@@ -2442,12 +2500,10 @@ let
             };
             first      = builtins.head sixSubVals;
             buildFrame = kqDescConChainBuild fallback layers n d payloadTag;
-            setupApp   = kqApp (builtins.tail sixSubVals) setupMkTm [ ];
-          in mkQEval
-            (push setupApp (push buildFrame kont))
-            fuel first.d first.v
+            setupApp   = { tag = "KQ_App"; pending = (builtins.tail sixSubVals); mkTm = setupMkTm; acc = [ ]; };
+          in { mode = "Q-Eval"; kont = ({ head = setupApp; tail = ({ head = buildFrame; tail = kont; }); }); fuel = fuel; d = first.d; v = first.v; }
 
-    else mkQApply kont fuel d (fallback d v);
+    else { mode = "Q-Apply"; kont = kont; fuel = fuel; d = d; tm = (fallback d v); };
 
   # The quote driver shares `mkStepIf` with the eval driver, parameterized by
   # the caller's `fallback` so Q-Eval's leaf dispatch routes correctly. The
@@ -2634,6 +2690,88 @@ in
       expr = (runMachineF self.defaultFuel [ ]
         (T.mkApp (T.mkLam "x" T.mkUnit (T.mkVar 0)) T.mkTt)).tag;
       expected = "VTt";
+    };
+
+    # `ev`'s bounded tier (tier 3) builds Vals directly via the shared
+    # `eval*V` builders instead of a 2-step machine entry. `fst (pair X tt)`
+    # routes X through `ev` (the pair arm's components are ev-thunks);
+    # parity against a bare machine run of X pins both paths to the same
+    # Val. Empty list = every probe converts.
+    "machine-ev-direct-parity" = {
+      expr =
+        let
+          viaEv = x: runMachineF self.defaultFuel [ ]
+            (T.mkFst (T.mkPair x T.mkTt));
+          bare = x: runMachineF self.defaultFuel [ ] x;
+          lv1 = T.mkLevelSuc T.mkLevelZero;
+          probes = {
+            lam = T.mkLam "x" T.mkUnit (T.mkVar 0);
+            pi = T.mkPi "x" T.mkUnit T.mkUnit;
+            sigma = T.mkSigma "x" T.mkUnit T.mkUnit;
+            pair = T.mkPair T.mkTt T.mkTt;
+            boot-sum = T.mkBootSum T.mkUnit T.mkEmpty;
+            boot-inl = T.mkBootInl T.mkUnit T.mkUnit T.mkTt;
+            boot-inr = T.mkBootInr T.mkUnit T.mkUnit T.mkTt;
+            boot-eq = T.mkBootEq T.mkUnit T.mkTt T.mkTt;
+            squash = T.mkSquash T.mkUnit;
+            squash-intro = T.mkSquashIntro T.mkTt;
+            mu = T.mkMu T.mkUnit T.mkTt T.mkTt;
+            U1 = T.mkU lv1;
+            desc = T.mkDesc T.mkLevelZero T.mkUnit;
+            lift-collapse = T.mkLift T.mkLevelZero T.mkLevelZero T.mkBootRefl T.mkUnit;
+            lift = T.mkLift T.mkLevelZero lv1 T.mkBootRefl T.mkUnit;
+            lift-intro = T.mkLiftIntro T.mkLevelZero lv1 T.mkBootRefl T.mkUnit T.mkTt;
+            ann-passthrough = T.mkAnn
+              (T.mkApp (T.mkLam "y" T.mkUnit (T.mkVar 0)) T.mkTt) T.mkUnit;
+          };
+        in
+        builtins.filter
+          (n: !(fx.tc.conv.conv 0 (viaEv probes.${n}) (bare probes.${n})))
+          (builtins.attrNames probes);
+      expected = [ ];
+    };
+
+    "machine-ev-direct-pi-plicity" = {
+      expr =
+        (runMachineF self.defaultFuel [ ]
+          (T.mkFst (T.mkPair
+            (T.mkPi "x" T.mkUnit T.mkUnit // { _plicity = "implicit"; })
+            T.mkTt)))._plicity or null;
+      expected = "implicit";
+    };
+
+    # Meta-bearing ann over a deferred-tag term, forced through the
+    # bounded tier: the sidecar must land on the real Val — a missing
+    # forceVal would glue it onto a VThunkTm wrapper and the driver's
+    # unwrap would silently discard it.
+    "machine-ev-direct-ann-sidecar" = {
+      expr =
+        let
+          v = runMachineF self.defaultFuel [ ]
+            (T.mkFst (T.mkPair
+              (T.mkAnn (T.mkApp (T.mkLam "y" T.mkUnit (T.mkVar 0)) T.mkTt)
+                T.mkUnit
+                // { _label = "probe"; })
+              T.mkTt));
+        in
+        { label = v._label or null; tag = v.tag; };
+      expected = { label = "probe"; tag = "VTt"; };
+    };
+
+    # Bounded-tier forces never touch a counting run's budget (the eager
+    # force previously ran on a fresh defaultFuel, equally invisible);
+    # pinned at the pre-bypass step counts.
+    "machine-ev-direct-step-neutral" = {
+      expr = {
+        lamSub = (runMachineCountedF self.defaultFuel [ ]
+          (T.mkFst (T.mkPair (T.mkLam "x" T.mkUnit (T.mkVar 0)) T.mkTt))).steps;
+        annSub = (runMachineCountedF self.defaultFuel [ ]
+          (T.mkFst (T.mkPair
+            (T.mkAnn (T.mkApp (T.mkLam "y" T.mkUnit (T.mkVar 0)) T.mkTt)
+              T.mkUnit)
+            T.mkTt))).steps;
+      };
+      expected = { lamSub = 3; annSub = 3; };
     };
 
     # Deep let/beta chains build an N-deep cons environment in the

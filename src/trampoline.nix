@@ -75,8 +75,12 @@ let
 
   # -- Interpreter --
 
+  # Singleton queues skip applyQueue/viewl entirely: a Leaf's only
+  # continuation receives the value directly (applyQueue would return
+  # that application unchanged since there is no tail).
   resumeWithQueue = q: value:
     if q._variant == "Identity" then pure value
+    else if q._variant == "Leaf" then q.fn value
     else applyQueue q value 0;
 
   # Resume with a value or computation. If the resume is a computation,

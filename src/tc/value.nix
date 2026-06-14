@@ -22,6 +22,11 @@ let
   # evaluator entry points is O(1) on already-normalized environments.
   envNil = null;
   envCons = x: e: { head = x; tail = e; };
+  # `envCons`/`envNth` are also INLINED at the hot evaluator arms — as
+  # `{ head = …; tail = …; }` literals at the extension sites and as an
+  # unrolled i≤7 select at the var sites. That inlining IS the frame-cut;
+  # do not re-wrap those sites into a call, it puts back the env frame the
+  # inline removes.
   envLen = e:
     if e == null then 0
     else builtins.length (builtins.genericClosure {
@@ -30,7 +35,25 @@ let
         if item.cur.tail == null then [ ]
         else [ { key = item.key + 1; cur = item.cur.tail; } ];
     });
-  envNth = e: i: (builtins.foldl' (acc: _: acc.tail) e (builtins.genList (x: x) i)).head;
+  # Small indices (de Bruijn refs are recently-bound-dominant) take an
+  # unrolled select chain — no genList range, no foldl' frame. The de
+  # Bruijn INDEX stays shallow even when env DEPTH grows large (measured
+  # max index 12 on the hot workload); i≤7 covers ~98% of lookups, so the
+  # unroll stops there and rarer deeper lookups fall to the iterative
+  # tail, which also keeps the C-stack/call-depth guarantee on
+  # pathological indices.
+  envNth = e: i:
+    if i == 0 then e.head
+    else if i == 1 then e.tail.head
+    else if i == 2 then e.tail.tail.head
+    else if i == 3 then e.tail.tail.tail.head
+    else if i == 4 then e.tail.tail.tail.tail.head
+    else if i == 5 then e.tail.tail.tail.tail.tail.head
+    else if i == 6 then e.tail.tail.tail.tail.tail.tail.head
+    else if i == 7 then e.tail.tail.tail.tail.tail.tail.tail.head
+    else (builtins.foldl' (acc: _: acc.tail)
+      e.tail.tail.tail.tail.tail.tail.tail.tail
+      (builtins.genList (x: x) (i - 8))).head;
   envReverse = xs: builtins.foldl' (acc: x: [ x ] ++ acc) [ ] xs;
   envFromList = xs:
     if builtins.isList xs

@@ -25,13 +25,14 @@ in
     };
 
     extend = api.leaf {
-      description = "extend: append a binding to a typing context — pushes a fresh de Bruijn variable at depth `ctx.depth`, the new type at index 0, and the name at index 0 of `names`; depth increments by one.";
+      description = "extend: append a binding to a typing context — pushes a fresh de Bruijn variable at depth `ctx.depth`, the new type at index 0, and the name at index 0 of `names`; depth increments by one. The entry-yield budget `eb` carries through unchanged (consumed only at `check`/`infer` heads).";
       signature = "extend : Ctx -> String -> Val -> Ctx";
       value = ctx: name: ty: {
         env = V.envCons (V.freshVar ctx.depth) ctx.env;
         types = [ ty ] ++ ctx.types;
         names = [ name ] ++ (ctx.names or [ ]);
         depth = ctx.depth + 1;
+        eb = ctx.eb or 0;
       };
     };
 

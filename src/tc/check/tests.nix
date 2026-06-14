@@ -554,6 +554,241 @@ in
         (checkTm ctx0 deepLet vUnit).tag;
       expected = "let";
     };
+    # Homogeneous-ctor-chain flatness under the strided head-yield: layers
+    # between stride multiples return Pure and must be applied iteratively
+    # from the trampoline queue, not by nesting host frames — a regression
+    # here overflows max-call-depth well before N=10000.
+    "stress-checktm-nat-chain-10000-flat" = {
+      expr = (checkTm ctx0 (H.elab (H.natLit 10000)) natTyVal).tag;
+      expected = "desc-con";
+    };
+    # Wide-term flatness under the entry-yield budget: the budget divides
+    # among children (Σ child budgets ≤ b − 1), so a full binary pair tree
+    # admits ≤ entryBudget un-yielded entries per native segment. A
+    # per-path depth counter instead admits arity^budget native frames —
+    # this term overflows the host stack under that design.
+    "stress-checktm-pair-bushy-flat" = {
+      expr =
+        let
+          pairTree = d:
+            if d == 0 then T.mkTt
+            else let s = pairTree (d - 1); in T.mkPair s s;
+          sigTree = d:
+            if d == 0 then T.mkUnit
+            else let s = sigTree (d - 1); in T.mkSigma "_" s s;
+        in
+        (checkTm ctx0 (pairTree 14) (E.eval [ ] (sigTree 14))).tag;
+      expected = "pair";
+    };
+    # app divides the entry budget by 2 per level (infer fn + check arg),
+    # so a deep spine re-yields every ~log2(entryBudget) entries and must
+    # stay host-stack-flat at N=10000.
+    "stress-infertm-app-spine-10000-flat" = {
+      expr =
+        let
+          deepPi = builtins.foldl' (cod: _: T.mkPi "x" T.mkUnit cod)
+            T.mkUnit
+            (builtins.genList (x: x) 10000);
+          ctxF = extend ctx0 "f" (E.eval [ ] deepPi);
+          spine = builtins.foldl' (f: _: T.mkApp f T.mkTt)
+            (T.mkVar 0)
+            (builtins.genList (x: x) 10000);
+        in
+        (inferTm ctxF spine).type.tag;
+      expected = "VUnit";
+    };
+    # Transit-economy pin for the entry-yield budget on a fanout-1 lam
+    # tower (windows of 64 entries). A 256-tower has 4 window boundaries:
+    # the top-level yield plus one fused push chain per interior window;
+    # entries inside windows above a deeper boundary still bracket (one
+    # pop each), while the terminal window is fully Pure — zero transits.
+    # A 64-tower is a single terminal window: the head yield only.
+    "check-entry-budget-transit-economy" = {
+      expr =
+        let
+          countTransits = n:
+            let
+              deepPi = builtins.foldl' (cod: _: T.mkPi "x" T.mkUnit cod)
+                T.mkUnit
+                (builtins.genList (x: x) n);
+              deepLam = builtins.foldl' (body: _: T.mkLam "x" T.mkUnit body)
+                T.mkTt
+                (builtins.genList (x: x) n);
+              r = fx.trampoline.handle
+                {
+                  state = { pushes = 0; pops = 0; yields = 0; };
+                  handlers = {
+                    tcBlamePush = { state, ... }: {
+                      resume = null;
+                      state = state // { pushes = state.pushes + 1; };
+                    };
+                    tcBlamePop = { state, ... }: {
+                      resume = null;
+                      state = state // { pops = state.pops + 1; };
+                    };
+                    tcYield = { state, ... }: {
+                      resume = null;
+                      state = state // { yields = state.yields + 1; };
+                    };
+                  };
+                }
+                (self.check ctx0 deepLam (E.eval [ ] deepPi));
+            in
+            { inherit (r.state) pushes pops yields; };
+        in
+        { tower256 = countTransits 256; tower64 = countTransits 64; };
+      expected = {
+        tower256 = { pushes = 3; pops = 192; yields = 1; };
+        tower64 = { pushes = 0; pops = 0; yields = 1; };
+      };
+    };
+    # An error deep inside a bypassed window must surface with the same
+    # blame structure as the always-yield discipline: the typeError makes
+    # every enclosing bind Impure, so the brackets fire identically.
+    # Expected values pinned from the pre-budget checker.
+    "check-entry-budget-error-blame-identical" = {
+      expr =
+        let
+          deepPi = builtins.foldl' (cod: _: T.mkPi "x" T.mkUnit cod)
+            T.mkString
+            (builtins.genList (x: x) 8);
+          deepLam = builtins.foldl' (body: _: T.mkLam "x" T.mkUnit body)
+            T.mkTt
+            (builtins.genList (x: x) 8);
+          r = checkTm ctx0 deepLam (E.eval [ ] deepPi);
+          childPath = err:
+            if builtins.length (err.children or [ ]) > 0
+            then
+              let c = builtins.elemAt err.children 0; in
+              [ c.position.tag ] ++ childPath c.error
+            else [ ];
+        in
+        {
+          msg = r.msg;
+          trace = map (e: e.position.tag) r.error.detail.trace;
+          childPath = childPath r.error;
+        };
+      expected = {
+        msg = "no inference rule for term shape tt";
+        trace = [ "Sub" ] ++ builtins.genList (_: "LamBody") 8;
+        childPath = builtins.genList (_: "LamBody") 8 ++ [ "Sub" ];
+      };
+    };
+    # Bushy type-former flatness under checkTypeLevel's entry budget: a
+    # full binary sigma tree (2^14 entries) divides the budget by 2 per
+    # level, so un-yielded entries per native segment stay ≤ entryBudget.
+    # A per-path counter admits arity^budget native frames here.
+    "stress-checktypelevel-sigma-bushy-flat" = {
+      expr =
+        let
+          sigTree = d:
+            if d == 0 then T.mkUnit
+            else let s = sigTree (d - 1); in T.mkSigma "_" s s;
+        in
+        (runCheck (checkType ctx0 (sigTree 14))).tag;
+      expected = "sigma";
+    };
+    # Transit-economy pin for the budgeted checkTypeLevel on a fanout-1
+    # squash tower (windows of 64 entries). The former arms recurse via
+    # plain `bind` (no blame positions), so windows produce no brackets;
+    # each window boundary survives as exactly one yield transit: a
+    # 64-tower is one terminal window (the head yield only), a 256-tower
+    # has four boundaries. `funext`/`level-zero` are leaves: fully Pure,
+    # zero transits.
+    "checktypelevel-entry-budget-transit-economy" = {
+      expr =
+        let
+          countTransits = comp:
+            let
+              r = fx.trampoline.handle
+                {
+                  state = { pushes = 0; pops = 0; yields = 0; };
+                  handlers = {
+                    tcBlamePush = { state, ... }: {
+                      resume = null;
+                      state = state // { pushes = state.pushes + 1; };
+                    };
+                    tcBlamePop = { state, ... }: {
+                      resume = null;
+                      state = state // { pops = state.pops + 1; };
+                    };
+                    tcYield = { state, ... }: {
+                      resume = null;
+                      state = state // { yields = state.yields + 1; };
+                    };
+                  };
+                }
+                comp;
+            in
+            { inherit (r.state) pushes pops yields; };
+          squashTower = n:
+            builtins.foldl' (acc: _: T.mkSquash acc) T.mkUnit
+              (builtins.genList (x: x) n);
+        in
+        {
+          sq64 = countTransits (checkTypeLevel ctx0 (squashTower 64));
+          sq256 = countTransits (checkTypeLevel ctx0 (squashTower 256));
+          funext = countTransits (self.infer ctx0 T.mkFunext);
+          lvlZero = countTransits (self.infer ctx0 T.mkLevelZero);
+        };
+      expected = {
+        sq64 = { pushes = 0; pops = 0; yields = 1; };
+        sq256 = { pushes = 0; pops = 0; yields = 4; };
+        funext = { pushes = 0; pops = 0; yields = 0; };
+        lvlZero = { pushes = 0; pops = 0; yields = 0; };
+      };
+    };
+    # Errors inside budgeted helper windows must surface with the same
+    # blame structure as the always-yield discipline. Expected values
+    # pinned from the pre-budget checker: a pi tower whose innermost
+    # codomain is not a type (former arms carry no blame positions), and
+    # a boot-sum-elim motive whose lam body is not a type (the Motive
+    # bracket fires identically through the budgeted checkMotive).
+    "checktypelevel-entry-budget-error-blame-identical" = {
+      expr =
+        let
+          childPath = err:
+            if builtins.length (err.children or [ ]) > 0
+            then
+              let c = builtins.elemAt err.children 0; in
+              [ c.position.tag ] ++ childPath c.error
+            else [ ];
+          badPi = builtins.foldl' (cod: _: T.mkPi "x" T.mkUnit cod)
+            T.mkTt
+            (builtins.genList (x: x) 8);
+          r = runCheck (checkTypeLevel ctx0 badPi);
+          badElim = T.mkBootSumElim T.mkUnit T.mkUnit
+            (T.mkLam "s" (T.mkBootSum T.mkUnit T.mkUnit) T.mkTt)
+            (T.mkLam "a" T.mkUnit T.mkTt)
+            (T.mkLam "b" T.mkUnit T.mkTt)
+            (T.mkBootInl T.mkTt);
+          rm = inferTm ctx0 badElim;
+        in
+        {
+          pi = {
+            msg = r.msg;
+            trace = map (e: e.position.tag) r.error.detail.trace;
+            childPath = childPath r.error;
+          };
+          motive = {
+            msg = rm.msg;
+            trace = map (e: e.position.tag) rm.error.detail.trace;
+            childPath = childPath rm.error;
+          };
+        };
+      expected = {
+        pi = {
+          msg = "no inference rule for term shape tt";
+          trace = [ ];
+          childPath = [ ];
+        };
+        motive = {
+          msg = "no inference rule for term shape tt";
+          trace = [ "Motive" ];
+          childPath = [ "Motive" ];
+        };
+      };
+    };
 
     "roundtrip-tt" = {
       expr = Q.nf [ ] (Q.nf [ ] T.mkTt) == Q.nf [ ] T.mkTt;

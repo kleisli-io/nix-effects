@@ -35,7 +35,9 @@
 # to reconstruct the nested trace.
 #
 # Narrow dependencies, satisfying the trust-boundary discipline:
-#   fx.kernel          — send, bind, pure
+#   fx.kernel          — bind, pure
+#   fx.comp            — isPure, impure
+#   fx.queue           — singleton, append
 #   fx.trampoline      — handle (tests only)
 #   fx.diag.error      — nestUnder, appendTrace
 #   fx.diag.positions  — withRule (rule decoration on Position)
@@ -48,10 +50,17 @@ let
   D = fx.diag.error;
   P = fx.diag.positions;
   isPure = fx.comp.isPure;
+  impure = fx.comp.impure;
+  queue = fx.queue;
 
   pushEff = "tcBlamePush";
   popEff = "tcBlamePop";
   yieldEff = "tcYield";
+
+  # Constant effect requests, hoisted so per-bracket construction
+  # allocates no effect attrset for the pop/yield sides.
+  popEffect = { name = popEff; param = null; };
+  yieldEffect = { name = yieldEff; param = null; };
 
   # Wrap an emitted error: append `{ rule = position.rule, position }`
   # to the Kernel-layer trace (no-op on Generic/Contract), then
@@ -59,19 +68,80 @@ let
   wrapWithTrace = position: err:
     D.nestUnder position (D.appendTrace (position.rule or null) position err);
 
+  # Pop bracket continuation: receives `m`'s value, forces `k v` to
+  # WHNF — the same WHNF the trampoline would force one transit later,
+  # at the same host depth — and absorbs the matching pop into its head
+  # effect (the pop-side mirror of the adjacent-head fusion in `scoped`;
+  # nothing observable fires between the pop and that head):
+  #   - pop-over-push: a sibling bracket's push follows the pop, so the
+  #     two transits collapse into one frame REPLACE — `{ swap = param }`
+  #     pops one frame and pushes `param`'s frame(s) in a single transit.
+  #   - pop-over-yield: the pop transit is itself a trampoline boundary,
+  #     so a yield-first continuation keeps its deferral without a
+  #     separate yield transit.
+  # The result's queue passes through verbatim (no append — no lazy
+  # tower to seq, `__rawResume` preserved); the queue the enclosing
+  # applyQueue appends after the bracket is outside this construction
+  # either way. Pop-headed results cannot occur: pop effects are
+  # constructed only here and consumed only as trampoline transits,
+  # never re-entering as a continuation's WHNF.
+  popThen = k: v:
+    let r = k v; in
+    if isPure r then impure popEffect (queue.singleton (_: r))
+    else
+      let en = r.effect.name; in
+      if en == pushEff then
+        impure { name = pushEff; param = { swap = r.effect.param; }; } r.queue
+      else if en == yieldEff then
+        impure popEffect r.queue
+      else
+        impure popEffect (queue.singleton (_: r));
+
+  # Head yield: makes a recursive checker entry effect-first (O(1) WHNF)
+  # so the bindP `isPure` fast path stays flat on recursive arms. The
+  # bracket in `scoped` absorbs a yield-first `m` into its push transit.
+  yieldWrap = comp: impure yieldEffect (queue.singleton (_: comp));
+
   # A pure `m` threads its value straight to `k` (no frame: it raises
   # nothing, so push-then-pop is a no-op). An impure `m` is bracketed with
-  # push/pop of a wrap frame; `tcBlamePush` is the outermost send, so this
-  # is `Impure` in O(1) and forces `m` only to WHNF — the recursion in `m`
-  # defers into the trampoline. `k` runs after the pop, so an error it
-  # raises escapes this frame. The fast path is forcing-safe only because
+  # push/pop of a wrap frame; `tcBlamePush` is the outermost effect, so
+  # this is `Impure` in O(1) and forces `m` only to WHNF — the recursion
+  # in `m` defers into the trampoline. `k` runs after the pop, so an error
+  # it raises escapes this frame. The fast path is forcing-safe only because
   # recursive checker entries are effect-first at their head (see `_yield`).
+  #
+  # Adjacent-head fusion: nothing can fire between this bracket's push and
+  # `m`'s own head effect, so when that head is itself a push or a yield
+  # the two transits collapse into one — observationally invisible (all
+  # three effects resume `null` and `queue.append` preserves `__rawResume`):
+  #   - push-over-push: nested brackets merge into ONE push whose param is
+  #     the frame chain `{ w; next = inner-param }` (ending in a plain wrap
+  #     function); the handler conses every frame in a single transit. N
+  #     nested bindPs cost one transit — the same quotient `bindPChain`
+  #     establishes for the sequential case.
+  #   - push-over-yield: the push transit is itself a trampoline boundary,
+  #     so a yield-first `m` (every recursive checker entry) keeps its
+  #     deferral without a separate yield transit.
+  # The fused queue is forced to WHNF at construction (`seq`): a lazy
+  # `append` here would left-nest one thunk per fused layer and the first
+  # consumer would force the whole tower in one native descent. Forcing
+  # eagerly cascades exactly one level — `m` is already WHNF from the
+  # `isPure` test, so by induction its queue field is too.
   scoped = wrapErr: m: k:
     if isPure m then k m.value
     else
-      K.bind (K.send pushEff wrapErr) (_:
-        K.bind m (v:
-          K.bind (K.send popEff null) (_: k v)));
+      let en = m.effect.name; in
+      if en == pushEff then
+        let q = queue.append m.queue (queue.singleton (popThen k)); in
+        builtins.seq q
+          (impure { name = pushEff; param = { w = wrapErr; next = m.effect.param; }; } q)
+      else if en == yieldEff then
+        let q = queue.append m.queue (queue.singleton (popThen k)); in
+        builtins.seq q
+          (impure { name = pushEff; param = wrapErr; } q)
+      else
+        impure { name = pushEff; param = wrapErr; }
+          (queue.singleton (_: K.bind m (popThen k)));
 
   bindP = position: scoped (wrapWithTrace position);
 
@@ -98,11 +168,43 @@ let
   emptyBlame = _: null;
   consBlame = w: rest: (_: { head = w; tail = rest; });
 
+  # Walk a fused frame chain (`{ w; next }` cells ending in a plain wrap
+  # function) iteratively, consing each frame onto `blame`. The chain head
+  # is the outermost frame, so head-first consing leaves the innermost
+  # frame at the blame head. genericClosure (not recursion) keeps the walk
+  # host-stack-flat on arbitrarily deep fusion chains; `acc` cells force
+  # lazily one at a time when the blame stack is consumed.
+  pushFrames = param: blame:
+    let
+      steps = builtins.genericClosure {
+        startSet = [{ key = 0; p = param; acc = blame; }];
+        operator = s:
+          if builtins.isFunction s.p then [ ]
+          else [{ key = s.key + 1; p = s.p.next; acc = consBlame s.p.w s.acc; }];
+      };
+      last = builtins.elemAt steps (builtins.length steps - 1);
+    in
+    consBlame last.p last.acc;
+
   # Blame-frame stack in handler state (head = innermost live frame).
+  # A push param is a plain wrap function (one frame), a `{ swap }`
+  # frame replace from pop-over-push fusion in `popThen` (pop one frame,
+  # then push `swap`'s frame(s)), or a fused frame chain from
+  # push-over-push fusion in `scoped`.
   blameHandlers = {
     "${pushEff}" = { param, state }: {
       resume = null;
-      state = state // { blame = consBlame param (state.blame or emptyBlame); };
+      state = state // {
+        blame =
+          if builtins.isFunction param
+          then consBlame param (state.blame or emptyBlame)
+          else if param ? swap then
+            let rest = (state.blame null).tail; in
+            if builtins.isFunction param.swap
+            then consBlame param.swap rest
+            else pushFrames param.swap rest
+          else pushFrames param (state.blame or emptyBlame);
+      };
     };
     "${popEff}" = { param, state }: {
       resume = null;
@@ -195,7 +297,7 @@ in
       signature = "_yield : { handlers : Handlers, wrap : Computation a -> Computation a }";
       value = {
         handlers = { "${yieldEff}" = { param, state }: { resume = null; inherit state; }; };
-        wrap = comp: K.bind (K.send yieldEff null) (_: comp);
+        wrap = yieldWrap;
       };
     };
   };
@@ -658,6 +760,169 @@ in
           map (e: e.position.tag) err.__surfacedError.detail.trace;
         expected = [ "AppHead" "DArgSort" ];
       };
+      # -- Adjacent-head fusion: push-over-push collapses N nested
+      # brackets into one transit. A 10000-deep nest must stay
+      # host-stack-flat (fused chain walked iteratively) and preserve
+      # the per-layer trace/wrap structure.
+      "bindP-fused-deep-nest-outermost-edge" = {
+        expr =
+          let
+            err = runSurfacing (
+              builtins.foldl'
+                (acc: _: bindP P.DArgSort acc K.pure)
+                (raiseDiag sampleKernelErr)
+                (builtins.genList (x: x) 10000));
+          in
+          (builtins.elemAt err.__surfacedError.children 0).position;
+        expected = P.DArgSort;
+      };
+      # Trace forcing walks a per-layer `++` chain (lazy in real use, so
+      # depth-bounded here — the 10000-deep edge test above covers
+      # construction/walk flatness).
+      "bindP-fused-deep-nest-trace-has-all-frames" = {
+        expr =
+          let
+            err = runSurfacing (
+              builtins.foldl'
+                (acc: _: bindP P.DArgSort acc K.pure)
+                (raiseDiag sampleKernelErr)
+                (builtins.genList (x: x) 2000));
+          in
+          builtins.length err.__surfacedError.detail.trace;
+        expected = 2000;
+      };
+      # Push-over-yield absorption: a yield-first `m` is bracketed
+      # without a separate yield transit — runSurfacing installs NO
+      # tcYield handler, so a non-absorbed yield would throw loudly.
+      "bindP-absorbs-yield-success-value" = {
+        expr = runSurfacing (
+          bindP P.DArgSort (yieldWrap (K.pure 9)) (x: K.pure (x + 1)));
+        expected = 10;
+      };
+      "bindP-absorbs-yield-error-wrapped" = {
+        expr =
+          let
+            err = runSurfacing (
+              bindP P.DArgSort
+                (yieldWrap (raiseDiag sampleKernelErr))
+                K.pure);
+          in
+          (builtins.elemAt err.__surfacedError.children 0).position;
+        expected = P.DArgSort;
+      };
+
+      # -- Pop-side fusion: the matching pop is absorbed into the head
+      # effect of the continuation's computation (see `popThen`).
+      # pop-over-yield: a yield-first continuation after a bracket keeps
+      # its deferral inside the pop transit — runSurfacing installs NO
+      # tcYield handler, so a non-absorbed yield would throw loudly.
+      "bindP-pop-absorbs-continuation-yield" = {
+        expr = runSurfacing (
+          bindP P.DArgSort (yieldWrap (K.pure 1)) (_: yieldWrap (K.pure 2)));
+        expected = 2;
+      };
+      # The absorbed pop's state effect still lands: `k` runs after the
+      # pop, so an error it raises surfaces unwrapped.
+      "bindP-pop-absorbed-yield-error-unwrapped" = {
+        expr =
+          let
+            err = runSurfacing (
+              bindP P.DArgSort
+                (yieldWrap (K.pure 1))
+                (_: yieldWrap (raiseDiag sampleKernelErr)));
+          in
+          err.__surfacedError;
+        expected = sampleKernelErr;
+      };
+      # pop-over-push: a sibling bracket's push follows the pop — one
+      # swap transit replaces the frame.
+      "bindP-swap-sibling-success" = {
+        expr = runSurfacing (
+          bindP P.DArgSort (yieldWrap (K.pure 1))
+            (x: bindP P.DArgBody (yieldWrap (K.pure (x + 1))) K.pure));
+        expected = 2;
+      };
+      # An error in the second sibling is wrapped under ONLY the second
+      # position — the swap must have popped the first frame.
+      "bindP-swap-sibling-error-wrapped-under-second-only" = {
+        expr =
+          let
+            err = runSurfacing (
+              bindP P.DArgSort (yieldWrap (K.pure 1))
+                (_: bindP P.DArgBody (raiseDiag sampleKernelErr) K.pure));
+          in
+          err.__surfacedError;
+        expected = D.nestUnder P.DArgBody
+          (D.appendTrace null P.DArgBody sampleKernelErr);
+      };
+      # Swap whose pushed param is itself a push-over-push frame chain:
+      # the handler walks the chain after dropping the popped frame.
+      "bindP-swap-with-fused-chain-param" = {
+        expr =
+          let
+            err = runSurfacing (
+              bindP P.DArgSort (yieldWrap (K.pure 1))
+                (_: bindP P.PiDom
+                  (bindP P.DArgBody (raiseDiag sampleKernelErr) K.pure)
+                  K.pure));
+          in
+          map (e: e.position.tag) err.__surfacedError.detail.trace;
+        expected = [ "DArgBody" "PiDom" ];
+      };
+      # Non-push/yield continuation head: the pop stays its own transit
+      # and the continuation's error surfaces unwrapped.
+      "bindP-pop-then-other-effect-unfused" = {
+        expr =
+          let
+            err = runSurfacing (
+              bindP P.DArgSort
+                (yieldWrap (K.pure 1))
+                (_: raiseDiag sampleKernelErr));
+          in
+          err.__surfacedError;
+        expected = sampleKernelErr;
+      };
+      # A deep sequential sibling chain runs one swap transit per step —
+      # host-stack-flat at 10000.
+      "bindP-swap-deep-sibling-chain" = {
+        expr =
+          let
+            go = i:
+              if i == 0 then K.pure 0
+              else bindP P.DArgSort (yieldWrap (K.pure i)) (_: go (i - 1));
+          in
+          runSurfacing (go 10000);
+        expected = 0;
+      };
+      # Transit-economy pin: N sibling brackets cost N push transits
+      # (1 initial + N-1 swaps) and ONE pop — a non-fused chain would
+      # pay N pops.
+      "bindP-swap-transit-count" = {
+        expr =
+          let
+            go = i:
+              if i == 0 then K.pure 0
+              else bindP P.DArgSort (yieldWrap (K.pure i)) (_: go (i - 1));
+            r = TR.handle
+              {
+                state = { pushes = 0; pops = 0; };
+                handlers = {
+                  "${pushEff}" = { state, ... }: {
+                    resume = null;
+                    state = state // { pushes = state.pushes + 1; };
+                  };
+                  "${popEff}" = { state, ... }: {
+                    resume = null;
+                    state = state // { pops = state.pops + 1; };
+                  };
+                };
+              }
+              (go 5);
+          in
+          { inherit (r.state) pushes pops; };
+        expected = { pushes = 5; pops = 1; };
+      };
+
       "bindP-generic-error-passes-through-without-trace" = {
         expr =
           let

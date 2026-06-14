@@ -61,8 +61,18 @@ let
     if fuel <= 0 then throw "normalization budget exceeded"
     else
       let env = envFromList envIn; t = tm.tag; f = fuel - 1; ev = self_.evalF f env; in
-      if t == "var" then envNth env tm.idx
-      else if t == "let" then self_.evalF f (envCons (ev tm.val) env) tm.body
+      if t == "var" then
+        # inlined envNth i≤7 — frame-cut, see value.nix; do not re-wrap
+        (if tm.idx == 0 then env.head
+         else if tm.idx == 1 then env.tail.head
+         else if tm.idx == 2 then env.tail.tail.head
+         else if tm.idx == 3 then env.tail.tail.tail.head
+         else if tm.idx == 4 then env.tail.tail.tail.tail.head
+         else if tm.idx == 5 then env.tail.tail.tail.tail.tail.head
+         else if tm.idx == 6 then env.tail.tail.tail.tail.tail.tail.head
+         else if tm.idx == 7 then env.tail.tail.tail.tail.tail.tail.tail.head
+         else envNth env tm.idx)
+      else if t == "let" then self_.evalF f ({ head = ev tm.val; tail = env; }) tm.body
       else if t == "ann" then
         let
           v = ev tm.term;
@@ -512,7 +522,7 @@ in
   scope = {
     defaultFuel = 10000000;
 
-    instantiateF = fuel: cl: arg: self.evalF fuel (envCons arg cl.env) cl.body;
+    instantiateF = fuel: cl: arg: self.evalF fuel ({ head = arg; tail = cl.env; }) cl.body;
 
     # Re-export the outer-`let` chain-`_layers` slicer as a self member so
     # `machine.nix` (`self.effLayers`) and `conv.nix` (`E.effLayers`) share

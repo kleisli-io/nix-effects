@@ -803,7 +803,7 @@ api.namespace {
     };
     mkDescConWithCert = api.leaf {
       value = mkDescConWithCert;
-      description = "mkDescConWithCert: `mkDescCon` carrying a `Squash`-truncated guard certificate — used by `fx.types.Certified` to thread refinement proofs through the kernel.";
+      description = "mkDescConWithCert: `mkDescCon` carrying a `Squash`-truncated guard certificate — threads a refinement guard's decision proof through the kernel for description-backed Record/Variant constructors (`descConCertified`).";
       signature = "mkDescConWithCert : Tm -> Tm -> Tm -> Tm -> Tm  -- D, i, payload, cert";
     };
     mkDescConChain = api.leaf {

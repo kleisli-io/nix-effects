@@ -5,7 +5,7 @@
 { lib, fx, examplesDocs ? { } }:
 
 let
-  # -- Test 1: "Your first type" (TargetClass example) --
+  # "Your first type" (TargetClass example)
   targetClassExample =
     let
       inherit (fx.types) String refined;
@@ -21,7 +21,7 @@ let
     && builtins.isList result.state
     && builtins.length result.state > 0;
 
-  # -- Test 2: "Your first dependent type" (DepRecord + TargetClass) --
+  # "Your first dependent type" (DepRecord + TargetClass)
   depRecordExample =
     let
       inherit (fx.types) Bool String ListOf DepRecord refined;
@@ -49,7 +49,7 @@ let
     in
     ok == true && bad == false;
 
-  # -- Test 3: "Your first effect" (state doubling) --
+  # "Your first effect" (state doubling)
   stateEffectExample =
     let
       inherit (fx) pure bind run;
@@ -59,7 +59,7 @@ let
     in
     result.value == 21 && result.state == 42;
 
-  # -- Test 4: "A first generated datatype" --
+  # "A first generated datatype"
   generatedDatatypeExample =
     let
       H = fx.types.hoas;
@@ -76,7 +76,7 @@ let
     && Aspect ? aspect
     && Aspect ? _dtypeMeta;
 
-  # -- Test 5: Verified aspect validator --
+  # Verified aspect validator
   verifiedAspectExample =
     let
       H = fx.types.hoas;
@@ -110,14 +110,14 @@ let
       requires = [ ];
     });
 
-  # -- Test 6: API surface sanity ("What's in the box") --
+  # API surface sanity ("What's in the box")
   apiSurfaceSanity =
     fx ? pure && fx ? bind && fx ? send && fx ? map && fx ? seq
     && fx ? run && fx ? handle
     && fx ? adapt && fx ? adaptHandlers
     && fx ? types && fx ? effects && fx ? stream;
 
-  # -- Test 7: API docs skip semantic data inside module wrappers --
+  # API docs skip semantic data inside module wrappers
   apiDocsSkipsPlainWrapperData =
     let
       raw = fx.api.mk {
@@ -136,7 +136,7 @@ let
     && docs.child.doc == "child"
     && !(docs ? data);
 
-  # -- Test 8: examples render from a separate docs tree --
+  # examples render from a separate docs tree
   examplesAreSeparateFromApiDocs =
     examplesDocs ? proofBasics
     && examplesDocs.proofBasics ? sections;

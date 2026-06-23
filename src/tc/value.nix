@@ -895,7 +895,7 @@ api.namespace {
     };
     vDescConTagged = api.leaf {
       value = vDescConTagged;
-      description = "vDescConTagged: value-domain `descCon` carrying a `Squash`-truncated guard certificate — surfaces refinement proofs on `fx.types.Certified` values.";
+      description = "vDescConTagged: value-domain `descCon` carrying a `Squash`-truncated guard certificate — the value-domain dual surfacing refinement guard proofs on description-backed Record/Variant constructors.";
       signature = "vDescConTagged : Val -> Val -> Val -> Val -> Val  -- D, i, payload, cert";
     };
     vDescConChain = api.leaf {

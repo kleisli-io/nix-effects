@@ -1,29 +1,13 @@
 # nix-effects type system integration tests
-#
-# Tests 1-10:  Core types — refinement, Vector, universe hierarchy, Record,
-#              Maybe, DepRecord, make, Variant, predicates, universe safety
-# Tests 11-15: Effectful type checking — Pi.checkAt effects, strict handler,
-#              collecting handler, logging handler, same-comp-different-handler
-# Tests 16-25: Semantic unification — Sigma/Certified/Vector/DepRecord through
-#              handlers, foundation.validate
-# Tests 26-33: Adequacy & contracts — guard/verifier agreement for Pi, Sigma,
-#              Certified, DepRecord, primitives, Vector; checkAt vs validate
-# Tests 34-46: Edge cases — malformed inputs, Pi domain failure, certifyE
-#              crash/wrong-base, pairE, compose+checkAt, handler diversity
-# Tests 47-50: Short-circuit totality — crash-path guard (Sigma with crashing
-#              snd family), adequacy on short-circuit path, Pi.checkAt
-#              short-circuit, universe trust boundary
 { lib, fx }:
 
 let
   inherit (fx) types;
   H = types.hoas;
+  R = fx.tc.kernel.reflect;
 
-  # All-pass handler: the canonical handler for testing the adequacy invariant.
-  # Resumes with the check result so computation proceeds naturally, while
-  # tracking via boolean state whether ALL typeCheck effects passed.
-  #
-  # Adequacy invariant: T.check v ⟺ (validationPassHandle(T.validate v)).state
+  # All-pass handler: resumes with the check result, tracks via boolean state
+  # whether ALL typeCheck effects passed.
   validationPassHandle = comp:
     fx.handle
       {
@@ -34,7 +18,7 @@ let
       }
       comp;
 
-  # -- Test 1: ValidPort refinement type --
+  # ValidPort refinement type
   validPortTest =
     let
       ValidPort = types.refined "ValidPort" types.Int (types.inRange 1 65535);
@@ -44,7 +28,7 @@ let
     && !(types.check ValidPort 0)
     && !(types.check ValidPort (-1));
 
-  # -- Test 2: Vector 3 Int (Vector is now a Pi type family) --
+  # Vector 3 Int (Vector is now a Pi type family)
   vectorTest =
     let V3I = (types.Vector types.Int).apply 3;
     in types.check V3I [ 1 2 3 ]
@@ -52,14 +36,14 @@ let
       && !(types.check V3I [ 1 2 3 4 ])
       && !(types.check V3I [ 1 "two" 3 ]);
 
-  # -- Test 3: Universe hierarchy --
+  # Universe hierarchy
   universeTest =
     types.check types.Type_1 types.Type_0
     && types.check types.Type_2 types.Type_1
     && !(types.check types.Type_0 types.Type_0)
     && !(types.check types.Type_1 types.Type_1);
 
-  # -- Test 4: Record + refinement composition --
+  # Record + refinement composition
   recordRefinementTest =
     let
       ServiceConfig = types.Record {
@@ -71,14 +55,14 @@ let
     && !(types.check ServiceConfig { name = "nginx"; port = 99999; })
     && !(types.check ServiceConfig { name = "nginx"; });
 
-  # -- Test 5: Maybe type --
+  # Maybe type
   maybeTest =
     let MaybeInt = types.Maybe types.Int;
     in types.check MaybeInt null
       && types.check MaybeInt 42
       && !(types.check MaybeInt "hello");
 
-  # -- Test 6: Dependent record (nested Sigma pairs) --
+  # Dependent record (nested Sigma pairs)
   depRecordTest =
     let
       SizedList = types.DepRecord [
@@ -93,19 +77,19 @@ let
             });
         }
       ];
-      # Values are now nested Sigma: { fst = n; snd = items; }
+      # Values are nested Sigma: { fst = n; snd = items; }
     in
     types.check SizedList { fst = 2; snd = [ "a" "b" ]; }
     && !(types.check SizedList { fst = 3; snd = [ "a" "b" ]; });
 
-  # -- Test 7: make throws on invalid --
+  # make throws on invalid
   makeThrowsTest =
     let
       result = builtins.tryEval (types.make types.Int "not-an-int");
     in
       !result.success;
 
-  # -- Test 8: Variant type --
+  # Variant type
   variantTest =
     let
       Shape = types.Variant {
@@ -117,7 +101,7 @@ let
     && types.check Shape { _tag = "rect"; value = { w = 3.0; h = 4.0; }; }
     && !(types.check Shape { _tag = "triangle"; value = null; });
 
-  # -- Test 9: Predicate combinators --
+  # Predicate combinators
   predicateTest =
     let
       EvenPositive = types.refined "EvenPositive" types.Int
@@ -127,7 +111,7 @@ let
     && !(types.check EvenPositive 3)
     && !(types.check EvenPositive (-2));
 
-  # -- Test 10: Universe tower safety --
+  # Universe tower safety
   universeSafetyTest =
     let
       noSelfMembership = !(types.check (types.typeAt 5) (types.typeAt 5));
@@ -136,16 +120,7 @@ let
     in
     noSelfMembership && chain;
 
-  # ===========================================================================
-  # EFFECTFUL TYPE CHECKING TESTS
-  # ===========================================================================
-  #
-  # These demonstrate type checking as an algebraic effect. Same
-  # computation, different handler, different behavior. Handler pattern
-  # follows Plotkin & Pretnar (2009); freer-monad encoding is Kiselyov
-  # & Ishii (2015).
-
-  # -- Test 11: Pi.checkAt returns Computation with typeCheck effect --
+  # Pi.checkAt returns Computation with typeCheck effect
   piCheckAtIsEffectful =
     let
       piT = types.Pi { domain = types.Int; codomain = _: types.Int; universe = 0; };
@@ -155,7 +130,7 @@ let
     && comp.effect.name == "typeCheck"
     && comp.effect.param.type.name == "Int";
 
-  # -- Test 12: Strict handler — passes when types match --
+  # Strict handler — passes when types match
   strictHandlerPassesTest =
     let
       piT = types.Pi { domain = types.Int; codomain = _: types.Int; universe = 0; };
@@ -171,7 +146,7 @@ let
     in
     result.value == 42;
 
-  # -- Test 13: Collecting handler — gathers codomain error --
+  # Collecting handler — gathers codomain error
   collectingHandlerTest =
     let
       piT = types.Pi { domain = types.Int; codomain = _: types.String; universe = 0; };
@@ -190,7 +165,7 @@ let
     builtins.length result.state == 1
     && (builtins.head result.state).expected == "String";
 
-  # -- Test 14: Logging handler — records ALL checks --
+  # Logging handler — records ALL checks
   loggingHandlerTest =
     let
       piT = types.Pi { domain = types.Int; codomain = _: types.Int; universe = 0; };
@@ -213,7 +188,7 @@ let
     && (builtins.elemAt result.state 0).passed
     && (builtins.elemAt result.state 1).passed;
 
-  # -- Test 15: Same computation, different handler, different outcome --
+  # Same computation, different handler, different outcome
   sameCompDifferentHandlerTest =
     let
       piT = types.Pi { domain = types.Int; codomain = _: types.String; universe = 0; };
@@ -249,7 +224,7 @@ let
     && builtins.elemAt logResult.state 0 == true   # domain passes
     && builtins.elemAt logResult.state 1 == false; # codomain fails
 
-  # -- Test 16: Sigma.validate emits typeCheck on failure --
+  # Sigma.validate emits typeCheck on failure
   # Under fail-only emission, a well-typed pair walks through without
   # emitting; a snd mismatch (Int ≠ String) drives the failure path.
   sigmaValidateIsEffectful =
@@ -260,7 +235,7 @@ let
     !(fx.isPure comp)
     && comp.effect.name == "typeCheck";
 
-  # -- Test 17: Sigma.validate through strict handler --
+  # Sigma.validate through strict handler
   sigmaStrictHandlerTest =
     let
       sigT = types.Sigma {
@@ -284,25 +259,25 @@ let
     in
     result.value == { fst = 2; snd = [ "a" "b" ]; };
 
-  # -- Test 18: Certified.certifyE is effectful --
+  # Certified.certifyE is pure on a valid value
   certifiedCertifyETest =
     let
       PosInt = types.Certified {
         base = types.Int;
-        predicate = x: x > 0;
+        predicate = R.intPositive;
         name = "PosInt";
       };
       comp = PosInt.certifyE 5;
     in
-    !(fx.isPure comp)
-    && comp.effect.name == "typeCheck";
+    fx.isPure comp
+    && comp.value == { fst = 5; snd = null; };
 
-  # -- Test 19: Certified.certifyE through collecting handler --
+  # Certified.certifyE through collecting handler
   certifiedCertifyECollectingTest =
     let
       PosInt = types.Certified {
         base = types.Int;
-        predicate = x: x > 0;
+        predicate = R.intPositive;
         name = "PosInt";
       };
       comp = PosInt.certifyE 5;
@@ -316,15 +291,15 @@ let
         }
         comp;
     in
-    result.value == { fst = 5; snd = true; }
-    && builtins.length result.state == 0; # no errors
+    result.value == { fst = 5; snd = null; }
+    && builtins.length result.state == 0; # valid → pure, no effects
 
-  # -- Test 20: Certified.certifyE failing predicate through collecting handler --
+  # Certified.certifyE failing predicate through collecting handler
   certifiedCertifyEFailTest =
     let
       PosInt = types.Certified {
         base = types.Int;
-        predicate = x: x > 0;
+        predicate = R.intPositive;
         name = "PosInt";
       };
       # -5 is int (base passes) but predicate fails
@@ -341,7 +316,7 @@ let
     in
     builtins.length result.state == 1; # predicate check fails
 
-  # -- Test 21: Vector-as-Pi has checkAt, validate, and other Pi operations --
+  # Vector-as-Pi has checkAt, validate, and other Pi operations
   vectorIsEffectful =
     let
       vecFamily = types.Vector types.Int;
@@ -353,7 +328,7 @@ let
     && vecFamily ? domain
     && vecFamily ? codomain;
 
-  # -- Test 22: Vector.checkAt through strict handler --
+  # Vector.checkAt through strict handler
   vectorCheckAtStrictTest =
     let
       vecFamily = types.Vector types.Int;
@@ -371,7 +346,7 @@ let
     in
     result.value == [ 0 1 2 ];
 
-  # -- Test 23: DepRecord-as-Sigma has validate (effectful) --
+  # DepRecord-as-Sigma has validate (effectful)
   depRecordIsEffectful =
     let
       recT = types.DepRecord [
@@ -381,7 +356,7 @@ let
     in
     recT ? validate && recT ? proj1 && recT ? proj2;
 
-  # -- Test 24: DepRecord.validate through strict handler --
+  # DepRecord.validate through strict handler
   depRecordValidateStrictTest =
     let
       recT = types.DepRecord [
@@ -401,7 +376,7 @@ let
     in
     result.value == { fst = 42; snd = "hello"; };
 
-  # -- Test 25: foundation.validate is now effectful (not result attrset) --
+  # foundation.validate is effectful (not a result attrset)
   foundationValidateIsEffectful =
     let
       comp = types.validate types.Int 42 "test-context";
@@ -410,14 +385,7 @@ let
     && comp.effect.name == "typeCheck"
     && comp.effect.param.context == "test-context";
 
-  # ===========================================================================
-  # ADEQUACY AND CONTRACT TESTS
-  # ===========================================================================
-  #
-  # These demonstrate the formal framework: one type system, two judgment
-  # forms (guard/verifier), connected by the adequacy invariant.
-
-  # -- Test 26: Pi.validate is the effectful guard (1 arg, auto-derived) --
+  # Pi.validate is the effectful guard (1 arg, auto-derived)
   # Under fail-only emission, the guard is observed by driving the
   # failure path with a non-function value (42 against Π(Int)).
   piValidateIsGuard =
@@ -432,7 +400,7 @@ let
     # not the elimination check
     && comp.effect.param.context == "Π(Int)";
 
-  # -- Test 27: Pi adequacy — check and validate agree --
+  # Pi adequacy — check and validate agree
   # Adequacy uses the all-pass handler's state (bool) rather than
   # `.value`: under fail-only emission, `pure v` keeps `.value = v`
   # (the validated value) and never invokes the handler, so the
@@ -447,11 +415,9 @@ let
     (types.check piT f) == (validationPassHandle (piT.validate f)).state
     && (types.check piT notF) == (validationPassHandle (piT.validate notF)).state;
 
-  # -- Test 28: Sigma adequacy — check and validate agree --
-  #
-  # Sigma has a CUSTOM verifier that returns `pure v` (the original pair),
-  # not a bool. The adequacy invariant uses the all-pass handler's boolean
-  # state, not result.value, to uniformly test all type constructors.
+  # Sigma adequacy — check and validate agree
+  # Sigma.validate returns `pure v` (the pair), not a bool; adequacy is tested
+  # via handler state, not result.value.
   sigmaAdequacy =
     let
       sigT = types.Sigma { fst = types.Int; snd = _: types.String; universe = 0; };
@@ -463,8 +429,8 @@ let
     # Bad pair: check fails, some effect fails
     && (types.check sigT bad) == (validationPassHandle (sigT.validate bad)).state;
 
-  # -- Test 29: checkAt differs from validate — a bad function passes
-  #    validate (it IS a function) but fails checkAt (wrong codomain) --
+  # checkAt differs from validate — a bad function passes
+  #    validate (it IS a function) but fails checkAt (wrong codomain)
   piCheckAtDiffersFromValidate =
     let
       piT = types.Pi { domain = types.Int; codomain = _: types.String; universe = 0; };
@@ -491,21 +457,21 @@ let
     && builtins.elemAt checkAtResult.state 0 == "pass"
     && builtins.elemAt checkAtResult.state 1 == "fail:Π codomain (Π(Int))";
 
-  # -- Test 30: Certified adequacy — check and validate agree --
+  # Certified adequacy — check and validate agree
   certifiedAdequacy =
     let
       PosInt = types.Certified {
         base = types.Int;
-        predicate = x: x > 0;
+        predicate = R.intPositive;
         name = "PosInt";
       };
-      good = { fst = 5; snd = true; };
-      bad = { fst = -1; snd = true; };
+      good = { fst = 5; snd = null; };
+      bad = { fst = -1; snd = null; };
     in
     (types.check PosInt good) == (validationPassHandle (PosInt.validate good)).state
     && (types.check PosInt bad) == (validationPassHandle (PosInt.validate bad)).state;
 
-  # -- Test 31: DepRecord adequacy — check and validate agree --
+  # DepRecord adequacy — check and validate agree
   depRecordAdequacy =
     let
       recT = types.DepRecord [
@@ -518,12 +484,12 @@ let
     (types.check recT good) == (validationPassHandle (recT.validate good)).state
     && (types.check recT bad) == (validationPassHandle (recT.validate bad)).state;
 
-  # -- Test 32: Primitive (Int) adequacy — auto-derived validate --
+  # Primitive (Int) adequacy — auto-derived validate
   primitiveAdequacy =
     (types.check types.Int 42) == (validationPassHandle (types.Int.validate 42)).state
     && (types.check types.Int "bad") == (validationPassHandle (types.Int.validate "bad")).state;
 
-  # -- Test 33: Vector (Pi-based) adequacy — auto-derived validate --
+  # Vector (Pi-based) adequacy — auto-derived validate
   vectorAdequacy =
     let
       vecFamily = types.Vector types.Int;
@@ -533,32 +499,28 @@ let
     (types.check vecFamily good) == (validationPassHandle (vecFamily.validate good)).state
     && (types.check vecFamily bad) == (validationPassHandle (vecFamily.validate bad)).state;
 
-  # ===========================================================================
-  # EXHAUSTIVE EDGE-CASE TESTS
-  # ===========================================================================
-
-  # -- Test 34: Sigma.validate on empty attrset --
+  # Sigma.validate on empty attrset
   sigmaValidateEmpty =
     let
       sigT = types.Sigma { fst = types.Int; snd = _: types.String; universe = 0; };
     in
     (validationPassHandle (sigT.validate { })).state == false;
 
-  # -- Test 35: Sigma.validate on {fst=1} (missing snd) --
+  # Sigma.validate on {fst=1} (missing snd)
   sigmaValidateMissingSnd =
     let
       sigT = types.Sigma { fst = types.Int; snd = _: types.String; universe = 0; };
     in
     (validationPassHandle (sigT.validate { fst = 1; })).state == false;
 
-  # -- Test 36: Sigma.validate on {snd=1} (missing fst) --
+  # Sigma.validate on {snd=1} (missing fst)
   sigmaValidateMissingFst =
     let
       sigT = types.Sigma { fst = types.Int; snd = _: types.String; universe = 0; };
     in
     (validationPassHandle (sigT.validate { snd = 1; })).state == false;
 
-  # -- Test 37: Sigma.validate wrong snd through collecting handler --
+  # Sigma.validate wrong snd through collecting handler
   # Deep recursive validation: snd type's own validate produces the context
   sigmaValidateWrongSnd =
     let
@@ -576,7 +538,7 @@ let
     builtins.length result.state == 1
     && builtins.head result.state == "Int";
 
-  # -- Test 38: Pi.checkAt domain failure — strict handler throws --
+  # Pi.checkAt domain failure — strict handler throws
   piCheckAtDomainFailure =
     let
       piT = types.Pi { domain = types.Int; codomain = _: types.Int; universe = 0; };
@@ -594,36 +556,25 @@ let
     in
       !result.success;
 
-  # -- Test 39: certifyE with crashing predicate — caught by tryEval guard --
-  certifyECrashingPredicate =
+  # a raw host-lambda predicate yields no proof → rejected at construction
+  certifiedRejectsRawPredicate =
     let
-      CrashType = types.Certified {
+      mk = types.Certified {
         base = types.Int;
         predicate = _: builtins.throw "crash";
         name = "CrashType";
       };
-      result = fx.handle
-        {
-          handlers.typeCheck = { param, state }:
-            if param.type.check param.value
-            then { resume = true; inherit state; }
-            else { resume = false; state = state ++ [ param.context ]; };
-          state = [ ];
-        }
-        (CrashType.certifyE 5);
     in
-    # Base passes (5 is Int), predicate crash caught → proof check fails
-    builtins.length result.state == 1
-    && builtins.head result.state == "Certified predicate (CrashType)";
+    !(builtins.tryEval mk).success;
 
-  # -- Test 40: certifyE with wrong base type --
+  # certifyE with wrong base type
   # certifyE short-circuits on base failure: predicate is never evaluated
   # (it may crash on wrong-typed input via uncatchable cross-type comparison).
   certifyEWrongBase =
     let
       PosInt = types.Certified {
         base = types.Int;
-        predicate = x: builtins.isInt x && x > 0;
+        predicate = R.intPositive;
         name = "PosInt";
       };
       result = fx.handle
@@ -640,7 +591,7 @@ let
     builtins.length result.state == 1
     && builtins.elemAt result.state 0 == "Int";
 
-  # -- Test 41: DepRecord.validate non-attrset --
+  # DepRecord.validate non-attrset
   depRecordValidateNonAttrset =
     let
       recT = types.DepRecord [
@@ -650,7 +601,7 @@ let
     in
     (validationPassHandle (recT.validate 42)).state == false;
 
-  # -- Test 42: DepRecord.validate missing field --
+  # DepRecord.validate missing field
   depRecordValidateMissingField =
     let
       recT = types.DepRecord [
@@ -660,7 +611,7 @@ let
     in
     (validationPassHandle (recT.validate { fst = 42; })).state == false;
 
-  # -- Test 43: DepRecord.validate wrong field types --
+  # DepRecord.validate wrong field types
   # DepRecord inherits Sigma's short-circuit: when fst fails, snd type
   # family is never evaluated (it depends on fst value being well-typed).
   depRecordValidateWrongTypes =
@@ -682,7 +633,7 @@ let
     # fst fails → short-circuit, snd type family never evaluated
     builtins.length result.state == 1;
 
-  # -- Test 44: pairE through handlers — success and failure --
+  # pairE through handlers — success and failure
   pairEThroughHandlers =
     let
       sigT = types.Sigma { fst = types.Int; snd = _: types.String; universe = 0; };
@@ -708,7 +659,7 @@ let
     && builtins.length badResult.state == 1
     && builtins.head badResult.state == "String";
 
-  # -- Test 45: Pi compose + checkAt interaction --
+  # Pi compose + checkAt interaction
   composeCheckAt =
     let
       piF = types.Pi { domain = types.Int; codomain = _: types.String; name = "f"; universe = 0; };
@@ -723,7 +674,7 @@ let
     && result.state == true
     && result.value == 2;
 
-  # -- Test 46: Handler diversity — Sigma through strict/collecting/logging --
+  # Handler diversity — Sigma through strict/collecting/logging
   # Under fail-only emission, only failing components emit. With
   # bad = {fst=42; snd=99}, fst (Int) passes silently and snd (String)
   # fails — exactly one typeCheck event reaches the handler.
@@ -774,7 +725,7 @@ let
     && builtins.length logResult.state == 1
     && (builtins.head logResult.state).passed == false;
 
-  # -- Test 47: Sigma short-circuit guards crash path --
+  # Sigma short-circuit guards crash path
   # The snd type family crashes on non-int fst. Without short-circuit,
   # validate would crash Nix. With short-circuit, we get a clean failure.
   sigmaShortCircuitGuardsCrash =
@@ -795,7 +746,7 @@ let
     in
     result.state == false;
 
-  # -- Test 48: Sigma adequacy with wrong fst (short-circuit path) --
+  # Sigma adequacy with wrong fst (short-circuit path)
   sigmaAdequacyWrongFst =
     let
       sigT = types.Sigma { fst = types.Int; snd = _: types.String; universe = 0; };
@@ -805,7 +756,7 @@ let
       # Both return false — adequacy holds on the short-circuit path.
     (types.check sigT badFst) == (validationPassHandle (sigT.validate badFst)).state;
 
-  # -- Test 49: Pi.checkAt short-circuit on domain failure --
+  # Pi.checkAt short-circuit on domain failure
   piCheckAtShortCircuit =
     let
       piT = types.Pi { domain = types.Int; codomain = _: types.Int; universe = 0; };
@@ -827,7 +778,7 @@ let
     # Result is null sentinel (f was never applied)
     && result.value == null;
 
-  # -- Test 50: Universe trust boundary — typeAt guards missing fields --
+  # Universe trust boundary — typeAt guards missing fields
   universeTrustBoundary =
     let
       fakeNoUniverse = { _tag = "Type"; name = "fake"; check = _: true; };
@@ -841,7 +792,7 @@ let
     # Well-formed fake type → accepted (kernel verifies level, guard verifies universe)
     && types.check types.Type_0 wellFormed;
 
-  # -- Test 51: ListOf validate is effectful when an element fails --
+  # ListOf validate is effectful when an element fails
   # Walker contract: per-element checks are predicate-based; typeCheck
   # effects emit only on failure. An all-pass list is therefore pure;
   # any failing element makes the computation effectful at that index.
@@ -852,7 +803,7 @@ let
     in
       !(fx.isPure (listT.validate [ 1 "bad" 3 ]));
 
-  # -- Test 52: ListOf collecting handler gets per-element errors with indices --
+  # ListOf collecting handler gets per-element errors with indices
   listOfCollectingPerElement =
     let
       IntT = types.mkType { name = "Int"; kernelType = H.int_; };
@@ -866,10 +817,7 @@ let
           state = [ ];
         }
         (listT.validate [ 1 "bad" 3 "worse" ]);
-      # Inspect path segments via tag/idx instead of constructor equality.
-      # User-facing pattern: the typeCheck handler reads `param.path` and
-      # asserts shapes without depending on the internal `diag.positions`
-      # module that emits them.
+      # Inspect path segments via tag/idx; avoids coupling to internal diag.positions.
       seg0 = builtins.elemAt (builtins.elemAt result.state 0).path 0;
       seg1 = builtins.elemAt (builtins.elemAt result.state 1).path 0;
     in
@@ -879,7 +827,7 @@ let
     && seg0.tag == "Elem" && seg0.idx == 1
     && seg1.tag == "Elem" && seg1.idx == 3;
 
-  # -- Test 53: ListOf empty list validate returns pure --
+  # ListOf empty list validate returns pure
   listOfEmptyValidatePure =
     let
       IntT = types.mkType { name = "Int"; kernelType = H.int_; };
@@ -887,7 +835,7 @@ let
     in
     fx.isPure (listT.validate [ ]);
 
-  # -- Test 54: ListOf non-list input totality --
+  # ListOf non-list input totality
   listOfNonListTotality =
     let
       IntT = types.mkType { name = "Int"; kernelType = H.int_; };
@@ -897,7 +845,7 @@ let
     !(fx.isPure (listT.validate 42))
     && (listT.validate 42).effect.name == "typeCheck";
 
-  # -- Test 55: ListOf adequacy (check agrees with all-pass handler) --
+  # ListOf adequacy (check agrees with all-pass handler)
   listOfAdequacy =
     let
       IntT = types.mkType { name = "Int"; kernelType = H.int_; };
@@ -920,17 +868,7 @@ let
     && testAdequacy [ ]          # empty
     && testAdequacy "not-list"; # wrong type
 
-  # ===========================================================================
-  # DEEP RECURSIVE VALIDATION TESTS
-  # ===========================================================================
-  #
-  # Tests 56-61: Verify that Sigma.verify, pairE, and certifyE recursively
-  # call sub-type .validate (not atomic .check), producing deep blame through
-  # compound types like ListOf. Grounded in Findler & Felleisen (2002):
-  # contract checking decomposes recursively; Plotkin & Pretnar (2009):
-  # effects compose via bind (N+M effects, not 2).
-
-  # -- Test 56: Sigma with ListOf fst — collecting handler gets per-element errors --
+  # Sigma with ListOf fst — collecting handler gets per-element errors
   sigmaDeepCollecting =
     let
       sigT = types.Sigma {
@@ -952,7 +890,7 @@ let
     builtins.length result.state == 1
     && fx.types.generic.path.renderAll (builtins.head result.state) == "Σ.fst[1]";
 
-  # -- Test 57: DepRecord with dependent ListOf — per-element blame through nested Sigma --
+  # DepRecord with dependent ListOf — per-element blame through nested Sigma
   depRecordDeepBlame =
     let
       recT = types.DepRecord [
@@ -983,7 +921,7 @@ let
     builtins.length result.state == 1
     && (lib.last (builtins.head result.state)).segment == "[1]";
 
-  # -- Test 58: Adequacy holds for Sigma with compound sub-types --
+  # Adequacy holds for Sigma with compound sub-types
   sigmaDeepAdequacy =
     let
       sigT = types.Sigma {
@@ -997,7 +935,7 @@ let
     (types.check sigT good) == (validationPassHandle (sigT.validate good)).state
     && (types.check sigT bad) == (validationPassHandle (sigT.validate bad)).state;
 
-  # -- Test 59: Deep validation + short-circuit interaction --
+  # Deep validation + short-circuit interaction
   # fst is compound (ListOf), snd type family crashes on wrong-typed fst.
   # Deep validation produces per-element effects, then short-circuits.
   sigmaDeepShortCircuit =
@@ -1032,7 +970,7 @@ let
     && builtins.length mixedResult.state == 1
     && fx.types.generic.path.renderAll (builtins.head mixedResult.state) == "Σ.fst[1]";
 
-  # -- Test 60: pairE with compound types gets per-element blame --
+  # pairE with compound types gets per-element blame
   pairEDeepBlame =
     let
       sigT = types.Sigma {
@@ -1059,33 +997,19 @@ let
     # Good: all pass, adequacy holds
     && goodResult.state == true;
 
-  # -- Test 61: certifyE with compound base gets deep blame --
-  certifyEDeepBlame =
+  # no KernelPred decides a list property, so a compound-base raw
+  # predicate yields no proof → rejected at construction (use `refined`).
+  certifiedRejectsCompoundRawPredicate =
     let
-      ListOfInts = types.ListOf types.Int;
-      CertifiedList = types.Certified {
-        base = ListOfInts;
+      mk = types.Certified {
+        base = types.ListOf types.Int;
         predicate = lst: builtins.length lst > 0;
         name = "NonEmptyIntList";
       };
-      result = fx.handle
-        {
-          handlers.typeCheck = { param, state }:
-            if param.type.check param.value
-            then { resume = true; inherit state; }
-            else { resume = false; state = state ++ [ param.path ]; };
-          state = [ ];
-        }
-        (CertifiedList.certifyE [ 1 "bad" 3 ]);
     in
-    # Per-element blame from ListOf flows through certifyE.
-      # Base fails at index 1 → short-circuit, predicate never evaluated.
-      # certifyE delegates to base.validate (1-arg), so the ListOf element
-      # index is the full path.
-    builtins.length result.state == 1
-    && fx.types.generic.path.renderAll (builtins.head result.state) == "[1]";
+    !(builtins.tryEval mk).success;
 
-  # -- Test 62: Cross-type parametric adequacy --
+  # Cross-type parametric adequacy
   # check and validationPassHandle agree across multiple type constructors and values
   crossTypeAdequacy =
     let
@@ -1122,41 +1046,34 @@ in
     recordRefinementTest maybeTest depRecordTest
     makeThrowsTest variantTest predicateTest universeSafetyTest;
 
-  # Effectful type checking tests
   inherit piCheckAtIsEffectful
     strictHandlerPassesTest collectingHandlerTest loggingHandlerTest
     sameCompDifferentHandlerTest
     sigmaValidateIsEffectful sigmaStrictHandlerTest
     certifiedCertifyETest certifiedCertifyECollectingTest certifiedCertifyEFailTest;
 
-  # Semantic unification tests
   inherit vectorIsEffectful vectorCheckAtStrictTest
     depRecordIsEffectful depRecordValidateStrictTest
     foundationValidateIsEffectful;
 
-  # Adequacy and contract tests
   inherit piValidateIsGuard piAdequacy sigmaAdequacy piCheckAtDiffersFromValidate
     certifiedAdequacy depRecordAdequacy primitiveAdequacy vectorAdequacy;
 
-  # Exhaustive edge-case tests
   inherit sigmaValidateEmpty sigmaValidateMissingSnd sigmaValidateMissingFst
     sigmaValidateWrongSnd
     piCheckAtDomainFailure
-    certifyECrashingPredicate certifyEWrongBase
+    certifiedRejectsRawPredicate certifyEWrongBase
     depRecordValidateNonAttrset depRecordValidateMissingField depRecordValidateWrongTypes
     pairEThroughHandlers composeCheckAt
     sigmaHandlerDiversity
     sigmaShortCircuitGuardsCrash sigmaAdequacyWrongFst piCheckAtShortCircuit
     universeTrustBoundary;
 
-  # ListOf effectful verify tests
   inherit listOfValidateIsEffectful listOfCollectingPerElement
     listOfEmptyValidatePure listOfNonListTotality listOfAdequacy;
 
-  # Deep recursive validation tests
   inherit sigmaDeepCollecting depRecordDeepBlame sigmaDeepAdequacy
-    sigmaDeepShortCircuit pairEDeepBlame certifyEDeepBlame;
+    sigmaDeepShortCircuit pairEDeepBlame certifiedRejectsCompoundRawPredicate;
 
-  # Cross-type parametric adequacy
   inherit crossTypeAdequacy;
 }

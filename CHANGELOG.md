@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`Certified` carries a genuine inhabitation proof, not a `Bool`.** `fx.types.Certified` was the subset type `Σ(x:A).{p:Bool | p ∧ P(v)}` — its second component stored the *result* of evaluating the predicate as a bare `Bool`, so a certified value held no transportable evidence and could not serve as propositional content downstream (no transport, no rewriting). It is now the subset type `Σ(x:A).P(x)` with `P` forced to a mere proposition, over two formers: a **decidable** predicate (a `fx.tc.kernel` `KernelPred` over the base carrier) reflects to `_kernel = El t`, with the witness the membership proof transported from the kernel decision `decide t x = true` through `Id` / `J` (the witness is the `Unit` inhabitant `tt`, `_kernelSufficient = true`); a **general** propositional family (`{ family; bridge; }`) carries a `Squash`-truncated inhabitant via `certifyProof`. The witness is always a real proof term.
+- **`certify` is pure on a valid value; `certifyE` emits a typecheck effect only on rejection.** The old `certifyE` emitted a `typeCheck` effect even on success; it is now pure on a valid value (`{ fst = v; snd = <proof>; }`) and effectful only when the predicate rejects.
+
+### Removed
+
+- **The `Bool`-witness escape is gone — an uncertifiable predicate is rejected at construction.** A raw host-lambda predicate (no kernel decision procedure, no propositional `family` + `bridge`) can no longer be wrapped in a `Certified` that forges a `Bool` witness; construction throws, pointing to `fx.types.refinement.refined` — the honest, proof-free guard subtype for predicates the kernel cannot express. A consequence of the decidable arm: the base carrier must match the predicate's `KernelPred` carrier (a scalar `int` / `string`), so a guard over a compound value (e.g. a list-length predicate) is not a `Certified` — it belongs on `refined` or the compound type's own `validate`. The corresponding "Bool witness" entry under the README's *Known limitations* is removed accordingly.
+
 ## [0.14.0] - 2026-06-23
 
 ### Headline changes

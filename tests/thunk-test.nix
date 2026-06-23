@@ -41,50 +41,37 @@ let
 
   result = run program registerHandler { packages = [ ]; };
 
-  # -- Test 1: trampoline run completes without infinite recursion --
-  #
-  # The success criterion is that the result is reachable at all; we use
-  # `deepSeq result null` to force the entire value structure, which would
-  # hang if any raw cyclic drv were threaded through state. Since
-  # `result.state.packages` holds Thunks (closures), deepSeq stops at
-  # the lambda boundary and terminates.
+  # trampoline run completes; deepSeq stops at the lambda boundary
   trampolineSurvivesCyclicDrv =
     (builtins.tryEval (builtins.deepSeq result null)).success;
 
-  # -- Test 2: all three carriers survived end-to-end --
+  # all three carriers survived end-to-end
   threePackagesInState =
     builtins.length result.state.packages == 3;
 
-  # -- Test 3: every stored value is a carrier, never a raw drv --
+  # every stored value is a carrier, never a raw drv
   allEntriesAreCarriers =
     lib.all isThunk result.state.packages;
 
-  # -- Test 4: post-trampoline forcing recovers the original drv --
+  # post-trampoline forcing recovers the original drv
   recoveryReturnsOriginalDrv =
     let recovered = forceThunk (builtins.head result.state.packages);
     in recovered.outPath == "/nix/store/cyclic-x";
 
-  # -- Test 5: round-trip identity through the trampoline --
-  #
-  # The drv that comes out is reference-equal to the one that went in. The
-  # carrier never copies the drv; it only hides it behind a closure.
+  # round-trip identity: the drv out is reference-equal to the one in; the carrier never copies
   roundTripIdentity =
     let recovered = forceThunk (builtins.head result.state.packages);
     in recovered == cyclicDrv;
 
-  # -- Test 6: kernel walker rejects raw drvs against the `Thunk Derivation`
-  #            shape, proving the type-system enforces the carrier discipline
-  #            at the value-shape level --
+  # kernel walker rejects raw drvs against the `Thunk Derivation` shape
   rawDrvRejectedByThunkType =
     (fx.types.validateValue [ ] ThunkDrvTy cyclicDrv) != [ ];
 
-  # -- Test 7: kernel walker accepts carriers against the `Thunk Derivation`
-  #            shape --
+  # kernel walker accepts carriers against the `Thunk Derivation` shape
   carrierAcceptedByThunkType =
     (fx.types.validateValue [ ] ThunkDrvTy (mkThunk cyclicDrv)) == [ ];
 
-  # -- Test 8: carrier is rejected by the bare Derivation type
-  #            (the two types are disjoint, no implicit subtyping) --
+  # carrier is rejected by the bare Derivation type (the two types are disjoint, no implicit subtyping)
   carrierRejectedByDerivationType =
     !(fx.types.Derivation.check (mkThunk cyclicDrv));
 

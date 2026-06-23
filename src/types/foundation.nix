@@ -52,7 +52,6 @@ let
       effectiveKernelType = if kernelType != null then kernelType else fx.tc.hoas.any;
       isApproximate = approximate || kernelType == null;
 
-      # The kernel's decision procedure
       kernelDecide = v: fx.tc.elaborate.decide effectiveKernelType v;
 
       # A KernelPred guard derives its decision from the kernel predicate
@@ -70,17 +69,12 @@ let
         else if R.isKernelPred guard then { predicate = "${name} (kernel-internalized)"; }
         else guard;
 
-      # .check: universal conjunction.
-      # No guard: check = kernelDecide (kernel is sufficient).
-      # Guard: check = kernelDecide(v) ∧ guard(v) — kernel catches
-      #   structural errors, guard handles residual constraints.
-      # Total elaboration (opaque lambda for Pi, HOAS substitution for
-      # Sigma) ensures kernelDecide never spuriously fails.
+      # Total elaboration ensures kernelDecide never spuriously fails — no
+      # replacement mode needed.
       effectiveCheck =
         if effectiveGuard == null then kernelDecide
         else v: kernelDecide v && effectiveGuard v;
 
-      # .universe: override if provided, otherwise computed from checkTypeLevel
       effectiveUniverse =
         if universe != null then universe
         else
@@ -231,7 +225,7 @@ let
       posInt = mkType { name = "PosInt"; kernelType = H.int_; guard = R.intPositive; };
     in
     {
-      # -- Core construction --
+      # Core construction
       "creates-type" = {
         expr = (mkType { name = "Test"; kernelType = H.any; })._tag;
         expected = "Type";
@@ -252,7 +246,7 @@ let
         expr = (mkType { name = "T"; kernelType = H.any; }) ? validate;
         expected = true;
       };
-      # -- Derived check --
+      # Derived check
       "check-accepts-valid-bool" = {
         expr = (mkType { name = "Bool"; kernelType = H.bool; }).check true;
         expected = true;
@@ -283,7 +277,7 @@ let
           in t.check 42 && t.check "s" && t.check true && t.check null;
         expected = true;
       };
-      # -- Derived universe --
+      # Derived universe
       "universe-level-0" = {
         expr = (mkType { name = "Bool"; kernelType = H.bool; }).universe;
         expected = 0;
@@ -296,7 +290,7 @@ let
         expr = (mkType { name = "U0"; kernelType = H.u 0; }).universe;
         expected = 1;
       };
-      # -- Guard (complete check override) --
+      # Guard (complete check override)
       "guard-overrides-decide" = {
         expr =
           let
@@ -349,7 +343,7 @@ let
           t.kernelCheck (-1); # kernel accepts (it's an int), check would reject
         expected = true;
       };
-      # -- _kernelPrecise / _kernelSufficient --
+      # _kernelPrecise / _kernelSufficient
       "kernel-precise-when-not-approximate" = {
         expr = (mkType { name = "T"; kernelType = H.bool; })._kernelPrecise;
         expected = true;
@@ -382,7 +376,7 @@ let
         expr = (mkType { name = "T"; kernelType = null; })._kernelSufficient;
         expected = false;
       };
-      # -- Diagnose --
+      # Diagnose
       "diagnose-agreement" = {
         expr =
           let
@@ -430,7 +424,7 @@ let
           d.kernel == false && d.guard == false && d.agreement == true;
         expected = true;
       };
-      # -- Prove --
+      # Prove
       "prove-accepts-valid" = {
         expr = (mkType { name = "Bool"; kernelType = H.bool; }).prove H.true_;
         expected = true;
@@ -439,7 +433,7 @@ let
         expr = (mkType { name = "Bool"; kernelType = H.bool; }).prove H.zero;
         expected = false;
       };
-      # -- Validate (fail-only emission) --
+      # Validate (fail-only emission)
       # Auto-derived validateAt emits `typeCheck` only when
       # `!effectiveCheck v` (kernel rejects or guard fails). On pass,
       # returns `pure v`. The test pairs below use `kernelType = H.bool`
@@ -569,7 +563,7 @@ let
           (t.validate "abc").effect.param.diagError.layer.tag;
         expected = "Generic";
       };
-      # -- KernelPred guard: check derives from the kernel predicate term --
+      # KernelPred guard: check derives from the kernel predicate term
       "kernelpred-accepts" = { expr = posInt.check 5; expected = true; };
       "kernelpred-rejects-zero" = { expr = posInt.check 0; expected = false; };
       "kernelpred-rejects-negative" = { expr = posInt.check (-3); expected = false; };
@@ -578,7 +572,7 @@ let
         expr = let d = posInt.diagnose (-1); in d.kernel == true && d.guard == false && d.agreement == false;
         expected = true;
       };
-      # -- ktype gate arms --
+      # ktype gate arms
       "ktype-approximate-null" = { expr = (mkType { name = "A"; kernelType = null; }).ktype == null; expected = true; };
       "ktype-sufficient-nonnull" = { expr = (mkType { name = "B"; kernelType = H.bool; }).ktype != null; expected = true; };
       "ktype-rawlambda-null" = {
@@ -586,13 +580,13 @@ let
         expected = true;
       };
       "ktype-kernelpred-nonnull" = { expr = posInt.ktype != null; expected = true; };
-      # -- _kernelPred exposure --
+      # _kernelPred exposure
       "kernelpred-exposed" = { expr = R.isKernelPred posInt._kernelPred; expected = true; };
       "kernelpred-null-for-rawlambda" = {
         expr = (mkType { name = "P"; kernelType = H.int_; guard = v: v > 0; })._kernelPred == null;
         expected = true;
       };
-      # -- Contract diagnostics stay clean under a KernelPred guard --
+      # Contract diagnostics stay clean under a KernelPred guard
       "kernelpred-predicate-failed-contract-layer" = {
         expr = (posInt.validate (-1)).effect.param.diagError.layer.tag;
         expected = "Contract";
@@ -741,14 +735,8 @@ let
     };
   };
 
-  # -- Standalone effectful validation with explicit context --
-  #
-  # This is a convenience function for ad-hoc validation with a custom
-  # context string. For typical use, call type.validate directly — mkType
-  # auto-derives it. This 3-arg form is useful when you need to specify
-  # a context string different from the type's name (e.g. for nested
-  # validation in user code).
-
+  # Convenience: ad-hoc typeCheck emission with explicit context; prefer
+  # type.validate for normal use.
   validate = type: v: context:
     send "typeCheck" {
       inherit type context; value = v;

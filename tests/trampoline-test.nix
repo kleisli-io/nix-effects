@@ -18,12 +18,12 @@ let
     if n <= 0 then pure null
     else bind (send name param) (_: buildChain name param (n - 1));
 
-  # -- Test 1: Pure computation, no effects --
+  # Pure computation, no effects
   pureComputation =
     let result = run (pure 42) { } { };
     in result.value == 42;
 
-  # -- Test 2: Single effect --
+  # Single effect
   singleEffect =
     let
       result = run (send "double" 21)
@@ -34,7 +34,7 @@ let
     in
     result.value == 42;
 
-  # -- Test 3: Simple counter — 10 increments --
+  # Simple counter — 10 increments
   simpleCounter =
     let
       result = run (buildChain "inc" 1 10)
@@ -44,7 +44,7 @@ let
     in
     result.state == 10;
 
-  # -- Test 4: 10,000 operations — validates O(1) stack depth --
+  # 10,000 operations — validates O(1) stack depth
   tenThousandOps =
     let
       result = run (buildChain "inc" 1 10000)
@@ -54,7 +54,7 @@ let
     in
     result.state == 10000;
 
-  # -- Test 5: 100,000 operations — stress test --
+  # 100,000 operations — stress test
   hundredThousandOps =
     let
       result = run (buildChain "inc" 1 100000)
@@ -64,7 +64,7 @@ let
     in
     result.state == 100000;
 
-  # -- Test 6: Multiple effect types compose --
+  # Multiple effect types compose
   multipleEffects =
     let
       comp =
@@ -92,7 +92,7 @@ let
     && result.value.newCounter == 1
     && result.state.logs == [ "step 0" ];
 
-  # -- Test 7: Effect return values flow through continuations --
+  # Effect return values flow through continuations
   returnValueFlow =
     let
       comp =
@@ -113,7 +113,7 @@ let
     && result.value.doubled == 60
     && result.value.negated == (0 - 60);
 
-  # -- Test 8: Stateful accumulation across many effects --
+  # Stateful accumulation across many effects
   statefulAccumulation =
     let
       # Compute sum 1 + 2 + ... + 100 via effects
@@ -128,7 +128,7 @@ let
     in
     result.state == 5050; # Gauss's formula: 100*101/2
 
-  # -- Test 9: Early termination via pure in middle of chain --
+  # Early termination via pure in middle of chain
   earlyPure =
     let
       comp =
@@ -143,7 +143,7 @@ let
     in
     result.value == 99 && result.state == 1;
 
-  # -- Test 10: Bind with pure (no effects at all) --
+  # Bind with pure (no effects at all)
   pureBindChain =
     let
       comp =
@@ -156,7 +156,7 @@ let
     in
     result.value == 6;
 
-  # -- Test 11: handle combinator with custom return clause --
+  # handle combinator with custom return clause
   handleWithReturn =
     let
       comp = bind (send "inc" 5) (_: send "inc" 3);
@@ -172,7 +172,7 @@ let
     in
     result.value == "done:8";
 
-  # -- Test 12: adapt transforms handler state --
+  # adapt transforms handler state
   adaptState =
     let
       # Inner handler works with integer state
@@ -191,7 +191,7 @@ let
     in
     result.state.counter == 5 && result.state.logs == [ ];
 
-  # -- Test 13: adaptHandlers adapts entire handler set --
+  # adaptHandlers adapts entire handler set
   adaptHandlersTest =
     let
       innerHandlers = {
@@ -215,7 +215,7 @@ let
     in
     result.value == 15 && result.state.extra == true;
 
-  # -- Test 14: FTCQueue correctness — left-nested bind --
+  # FTCQueue correctness — left-nested bind
   leftNestedBind =
     let
       # Build a left-nested chain: bind (bind (bind (send ...) f1) f2) f3
@@ -231,9 +231,7 @@ let
     in
     result.state == 101; # 100 + 1 initial
 
-  # -- Test: qApp consecutive Pure chain (stress test) --
-  # One effect followed by 5000 pure binds: qApp chains all Pure returns
-  # within a single trampoline step, exercising the recursive Pure path
+  # qApp chains Pure returns within one trampoline step (recursive Pure path).
   qAppPureChain =
     let
       comp = builtins.foldl'
@@ -248,7 +246,7 @@ let
     in
     result.value == 5000;
 
-  # -- Test 16: viewlGo deep left-nested bind (stress test) --
+  # viewlGo deep left-nested bind (stress test)
   # 1000-deep left-nested bind chain
   viewlGoLeftNested =
     let
@@ -263,7 +261,7 @@ let
     in
     result.state == 1001;
 
-  # -- Test 17: selective handler rotation (Kyo-style) --
+  # selective handler rotation (Kyo-style)
   # Unhandled effects are rotated outward and resumed by outer handlers.
   effectRotationResumesInner =
     let
@@ -291,7 +289,7 @@ let
     in
     result.value == { value = "ok"; state = 6; };
 
-  # -- Test 18: rotation leaves unknown effect suspended --
+  # rotation leaves unknown effect suspended
   effectRotationSuspendsUnknown =
     let
       comp = send "unknown" 1;
@@ -306,7 +304,6 @@ let
     in
     (!fx.isPure rotated) && rotated.effect.name == "unknown";
 
-  # -- Test: rotation stack safety — 10,000 handled effects --
   # rotateInterpret recursively calls itself for each handled effect.
   # Without trampolining, this blows the stack.
   effectRotationStackSafety =
@@ -324,7 +321,7 @@ let
     in
     result.value.state == 10000;
 
-  # -- Test 19: rotation supports nested selective handlers --
+  # rotation supports nested selective handlers
   effectRotationNestedHandlers =
     let
       comp =

@@ -525,14 +525,6 @@ deep pure bind chains use the iterative queue path.
 
 ## Known limitations
 
-**`Certified` carries a boolean witness, not an inhabitation proof.**
-`Certified(A, P) = Σ(v:A).{p : Bool | p ∧ P(v)}` stores the boolean
-result of `P(v)` as its second component rather than a term inhabiting
-`P(v)`. Predicate evaluation happens at construction time and produces
-no transportable proof term. For genuinely propositional content, use
-`Pi` with identity types and the `J`-derived combinators (`sym`,
-`trans`, `cong`, `transport`) from `fx.types.hoas`.
-
 **Universe levels are partially enforced.** For kernel-backed types,
 `checkTypeLevel` computes the correct universe level from the typing derivation.
 For non-kernel types, the `universe` field remains a trusted declaration

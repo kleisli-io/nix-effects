@@ -11,7 +11,7 @@ let
   H = fx.tc.hoas;
   R = fx.tc.kernel.reflect;
 
-  # -- Named refinement constructor --
+  # Named refinement constructor
 
   refined = name: base: predicate: mkType {
     inherit name;
@@ -114,7 +114,7 @@ let
     };
   };
 
-  # -- Predicate combinators --
+  # Predicate combinators
 
   allOf = preds: v: builtins.all (p: p v) preds;
 
@@ -139,7 +139,7 @@ let
     "negates-false" = { expr = negate (x: x > 0) 1; expected = false; };
   };
 
-  # -- Common predicates --
+  # Common predicates
 
   positive = x: x > 0;
 
@@ -183,11 +183,8 @@ let
     "no-match" = { expr = matching "[a-z]+" "123"; expected = false; };
   };
 
-  # -- Kernel-internalizing Int predicates --
-  #
-  # Passed as the predicate to `refined`/`refine`, these carry a KernelPred
-  # witness over the signed-int carrier, so the resulting type's check is
-  # decided by the kernel and its `.ktype` is non-null. lo/hi/k are Nix ints.
+  # KernelPred witness over the signed-int carrier; the resulting type's check
+  # is kernel-decided, `.ktype` non-null. lo/hi/k are Nix ints.
   positiveInt = R.intPositive;
   nonNegativeInt = R.intNonNegative;
   inRangeInt = R.intInRange;

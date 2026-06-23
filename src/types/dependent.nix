@@ -1,121 +1,28 @@
-# nix-effects dependent types: Pi (Π), Sigma (Σ), and friends
-#
-# Dependent type constructors grounded in Martin-Löf Type Theory (1984).
-# Each type is backed by the MLTT type-checking kernel (src/tc/), which
-# provides formal verification via bidirectional typing with NbE.
-#
-# == Architecture ==
-#
-#   Surface API (Pi, Sigma, DepRecord, ...)
-#        |
-#        | kernelType (HOAS → de Bruijn Tm)
-#        v
-#   Type-checking kernel (MLTT — eval/quote/conv/check)
-#        |
-#        | checker runs as effectful computation
-#        v
-#   Effects kernel (freer monad, FTCQueue, trampoline, handlers)
-#        |
-#        v
-#   Pure Nix
-#
-# Every type is a kernel type. The kernel representation (kernelType) IS
-# the type, and .check is derived mechanically from the kernel's decide
-# procedure. All types — including primitives (String, Int, Float, Attrs,
-# Path, Function, Any) and compound constructors (Record, Maybe, Variant)
-# — have kernel backing. The kernel adds what decidable checking cannot
-# express: proof terms for universally quantified properties (∀ services,
-# if enabled then firewall rule exists).
-#
-# == Trust model ==
-#
-#   Layer 0 (TCB):          eval, quote, conv — pure, no effects
-#   Layer 1 (semi-trusted): bidirectional checker — uses TCB
-#   Layer 2 (UNTRUSTED):    elaborator — can have arbitrary bugs,
-#                           kernel catches them
-#
-# == Type interface ==
-#
-# Every type carries:
-#
-#   Decidable checking (all types — derived from kernel):
-#     check      — pure predicate, derived from decide(kernelType, value)
-#     validate   — effectful, sends typeCheck effects for blame tracking
-#     kernelCheck — same predicate as check
-#
-#   Kernel verification:
-#     _kernel     — kernel Tm representation (the type IS this)
-#     prove       — (term → bool) verify a proof term against _kernel
-#
-# Handler semantics for validate (configurable error policy):
-#   strict     — throws on first failure
-#   collecting — accumulates all errors in state
-#   logging    — records all checks for observability
-#   all-pass   — boolean conjunction; canonical for testing
-#
-# == Kernel types via HOAS ==
-#
-# HOAS combinators (src/tc/hoas.nix) make kernel types writable as Nix
-# expressions. Nix lambdas capture binding; elaboration converts to
-# de Bruijn-indexed kernel terms:
-#
-#   H.forall "x" H.bool (x: H.natElim x ...)   — dependent
-#   H.forall "x" H.bool (_: H.nat)             — non-dependent (Arrow)
-#   H.sigma "x" H.nat (x: H.vec x H.bool)      — dependent pair
-#
-# Kernel types flow DOWN from explicit construction:
-#   Pi { domain; codomain; universe; kernelType = H.forall ...; }
-# The elaborator (src/tc/elaborate.nix) may compute kernelType as a
-# Layer 2 convenience — if wrong, the kernel catches it.
-#
-# == Operations naming convention ==
-#
-#   check / validate       = decidable checking (derived from kernel / effectful)
-#   prove                  = kernel proof verification (proof term)
-#   apply / proj1 / proj2  = elimination
-#   checkAt                = deferred elimination check (Pi only)
-#   pair / pairE           = introduction construction
-#
-# == MLTT rule mapping ==
-#
-# Π(x:A).B(x) — Dependent function (Curry-Howard: ∀)
-#   Formation:    Pi { domain, codomain, universe, kernelType? }
-#   Introduction: .check (isFunction), .validate (effectful)
-#   Elimination:  .apply (pure), .checkAt (deferred)
-#   Computation:  β-reduction (Nix evaluation)
-#   Kernel:       .prove (proof term), ._kernel (Tm)
-#
-# Σ(x:A).B(x) — Dependent pair (Curry-Howard: ∃)
-#   Formation:    Sigma { fst, snd, universe, kernelType? }
-#   Introduction: .check (exact guard), .validate (decomposed for blame)
-#   Elimination:  .proj1, .proj2
-#   Computation:  π₁(a,b) ≡ a, π₂(a,b) ≡ b
-#   Kernel:       .prove (proof term), ._kernel (Tm representation)
-#
-# Known Nix constraint: builtins.tryEval only catches `throw` and `assert`.
-# Cross-type comparison (e.g. "str" > 0) is uncatchable — predicates must
-# guard input types before comparison operators.
+# nix-effects dependent types: Pi, Sigma, Certified, Vector, DepRecord.
 { fx, api, ... }:
 let
   inherit (fx.types.foundation) mkType check;
   inherit (fx.kernel) pure bind send;
   H = fx.tc.hoas;
   P = fx.diag.positions;
+  R = fx.tc.kernel.reflect;
+  KT = fx.tc.kernel.ktype;
+
+  # checkHoas wrapped so a stuck/ill-formed term degrades to `false`, never poisons.
+  proves = ty: term:
+    let r = builtins.tryEval (!((H.checkHoas ty term) ? error));
+    in r.success && r.value;
 
   # Native-recursion budget per trampoline segment (cf. foundation.nix).
   nativeWalkBudget = 512;
 
-  # Fuel-gated descent across Σ-instance boundaries: recurse natively
-  # while fuel remains, otherwise defer the sub-walk onto the trampoline
-  # so deep Σ-spines stay within the host stack. Threading fuel through
-  # `validateAtF` is what makes the bounce reachable — the public 2-arg
-  # `validateAt` reseeds the budget at every level and would never bounce.
+  # Recurse natively while fuel remains, else defer the sub-walk onto the
+  # trampoline so deep Σ-spines stay in the host stack; the public 2-arg
+  # validateAt reseeds the budget and would never bounce.
   descendV = t: fuel: p: x:
     if fuel <= 0
     then send "deriveBounce" { run = _: t.validateAtF nativeWalkBudget p x; }
     else t.validateAtF (fuel - 1) p x;
-
-  # -- PI TYPES (DEPENDENT FUNCTIONS) --
 
   Pi = { domain, codomain, universe, name ? "Π(${domain.name})", kernelType ? null }:
     let
@@ -137,14 +44,8 @@ let
         } // {
         inherit domain codomain;
 
-        # Elimination rule: given a : A, compute B(a)
         apply = arg: codomain arg;
 
-        # Pointwise elimination check: verifies a SPECIFIC application f(arg).
-        # Sends typeCheck effects for both domain (arg : A) and codomain
-        # (f(arg) : B(arg)). This is the ELIMINATION rule — it checks one
-        # use of the function, not the introduction form.
-        #
         # In higher-order contract terms (Findler & Felleisen 2002): checkAt
         # is deferred contract checking at each application site.
         #
@@ -152,8 +53,6 @@ let
         # type itself. When domain check fails, we short-circuit: f(arg) is
         # never evaluated, because f may crash on wrong-typed arguments.
         # This mirrors the principle that elimination requires valid inputs.
-        #
-        # checkAt : (A → B(a)) → a → Computation result
         checkAt = f: arg:
           if !(builtins.isFunction f)
           then
@@ -189,9 +88,6 @@ let
                     (_:
                       pure result));
 
-        # Compose Pi types: for this: Π(x:A)→B(x) and other: Π(y:C)→D(y),
-        # produce Π(x:A)→D(f(x)). Requires a witness function f inhabiting
-        # this Pi type, because the composed codomain depends on f's output.
         compose = f: other:
           Pi {
             inherit domain;
@@ -419,8 +315,6 @@ let
     };
   };
 
-  # -- SIGMA TYPES (DEPENDENT PAIRS) --
-
   Sigma = { fst, snd, universe, name ? "Σ(${fst.name})", kernelType ? null }:
     mkType
       {
@@ -438,30 +332,11 @@ let
           && fst.check v.fst
           && (snd v.fst).check v.snd;
         universe = universe;
-        # Σ-specific verify: bespoke decomposed checker.
-        #
-        # Conditional dispatch on `(self._kernel._htag or null) ==
-        # "sigma"` is tempting (walker for precise-kernel sigmas,
-        # bespoke for approximate) but loses soundness when sub-types
-        # carry guards the kernel cannot express. `Certified` is the
-        # paradigm case: snd is `v: mkType { kernelType = H.bool;
-        # guard = proof: proof == true && predicate v; }` — the
-        # predicate lives in the guard, not the kernel. Walker would
-        # walk `H.bool` against `true` and pass, missing the
-        # predicate failure that bespoke's `(snd v.fst).validateAt`
-        # catches via the guard. Walker dispatch is therefore deferred
-        # until either (a) sub-component kernel sufficiency is
-        # tracked at dispatch time, or (b) Certified-style guards are
-        # encoded into the kernel.
-        #
-        # The walker and bespoke alphabets match
-        # (`P.SigmaFst`/`P.SigmaSnd`), so when dispatch is eventually
-        # safe to enable, the path shape stays invariant.
-        #
-        # Recurse via the sub-components' own `validateAt`. Short-
-        # circuit on fst failure: `snd v.fst` may crash on wrong-typed
-        # fst values, so we consult `fst.check` (pure, memoised) after
-        # the effectful validateAt before descending into snd.
+        # Guard-bearing sub-types (e.g. Certified snd) are invisible to the
+        # kernel walker, so walker dispatch is deferred until either sub-component
+        # kernel sufficiency is tracked at dispatch time or such guards are
+        # kernel-encoded. The walker and bespoke path shapes (P.SigmaFst/
+        # P.SigmaSnd) are invariant, so enabling dispatch later won't move them.
         verify = self: fuel: path: v:
           if !(builtins.isAttrs v && v ? fst && v ? snd)
           then
@@ -483,13 +358,10 @@ let
       fstType = fst;
       sndFamily = snd;
 
-      # π₁ : Σ(x:A).B(x) → A
       proj1 = p: p.fst;
 
-      # π₂ : (p : Σ(x:A).B(x)) → B(π₁(p))
       proj2 = p: p.snd;
 
-      # Smart constructor with dependent validation (throws — for pure contexts)
       pair = fstVal: sndVal:
         if !(fst.check fstVal)
         then builtins.throw "Σ type ${name}: fst does not inhabit ${fst.name}"
@@ -497,9 +369,8 @@ let
         then builtins.throw "Σ type ${name}: snd does not inhabit ${(snd fstVal).name}"
         else { fst = fstVal; snd = sndVal; };
 
-      # Effectful smart constructor. Recursively validates sub-components
-      # for deep blame tracking. Short-circuits on fst failure:
-      # the snd type family is never evaluated on wrong-typed fst.
+      # Short-circuits on fst failure: the snd type family is never evaluated
+      # on wrong-typed fst.
       pairE = fstVal: sndVal:
         bind (fst.validate fstVal) (_:
           if fst.check fstVal == false then pure { fst = fstVal; snd = sndVal; }
@@ -515,19 +386,8 @@ let
         then f p.fst p.snd
         else builtins.throw "uncurry: expected Sigma pair";
 
-      # Contravariant predicate pullback on Sigma types.
-      #
-      # Given transforms f and g, creates a new Sigma type that accepts
-      # (x, y) iff the original accepts (f(x), g(y)). This is the
-      # PREIMAGE/PULLBACK — not a covariant bimap.
-      #
-      # In category theory: types-as-predicates are contravariant functors
-      # (a predicate P : X → Bool can be pulled back along f : Y → X to
-      # give P ∘ f : Y → Bool). A covariant bimap would map VALUES forward:
-      # (a,b) ↦ (f(a), g(b)) — but predicates can only pull back, not push
-      # forward, because they test membership, not construct inhabitants.
-      #
-      # Composition law (contravariant):
+      # Contravariant predicate pullback: accepts (x, y) iff the original
+      # accepts (f(x), g(y)). Composition law (contravariant):
       #   pullback (f∘g) (h∘k) = pullback g k >>> pullback f h
       # Note the REVERSED order vs. covariant bimap.
       pullback = f: g: Sigma {
@@ -764,174 +624,215 @@ let
     };
   };
 
-  # -- CERTIFIED VALUES (Σ WITH PROOF WITNESS) --
-  #
-  # Certified(A, P) = Σ(v:A).{p : Bool | p ∧ P(v)}
-  # A dependent pair of a value and a witness that a predicate holds.
-  # The witness is `true` — the predicate is checked at construction time.
-
-  Certified = { base, predicate, name ? "Certified(${base.name})" }:
-    Sigma
-      {
+  Certified =
+    { base
+    , predicate ? null
+    , family ? null
+    , bridge ? null
+    , name ? "Certified(${base.name})"
+    }:
+    if predicate != null && R.isKernelPred predicate then
+    # decidable: Boolean-reflected certificate
+      let
+        t = R.ktypeOf predicate;
+        El = KT.El t;
+        guardHolds = R.deriveGuard predicate;
+        witnessTerm = v: H.ann (H.pair (predicate.bridge v) H.tt) El;
+      in
+      (Sigma {
         fst = base;
+        # Proof at the concrete fst; witness is the Unit inhabitant (`null`),
+        # the guard decides the predicate through the kernel oracle.
         snd = v: mkType {
           name = "Proof(${name})";
-          kernelType = H.bool;
-          guard = proof: proof == true && predicate v;
+          kernelType = H.unit;
+          guard = _witness: guardHolds v;
         };
         inherit name;
         inherit (base) universe;
-        # Σ-shape visible to the kernel; predicate stays meta-level via the
-        # Sigma exact guard. `_kernelPrecise` is true (shape is faithful)
-        # but `_kernelSufficient` is false (predicate must still fire).
-        kernelType = H.sigma "x" base._kernel (_: H.bool);
-      } // {
-      # Pure smart constructor: evaluate predicate and build pair (throws on invalid)
-      certify = v:
-        if !(base.check v)
-        then builtins.throw "Certified ${name}: value does not inhabit ${base.name}"
-        else if !(predicate v)
-        then builtins.throw "Certified ${name}: predicate failed"
-        else { fst = v; snd = true; };
+        # Σ x:A. Unit — the host decide oracle settles this without normalizing.
+        # NOT El t: decide dispatches on the snd type's syntactic head and never
+        # reduces, so a stuck P(decide t x) head would be rejected. El t rides on
+        # `_kernel` below, for prove/metatheory only.
+        kernelType = H.sigma "x" base._kernel (_: H.unit);
+      }) // {
+        _kernel = El;
+        _kernelSufficient = true;
+        ktype = t;
+        decidable = true;
+        prove = term: proves El term;
+        inherit witnessTerm;
+        # Fail-closed; witness synthesized as the Unit inhabitant.
+        certify = v:
+          if !(base.check v)
+          then builtins.throw "Certified ${name}: value does not inhabit ${base.name}"
+          else if !(guardHolds v)
+          then builtins.throw "Certified ${name}: predicate failed"
+          else { fst = v; snd = null; };
+        certifyE = v:
+          bind (base.validate v) (_:
+            if base.check v == false then pure { fst = v; snd = null; }
+            else
+              let
+                proofType = mkType {
+                  name = "Proof(${name})";
+                  kernelType = H.unit;
+                  guard = _: guardHolds v;
+                };
+                r = builtins.tryEval (guardHolds v);
+                ok = r.success && r.value;
+              in
+              if ok then pure { fst = v; snd = null; }
+              else bind
+                (send "typeCheck" {
+                  type = proofType;
+                  context = "Certified predicate (${name})";
+                  value = null;
+                  reason = "predicate-failed";
+                })
+                (_: pure { fst = v; snd = null; }));
+      }
+    else if family != null then
+    # general: truncated certificate. squash makes any family a mere prop;
+    # proof irrelevance is definitional in conv.
+      assert bridge != null;
+      let
+        sqAt = vTerm: H.squash (family vTerm);
+        kernelTy = H.sigma "x" base._kernel (x: sqAt x);
+      in
+      (Sigma {
+        fst = base;
+        # Witness is a host-opaque HOAS term; the guard re-checks it against
+        # squash(family v) via the kernel (squash inhabitation isn't host-decidable).
+        snd = v: mkType {
+          name = "Proof(${name})";
+          kernelType = H.any;
+          guard = witness: proves (sqAt (bridge v)) witness;
+        };
+        inherit name;
+        inherit (base) universe;
+        kernelType = H.sigma "x" base._kernel (_: H.any);
+      }) // {
+        _kernel = kernelTy;
+        _kernelSufficient = false;
+        decidable = false;
+        prove = term: proves kernelTy term;
+        # Check p : family(v), then truncate.
+        certifyProof = v: p:
+          if !(base.check v)
+          then builtins.throw "Certified ${name}: value does not inhabit ${base.name}"
+          else if !(proves (family (bridge v)) p)
+          then builtins.throw "Certified ${name}: supplied proof does not check"
+          else { fst = v; snd = H.squashIntro p; };
+      }
+    else
+    # No proof obtainable. The honest home for an un-proven guard is `refined`.
+      builtins.throw
+        ("Certified ${name}: predicate is not kernel-decidable and no propositional "
+        + "family was supplied. Pass a KernelPred from fx.tc.kernel.reflect, supply "
+        + "{ family; bridge; }, or use fx.types.refinement.refined for an un-proven guard.");
+  CertifiedTests =
+    let
+      ev = h: fx.tc.eval.eval [ ] (H.elab h);
+      conv = a: b: fx.tc.conv.conv 0 (ev a) (ev b);
+      throws = e: !(builtins.tryEval e).success;
+      isPure = fx.comp.isPure;
 
-      # Effectful smart constructor: recursively validates the base type
-      # (for deep blame if base is compound), then evaluates the predicate.
-      # This is NOT the introduction check (that's .validate, inherited
-      # from Sigma) — it's a convenience for constructing certified values
-      # with blame tracking.
-      #
-      # Short-circuits on base failure: if v doesn't inhabit the base type,
-      # the predicate is never evaluated (it may crash on wrong-typed input,
-      # e.g., cross-type comparison which tryEval cannot catch).
-      certifyE = v:
-        bind (base.validate v) (_:
-          if base.check v == false then pure { fst = v; snd = true; }
-          else
-            let
-              proofType = mkType {
-                name = "Proof(${name})";
-                kernelType = H.bool;
-                guard = (proof: proof == true && predicate v);
-              };
-              # Guard against throwing predicates: if predicate crashes, catch it
-              # and pass false to the typeCheck effect. The handler sees a failed
-              # proof check instead of a Nix-level crash.
-              predResult = builtins.tryEval (predicate v);
-              predValue = if predResult.success then predResult.value else false;
-            in
-            bind
-              (send "typeCheck" {
-                type = proofType;
-                context = "Certified predicate (${name})";
-                value = predValue;
-                reason = "predicate-failed";
-              })
-              (_:
-                pure { fst = v; snd = true; }));
-    };
-  CertifiedTests = {
-    "certified-accepts-valid-proof" = {
-      expr =
-        let
-          IntT = mkType { name = "Int"; kernelType = H.int_; };
-          PosInt = Certified {
-            base = IntT;
-            predicate = x: x > 0;
-            name = "PosInt";
-          };
-        in
-        check PosInt { fst = 5; snd = true; };
-      expected = true;
-    };
-    "certified-rejects-failing-predicate" = {
-      expr =
-        let
-          IntT = mkType { name = "Int"; kernelType = H.int_; };
-          PosInt = Certified {
-            base = IntT;
-            predicate = x: x > 0;
-            name = "PosInt";
-          };
-        in
-        check PosInt { fst = -1; snd = true; };
-      expected = false;
-    };
-    "certified-rejects-false-proof" = {
-      expr =
-        let
-          IntT = mkType { name = "Int"; kernelType = H.int_; };
-          PosInt = Certified {
-            base = IntT;
-            predicate = x: x > 0;
-            name = "PosInt";
-          };
-        in
-        check PosInt { fst = 5; snd = false; };
-      expected = false;
-    };
-    "certified-certifyE-returns-computation" = {
-      expr =
-        let
-          IntT = mkType { name = "Int"; kernelType = H.int_; };
-          PosInt = Certified {
-            base = IntT;
-            predicate = x: x > 0;
-            name = "PosInt";
-          };
-        in
-        fx.comp.isPure (PosInt.certifyE 5);
-      expected = false;
-    };
-    "certified-certifyE-effect-is-typeCheck" = {
-      expr =
-        let
-          IntT = mkType { name = "Int"; kernelType = H.int_; };
-          PosInt = Certified {
-            base = IntT;
-            predicate = x: x > 0;
-            name = "PosInt";
-          };
-        in
-        (PosInt.certifyE 5).effect.name;
-      expected = "typeCheck";
-    };
-    "certified-inherits-sigma-validate" = {
-      # Certified inherits .validate from Sigma — this is the introduction
-      # check for the pair, NOT the smart constructor. It takes an
-      # already-formed pair and verifies it effectfully. Under fail-only
-      # emission, we drive the failure path with an fst that violates the
-      # predicate (-1 fails `x > 0`); the snd type's guard then emits.
-      expr =
-        let
-          IntT = mkType { name = "Int"; kernelType = H.int_; };
-          PosInt = Certified {
-            base = IntT;
-            predicate = x: x > 0;
-            name = "PosInt";
-          };
-        in
-        fx.comp.isPure (PosInt.validate { fst = -1; snd = true; });
-      expected = false;
-    };
-    "certify-constructs-valid-pair" = {
-      expr =
-        let
-          IntT = mkType { name = "Int"; kernelType = H.int_; };
-          PosInt = Certified {
-            base = IntT;
-            predicate = x: x > 0;
-            name = "PosInt";
-          };
-          pair = PosInt.certify 5;
-        in
-        pair.fst == 5 && pair.snd == true;
-      expected = true;
-    };
-  };
+      IntT = mkType { name = "Int"; kernelType = H.int_; };
+      StrT = mkType { name = "String"; kernelType = H.string; };
 
-  # -- VECTOR (LENGTH-INDEXED LIST — CANONICAL DEPENDENT CONTRACT EXAMPLE) --
+      PosInt = Certified { base = IntT; predicate = R.intPositive; name = "PosInt"; };
+      Suit = Certified { base = StrT; predicate = R.strOneOf [ "clubs" "spades" "hearts" "diamonds" ]; name = "Suit"; };
+      Bounded = Certified { base = IntT; predicate = R.andKP R.intNonNegative (R.intInRange 0 10); name = "Bounded[0,10]"; };
 
-  # NatT — non-negative integer type used by Vector as domain
+      # Pfam x = (x = x), inhabited by reflexivity. bridge = intLit.
+      ReflEq = Certified { base = IntT; family = x: H.eq H.int_ x x; bridge = H.intLit; name = "ReflEq"; };
+      reflProof = v: H.reflDT H.int_ (H.intLit v);
+    in
+    {
+      # decidable: membership
+      "dec-accepts-valid" = { expr = check PosInt { fst = 5; snd = null; }; expected = true; };
+      "dec-rejects-failing-pred" = { expr = check PosInt { fst = -1; snd = null; }; expected = false; };
+      # Contract change: the old Bool witness no longer inhabits.
+      "dec-rejects-old-bool-witness" = { expr = check PosInt { fst = 5; snd = true; }; expected = false; };
+      # The snd slot enforces Unit: only the canonical inhabitant (`null`) passes.
+      "dec-rejects-int-witness" = { expr = check PosInt { fst = 5; snd = 42; }; expected = false; };
+      "dec-rejects-string-witness" = { expr = check PosInt { fst = 5; snd = "x"; }; expected = false; };
+      "dec-rejects-non-base" = { expr = check PosInt { fst = "x"; snd = null; }; expected = false; };
+
+      # decidable: certify (fail-closed, synthesized witness)
+      "dec-certify-builds-null-witness" = { expr = PosInt.certify 5; expected = { fst = 5; snd = null; }; };
+      "dec-certify-fail-closed-pred" = { expr = throws (PosInt.certify (-1)); expected = true; };
+      "dec-certify-fail-closed-base" = { expr = throws (PosInt.certify "x"); expected = true; };
+      "dec-certified-value-checks" = { expr = check PosInt (PosInt.certify 7); expected = true; };
+
+      # decidable: the witness is a real proof term
+      "dec-kernel-sufficient" = { expr = PosInt._kernelSufficient; expected = true; };
+      "dec-ktype-nonnull" = { expr = PosInt.ktype != null; expected = true; };
+      "dec-kernel-is-El" = { expr = conv PosInt._kernel (KT.El (R.ktypeOf R.intPositive)); expected = true; };
+      "dec-prove-accepts-real-witness" = { expr = PosInt.prove (PosInt.witnessTerm 5); expected = true; };
+      "dec-prove-rejects-false-witness" = {
+        expr = PosInt.prove (H.ann (H.pair (H.intLit (-1)) H.tt) PosInt._kernel);
+        expected = false;
+      };
+      "dec-witness-normal-form" = {
+        expr = conv (PosInt.witnessTerm 5) (H.ann (H.pair (H.intLit 5) H.tt) PosInt._kernel);
+        expected = true;
+      };
+
+      # decidable: predicate agreement on a grid
+      "dec-agreement" = {
+        expr = builtins.map (n: check PosInt { fst = n; snd = null; }) [ 42 (-1) 0 7 1 ];
+        expected = [ true false false true true ];
+      };
+
+      # decidable: effectful introduction + certifyE
+      "dec-validate-fails-on-bad-pair" = { expr = isPure (PosInt.validate { fst = -1; snd = null; }); expected = false; };
+      "dec-validate-passes-good-pair" = { expr = isPure (PosInt.validate { fst = 5; snd = null; }); expected = true; };
+      "dec-certifyE-pure-on-valid" = { expr = isPure (PosInt.certifyE 5); expected = true; };
+      "dec-certifyE-impure-on-invalid" = { expr = isPure (PosInt.certifyE (-1)); expected = false; };
+      "dec-certifyE-effect-is-typeCheck" = { expr = (PosInt.certifyE (-1)).effect.name; expected = "typeCheck"; };
+
+      # decidable: non-Int carrier (String bridge)
+      "dec-str-accepts" = { expr = check Suit { fst = "spades"; snd = null; }; expected = true; };
+      "dec-str-rejects" = { expr = check Suit { fst = "joker"; snd = null; }; expected = false; };
+      "dec-str-certify" = { expr = Suit.certify "hearts"; expected = { fst = "hearts"; snd = null; }; };
+
+      # decidable: andKP composite
+      "dec-andkp-in" = { expr = check Bounded { fst = 5; snd = null; }; expected = true; };
+      "dec-andkp-below" = { expr = check Bounded { fst = -1; snd = null; }; expected = false; };
+      "dec-andkp-above" = { expr = check Bounded { fst = 20; snd = null; }; expected = false; };
+
+      # general: truncated certificate
+      "gen-certifyProof-accepts-valid" = {
+        expr = check ReflEq (ReflEq.certifyProof 3 (reflProof 3));
+        expected = true;
+      };
+      "gen-certifyProof-fail-closed-bad-proof" = {
+        expr = throws (ReflEq.certifyProof 3 H.tt);
+        expected = true;
+      };
+      "gen-certifyProof-fail-closed-base" = {
+        expr = throws (ReflEq.certifyProof "x" (reflProof 3));
+        expected = true;
+      };
+      # Proof irrelevance is definitional.
+      "gen-proof-irrelevance" = {
+        expr = conv (H.squashIntro (reflProof 3)) (H.squashIntro H.tt);
+        expected = true;
+      };
+      "gen-prove-accepts-witness" = {
+        expr = ReflEq.prove (H.ann (H.pair (H.intLit 3) (H.squashIntro (reflProof 3))) ReflEq._kernel);
+        expected = true;
+      };
+      "gen-not-kernel-sufficient" = { expr = ReflEq._kernelSufficient; expected = false; };
+
+      # no proof obtainable: rejected at construction (no Bool escape)
+      "reject-raw-lambda" = { expr = throws (Certified { base = IntT; predicate = x: x > 0; }); expected = true; };
+      "reject-crashing-predicate" = { expr = throws (Certified { base = IntT; predicate = _: builtins.throw "crash"; }); expected = true; };
+      "reject-family-without-bridge" = { expr = throws (Certified { base = IntT; family = x: H.eq H.int_ x x; }); expected = true; };
+    };
+
   NatT = mkType { name = "Nat"; kernelType = H.nat; };
 
   Vector = elemType:
@@ -1007,14 +908,9 @@ let
     };
   };
 
-  # -- DEPENDENT RECORD (N-ARY SIGMA ENCODING) --
-  #
   # An n-ary dependent record is isomorphic to nested Sigma:
   #   { a : A, b : B(a), c : C(a,b) }  ≅  Σ(a:A).Σ(b:B(a)).C(a,b)
-  #
   # Values are nested Sigma pairs: { fst = a; snd = { fst = b; snd = c; }; }
-  # This gives DepRecord full Sigma inheritance: .validate (effectful),
-  # .proj1, .proj2, .pair, .pairE, .curry, .uncurry.
 
   # Unit type for the terminal case of nested Sigma
   UnitT = mkType { name = "Unit"; kernelType = H.unit; };
@@ -1066,7 +962,6 @@ let
 
       sigmaType = buildSigma fields { };
 
-      # Convert flat attrset → nested Sigma value
       packFields = remaining: v:
         if builtins.length remaining == 0 then
           null
@@ -1079,7 +974,6 @@ let
           in
           { fst = v.${field.name}; snd = packFields rest v; };
 
-      # Convert nested Sigma value → flat attrset
       unpackFields = remaining: packed:
         if builtins.length remaining == 0 then
           { }
@@ -1468,34 +1362,31 @@ api.namespace {
     Certified = api.leaf {
       value = Certified;
       doc = ''
-        Certified value: `Σ(v:A).Proof(P(v))`.
+        Subset type `Σ(x:A).P(x)` with `P(x)` a mere proposition. The witness
+        is an inhabitant of `P(x)`, not the host Bool. Two formers, one type:
 
-        A dependent pair where:
+        - decidable `predicate` (a `reflect` KernelPred) → `P x = KT.P(decide t x)`
+          (`Unit`/`Void` ≡ `KT.El t`); witness is the Unit inhabitant (`null`),
+          synthesized by `certify`. `_kernelSufficient = true`; `_kernel = El t`.
+        - general `{ family; bridge; }` (`family : A → U`) → `P x = squash(family x)`,
+          proof irrelevance definitional; witness is `squashIntro` of a checked
+          HOAS proof supplied to `certifyProof v p`. `_kernelSufficient = false`.
 
-        ```
-        fst : A              — the value
-        snd : true           — proof witness (must be true AND predicate must hold)
-        ```
-
-        The second component's type depends on the first: it checks both
-        that the proof is `true` and that `predicate(fst)` holds.
-
-        Certified is a first-order contract — both components are concrete
-        data, so the contract is checked immediately and completely (like
-        Sigma). The guard IS full membership.
+        A predicate that is neither (a raw host lambda) yields no proof, so it is
+        not a `Certified` — construction throws. For an un-proven runtime guard
+        use `fx.types.refinement.refined`.
 
         Construction:
 
-        - `.certify v` — pure smart constructor (throws on invalid)
-        - `.certifyE v` — effectful smart constructor (sends `typeCheck` effects)
-        - `.check` — inherited from Sigma (full dependent pair check)
-        - `.validate` — inherited from Sigma (effectful introduction check)
+        - `.certify v` — decidable: pure, fail-closed, synthesizes the witness.
+        - `.certifyProof v p` — general: checks `p : family(v)`, then truncates.
+        - `.certifyE v` — decidable effectful dual (sends `typeCheck` on failure).
+        - `.check` / `.validate` — inherited from Sigma (pair check / effectful intro).
+        - `.prove term` — checks a term against the genuine subset `_kernel`.
 
-        The `.certifyE` constructor is NOT an introduction check — it's a
-        convenience that takes a raw value, evaluates the predicate, and
-        produces the Sigma pair `{ fst = v; snd = true; }`. The actual
-        introduction check (`.validate`) is inherited from Sigma and verifies
-        an already-formed pair.
+        Membership decides component-wise: `.check`/`.validate` ride a structural
+        `Σ x:A. Unit` kernelType (host-decidable without normalizing), with the
+        predicate decided at the concrete fst; `_kernel` exposes the real `El t`.
       '';
       tests = CertifiedTests;
     };

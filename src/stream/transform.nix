@@ -11,12 +11,34 @@ let
       if step._tag == "Done" then pure step
       else pure { _tag = "More"; head = f step.head; tail = smap f step.tail; });
 
+  # advanceUntil: iterative (stack-safe) skip via genericClosure.
+  # Walks the stream until pred is satisfied or the stream is exhausted.
+  # Returns { done = true; rest = <Done computation>; } | { done = false; head = h; tail = t; }
+  # Precondition: stream is Pure-encoded (every stream source here produces Pure nodes);
+  # advanceUntil reads `.value` to advance iteratively without interpretation.
+  advanceUntil = pred: stream:
+    let
+      walked = builtins.genericClosure {
+        startSet = [ { key = 0; cur = stream; out = null; } ];
+        operator = st:
+          if st.out != null then [ ]
+          else
+            let step = st.cur.value; in
+            if step._tag == "Done"
+            then [ { key = st.key + 1; cur = st.cur; out = { done = true; rest = st.cur; }; } ]
+            else if pred step.head
+            then [ { key = st.key + 1; cur = st.cur; out = { done = false; head = step.head; tail = step.tail; }; } ]
+            else [ { key = st.key + 1; cur = step.tail; out = null; } ];
+      };
+      final = builtins.elemAt walked (builtins.length walked - 1);
+    in
+    final.out;
+
   sfilter = pred: stream:
-    bind stream (step:
-      if step._tag == "Done" then pure step
-      else if pred step.head
-      then pure { _tag = "More"; inherit (step) head; tail = sfilter pred step.tail; }
-      else sfilter pred step.tail);
+    let r = advanceUntil pred stream; in
+    if r.done
+    then r.rest
+    else pure { _tag = "More"; head = r.head; tail = sfilter pred r.tail; };
 
   scanl = f: z: stream:
     bind stream (step:
@@ -26,9 +48,18 @@ let
         in pure { _tag = "More"; head = z; tail = scanl f next step.tail; });
 
   flatMap = f: stream:
-    bind stream (step:
-      if step._tag == "Done" then pure step
-      else fx.stream.combine.concat (f step.head) (flatMap f step.tail));
+    # advanceUntil iteratively skips elements whose inner stream f(x) is empty
+    # (Done), consuming no stack.  Once a non-empty inner is found, concat is
+    # lazy (stack-safe) and the recursive flatMap sits under its lazy tail →
+    # O(1) stack per non-empty inner.  f is evaluated twice per emitted head
+    # (once in isEmpty pred, once in concat) — acceptable.
+    let
+      isEmpty = s: s.value._tag == "Done";
+      r = advanceUntil (x: !(isEmpty (f x))) stream;
+    in
+    if r.done
+    then r.rest
+    else fx.stream.combine.concat (f r.head) (flatMap f r.tail);
 
 in
 api.namespace {

@@ -22,9 +22,19 @@ let
   drop = n: stream:
     if n <= 0 then stream
     else
-      bind stream (step:
-        if step._tag == "Done" then pure step
-        else drop (n - 1) step.tail);
+      let
+        walked = builtins.genericClosure {
+          startSet = [{ key = 0; cur = stream; rem = n; }];
+          operator = st:
+            if st.rem <= 0 then [ ]
+            else
+              let step = st.cur.value; in
+              if step._tag == "Done" then [ ]
+              else [{ key = st.key + 1; cur = step.tail; rem = st.rem - 1; }];
+        };
+        final = builtins.elemAt walked (builtins.length walked - 1);
+      in
+      final.cur;
 
 in
 api.namespace {

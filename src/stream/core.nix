@@ -16,8 +16,11 @@ let
   more = head: tail: pure { _tag = "More"; inherit head tail; };
 
   fromList = xs:
-    if xs == [ ] then done null
-    else more (builtins.head xs) (fromList (builtins.tail xs));
+    let
+      n = builtins.length xs;
+      go = i: if i == n then done null else more (builtins.elemAt xs i) (go (i + 1));
+    in
+    go 0;
 
   iterate = f: x: more x (iterate f (f x));
 

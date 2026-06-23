@@ -3,11 +3,21 @@
 # Terminal operations that consume a stream into a single value.
 { fx, api, ... }:
 let
-  inherit (fx.kernel) pure bind;
+  inherit (fx.kernel) pure;
   fold = f: z: stream:
-    bind stream (step:
-      if step._tag == "Done" then pure z
-      else fold f (f z step.head) step.tail);
+    let
+      walked = builtins.genericClosure {
+        startSet = [{ key = 0; node = stream; acc = z; }];
+        operator = st:
+          let step = st.node.value; in
+          if step._tag == "Done" then [ ]
+          else
+            let acc2 = f st.acc step.head; in
+            [{ key = builtins.seq acc2 (st.key + 1); node = step.tail; acc = acc2; }];
+      };
+      final = builtins.elemAt walked (builtins.length walked - 1);
+    in
+    pure final.acc;
 
   toList = stream: fold (acc: x: acc ++ [ x ]) [ ] stream;
 
@@ -17,33 +27,66 @@ let
 
   signalOn = z: cmp: stream:
     let
+      # Walk forward through same-valued elements iteratively (no stack growth).
+      # Returns the last genericClosure state record with field `out`:
+      #   { done = true; }               -- hit a Done step; `node` holds the Done computation
+      #   { done = false; head = ...; tail = ...; }  -- found a different element
+      skipSame = current: s:
+        let
+          walked = builtins.genericClosure {
+            startSet = [{ key = 0; cur = s; out = null; }];
+            operator = st:
+              if st.out != null then [ ]
+              else
+                let step = st.cur.value; in
+                if step._tag == "Done"
+                then [{ key = st.key + 1; cur = st.cur; out = { done = true; }; }]
+                else if cmp current step.head
+                then [{ key = st.key + 1; cur = step.tail; out = null; }]
+                else [{ key = st.key + 1; cur = st.cur; out = { done = false; head = step.head; tail = step.tail; }; }];
+          };
+        in
+        builtins.elemAt walked (builtins.length walked - 1);
+
       go = current: s:
-        bind s (step:
-          if step._tag == "Done" then pure step
-          else
-            let
-              next = step.head;
-              same = cmp current next;
-            in
-            if same
-            then go current step.tail
-            else fx.stream.core.more next (go next step.tail));
+        let final = skipSame current s; in
+        if final.out.done
+        then pure final.cur.value          # preserves Done step exactly (matches original `pure step`)
+        else fx.stream.core.more final.out.head (go final.out.head final.out.tail);
     in
     fx.stream.core.more z (go z stream);
 
   signal = z: stream: signalOn z (x: y: x == y) stream;
 
   any = pred: stream:
-    bind stream (step:
-      if step._tag == "Done" then pure false
-      else if pred step.head then pure true
-      else any pred step.tail);
+    let
+      walked = builtins.genericClosure {
+        startSet = [{ key = 0; node = stream; found = false; stop = false; }];
+        operator = st:
+          if st.stop then [ ]
+          else let step = st.node.value; in
+            if step._tag == "Done" then [{ key = st.key + 1; node = null; found = false; stop = true; }]
+            else if pred step.head then [{ key = st.key + 1; node = null; found = true; stop = true; }]
+            else [{ key = st.key + 1; node = step.tail; found = false; stop = false; }];
+      };
+      final = builtins.elemAt walked (builtins.length walked - 1);
+    in
+    pure final.found;
 
   all = pred: stream:
-    bind stream (step:
-      if step._tag == "Done" then pure true
-      else if !(pred step.head) then pure false
-      else all pred step.tail);
+    let
+      walked = builtins.genericClosure {
+        startSet = [{ key = 0; node = stream; ok = true; stop = false; }];
+        operator = st:
+          if st.stop then [ ]
+          else let step = st.node.value; in
+            if step._tag == "Done" then [{ key = st.key + 1; node = null; ok = true; stop = true; }]
+            else if !(pred step.head) then [{ key = st.key + 1; node = null; ok = false; stop = true; }]
+            else [{ key = st.key + 1; node = step.tail; ok = true; stop = false; }];
+      };
+      final = builtins.elemAt walked (builtins.length walked - 1);
+    in
+    pure final.ok;
 
 in
 api.namespace {

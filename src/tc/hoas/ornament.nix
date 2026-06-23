@@ -678,44 +678,91 @@ let
   algPiProof = node:
     if node ? proof then node.proof else _: self.bootRefl;
 
+  # Shape-check an algebra against its target description, collecting every
+  # mismatch as a diagnostic record (empty on success). The walk is a
+  # pre-order traversal of the description: each form either emits one
+  # terminal diagnostic (mismatch / unsupported / sample failure) or descends
+  # into its children with no emission of its own, so the flat record list is
+  # exactly the left-to-right concatenation of the leaf emissions. The
+  # traversal runs on a `genericClosure` cons-stack rather than host recursion,
+  # so its depth scales with memory, not the call stack.
   algShapeDiagnosticRecordsAt = path: D: alg:
     let
-      node = if isAlg alg then alg else null;
-      got = algTag alg;
-    in
-    if D._htag == "ann" then algShapeDiagnosticRecordsAt path D.term alg
-    else if D._htag == "desc-ret-enc" then
-      if node == null || node.tag != "ret" then [ (algMismatchDiagnostic path "ret" D got) ] else [ ]
-    else if D._htag == "desc-arg-enc" then
-      if node == null || node.tag != "arg" then [ (algMismatchDiagnostic path "arg" D got) ]
-      else
-        let sampled = sampleAlgBodyResult path node.body; in
-        if !sampled.ok then sampled.diagnostics
+      # Push a frame list so frame 0 becomes the new head, preserving the
+      # left-to-right pre-order of the original recursion.
+      pushAll = frames: s:
+        let n = builtins.length frames;
+        in builtins.foldl'
+          (st: i: { head = builtins.elemAt frames (n - 1 - i); tail = st; })
+          s
+          (builtins.genList (x: x) n);
+      # One traversal step: a `{ path; D; alg }` frame yields the diagnostics
+      # emitted here plus the child frames to descend into. `ret` on a matching
+      # algebra emits nothing and has no children.
+      step = frame:
+        let
+          path = frame.path;
+          D = frame.D;
+          alg = frame.alg;
+          node = if isAlg alg then alg else null;
+          got = algTag alg;
+        in
+        if D._htag == "ann" then { emit = [ ]; children = [ (frame // { D = D.term; }) ]; }
+        else if D._htag == "desc-ret-enc" then
+          if node == null || node.tag != "ret"
+          then { emit = [ (algMismatchDiagnostic path "ret" D got) ]; children = [ ]; }
+          else { emit = [ ]; children = [ ]; }
+        else if D._htag == "desc-arg-enc" then
+          if node == null || node.tag != "arg"
+          then { emit = [ (algMismatchDiagnostic path "arg" D got) ]; children = [ ]; }
+          else
+            let sampled = sampleAlgBodyResult path node.body; in
+            if !sampled.ok then { emit = sampled.diagnostics; children = [ ]; }
+            else { emit = [ ]; children = [ { path = "${path}.arg"; D = D.body self.ttPrim; alg = sampled.value; } ]; }
+        else if D._htag == "desc-rec-enc" then
+          if node == null || node.tag != "rec"
+          then { emit = [ (algMismatchDiagnostic path "rec" D got) ]; children = [ ]; }
+          else
+            let sampled = sampleAlgBodyResult path node.body; in
+            if !sampled.ok then { emit = sampled.diagnostics; children = [ ]; }
+            else { emit = [ ]; children = [ { path = "${path}.rec"; D = D.D; alg = sampled.value; } ]; }
+        else if D._htag == "desc-plus-enc" then
+          if node == null || node.tag != "plus"
+          then { emit = [ (algMismatchDiagnostic path "plus" D got) ]; children = [ ]; }
+          else { emit = [ ]; children = [
+            { path = "${path}.left"; D = D.A; alg = node.left; }
+            { path = "${path}.right"; D = D.B; alg = node.right; }
+          ]; }
+        else if D._htag == "desc-pi-enc" then
+          if node == null || node.tag != "pi"
+          then { emit = [ (algMismatchDiagnostic path "pi" D got) ]; children = [ ]; }
+          else { emit = [ ]; children = [ { path = "${path}.pi"; D = D.D; alg = node.body; } ]; }
         else
-          algShapeDiagnosticRecordsAt "${path}.arg"
-            (D.body self.ttPrim)
-            sampled.value
-    else if D._htag == "desc-rec-enc" then
-      if node == null || node.tag != "rec" then [ (algMismatchDiagnostic path "rec" D got) ]
-      else
-        let sampled = sampleAlgBodyResult path node.body; in
-        if !sampled.ok then sampled.diagnostics
-        else
-          algShapeDiagnosticRecordsAt "${path}.rec"
-            D.D
-            sampled.value
-    else if D._htag == "desc-plus-enc" then
-      if node == null || node.tag != "plus" then [ (algMismatchDiagnostic path "plus" D got) ]
-      else (algShapeDiagnosticRecordsAt "${path}.left" D.A node.left)
-        ++ (algShapeDiagnosticRecordsAt "${path}.right" D.B node.right)
-    else if D._htag == "desc-pi-enc" then
-      if node == null || node.tag != "pi" then [ (algMismatchDiagnostic path "pi" D got) ]
-      else algShapeDiagnosticRecordsAt "${path}.pi" D.D node.body
-    else
-      [
-        (algDiagnostic "algOrn.unsupported-description" path
-          "unsupported description form '${descLabel D}'")
-      ];
+          {
+            emit = [
+              (algDiagnostic "algOrn.unsupported-description" path
+                "unsupported description form '${descLabel D}'")
+            ];
+            children = [ ];
+          };
+      closure = builtins.genericClosure {
+        startSet = [ { key = 0; stack = pushAll [ { inherit path D alg; } ] null; acc = [ ]; } ];
+        operator = item:
+          if item.stack == null then [ ]
+          else
+            let
+              s = step item.stack.head;
+              # Force the accumulator each step: a lazily-threaded `++` chain
+              # would defer an n-deep force back onto the host stack.
+              nextAcc = item.acc ++ s.emit;
+            in builtins.seq nextAcc [{
+              key = item.key + 1;
+              stack = pushAll s.children item.stack.tail;
+              acc = nextAcc;
+            }];
+      };
+      final = builtins.head (builtins.filter (it: it.stack == null) closure);
+    in final.acc;
 
   algShapeDiagnosticsAt = path: D: alg:
     map diagnosticText (algShapeDiagnosticRecordsAt path D alg);

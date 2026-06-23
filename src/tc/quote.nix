@@ -132,6 +132,9 @@ let
         (quote d elim.rhs)
         head
     else if t == "EStrEq" then T.mkStrEq head (quote d elim.arg)
+    else if t == "EIntEq" then T.mkIntEq head (quote d elim.arg)
+    else if t == "EIntLeL" then T.mkIntLe head (quote d elim.arg)
+    else if t == "EIntLeR" then T.mkIntLe (quote d elim.arg) head
     else if t == "EAbsurd" then T.mkAbsurd (quote d elim.type) head
     else if t == "EDescInd" then
       T.mkDescInd (quote d elim.D) (quote d elim.motive) (quote d elim.step) (quote d elim.i) head

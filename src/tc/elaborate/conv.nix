@@ -50,6 +50,7 @@ let
         elim.rhs
       ]
     else if t == "EStrEq" then metaIdsVal elim.arg
+    else if t == "EIntEq" || t == "EIntLeL" || t == "EIntLeR" then metaIdsVal elim.arg
     else if t == "EDescInd" then
       idsInList [
         elim.D

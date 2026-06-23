@@ -74,6 +74,8 @@ let
     "everywhere-d" = 9;
     "desc-desc-app" = 2;
     "str-eq" = 2;
+    "int-le" = 2;
+    "int-eq" = 2;
     "squash-elim" = 4;
     "opaque-lam" = 1;
     "pi" = 1;
@@ -1032,6 +1034,18 @@ in
             (lhsTm:
               bindP P.AppArg (self.check ctx tm.rhs V.vString) (rhsTm:
                 pure { term = T.mkStrEq lhsTm rhsTm; type = boolTyVal; }))
+
+        # IntLe/IntEq: both args must be Int, result is Bool (plus-encoded).
+        else if t == "int-le" then
+          bindP P.AppHead (self.check ctx tm.lhs V.vInt)
+            (lhsTm:
+              bindP P.AppArg (self.check ctx tm.rhs V.vInt) (rhsTm:
+                pure { term = T.mkIntLe lhsTm rhsTm; type = boolTyVal; }))
+        else if t == "int-eq" then
+          bindP P.AppHead (self.check ctx tm.lhs V.vInt)
+            (lhsTm:
+              bindP P.AppArg (self.check ctx tm.rhs V.vInt) (rhsTm:
+                pure { term = T.mkIntEq lhsTm rhsTm; type = boolTyVal; }))
 
         # `recTrunc A B f x : Squash B` for `f : A → Squash B`,
         # `x : Squash A`. The motive is restricted to `Squash _` by the

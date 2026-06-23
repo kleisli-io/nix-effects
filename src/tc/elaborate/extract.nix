@@ -382,7 +382,7 @@ in
             r = builtins.tryEval (hoasTy.body { _htag = "unit"; });
             sndHoas = if r.success then r.value else self.reifyType sndTyVal;
           in
-          { fst = fstNix; snd = self.extractInner sndHoas sndTyVal val.snd; }
+          { fst = fstNix; snd = builtins.seq (E.forceVal sndTyVal) (self.extractInner sndHoas sndTyVal val.snd); }
 
         # -- Compound types (record, maybe, variant) --
 

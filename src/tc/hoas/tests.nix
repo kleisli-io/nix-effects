@@ -385,6 +385,28 @@ in
       expected = "lam";
     };
 
+    # -- Stack safety: deep Pi-telescope ending in Eq (EqDT-witness path) --
+    # A telescope ending in a 3-arg Eq spine drives checkHoas's shared-Eq
+    # witness derivation (checkedEqWitnesses -> peelTmTelescope), which
+    # descends the kernel-built Pi Tm spine. A native descent grows the
+    # host stack one frame per binder; the heap worklist keeps it bounded.
+    # Depth exceeds the native walk budget, so the worklist fallback runs.
+    "check-deep-pi-eq-2000" = {
+      expr =
+        let
+          deepPi = builtins.foldl'
+            (acc: _: forall "_" nat (_: acc))
+            (eq nat zero zero)
+            (builtins.genList (x: x) 2000);
+          deepLam = builtins.foldl'
+            (acc: _: lam "_" nat (_: acc))
+            refl
+            (builtins.genList (x: x) 2000);
+        in
+        (checkHoas deepPi deepLam).tag;
+      expected = "lam";
+    };
+
     # -- Stack safety: deep cons chain elaboration --
     "elab-cons-5000" = {
       expr =
@@ -462,6 +484,37 @@ in
     "check-inl" = {
       expr = let t = checkHoas (sum nat bool) (inl zero); in
         "${t.tag}/${t.d.tag}";
+      expected = "desc-con/boot-inl";
+    };
+
+    # inl leZ : Sum (le 0 2) Nat — the Left summand is an INDEXED inductive
+    # family (`Le`), so the inner ctor must flatten and recover its implicit
+    # index from the field type. Regression guard: a level-sort param must
+    # not be `ann`-ascribed (else `fieldLiftType` lift-wraps the field type,
+    # `dtypeView` declines, and the payload leaks with its index unsolved).
+    "check-inl-indexed-family" = {
+      expr = let
+        le02 = le (natLit 0) (natLit 2);
+        t = checkHoas (sum le02 nat) (inl leZ);
+      in "${t.tag}/${t.d.tag}";
+      expected = "desc-con/boot-inl";
+    };
+
+    # inl nil : Sum (List Nat) Nat — Left summand is a PARAMETRIC family.
+    "check-inl-parametric-family" = {
+      expr = let t = checkHoas (sum (listOf nat) nat) (inl nil); in
+        "${t.tag}/${t.d.tag}";
+      expected = "desc-con/boot-inl";
+    };
+
+    # yes le02 leZ : Dec (le 0 2) — `Dec` over an indexed family; exercises
+    # the decision vocabulary (`decideLeNat`/`decideEqNat`) in CHECKING
+    # position, previously only validated via `Q.nf` normalization.
+    "check-dec-yes-indexed-family" = {
+      expr = let
+        le02 = le (natLit 0) (natLit 2);
+        t = checkHoas (dec le02) (yes le02 leZ);
+      in "${t.tag}/${t.d.tag}";
       expected = "desc-con/boot-inl";
     };
 

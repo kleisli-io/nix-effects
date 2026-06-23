@@ -43,7 +43,11 @@ let
   # tail, which also keeps the C-stack/call-depth guarantee on
   # pathological indices.
   envNth = e: i:
-    if i == 0 then e.head
+    # A plain Nix list (elaborate-layer list-contexts) is indexed verbatim;
+    # cons spines (the kernel typing context + evaluator env) take the
+    # iterative walk below. Mirrors envFromList's isList idempotence.
+    if builtins.isList e then builtins.elemAt e i
+    else if i == 0 then e.head
     else if i == 1 then e.tail.head
     else if i == 2 then e.tail.tail.head
     else if i == 3 then e.tail.tail.tail.head
@@ -54,6 +58,30 @@ let
     else (builtins.foldl' (acc: _: acc.tail)
       e.tail.tail.tail.tail.tail.tail.tail.tail
       (builtins.genList (x: x) (i - 8))).head;
+  # Materialize a de Bruijn spine into an index-ordered Nix list (index 0
+  # = most-recently-bound = head). Iterative (genericClosure) so deep
+  # spines stay host-stack- and call-depth-flat; tolerates a null- or
+  # list-terminated spine (a plain Nix list passes through verbatim, a
+  # cons spine ending in a list appends that tail). Inverse of envFromList
+  # on cons inputs; the read counterpart consumers reach for when they
+  # need every element (e.g. an `any`/`map` over the whole context), not
+  # an indexed lookup (envNth) or just the length (envLen).
+  envToList = e:
+    if builtins.isList e then e
+    else if e == null then [ ]
+    else
+      let
+        cells = builtins.genericClosure {
+          startSet = [ { key = 0; cur = e; } ];
+          operator = s:
+            if builtins.isAttrs s.cur.tail
+            then [ { key = s.key + 1; cur = s.cur.tail; } ]
+            else [ ];
+        };
+        last = (builtins.elemAt cells (builtins.length cells - 1)).cur.tail;
+        tailList = if builtins.isList last then last else [ ];
+      in
+      map (s: s.cur.head) cells ++ tailList;
   envReverse = xs: builtins.foldl' (acc: x: [ x ] ++ acc) [ ] xs;
   envFromList = xs:
     if builtins.isList xs
@@ -319,6 +347,11 @@ let
   eBootJ = type: lhs: motive: base: rhs:
     { tag = "EBootJ"; inherit type lhs motive base rhs; };
   eStrEq = arg: { tag = "EStrEq"; inherit arg; };
+  # intLe non-symmetric: frame tag records the neutral's side (L=lhs, R=rhs),
+  # arg holds the other operand. intEq symmetric → one frame.
+  eIntLeL = arg: { tag = "EIntLeL"; inherit arg; };
+  eIntLeR = arg: { tag = "EIntLeR"; inherit arg; };
+  eIntEq = arg: { tag = "EIntEq"; inherit arg; };
   eAbsurd = type: { tag = "EAbsurd"; inherit type; };
   eDescInd = D: motive: step: i:
     { tag = "EDescInd"; inherit D motive step i; };
@@ -406,6 +439,24 @@ api.namespace {
     "env-deep-len" = {
       expr = envLen (builtins.foldl' (acc: _: envCons vTt acc) envNil
         (builtins.genList (i: i) 20000));
+      expected = 20000;
+    };
+    # envToList materializes a cons spine index-ordered (head first), is
+    # idempotent on a plain Nix list and maps null to [], and walks a
+    # 20000-deep spine iteratively without overflow.
+    "env-to-list-order" = {
+      expr = envToList (envCons (vIntLit 0) (envCons (vIntLit 1) (envCons (vIntLit 2) envNil)));
+      expected = [ (vIntLit 0) (vIntLit 1) (vIntLit 2) ];
+    };
+    "env-to-list-nil" = { expr = envToList envNil; expected = [ ]; };
+    "env-to-list-list-verbatim" = {
+      expr = envToList [ (vIntLit 7) (vIntLit 8) ];
+      expected = [ (vIntLit 7) (vIntLit 8) ];
+    };
+    "env-to-list-deep" = {
+      expr = builtins.length (envToList
+        (builtins.foldl' (acc: _: envCons vTt acc) envNil
+          (builtins.genList (i: i) 20000)));
       expected = 20000;
     };
 
@@ -726,7 +777,7 @@ api.namespace {
     };
     envNth = api.leaf {
       value = envNth;
-      description = "envNth: iterative de Bruijn lookup (foldl' over a range) — clears the C-stack and max-call-depth on deep environments.";
+      description = "envNth: iterative de Bruijn lookup (foldl' over a range) — clears the C-stack and max-call-depth on deep environments; a plain Nix list is indexed verbatim (isList guard) so elaborate-layer list-contexts pass through unchanged.";
       signature = "envNth : Env -> Int -> Val";
     };
     envFromList = api.leaf {
@@ -738,6 +789,11 @@ api.namespace {
       value = envPrepend;
       description = "envPrepend: prepend a short Nix list of values (index 0 first) onto an environment.";
       signature = "envPrepend : [Val] -> Env -> Env";
+    };
+    envToList = api.leaf {
+      value = envToList;
+      description = "envToList: materialize a de Bruijn spine into an index-ordered Nix list (index 0 = most recent) via an iterative genericClosure walk — O(N) time, O(1) stack (overflow-free). For whole-context reads (`any`/`map`/`filter` over every binding); a plain Nix list passes through verbatim (isList guard), null yields the empty list. Inverse of envFromList on cons inputs.";
+      signature = "envToList : Env -> [Val]";
     };
 
     vLam = api.leaf {
@@ -1038,6 +1094,21 @@ api.namespace {
       value = eStrEq;
       description = "eStrEq: elimination frame for `strEq` on a neutral string operand — carries the other operand for completion when the neutral resolves.";
       signature = "eStrEq : Val -> Val -> SpineEntry";
+    };
+    eIntLeL = api.leaf {
+      value = eIntLeL;
+      description = "eIntLeL: `intLe` frame where the neutral operand is the lhs — carries the rhs.";
+      signature = "eIntLeL : Val -> SpineEntry";
+    };
+    eIntLeR = api.leaf {
+      value = eIntLeR;
+      description = "eIntLeR: `intLe` frame where the neutral operand is the rhs — carries the lhs.";
+      signature = "eIntLeR : Val -> SpineEntry";
+    };
+    eIntEq = api.leaf {
+      value = eIntEq;
+      description = "eIntEq: `intEq` frame on a neutral int operand — carries the other operand (symmetric).";
+      signature = "eIntEq : Val -> SpineEntry";
     };
     eAbsurd = api.leaf {
       value = eAbsurd;

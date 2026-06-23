@@ -30,7 +30,14 @@ let
     instantiateF = fuel: cl: arg:
       overlaySelf.evalF fuel (V.envCons arg cl.env) cl.body;
 
-    vAppF = fuel: fn: arg:
+    # `fn0` may be a machine-deferred `VThunkTm` read out of a
+    # machine-built closure env (the overlay's own `evalF` is eager and
+    # never mints thunks). Force it first, exactly as the kernel `vAppF`
+    # does. Forcing is meta-safe: `VThunkTm` is produced only by the
+    # kernel machine, which never sees a `VMeta`, so its thunks are
+    # meta-free. `forceVal` is identity on a `VMeta` (no `.tag`).
+    vAppF = fuel: fn0: arg:
+      let fn = E.forceVal fn0; in
       if isVMeta fn then extendVMeta fn (V.eApp arg)
       else if fn.tag == "VDescViewFn" then
         E.dispatch.applyDescViewFnByKindF fuel fn arg

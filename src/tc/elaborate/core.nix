@@ -220,8 +220,7 @@ in
         then throw "verifyAndExtract: type check failed"
         else
           let
-            tm = H.elab hoasImpl;
-            val = E.eval [ ] tm;
+            val = E.eval [ ] checked;
             tyVal = E.eval [ ] (H.elab hoasTy);
           in
           self.extractInner hoasTy tyVal val;
@@ -229,10 +228,15 @@ in
       signature = "verifyAndExtract : Hoas -> Hoas -> NixValue";
       doc = ''
         The canonical entry point for closing a verified-impl pipeline
-        back to ordinary Nix data. The kernel type value is computed
-        once and reused by `extractInner` so dependent codomain/snd
-        closures evaluate against the same type representation the
-        checker consumed.
+        back to ordinary Nix data. Evaluates the term returned by
+        `checkHoas` — not a fresh elaboration of the impl — so the
+        extracted value is the one that was verified, with all metas
+        (e.g. a polymorphic list's element type, solved only by
+        checking against the expected type) already pinned. The kernel
+        type value is the direct elaboration of `hoasTy`; `extractInner`
+        reads descriptions through `descView`, which treats primitive
+        and encoded shapes uniformly, so the type's representation need
+        not match the checked term's.
 
         On type-check failure throws `"verifyAndExtract: type check
         failed"` — callers needing structured diagnostics should split
@@ -1429,6 +1433,27 @@ in
           left = { _con = "leaf"; value = 0; };
           right = { _con = "leaf"; value = 1; };
         };
+      };
+
+      # verifyAndExtract evaluates the checked term, so a polymorphic list
+      # built from bare `cons`/`nil` — whose element-type meta is solved only
+      # by checking against the expected type — extracts to the list.
+      # Elaborating the impl without the expected type leaves that meta
+      # unsolved.
+      "verify-extract-poly-list" = {
+        expr = verifyAndExtract (H.listOf H.nat)
+          (H.cons H.zero (H.cons (H.succ H.zero) (H.cons (H.succ (H.succ H.zero)) H.nil)));
+        expected = [ 0 1 2 ];
+      };
+      # Dependent Sigma through verifyAndExtract: the fst value flows into the
+      # instantiated snd type. The checked term's encoded payload decodes
+      # against the kernel type value, which extractInner reads through the
+      # representation-agnostic descView.
+      "verify-extract-dependent-sigma" = {
+        expr = verifyAndExtract
+          (H.sigma "n" H.nat (n: H.eq H.nat n n))
+          (H.pair (H.succ H.zero) (H.reflDT H.nat (H.succ H.zero)));
+        expected = { fst = 1; snd = null; };
       };
 
       # reifyType for non-prelude VMu shapes: returns an `H.mu D'` form

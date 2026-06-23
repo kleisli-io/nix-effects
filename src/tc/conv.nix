@@ -265,17 +265,18 @@ let
     else null;
 
   # -- Conversion step over forced values --
-  # Definitional equality of v1 and v2 at depth d. `runConvF` drives the
-  # structural arms (VPair/VBootSum/VBootInl/VBootInr/Σ-eta) depth-flat and
-  # delegates every other arm here. `convStepForced` requires both sides
-  # already WHNF (never `VThunkTm`); `convStep` is the forcing wrapper for
-  # callers holding possibly-deferred values (`runConvF` base goals carry
-  # lazy spine fields). `conv` forces at entry, so its dispatch skips the
-  # wrapper — forceVal is idempotent but each call costs an application.
-  convStep = d: v1raw: v2raw: convStepForced d (E.forceVal v1raw) (E.forceVal v2raw);
+  # Definitional equality of v1 and v2 at depth d; the native arms drive every
+  # rule. `convStepForced` requires both sides already WHNF (never `VThunkTm`);
+  # `convStep` is the forcing wrapper for callers holding possibly-deferred
+  # values (`runConvF` base goals carry lazy spine fields). `conv` forces at
+  # entry, so its dispatch skips the wrapper — forceVal is idempotent but each
+  # call costs an application.
+  convStep = d: v1raw: v2raw: convStepForcedF convDepthFuel d (E.forceVal v1raw) (E.forceVal v2raw);
 
-  convStepForced = d: v1: v2:
+  convStepForcedF = fuel: d: v1: v2:
     let
+      conv = convF fuel;
+      convSp = convSpF fuel;
       t1 = v1.tag; t2 = v2.tag;
     in
 
@@ -755,38 +756,90 @@ let
       layer [ (goal a.fst b.fst) ] (E.instantiate a.closure fv) (E.instantiate b.closure fv) (d + 1)
     else null;
 
-  # Public entry and recursion knot: definitional equality at binding depth d.
-  # Structural-spine and binder goals run on `runConvF`'s goal stack
-  # (depth-flat); every other goal dispatches `convStepForced` directly — the
-  # machine sandwich per sub-goal (two genericClosure setups + double cPeel)
-  # costs more than the dispatch it wraps. Same stack envelope as before:
-  # non-structural chains recursed natively through `runConvF` bases too.
-  # The `cPeelBinder` try is gated behind an inline binder-tag test: every
-  # non-null cPeelBinder arm requires VPi/VLam/VSigma on at least one side
-  # (the Lift-guard arms return null), so the gate routes identically while
-  # base goals — the dominant class — skip the classifier call and its let
-  # allocations entirely. The tag tests stay inline: a let-bound flag would
-  # cost a thunk per goal.
-  conv = d: v1: v2:
+  # Classifies the non-binder deep arms (VNe spine, VMu/VDesc/VBootEq towers)
+  # for `cPeel` so they peel onto the machine's goal stack instead of recursing
+  # natively. `a`/`b` already forced. Returns a layer record, or null to fall
+  # through to a base goal (`convStep` then rejects it shallowly — the native
+  # arms short-circuit before any deep walk on the failure path).
+  #
+  # VNe×VNe routes every spine frame's `elimGoals` onto the frontier (one goal
+  # designated as the na/nb continuation, the rest siblings); level/length
+  # mismatch or a non-matching/guard-failing frame returns null. The compound
+  # arms peel one slot as the continuation and emit the others as siblings,
+  # matching the native conjunction exactly (a conjunction is order-insensitive
+  # and these arms are throw-free, so machine `all` and native `&&` agree).
+  cPeelArm = d: a: b:
+    let
+      ta = a.tag; tb = b.tag;
+      goal = x: y: { inherit d; a = x; b = y; };
+      layer = goals: na: nb: { kind = "layer"; inherit goals na nb; nd = d; };
+    in
+    if ta != tb then null
+    else if ta == "VNe" then
+      if a.level != b.level then null
+      else
+        let
+          sp1 = a.spine; sp2 = b.spine;
+          len = builtins.length sp1;
+        in
+        if len != builtins.length sp2 then null
+        else
+          let
+            frames = builtins.genList
+              (i: elimGoals d (builtins.elemAt sp1 i) (builtins.elemAt sp2 i)) len;
+            bad = builtins.any (r: r == null || !r.guard) frames;
+          in
+          if bad then null
+          else
+            let goals = builtins.concatLists (map (r: r.goals) frames); in
+            if goals == [ ] then null
+            else
+              let
+                n = builtins.length goals;
+                cont = builtins.elemAt goals (n - 1);
+              in
+              layer (builtins.genList (i: builtins.elemAt goals i) (n - 1)) cont.a cont.b
+    else if ta == "VBootEq" then
+      layer [ (goal a.lhs b.lhs) (goal a.rhs b.rhs) ] a.type b.type
+    else if ta == "VMu" then
+      layer [ (goal a.I b.I) (goal a.i b.i) ] a.D b.D
+    else if ta == "VDesc" then
+      let
+        levOk =
+          (a.level.tag == "VLevelZero" && b.level.tag == "VLevelZero")
+          || convLevel a.level b.level;
+        iLevOk = convLevel (a.iLev or V.vLevelZero) (b.iLev or V.vLevelZero);
+      in
+      if levOk && iLevOk then layer [ ] a.I b.I
+      else null
+    else null;
+
+  # Native-recursion C-stack budget. A goal recursing deeper than this bounces
+  # to the heap-bounded machine; far above real conversion depths, so shallow
+  # goals never bounce.
+  convDepthFuel = 512;
+
+  # Definitional equality at binding depth d, and the recursion knot. The native
+  # arms run on the C-stack under the recursion budget; on exhaustion the goal
+  # bounces to the heap-bounded machine, which handles any remaining depth and
+  # any shape (`cPeel` is total — its base fallback hands leaves back to
+  # `convStep`). Shallow goals never bounce, so carry no machine cost. Both paths
+  # decompose through the shared `cPeel`/`elimGoals` authority, so cannot drift.
+  convF = fuel: d: v1: v2:
     let
       a = E.forceVal v1; b = E.forceVal v2;
-      ta = a.tag; tb = b.tag;
-      structural =
-        (ta == "VPair" && (tb == "VPair" || tb == "VNe"))
-        || (ta == "VNe" && tb == "VPair")
-        || (ta == "VBootSum" && tb == "VBootSum")
-        || (ta == "VBootInl" && tb == "VBootInl")
-        || (ta == "VBootInr" && tb == "VBootInr")
-        || ((ta == "VPi" || ta == "VLam" || ta == "VSigma"
-             || tb == "VPi" || tb == "VLam" || tb == "VSigma")
-            && cPeelBinder d a b != null);
     in
-    if structural then E.machine.runConvF E.dispatch.defaultFuel d a b
-    else convStepForced d a b;
+    if fuel <= 0
+    then E.machine.runConvF E.dispatch.defaultFuel d a b
+    else convStepForcedF (fuel - 1) d a b;
+  conv = convF convDepthFuel;
 
   # -- Spine conversion --
-  convSp = d: sp1: sp2:
-    let len1 = builtins.length sp1; len2 = builtins.length sp2; in
+  convSpF = fuel: d: sp1: sp2:
+    let
+      convElim = convElimF fuel;
+      len1 = builtins.length sp1; len2 = builtins.length sp2;
+    in
     if len1 != len2 then false
     else if len1 == 0 then true
     else
@@ -796,54 +849,73 @@ let
         )
         true
         (builtins.genList (i: i) len1);
+  convSp = convSpF convDepthFuel;
 
-  # -- Elimination frame conversion --
-  convElim = d: e1: e2:
-    let t1 = e1.tag; t2 = e2.tag; in
-    if t1 != t2 then false
-    else if t1 == "EApp" then conv d e1.arg e2.arg
-    else if t1 == "EFst" then true
-    else if t1 == "ESnd" then true
+  # -- Elimination frame decomposition --
+  #
+  # Single source of truth for frame equality: decomposes a frame pair into
+  # `{ guard; goals }` (guard = eager bool prerequisite, goals = sub-`conv`
+  # obligations) or `null` when the frame tags cannot match. Native `convElim`
+  # and the machine's `cPeelArm` both consume it, so the two encodings cannot
+  # drift. Slot levels route as ordinary `conv` goals (a VLevel dispatches to
+  # `convLevel`); ELiftElim keeps an explicit `convLevel` guard because
+  # `convLevel` and `conv` differ on a stuck Level neutral carrying a spine.
+  elimGoals = d: e1: e2:
+    let
+      t1 = e1.tag; t2 = e2.tag;
+      goal = x: y: { inherit d; a = x; b = y; };
+      ok = goals: { guard = true; inherit goals; };
+    in
+    if t1 != t2 then null
+    else if t1 == "EApp" then ok [ (goal e1.arg e2.arg) ]
+    else if t1 == "EFst" then ok [ ]
+    else if t1 == "ESnd" then ok [ ]
     else if t1 == "EBootSumElim" then
-      conv d e1.left e2.left && conv d e1.right e2.right
-      && conv d e1.motive e2.motive && conv d e1.onLeft e2.onLeft
-      && conv d e1.onRight e2.onRight
+      ok [ (goal e1.left e2.left) (goal e1.right e2.right) (goal e1.motive e2.motive)
+        (goal e1.onLeft e2.onLeft) (goal e1.onRight e2.onRight) ]
     else if t1 == "EBootJ" then
-      conv d e1.type e2.type && conv d e1.lhs e2.lhs
-      && conv d e1.motive e2.motive && conv d e1.base e2.base
-      && conv d e1.rhs e2.rhs
-    else if t1 == "EStrEq" then conv d e1.arg e2.arg
-    else if t1 == "EAbsurd" then conv d e1.type e2.type
+      ok [ (goal e1.type e2.type) (goal e1.lhs e2.lhs) (goal e1.motive e2.motive)
+        (goal e1.base e2.base) (goal e1.rhs e2.rhs) ]
+    else if t1 == "EStrEq" then ok [ (goal e1.arg e2.arg) ]
+    # Distinct EIntLeL/EIntLeR tags make cross-side spines non-convertible
+    # via the `t1 != t2` guard, so intLe operand order is never conflated.
+    else if t1 == "EIntEq" then ok [ (goal e1.arg e2.arg) ]
+    else if t1 == "EIntLeL" then ok [ (goal e1.arg e2.arg) ]
+    else if t1 == "EIntLeR" then ok [ (goal e1.arg e2.arg) ]
+    else if t1 == "EAbsurd" then ok [ (goal e1.type e2.type) ]
     else if t1 == "EDescInd" then
-      conv d e1.D e2.D && conv d e1.motive e2.motive
-      && conv d e1.step e2.step && conv d e1.i e2.i
+      ok [ (goal e1.D e2.D) (goal e1.motive e2.motive) (goal e1.step e2.step) (goal e1.i e2.i) ]
     # EInterpD / EAllD / EEverywhereD spine frames — stuck `interpD` /
     # `allD` / `everywhereD` applications on a neutral D scrutinee.
     # Compare slots field-wise (D is the spine head, compared by
     # `convSp`). Levels delegate to `conv`'s VLevel routing.
     else if t1 == "EInterpD" then
-      conv d e1.level e2.level && conv d e1.I e2.I
-      && conv d e1.X e2.X && conv d e1.i e2.i
+      ok [ (goal e1.level e2.level) (goal e1.I e2.I) (goal e1.X e2.X) (goal e1.i e2.i) ]
     else if t1 == "EAllD" then
-      conv d e1.level e2.level && conv d e1.I e2.I
-      && conv d e1.K e2.K && conv d e1.X e2.X
-      && conv d e1.M e2.M && conv d e1.i e2.i && conv d e1.d e2.d
+      ok [ (goal e1.level e2.level) (goal e1.I e2.I) (goal e1.K e2.K) (goal e1.X e2.X)
+        (goal e1.M e2.M) (goal e1.i e2.i) (goal e1.d e2.d) ]
     else if t1 == "EEverywhereD" then
-      conv d e1.level e2.level && conv d e1.I e2.I
-      && conv d e1.K e2.K && conv d e1.X e2.X
-      && conv d e1.M e2.M && conv d e1.ih e2.ih
-      && conv d e1.i e2.i && conv d e1.d e2.d
+      ok [ (goal e1.level e2.level) (goal e1.I e2.I) (goal e1.K e2.K) (goal e1.X e2.X)
+        (goal e1.M e2.M) (goal e1.ih e2.ih) (goal e1.i e2.i) (goal e1.d e2.d) ]
     # ELiftElim spine frame — compare l, m, A. The `eq` slot is not
     # compared, mirroring the witness-irrelevance of the type-former.
     else if t1 == "ELiftElim" then
-      convLevel e1.l e2.l && convLevel e1.m e2.m && conv d e1.A e2.A
+      { guard = convLevel e1.l e2.l && convLevel e1.m e2.m; goals = [ (goal e1.A e2.A) ]; }
     # ESquashElim spine frame — structural compare of motive shape (A,B)
     # and case function. Two stuck `recTrunc` applications agree iff they
     # agree on metadata; payload irrelevance lives at the value layer
     # (VSquashIntro/VNe rules above), not on the spine frame itself.
     else if t1 == "ESquashElim" then
-      conv d e1.A e2.A && conv d e1.B e2.B && conv d e1.f e2.f
-    else false;
+      ok [ (goal e1.A e2.A) (goal e1.B e2.B) (goal e1.f e2.f) ]
+    else null;
+
+  # -- Elimination frame conversion --
+  convElimF = fuel: d: e1: e2:
+    let
+      conv = convF fuel;
+      r = elimGoals d e1 e2;
+    in r != null && r.guard && builtins.all (g: conv g.d g.a g.b) r.goals;
+  convElim = convElimF convDepthFuel;
 
 in
 api.namespace {
@@ -2047,6 +2119,11 @@ api.namespace {
       value = cPeelBinder;
       description = "cPeelBinder: binder-arm classifier for `cPeel` — mirrors convStep's VPi/VLam/eta/VSigma arms (and the preceding Lift-collapse guard) so binder layers peel flat. Returns a layer record or null.";
       signature = "cPeelBinder : Depth -> Val -> Val -> ({ kind; goals; na; nb; nd; } | null)";
+    };
+    cPeelArm = api.leaf {
+      value = cPeelArm;
+      description = "cPeelArm: deep-arm classifier for `cPeel` — peels VNe spines and VMu/VDesc/VBootEq towers onto the machine frontier via the shared `elimGoals` decomposition. Returns a layer record or null.";
+      signature = "cPeelArm : Depth -> Val -> Val -> ({ kind; goals; na; nb; nd; } | null)";
     };
     convSp = api.leaf {
       value = convSp;

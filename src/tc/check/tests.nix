@@ -554,6 +554,23 @@ in
         (checkTm ctx0 deepLet vUnit).tag;
       expected = "let";
     };
+    # Context-counter depth-flatness. `extend` caches `depth = ctx.depth + 1`
+    # (and `eb`); without forcing the counter at each extension, N chained
+    # extends leave an N-deep `+1` thunk chain. Forcing it (any check reading
+    # `ctx.depth`, e.g. `lookupType`'s bound check) recurses N-deep on the
+    # native C-stack and overflows a small thread stack — a nix-unit worker
+    # crosses over below N=4000 — while max-call-depth stays untouched.
+    # extend forces the counter eagerly, so a 10000-deep context reads its
+    # depth and looks up a binding in O(1) host frames.
+    "stress-extend-deep-depth-flat-10000" = {
+      expr =
+        let
+          deepCtx = builtins.foldl' (acc: _: extend acc "x" vUnit) ctx0
+            (builtins.genList (x: x) 10000);
+        in
+        { depth = deepCtx.depth; tag = (lookupType deepCtx 0).tag; };
+      expected = { depth = 10000; tag = "VUnit"; };
+    };
     # Homogeneous-ctor-chain flatness under the strided head-yield: layers
     # between stride multiples return Pure and must be applied iteratively
     # from the trampoline queue, not by nesting host frames — a regression

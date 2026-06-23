@@ -12,6 +12,14 @@ let
   P = fx.diag.positions;
   bindP = fx.tc.check.bindP;
 
+  # Host-stack fuel for the monadic folds. Each level recurses natively up to
+  # `nativeWalkBudget`; past it `descend` defers re-entry via the
+  # `deriveBounce` effect, which the trampoline splices as a fresh segment, so
+  # the host stack stays O(1) per segment regardless of description depth.
+  # Shallow descriptions never bounce, so their effect/blame structure is
+  # identical to the native recursion (cf. tc/generic/check.nix).
+  nativeWalkBudget = 512;
+
   isHoas = x:
     builtins.isAttrs x && x ? _htag;
 
@@ -199,47 +207,127 @@ let
   # and witness-irrelevance for bound `liftedRefl` / `Eq Level` proofs.
   # Initial binder depth is 0; conv increments under binders.
 
-  fold = handlers: d:
+  # Push a child list onto a cons-stack so child 0 becomes the new head,
+  # preserving the recursive walk's left-to-right order.
+  pushAll = items: s:
+    let n = builtins.length items;
+    in builtins.foldl'
+      (st: i: { head = builtins.elemAt items (n - 1 - i); tail = st; })
+      s
+      (builtins.genList (x: x) n);
+
+  # Pure catamorphism, defunctionalised as a self-contained post-order
+  # worklist. `fold` has no monad to bounce through, so stack safety comes
+  # from an explicit `genericClosure` two-stack machine rather than the
+  # `deriveBounce` trampoline used by the monadic variants: a `work`
+  # cons-stack of `descend`/`combine` steps and a `vals` cons-stack of
+  # already-folded child results. Each `descend` views one node and queues
+  # its children (left-to-right) ahead of its own `combine`; each `combine`
+  # pops its `n` child results and runs the matching handler. The result is
+  # forced (`seq`) before being pushed, so a deep description never builds a
+  # host-recursive thunk chain — output is identical to the native fold.
+  fold = handlers:
     let
-      view = rawView d;
-      recur = sub: fold handlers sub;
       default = handlerOr handlers "default" (v: v);
+
+      childDescs = view:
+        if view.idx == 0 then [ ]
+        else if view.idx == 1 then [ (applyDescFn view.tFn placeholder) ]
+        else if view.idx == 2 then [ view.sub ]
+        else if view.idx == 3 then [ view.sub ]
+        else [ view.A view.B ];
+
+      combine = view: kids:
+        if view.idx == 0 then
+          (handlerOr handlers "ret" default)
+            {
+              inherit view;
+              j = view.j;
+            }
+        else if view.idx == 1 then
+          (handlerOr handlers "arg" default)
+            {
+              inherit view;
+              sTy = view.sTy;
+              body = arg: fold handlers (applyDescFn view.tFn arg);
+              sample = builtins.elemAt kids 0;
+            }
+        else if view.idx == 2 then
+          (handlerOr handlers "rec" default)
+            {
+              inherit view;
+              j = view.j;
+              sub = builtins.elemAt kids 0;
+            }
+        else if view.idx == 3 then
+          (handlerOr handlers "pi" default)
+            {
+              inherit view;
+              sTy = view.sTy;
+              fn = view.fn;
+              sub = builtins.elemAt kids 0;
+            }
+        else
+          (handlerOr handlers "plus" default) {
+            inherit view;
+            left = builtins.elemAt kids 0;
+            right = builtins.elemAt kids 1;
+          };
+
+      # Pop `n` results off the vals cons-stack, restoring left-to-right
+      # order (children were pushed left-first so they sit right-first).
+      popN = n: s:
+        builtins.foldl'
+          (acc: _: { kids = [ acc.rest.head ] ++ acc.kids; rest = acc.rest.tail; })
+          { kids = [ ]; rest = s; }
+          (builtins.genList (x: x) n);
+
+      run = d:
+        let
+          closure = builtins.genericClosure {
+            startSet = [{
+              key = 0;
+              work = { head = { t = "descend"; inherit d; }; tail = null; };
+              vals = null;
+            }];
+            operator = item:
+              if item.work == null then [ ]
+              else
+                let
+                  w = item.work.head;
+                  rest = item.work.tail;
+                in
+                if w.t == "descend" then
+                  let
+                    view = rawView w.d;
+                    kids = childDescs view;
+                  in
+                  [{
+                    key = item.key + 1;
+                    work = pushAll
+                      (map (c: { t = "descend"; d = c; }) kids)
+                      {
+                        head = { t = "combine"; inherit view; n = builtins.length kids; };
+                        tail = rest;
+                      };
+                    inherit (item) vals;
+                  }]
+                else
+                  let
+                    popped = popN w.n item.vals;
+                    r = combine w.view popped.kids;
+                  in
+                  builtins.seq r [{
+                    key = item.key + 1;
+                    work = rest;
+                    vals = { head = r; tail = popped.rest; };
+                  }];
+          };
+          final = builtins.head (builtins.filter (it: it.work == null) closure);
+        in
+        final.vals.head;
     in
-    if view.idx == 0 then
-      (handlerOr handlers "ret" default)
-        {
-          inherit view;
-          j = view.j;
-        }
-    else if view.idx == 1 then
-      (handlerOr handlers "arg" default)
-        {
-          inherit view;
-          sTy = view.sTy;
-          body = arg: recur (applyDescFn view.tFn arg);
-          sample = recur (applyDescFn view.tFn placeholder);
-        }
-    else if view.idx == 2 then
-      (handlerOr handlers "rec" default)
-        {
-          inherit view;
-          j = view.j;
-          sub = recur view.sub;
-        }
-    else if view.idx == 3 then
-      (handlerOr handlers "pi" default)
-        {
-          inherit view;
-          sTy = view.sTy;
-          fn = view.fn;
-          sub = recur view.sub;
-        }
-    else
-      (handlerOr handlers "plus" default) {
-        inherit view;
-        left = recur view.A;
-        right = recur view.B;
-      };
+    run;
 
   shapeOf = d:
     fold
@@ -265,51 +353,58 @@ let
   # sub-description is parameterised; `sample` is the bound result of
   # `recur (applyDescFn view.tFn placeholder)` for handlers that only
   # need a representative.
-  foldDescM = handlers: d:
+  foldDescM = handlers:
     let
-      view = rawView d;
-      recur = sub: foldDescM handlers sub;
-      default = handlerOr handlers "default" defaultHandlerM;
+      go = fuel: d:
+        let
+          view = rawView d;
+          descend = sub:
+            if fuel <= 0
+            then K.send "deriveBounce" { run = _: go nativeWalkBudget sub; }
+            else go (fuel - 1) sub;
+          default = handlerOr handlers "default" defaultHandlerM;
+        in
+        if view.idx == 0 then
+          (handlerOr handlers "ret" default)
+            {
+              inherit view;
+              inherit (view) j;
+            }
+        else if view.idx == 1 then
+          K.bind (descend (applyDescFn view.tFn placeholder))
+            (sampleR:
+              (handlerOr handlers "arg" default) {
+                inherit view;
+                inherit (view) sTy;
+                body = arg: foldDescM handlers (applyDescFn view.tFn arg);
+                sample = sampleR;
+              })
+        else if view.idx == 2 then
+          K.bind (descend view.sub)
+            (subR:
+              (handlerOr handlers "rec" default) {
+                inherit view;
+                inherit (view) j;
+                sub = subR;
+              })
+        else if view.idx == 3 then
+          K.bind (descend view.sub)
+            (subR:
+              (handlerOr handlers "pi" default) {
+                inherit view;
+                inherit (view) sTy fn;
+                sub = subR;
+              })
+        else
+          K.bind (descend view.A) (leftR:
+            K.bind (descend view.B) (rightR:
+              (handlerOr handlers "plus" default) {
+                inherit view;
+                left = leftR;
+                right = rightR;
+              }));
     in
-    if view.idx == 0 then
-      (handlerOr handlers "ret" default)
-        {
-          inherit view;
-          inherit (view) j;
-        }
-    else if view.idx == 1 then
-      K.bind (recur (applyDescFn view.tFn placeholder))
-        (sampleR:
-          (handlerOr handlers "arg" default) {
-            inherit view;
-            inherit (view) sTy;
-            body = arg: recur (applyDescFn view.tFn arg);
-            sample = sampleR;
-          })
-    else if view.idx == 2 then
-      K.bind (recur view.sub)
-        (subR:
-          (handlerOr handlers "rec" default) {
-            inherit view;
-            inherit (view) j;
-            sub = subR;
-          })
-    else if view.idx == 3 then
-      K.bind (recur view.sub)
-        (subR:
-          (handlerOr handlers "pi" default) {
-            inherit view;
-            inherit (view) sTy fn;
-            sub = subR;
-          })
-    else
-      K.bind (recur view.A) (leftR:
-        K.bind (recur view.B) (rightR:
-          (handlerOr handlers "plus" default) {
-            inherit view;
-            left = leftR;
-            right = rightR;
-          }));
+    go nativeWalkBudget;
 
   # Paramorphism. Each handler additionally receives the original
   # sub-description Val alongside the bound recursed result — required
@@ -320,57 +415,64 @@ let
   # `arg`/`pi` carry both `body : arg -> Computation R` (recursion) and
   # `bodyDesc : arg -> Val` (description-only view) so handlers can
   # query a sub-description without paying for a monadic descent.
-  paraDM = handlers: d:
+  paraDM = handlers:
     let
-      view = rawView d;
-      recur = sub: paraDM handlers sub;
-      default = handlerOr handlers "default" defaultHandlerM;
+      go = fuel: d:
+        let
+          view = rawView d;
+          descend = sub:
+            if fuel <= 0
+            then K.send "deriveBounce" { run = _: go nativeWalkBudget sub; }
+            else go (fuel - 1) sub;
+          default = handlerOr handlers "default" defaultHandlerM;
+        in
+        if view.idx == 0 then
+          (handlerOr handlers "ret" default)
+            {
+              inherit view;
+              inherit (view) j;
+            }
+        else if view.idx == 1 then
+          let sampleDesc = applyDescFn view.tFn placeholder; in
+          K.bind (descend sampleDesc) (sampleR:
+            (handlerOr handlers "arg" default) {
+              inherit view;
+              inherit (view) sTy;
+              body = arg: paraDM handlers (applyDescFn view.tFn arg);
+              bodyDesc = arg: applyDescFn view.tFn arg;
+              sample = sampleR;
+              inherit sampleDesc;
+            })
+        else if view.idx == 2 then
+          K.bind (descend view.sub)
+            (subR:
+              (handlerOr handlers "rec" default) {
+                inherit view;
+                inherit (view) j;
+                sub = subR;
+                subDesc = view.sub;
+              })
+        else if view.idx == 3 then
+          K.bind (descend view.sub)
+            (subR:
+              (handlerOr handlers "pi" default) {
+                inherit view;
+                inherit (view) sTy fn;
+                sub = subR;
+                subDesc = view.sub;
+              })
+        else
+          K.bind (descend view.A) (leftR:
+            K.bind (descend view.B) (rightR:
+              (handlerOr handlers "plus" default) {
+                inherit view;
+                left = leftR;
+                right = rightR;
+                leftDesc = view.A;
+                rightDesc = view.B;
+              }));
     in
-    if view.idx == 0 then
-      (handlerOr handlers "ret" default)
-        {
-          inherit view;
-          inherit (view) j;
-        }
-    else if view.idx == 1 then
-      let sampleDesc = applyDescFn view.tFn placeholder; in
-      K.bind (recur sampleDesc) (sampleR:
-        (handlerOr handlers "arg" default) {
-          inherit view;
-          inherit (view) sTy;
-          body = arg: recur (applyDescFn view.tFn arg);
-          bodyDesc = arg: applyDescFn view.tFn arg;
-          sample = sampleR;
-          inherit sampleDesc;
-        })
-    else if view.idx == 2 then
-      K.bind (recur view.sub)
-        (subR:
-          (handlerOr handlers "rec" default) {
-            inherit view;
-            inherit (view) j;
-            sub = subR;
-            subDesc = view.sub;
-          })
-    else if view.idx == 3 then
-      K.bind (recur view.sub)
-        (subR:
-          (handlerOr handlers "pi" default) {
-            inherit view;
-            inherit (view) sTy fn;
-            sub = subR;
-            subDesc = view.sub;
-          })
-    else
-      K.bind (recur view.A) (leftR:
-        K.bind (recur view.B) (rightR:
-          (handlerOr handlers "plus" default) {
-            inherit view;
-            left = leftR;
-            right = rightR;
-            leftDesc = view.A;
-            rightDesc = view.B;
-          }));
+    go nativeWalkBudget;
 
   # Path-threading monadic fold. Mirrors `foldDescM` and additionally
   # threads a `path` (list of `fx.diag.positions` segments) extended at
@@ -395,58 +497,65 @@ let
   # Initial path is the caller-supplied root (typically `[]` for a
   # top-level walk; callers nested under an existing descent pass the
   # outer chain so positions compose end-to-end).
-  foldDescWithPath = path: handlers: d:
+  foldDescWithPath = path: handlers:
     let
-      view = rawView d;
-      default = handlerOr handlers "default" defaultHandlerM;
-      extend = seg: path ++ [ seg ];
-      recurAt = seg: sub:
-        foldDescWithPath (extend seg) handlers sub;
+      go = fuel: path: d:
+        let
+          view = rawView d;
+          default = handlerOr handlers "default" defaultHandlerM;
+          extend = seg: path ++ [ seg ];
+          descendAt = seg: sub:
+            let p = extend seg; in
+            if fuel <= 0
+            then K.send "deriveBounce" { run = _: go nativeWalkBudget p sub; }
+            else go (fuel - 1) p sub;
+        in
+        if view.idx == 0 then
+          (handlerOr handlers "ret" default)
+            {
+              inherit view path;
+              inherit (view) j;
+            }
+        else if view.idx == 1 then
+          bindP P.DArgBody (descendAt P.DArgBody (applyDescFn view.tFn placeholder))
+            (sampleR:
+              (handlerOr handlers "arg" default) {
+                inherit view path;
+                inherit (view) sTy;
+                body = arg: foldDescWithPath (extend P.DArgBody) handlers (applyDescFn view.tFn arg);
+                sample = sampleR;
+                bodyPath = extend P.DArgBody;
+              })
+        else if view.idx == 2 then
+          bindP P.DRecTail (descendAt P.DRecTail view.sub)
+            (subR:
+              (handlerOr handlers "rec" default) {
+                inherit view path;
+                inherit (view) j;
+                sub = subR;
+                subPath = extend P.DRecTail;
+              })
+        else if view.idx == 3 then
+          bindP P.DPiBody (descendAt P.DPiBody view.sub)
+            (subR:
+              (handlerOr handlers "pi" default) {
+                inherit view path;
+                inherit (view) sTy fn;
+                sub = subR;
+                subPath = extend P.DPiBody;
+              })
+        else
+          bindP P.DPlusL (descendAt P.DPlusL view.A) (leftR:
+            bindP P.DPlusR (descendAt P.DPlusR view.B) (rightR:
+              (handlerOr handlers "plus" default) {
+                inherit view path;
+                left = leftR;
+                right = rightR;
+                leftPath = extend P.DPlusL;
+                rightPath = extend P.DPlusR;
+              }));
     in
-    if view.idx == 0 then
-      (handlerOr handlers "ret" default)
-        {
-          inherit view path;
-          inherit (view) j;
-        }
-    else if view.idx == 1 then
-      bindP P.DArgBody (recurAt P.DArgBody (applyDescFn view.tFn placeholder))
-        (sampleR:
-          (handlerOr handlers "arg" default) {
-            inherit view path;
-            inherit (view) sTy;
-            body = arg: recurAt P.DArgBody (applyDescFn view.tFn arg);
-            sample = sampleR;
-            bodyPath = extend P.DArgBody;
-          })
-    else if view.idx == 2 then
-      bindP P.DRecTail (recurAt P.DRecTail view.sub)
-        (subR:
-          (handlerOr handlers "rec" default) {
-            inherit view path;
-            inherit (view) j;
-            sub = subR;
-            subPath = extend P.DRecTail;
-          })
-    else if view.idx == 3 then
-      bindP P.DPiBody (recurAt P.DPiBody view.sub)
-        (subR:
-          (handlerOr handlers "pi" default) {
-            inherit view path;
-            inherit (view) sTy fn;
-            sub = subR;
-            subPath = extend P.DPiBody;
-          })
-    else
-      bindP P.DPlusL (recurAt P.DPlusL view.A) (leftR:
-        bindP P.DPlusR (recurAt P.DPlusR view.B) (rightR:
-          (handlerOr handlers "plus" default) {
-            inherit view path;
-            left = leftR;
-            right = rightR;
-            leftPath = extend P.DPlusL;
-            rightPath = extend P.DPlusR;
-          }));
+    go nativeWalkBudget path;
 in
 {
   scope = {

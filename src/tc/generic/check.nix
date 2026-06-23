@@ -44,6 +44,12 @@ let
   H = fx.tc.hoas;
   HI = H._internal._indexed;
 
+  # Host-stack fuel for the walker. Each structural level consumes one unit;
+  # native recursion runs up to `nativeWalkBudget` levels per trampoline
+  # segment, then `descend` defers re-entry via the `deriveBounce` effect so
+  # host stack stays O(1) per segment regardless of value depth.
+  nativeWalkBudget = 512;
+
   # Emit a typeCheck effect, then continue with the algebra's failure
   # carrier. Strict throws before bind runs; collecting resumes.
   emit = alg: ty: path: reason: context: value:
@@ -154,7 +160,7 @@ let
           handlers = fx.effects.typecheck.strict;
           state = null;
         }
-        (deriveGo hoasAlg ty path value)).value
+        (deriveGo hoasAlg nativeWalkBudget ty path value)).value
     );
 
   # Elaborate fst via a strict-handler hoasAlg walk; tryEval for failure.
@@ -176,7 +182,7 @@ let
   # validating — snd needs it dependently. Blame uses
   # `Pos.SigmaFst`/`Pos.SigmaSnd`, matching SourceMap and Sigma's
   # surface `verify=` so paths stay invariant under encoding.
-  walkSigma = alg: ty: path: value:
+  walkSigma = alg: fuel: ty: path: value:
     if !(builtins.isAttrs value && value ? fst && value ? snd) then
       emit alg (wrapType ty) path "shape-mismatch"
         "expected { fst; snd; }, got ${builtins.typeOf value}"
@@ -186,7 +192,7 @@ let
         fstPath = P.extend path Pos.SigmaFst;
         sndPath = P.extend path Pos.SigmaSnd;
       in
-      bind (deriveGo alg ty.fst fstPath value.fst) (fstA:
+      bind (descend alg fuel ty.fst fstPath value.fst) (fstA:
         let fstHoasTry = elaborateFstHoas ty.fst fstPath value.fst; in
         if !fstHoasTry.success then pure alg.onFailure
         else
@@ -195,13 +201,13 @@ let
           in
           if !sndTyTry.success then pure alg.onFailure
           else
-            bind (deriveGo alg sndTyTry.value sndPath value.snd) (sndA:
+            bind (descend alg fuel sndTyTry.value sndPath value.snd) (sndA:
               pure (alg.onSigma ty fstA sndA)));
 
-  walkMaybe = alg: ty: path: value:
+  walkMaybe = alg: fuel: ty: path: value:
     if value == null then pure (alg.onMaybeNull ty)
     else
-      bind (deriveGo alg ty.inner path value) (innerA:
+      bind (descend alg fuel ty.inner path value) (innerA:
         pure (alg.onMaybeJust ty innerA));
 
   # Thunk — deepSeq-safe carrier. Check the carrier shape only; never
@@ -221,7 +227,7 @@ let
   # into the matching branch's type with `Pos.Tag tag`. No synthetic
   # `Pos.Field "value"` appears in any path; constructor tags at the
   # surface preserve Wadler-Findler blame-label source-invariance.
-  walkVariant = alg: ty: path: value:
+  walkVariant = alg: fuel: ty: path: value:
     if !(builtins.isAttrs value && value ? _tag && value ? value) then
       emit alg (wrapType ty) path "shape-mismatch"
         "expected { _tag; value; }, got ${builtins.typeOf value}"
@@ -244,14 +250,14 @@ let
           value
       else
         let branchPath = P.extend path (Pos.Tag tag); in
-        bind (deriveGo alg branch.type branchPath value.value)
+        bind (descend alg fuel branch.type branchPath value.value)
           (innerA: pure (alg.onVariant ty tag innerA));
 
   # Walk a list at element type. Accumulator is algebra-specific
   # (`alg.listAcc`): null for unitAlg, a cons-chain continuation for
   # hoasAlg. `foldl'` (not recursive `go`) avoids the construction-time
   # N-deep stack from eager `bind (pure x) k`.
-  walkElems = alg: ty: path: elemTy: value:
+  walkElems = alg: fuel: ty: path: elemTy: value:
     if !builtins.isList value then
       emit alg (wrapType ty) path "shape-mismatch"
         "expected list, got ${builtins.typeOf value}"
@@ -266,14 +272,11 @@ let
             childPath = P.extend path (Pos.Elem i);
           in
           bind acc (accB:
-            bind (deriveGo alg elemTy childPath v) (elemA:
+            bind (descend alg fuel elemTy childPath v) (elemA:
               pure (alg.listAcc.step ty elemTy accB elemA)));
       in
       bind (builtins.foldl' step (pure (alg.listAcc.init ty elemTy)) indices)
         (accB: pure (alg.listAcc.finish ty elemTy accB));
-
-  walkLegacyList = alg: ty: path: value:
-    walkElems alg ty path ty.elem value;
 
   walkPrim = alg: htag: ty: path: value:
     let pred = nativePred htag; in
@@ -292,7 +295,7 @@ let
   # `_con`/`_tag` via `resolveCon`, then through `alg.walkFields`.
   # μ-encoded Bool (`[[],[]]`) and Nat (`[[],["recAt"]]`) route back
   # through walkPrim.
-  walkDatatype = alg: ty: path: value:
+  walkDatatype = alg: fuel: ty: path: value:
     let infoTry = tryDatatypeInfo ty; in
     if !infoTry.success then
       emit alg (wrapType ty) path "shape-mismatch"
@@ -307,7 +310,7 @@ let
         isNatSig = sigs == [ [ ] [ "recAt" ] ];
       in
       if isListShape info then
-        walkElems alg ty path (listElemType info) value
+        walkElems alg fuel ty path (listElemType info) value
       else if builtins.isAttrs value then
         let con = resolveCon info value; in
         if con == null then
@@ -327,7 +330,7 @@ let
               then P.extend path (Pos.Tag con.name)
               else path;
           in
-          alg.walkFields ty walkPath info con value
+          alg.walkFields fuel ty walkPath info con value
       else if isBoolSig then walkPrim alg "bool" ty path value
       else if isNatSig then walkPrim alg "nat" ty path value
       else
@@ -335,23 +338,33 @@ let
           "expected attrset (constructor signatures = ${builtins.toJSON sigs})"
           value;
 
-  # Polymorphic fold. Routes on `ty._htag`, threading `alg` through every
-  # recursive call. unitAlg → validation; hoasAlg → elaboration.
-  deriveGo = alg: ty: path: value:
+  # Bounce gate for structural re-entry. Within `fuel`, recurse natively (the
+  # fast shallow path). At zero, defer re-entry via the `deriveBounce` effect:
+  # the handler forces the deferred sub-walk and the trampoline splices it as a
+  # fresh segment (resumeCompOrValue), so host stack stays O(1) per segment
+  # while DFS effect order and the bottom-up carrier are preserved.
+  descend = alg: fuel: ty: path: value:
+    if fuel <= 0
+    then send "deriveBounce" { run = _: deriveGo alg nativeWalkBudget ty path value; }
+    else deriveGo alg (fuel - 1) ty path value;
+
+  # Polymorphic fold. Routes on `ty._htag`, threading `alg` and the
+  # host-stack `fuel` through every recursive call (via `descend`).
+  # unitAlg → validation; hoasAlg → elaboration.
+  deriveGo = alg: fuel: ty: path: value:
     let t = ty._htag or null; in
     if t == "pi" then walkPi alg ty path value
-    else if t == "sigma" then walkSigma alg ty path value
-    else if t == "maybe" then walkMaybe alg ty path value
+    else if t == "sigma" then walkSigma alg fuel ty path value
+    else if t == "maybe" then walkMaybe alg fuel ty path value
     else if t == "thunk" then walkThunk alg ty path value
-    else if t == "variant" then walkVariant alg ty path value
-    else if t == "list" then walkLegacyList alg ty path value
-    else if t == "mu" || t == "app" then walkDatatype alg ty path value
+    else if t == "variant" then walkVariant alg fuel ty path value
+    else if t == "mu" || t == "app" then walkDatatype alg fuel ty path value
     else if nativePred t != null then walkPrim alg t ty path value
     else
     # Fallback: some construction paths attach `_dtypeMeta` without
     # `_htag`; try datatypeInfo before emitting unknown-tag.
       let infoTry = tryDatatypeInfo ty; in
-      if infoTry.success then walkDatatype alg ty path value
+      if infoTry.success then walkDatatype alg fuel ty path value
       else
         emit alg (wrapType ty) path "shape-mismatch"
           "unknown type tag '${toString t}'"
@@ -360,7 +373,7 @@ let
   # unitAlg's walkFields. Validates each field and threads passing
   # data/dataD as HOAS in `prev` for dependent `typeFn` resolution —
   # same record hoasAlg sees.
-  unitWalkFields = ty: path: info: con: value:
+  unitWalkFields = fuel: ty: path: info: con: value:
     let
       unknownType = { _htag = "<unknown>"; };
       fieldTyAt = f: prev:
@@ -401,9 +414,9 @@ let
             })
             (_: pure prev)
         else if f.kind == "recAt" then
-          bind (deriveGo unitAlg tyAtF childPath fv) (_: pure prev)
+          bind (descend unitAlg fuel tyAtF childPath fv) (_: pure prev)
         else if f.kind == "data" || f.kind == "dataD" then
-          bind (deriveGo unitAlg tyAtF childPath fv)
+          bind (descend unitAlg fuel tyAtF childPath fv)
             (_:
               let fieldHoasTry = elaborateHoasStrict tyAtF childPath fv; in
               pure (
@@ -412,7 +425,7 @@ let
                 else prev
               ))
         else
-          bind (deriveGo unitAlg tyAtF childPath fv) (_: pure prev);
+          bind (descend unitAlg fuel tyAtF childPath fv) (_: pure prev);
       step = acc: f: bind acc (prev: fieldComp prev f);
     in
     bind (builtins.foldl' step (pure { }) con.fields) (_: pure null);
@@ -420,7 +433,7 @@ let
   # hoasAlg's walkFields. Threads `prev` through `D.fieldType` for
   # dependent fields and accumulates an `H.app` chain rooted at
   # `con.ctor`.
-  hoasWalkFields = ty: path: info: con: value:
+  hoasWalkFields = fuel: ty: path: info: con: value:
     let
       fields = con.fields or [ ];
       openExtras = info.openExtras or false;
@@ -465,7 +478,7 @@ let
               })
               (_: go rest prev acc)
           else
-            bind (deriveGo hoasAlg tyAtF childPath fv) (fieldHoas:
+            bind (descend hoasAlg fuel tyAtF childPath fv) (fieldHoas:
               let
                 prev' =
                   if f.kind == "data" || f.kind == "dataD"
@@ -546,8 +559,8 @@ let
     walkFields = hoasWalkFields;
   };
 
-  deriveCheckGo = ty: path: value: deriveGo unitAlg ty path value;
-  deriveElaborateGo = ty: path: value: deriveGo hoasAlg ty path value;
+  deriveCheckGo = ty: path: value: deriveGo unitAlg nativeWalkBudget ty path value;
+  deriveElaborateGo = ty: path: value: deriveGo hoasAlg nativeWalkBudget ty path value;
 
   # Refinement: shape first, then predicate (Σ-type sequencing — the
   # predicate's domain is shape-passing values). `mkType` composes the

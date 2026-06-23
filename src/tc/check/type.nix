@@ -433,15 +433,18 @@ in
               bind (self.check ctx tm.val aVal) (vTm:
                 let
                   vVal = E.eval ctx.env vTm;
+                  d = ctx.depth + 1;
+                  e = ctx.eb or 0;
                   ctx' = {
                     env = V.envCons vVal ctx.env;
-                    types = [ aVal ] ++ ctx.types;
-                    depth = ctx.depth + 1;
-                    eb = ctx.eb or 0;
+                    types = V.envCons aVal ctx.types;
+                    depth = d;
+                    eb = e;
                   };
                 in
-                bind (self.checkTypeLevel ctx' tm.body) (r:
-                  pure { term = T.mkLet tm.name aTm vTm r.term; level = r.level; })))
+                builtins.seq d (builtins.seq e
+                  (bind (self.checkTypeLevel ctx' tm.body) (r:
+                    pure { term = T.mkLet tm.name aTm vTm r.term; level = r.level; })))))
         # Fallback: infer and check it's a universe, extract level.
         else
           bind (self.infer ctx tm) (result:

@@ -235,7 +235,7 @@ let
       else if t == "U" then rebuildFields depth state tm [
         { name = "level"; under = 0; }
       ]
-      else if t == "str-eq" then rebuildFields depth state tm [
+      else if t == "str-eq" || t == "int-le" || t == "int-eq" then rebuildFields depth state tm [
         { name = "lhs"; under = 0; }
         { name = "rhs"; under = 0; }
       ]

@@ -266,6 +266,7 @@ let
     "app" = true; "let" = true; "fst" = true; "snd" = true;
     "absurd" = true; "boot-sum-elim" = true; "boot-j" = true;
     "squash-elim" = true; "lift-elim" = true; "str-eq" = true;
+    "int-le" = true; "int-eq" = true;
     "desc-ind" = true; "interp-d" = true; "all-d" = true;
     "everywhere-d" = true;
   };
@@ -623,6 +624,10 @@ let
     # tag/level, so passing lazy thunks here is safe (string operands are
     # atomic — forcing is O(1) in user-recursion depth).
     "str-eq" = state: { mode = "Apply"; val = (self.vStrEq ((ev state.env) state.tm.lhs) ((ev state.env) state.tm.rhs)); kont = state.kont; fuel = state.fuel - 1; };
+    # `vIntLe`/`vIntEq` force both operands to WHNF internally (atomic int
+    # literals — O(1)), so passing lazy thunks here is safe.
+    "int-le" = state: { mode = "Apply"; val = (self.vIntLe ((ev state.env) state.tm.lhs) ((ev state.env) state.tm.rhs)); kont = state.kont; fuel = state.fuel - 1; };
+    "int-eq" = state: { mode = "Apply"; val = (self.vIntEq ((ev state.env) state.tm.lhs) ((ev state.env) state.tm.rhs)); kont = state.kont; fuel = state.fuel - 1; };
 
     "lift-elim" = state:
       let
@@ -2080,6 +2085,18 @@ let
       pending = [ { inherit d; v = e.arg; } ];
       mkTm = ts: term.mkStrEq headTm (builtins.elemAt ts 0);
     }
+    else if t == "EIntEq" then {
+      pending = [ { inherit d; v = e.arg; } ];
+      mkTm = ts: term.mkIntEq headTm (builtins.elemAt ts 0);
+    }
+    else if t == "EIntLeL" then {
+      pending = [ { inherit d; v = e.arg; } ];
+      mkTm = ts: term.mkIntLe headTm (builtins.elemAt ts 0);
+    }
+    else if t == "EIntLeR" then {
+      pending = [ { inherit d; v = e.arg; } ];
+      mkTm = ts: term.mkIntLe (builtins.elemAt ts 0) headTm;
+    }
     else if t == "EAbsurd" then {
       pending = [ { inherit d; v = e.type; } ];
       mkTm = ts: term.mkAbsurd (builtins.elemAt ts 0) headTm;
@@ -2558,8 +2575,10 @@ let
       ta = a.tag; tb = b.tag;
       goal = x: y: { inherit d; a = x; b = y; };
       binder = fx.tc.conv.cPeelBinder d a b;
+      arm = fx.tc.conv.cPeelArm d a b;
     in
          if binder != null then binder
+    else if arm != null then arm
     else if ta == "VPair" && tb == "VPair" then
       { kind = "layer"; goals = [ (goal a.fst b.fst) ]; na = a.snd; nb = b.snd; nd = d; }
     else if ta == "VBootSum" && tb == "VBootSum" then
@@ -2663,7 +2682,7 @@ in
     inherit runMachineF runMachineCountedF runMachineAtF
       runDescIndAtF runDescIndLayerAtF
       runInterpDAtF runAllDAtF runEverywhereDAtF
-      runQuoteF runConvF runConvCountedF;
+      runQuoteF runConvF runConvCountedF cPeel;
   };
 
   tests = {
@@ -3005,6 +3024,18 @@ in
     "machine-eval-str-eq-stuck" = {
       expr = (runMachineF self.defaultFuel [ (freshVar 0) ]
         (T.mkStrEq (T.mkVar 0) (T.mkVar 0))).tag;
+      expected = "VNe";
+    };
+
+    "machine-eval-int-le-stuck" = {
+      expr = (runMachineF self.defaultFuel [ (freshVar 0) ]
+        (T.mkIntLe (T.mkVar 0) (T.mkVar 0))).tag;
+      expected = "VNe";
+    };
+
+    "machine-eval-int-eq-stuck" = {
+      expr = (runMachineF self.defaultFuel [ (freshVar 0) ]
+        (T.mkIntEq (T.mkVar 0) (T.mkVar 0))).tag;
       expected = "VNe";
     };
 
@@ -3419,6 +3450,69 @@ in
         in runConvF self.defaultFuel 0
           (runMachineF self.defaultFuel [ ] (mk T.mkTt))
           (runMachineF self.defaultFuel [ ] (mk T.mkUnit));
+      expected = false;
+    };
+
+    # Neutral-spine + medium-arm depth-flatness. A VNe spine, VMu/VDesc/VBootEq
+    # tower conv'd against itself: cPeel routes each layer to runConvF's
+    # frontier so convStep never recurses on a user-depth value. Recursive
+    # convStep overflows near ~5000; N=10000 is the depth sentinel. neq nests
+    # the mismatch at the floor (deep-false stays flat); the head-mismatch and
+    # length cases reject without a deep walk.
+    "machine-conv-depth-neutral-spine-10000" = {
+      expr =
+        let c = builtins.foldl' (acc: _: vNe 0 [ (eApp acc) ]) (freshVar 0) (builtins.genList (i: i) 10000);
+        in runConvF self.defaultFuel 0 c c;
+      expected = true;
+    };
+    "machine-conv-depth-neutral-spine-neq" = {
+      expr =
+        let mk = leaf: builtins.foldl' (acc: _: vNe 0 [ (eApp acc) ]) leaf (builtins.genList (i: i) 10000);
+        in runConvF self.defaultFuel 0 (mk (freshVar 0)) (mk (freshVar 1));
+      expected = false;
+    };
+    "machine-conv-neutral-spine-head-neq" = {
+      expr = runConvF self.defaultFuel 0 (vNe 0 [ (eApp vTt) ]) (vNe 1 [ (eApp vTt) ]);
+      expected = false;
+    };
+    "machine-conv-neutral-spine-len-neq" = {
+      expr = runConvF self.defaultFuel 0 (vNe 0 [ (eApp vTt) (eApp vTt) ]) (vNe 0 [ (eApp vTt) ]);
+      expected = false;
+    };
+    "machine-conv-depth-mu-10000" = {
+      expr =
+        let c = builtins.foldl' (acc: _: vMu vTt acc vTt) vTt (builtins.genList (i: i) 10000);
+        in runConvF self.defaultFuel 0 c c;
+      expected = true;
+    };
+    "machine-conv-depth-mu-neq" = {
+      expr =
+        let mk = leaf: builtins.foldl' (acc: _: vMu vTt acc vTt) leaf (builtins.genList (i: i) 10000);
+        in runConvF self.defaultFuel 0 (mk vTt) (mk vUnit);
+      expected = false;
+    };
+    "machine-conv-depth-desc-10000" = {
+      expr =
+        let c = builtins.foldl' (acc: _: vDescAt vLevelZero vLevelZero acc) vTt (builtins.genList (i: i) 10000);
+        in runConvF self.defaultFuel 0 c c;
+      expected = true;
+    };
+    "machine-conv-depth-desc-neq" = {
+      expr =
+        let mk = leaf: builtins.foldl' (acc: _: vDescAt vLevelZero vLevelZero acc) leaf (builtins.genList (i: i) 10000);
+        in runConvF self.defaultFuel 0 (mk vTt) (mk vUnit);
+      expected = false;
+    };
+    "machine-conv-depth-booteq-10000" = {
+      expr =
+        let c = builtins.foldl' (acc: _: vBootEq acc vTt vTt) vBootRefl (builtins.genList (i: i) 10000);
+        in runConvF self.defaultFuel 0 c c;
+      expected = true;
+    };
+    "machine-conv-depth-booteq-neq" = {
+      expr =
+        let mk = leaf: builtins.foldl' (acc: _: vBootEq acc vTt vTt) leaf (builtins.genList (i: i) 10000);
+        in runConvF self.defaultFuel 0 (mk vBootRefl) (mk vTt);
       expected = false;
     };
   };

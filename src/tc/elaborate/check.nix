@@ -49,7 +49,7 @@ let
     else false;
 
   ctxHasMeta = ctx:
-    builtins.any containsMetaVal (ctx.types or [ ]);
+    builtins.any containsMetaVal (V.envToList (ctx.types or V.envNil));
 
   comparisonType = lhs: rhs:
     if self.isVMeta lhs && lhs.type ? ty then lhs.type.ty

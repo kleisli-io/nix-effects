@@ -93,32 +93,96 @@ let
     in
     (lib.last steps)._err;
 
-  # Render an arbitrary Nix value compactly. Bounded by the shape of
-  # the value itself (typically a tagged record with one or two
-  # fields); no walker discipline needed.
-  renderValue = v:
-    if v == null then "null"
-    else if builtins.isString v then v
-    else if builtins.isBool v then (if v then "true" else "false")
-    else if builtins.isInt v || builtins.isFloat v then toString v
+  # Render an arbitrary Nix value compactly. Native recursion descends
+  # once per nesting level, so a deep value (e.g. a quoted type on an
+  # error path) overflows the host stack. Drive it with an explicit
+  # task stack: `emit` appends a literal, `render` expands a value into
+  # emit/render subtasks pushed in document order. Totality comes from
+  # the worklist alone; `renderBudget` is an independent readability cap
+  # (a decoupled display policy), never the safety mechanism.
+  renderBudget = 4096;
+
+  # Expand one value into the ordered task fragments that render it.
+  renderTasks = v:
+    if v == null then [{ emit = "null"; }]
+    else if builtins.isString v then [{ emit = v; }]
+    else if builtins.isBool v then [{ emit = if v then "true" else "false"; }]
+    else if builtins.isInt v || builtins.isFloat v then [{ emit = toString v; }]
     else if builtins.isAttrs v && v ? tag then
-      let
-        extras = removeAttrs v [ "tag" "_tag" ];
-        fields = lib.mapAttrsToList
-          (k: val: "${k}=${renderValue val}")
-          extras;
-      in
-      if fields == [ ]
-      then v.tag
-      else "${v.tag}(${lib.concatStringsSep ", " fields})"
+      let extras = removeAttrs v [ "tag" "_tag" ]; in
+      if extras == { }
+      then [{ emit = v.tag; }]
+      else [{ emit = "${v.tag}("; }] ++ fieldTasks ", " extras ++ [{ emit = ")"; }]
     else if builtins.isAttrs v then
-      "{${lib.concatStringsSep "; "
-          (lib.mapAttrsToList
-            (k: val: "${k}=${renderValue val}") v)}}"
+      [{ emit = "{"; }] ++ fieldTasks "; " v ++ [{ emit = "}"; }]
     else if builtins.isList v then
-      "[${lib.concatStringsSep ", " (map renderValue v)}]"
-    else if builtins.isFunction v then "<function>"
-    else "<?>";
+      [{ emit = "["; }] ++ elemTasks ", " v ++ [{ emit = "]"; }]
+    else if builtins.isFunction v then [{ emit = "<function>"; }]
+    else [{ emit = "<?>"; }];
+
+  # `k=<render val>` per attr in attr-name order, joined by `sep`.
+  fieldTasks = sep: attrs:
+    let
+      pairs = lib.mapAttrsToList (k: val: { inherit k val; }) attrs;
+      n = builtins.length pairs;
+      frag = i:
+        let p = builtins.elemAt pairs i; in
+        [{ emit = "${p.k}="; } { render = p.val; }]
+        ++ (if i < n - 1 then [{ emit = sep; }] else [ ]);
+    in builtins.concatMap frag (builtins.genList (x: x) n);
+
+  # `<render elem>` per element, joined by `sep`.
+  elemTasks = sep: xs:
+    let
+      n = builtins.length xs;
+      frag = i:
+        [{ render = builtins.elemAt xs i; }]
+        ++ (if i < n - 1 then [{ emit = sep; }] else [ ]);
+    in builtins.concatMap frag (builtins.genList (x: x) n);
+
+  # Push tasks so element 0 becomes the new head, preserving document order.
+  pushTasks = tasks: s:
+    let n = builtins.length tasks;
+    in builtins.foldl'
+      (st: i: { head = builtins.elemAt tasks (n - 1 - i); tail = st; })
+      s
+      (builtins.genList (x: x) n);
+
+  renderValue = v0:
+    let
+      closure = builtins.genericClosure {
+        startSet = [{ key = 0; stack = pushTasks [{ render = v0; }] null; out = ""; trunc = false; }];
+        operator = item:
+          if item.stack == null then [ ]
+          else
+            let
+              h = item.stack.head;
+              rest = item.stack.tail;
+              isEmit = h ? emit;
+              # The worklist drains the whole structure regardless of its
+              # size, so totality is the stack's alone — disabling the
+              # budget below leaves it total. The budget only bounds the
+              # rendered string: once `out` fills, emit one `…` and drop
+              # later literals while the walk runs to completion. Force
+              # `out` each step or the lazily-threaded concat builds a
+              # deferred chain whose final force recurses step-count deep.
+              over = !item.trunc && builtins.stringLength item.out >= renderBudget;
+              nextOut =
+                if item.trunc || !isEmit then item.out
+                else if over then item.out + "…"
+                else item.out + h.emit;
+              nextStack =
+                if isEmit then rest
+                else pushTasks (renderTasks h.render) rest;
+            in builtins.seq nextOut [{
+              key = item.key + 1;
+              stack = nextStack;
+              out = nextOut;
+              trunc = item.trunc || over;
+            }];
+      };
+      final = builtins.head (builtins.filter (it: it.stack == null) closure);
+    in final.out;
 
   # Path rendering. Joined path uses " -> " so it reads in the same
   # direction as the descent (outer to inner).

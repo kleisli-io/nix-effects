@@ -229,7 +229,8 @@ let
 
       # Refinement
       inherit (types.refinement) refined allOf anyOf negate
-        positive nonNegative inRange nonEmpty matching;
+        positive nonNegative inRange nonEmpty matching
+        positiveInt inRangeInt oneOfStr;
 
       # Universe
       inherit (types.universe) typeAt level Type_0 Type_1 Type_2 Type_3 Type_4;

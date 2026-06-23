@@ -1356,7 +1356,13 @@ in
                 let
                   p = builtins.elemAt params i;
                   a = builtins.elemAt args i;
-                  aAnn = ann a (resolveKind p prev);
+                  K = resolveKind p prev;
+                  # A universe level is a sort, not a term: ascribing it
+                  # (`ann level level`) is vacuous and makes the level opaque
+                  # to `sameLevelSyntax`/`levelAsInt`, spuriously defeating
+                  # `LiftAt`/`liftAt` idempotence at equal levels. Keep level
+                  # params bare; ascribe only genuine type/term params.
+                  aAnn = if (K._htag or null) == "level" then a else ann a K;
                 in
                 [ aAnn ] ++ go (i + 1) (prev ++ [ aAnn ]);
           in

@@ -202,7 +202,7 @@ let
           }
       else if t == "opaque-lam" then
         SM.node h { "OpaqueType" = sourceMapOf h.piHoas; }
-      else if t == "str-eq" then
+      else if t == "str-eq" || t == "int-le" || t == "int-eq" then
         SM.node h
           {
             "JLhs" = sourceMapOf h.lhs;

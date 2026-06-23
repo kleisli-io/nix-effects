@@ -281,6 +281,10 @@ let
   # -- String operations --
   mkStrEq = lhs: rhs: { tag = "str-eq"; inherit lhs rhs; };
 
+  # -- Int operations --
+  mkIntLe = lhs: rhs: { tag = "int-le"; inherit lhs rhs; };
+  mkIntEq = lhs: rhs: { tag = "int-eq"; inherit lhs rhs; };
+
   # -- Primitive literals --
   mkStringLit = s: { tag = "string-lit"; value = s; };
   mkIntLit = n: { tag = "int-lit"; value = n; };
@@ -927,6 +931,17 @@ api.namespace {
       value = mkStrEq;
       description = "mkStrEq: decidable equality on `String` literals `strEq a b : Bool` — used by indexed datatypes whose constructor selection branches on string keys.";
       signature = "mkStrEq : Tm -> Tm -> Tm  -- a, b";
+    };
+
+    mkIntLe = api.leaf {
+      value = mkIntLe;
+      description = "mkIntLe: host `<=` on `Int` literals `intLe a b : Bool` (parallel to `mkStrEq`). Non-symmetric — operand order preserved on a neutral spine.";
+      signature = "mkIntLe : Tm -> Tm -> Tm  -- a, b";
+    };
+    mkIntEq = api.leaf {
+      value = mkIntEq;
+      description = "mkIntEq: host `==` on `Int` literals `intEq a b : Bool` (parallel to `mkStrEq`).";
+      signature = "mkIntEq : Tm -> Tm -> Tm  -- a, b";
     };
 
     mkStringLit = api.leaf {

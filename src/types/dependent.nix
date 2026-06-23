@@ -102,6 +102,19 @@ let
   H = fx.tc.hoas;
   P = fx.diag.positions;
 
+  # Native-recursion budget per trampoline segment (cf. foundation.nix).
+  nativeWalkBudget = 512;
+
+  # Fuel-gated descent across Σ-instance boundaries: recurse natively
+  # while fuel remains, otherwise defer the sub-walk onto the trampoline
+  # so deep Σ-spines stay within the host stack. Threading fuel through
+  # `validateAtF` is what makes the bounce reachable — the public 2-arg
+  # `validateAt` reseeds the budget at every level and would never bounce.
+  descendV = t: fuel: p: x:
+    if fuel <= 0
+    then send "deriveBounce" { run = _: t.validateAtF nativeWalkBudget p x; }
+    else t.validateAtF (fuel - 1) p x;
+
   # -- PI TYPES (DEPENDENT FUNCTIONS) --
 
   Pi = { domain, codomain, universe, name ? "Π(${domain.name})", kernelType ? null }:
@@ -449,7 +462,7 @@ let
         # circuit on fst failure: `snd v.fst` may crash on wrong-typed
         # fst values, so we consult `fst.check` (pure, memoised) after
         # the effectful validateAt before descending into snd.
-        verify = self: path: v:
+        verify = self: fuel: path: v:
           if !(builtins.isAttrs v && v ? fst && v ? snd)
           then
             send "typeCheck"
@@ -461,10 +474,10 @@ let
                 inherit path;
               }
           else
-            bind (fst.validateAt (path ++ [ P.SigmaFst ]) v.fst) (_:
+            bind (descendV fst fuel (path ++ [ P.SigmaFst ]) v.fst) (_:
               if !(fst.check v.fst) then pure v
               else
-                bind ((snd v.fst).validateAt (path ++ [ P.SigmaSnd ]) v.snd)
+                bind (descendV (snd v.fst) fuel (path ++ [ P.SigmaSnd ]) v.snd)
                   (_: pure v));
       } // {
       fstType = fst;

@@ -20,58 +20,85 @@ let
 
   concatMap = f: xs: builtins.concatLists (map f xs);
 
-  idsInElim = frame:
+  # Children of a value node for the meta/level walk: the sub-values reachable
+  # in one structural step, spine-frame payloads included. The `_canonRef`
+  # VDescCon short-circuit walks only `params` — the body is a closed canonical
+  # encoding (`descDesc` nesting through `Lift`/`LevelMax`) that would loop;
+  # mirrors the kernel `canonRefConv` short-circuit. EAbsurd carries no
+  # walkable payload here.
+  frameChildren = frame:
     let t = frame.tag or null;
     in
-    if t == "EApp" then metaIdsVal frame.arg
-    else if t == "EBootSumElim" then concatMap metaIdsVal [ frame.left frame.right frame.motive frame.onLeft frame.onRight ]
-    else if t == "EBootJ" then concatMap metaIdsVal [ frame.type frame.lhs frame.motive frame.base frame.rhs ]
-    else if t == "EStrEq" then metaIdsVal frame.arg
-    else if t == "EDescInd" then concatMap metaIdsVal [ frame.D frame.motive frame.step frame.i ]
-    else if t == "ELiftElim" then concatMap metaIdsVal [ frame.l frame.m frame.eq frame.A ]
-    else if t == "ESquashElim" then concatMap metaIdsVal [ frame.A frame.B frame.f ]
-    else if t == "EInterpD" then concatMap metaIdsVal [ frame.level frame.I frame.X frame.i ]
-    else if t == "EAllD" then concatMap metaIdsVal [ frame.level frame.I frame.K frame.X frame.M frame.i frame.d ]
-    else if t == "EEverywhereD" then concatMap metaIdsVal [ frame.level frame.I frame.K frame.X frame.M frame.ih frame.i frame.d ]
+    if t == "EApp" then [ frame.arg ]
+    else if t == "EBootSumElim" then [ frame.left frame.right frame.motive frame.onLeft frame.onRight ]
+    else if t == "EBootJ" then [ frame.type frame.lhs frame.motive frame.base frame.rhs ]
+    else if t == "EStrEq" then [ frame.arg ]
+    else if t == "EIntEq" || t == "EIntLeL" || t == "EIntLeR" then [ frame.arg ]
+    else if t == "EDescInd" then [ frame.D frame.motive frame.step frame.i ]
+    else if t == "ELiftElim" then [ frame.l frame.m frame.eq frame.A ]
+    else if t == "ESquashElim" then [ frame.A frame.B frame.f ]
+    else if t == "EInterpD" then [ frame.level frame.I frame.X frame.i ]
+    else if t == "EAllD" then [ frame.level frame.I frame.K frame.X frame.M frame.i frame.d ]
+    else if t == "EEverywhereD" then [ frame.level frame.I frame.K frame.X frame.M frame.ih frame.i frame.d ]
     else [ ];
 
-  metaIdsVal = v:
-    if isVMeta v then [ v.id ] ++ concatMap idsInElim (v.spine or [ ])
+  childrenVal = v:
+    if isVMeta v then concatMap frameChildren (v.spine or [ ])
     else if builtins.isAttrs v then
       let t = v.tag or null;
       in
-      if t == "VNe" then concatMap idsInElim (v.spine or [ ])
-      else if t == "VLam" || t == "VPi" then metaIdsVal v.domain
-      else if t == "VSigma" then metaIdsVal v.fst
-      else if t == "VPair" then metaIdsVal v.fst ++ metaIdsVal v.snd
-      else if t == "VBootSum" then metaIdsVal v.left ++ metaIdsVal v.right
-      else if t == "VBootInl" || t == "VBootInr" then metaIdsVal v.left ++ metaIdsVal v.right ++ metaIdsVal v.val
-      else if t == "VBootEq" then concatMap metaIdsVal [ v.type v.lhs v.rhs ]
-      else if t == "VSquash" then metaIdsVal v.A
-      else if t == "VSquashIntro" then metaIdsVal v.a
-      else if t == "VDesc" then metaIdsVal v.level ++ metaIdsVal v.I
-      else if t == "VMu" then concatMap metaIdsVal [ v.I v.D v.i ]
-      # `_canonRef`-tagged VDescCons stand for closed canonical terms whose
-      # `.D`/`.i`/`.d` slots are built by applying a canonical body to
-      # `params` (see eval/desc.nix:206, 222). User-introduced metas can
-      # therefore only flow through `params`; walking the body would
-      # descend into self-referential canonical encodings (e.g. `descDesc`
-      # nesting through `Lift`/`LevelMax`) and stack-overflow. Mirrors the
-      # kernel `canonRefConv` short-circuit at conv.nix:427-430.
+      if t == "VNe" then concatMap frameChildren (v.spine or [ ])
+      else if t == "VLam" || t == "VPi" then [ v.domain ]
+      else if t == "VSigma" then [ v.fst ]
+      else if t == "VPair" then [ v.fst v.snd ]
+      else if t == "VBootSum" then [ v.left v.right ]
+      else if t == "VBootInl" || t == "VBootInr" then [ v.left v.right v.val ]
+      else if t == "VBootEq" then [ v.type v.lhs v.rhs ]
+      else if t == "VSquash" then [ v.A ]
+      else if t == "VSquashIntro" then [ v.a ]
+      else if t == "VDesc" then [ v.level v.I ]
+      else if t == "VMu" then [ v.I v.D v.i ]
       else if t == "VDescCon" then
-        if v ? _canonRef
-        then concatMap metaIdsVal (v._canonRef.params or [ ])
-        else concatMap metaIdsVal [ v.D v.i v.d ]
-      else if t == "VInterpD" then concatMap metaIdsVal [ v.level v.I v.D v.X v.i ]
-      else if t == "VAllD" then concatMap metaIdsVal [ v.level v.I v.D v.K v.X v.M v.i v.d ]
-      else if t == "VEverywhereD" then concatMap metaIdsVal [ v.level v.I v.D v.K v.X v.M v.ih v.i v.d ]
-      else if t == "VLift" then concatMap metaIdsVal [ v.l v.m v.eq v.A ]
-      else if t == "VLiftIntro" then concatMap metaIdsVal [ v.l v.m v.eq v.A v.a ]
-      else if t == "VLevelSuc" then metaIdsVal v.pred
-      else if t == "VLevelMax" then metaIdsVal v.lhs ++ metaIdsVal v.rhs
-      else if t == "VOpaqueLam" then metaIdsVal v.piTy
+        if v ? _canonRef then (v._canonRef.params or [ ]) else [ v.D v.i v.d ]
+      else if t == "VInterpD" then [ v.level v.I v.D v.X v.i ]
+      else if t == "VAllD" then [ v.level v.I v.D v.K v.X v.M v.i v.d ]
+      else if t == "VEverywhereD" then [ v.level v.I v.D v.K v.X v.M v.ih v.i v.d ]
+      else if t == "VLift" then [ v.l v.m v.eq v.A ]
+      else if t == "VLiftIntro" then [ v.l v.m v.eq v.A v.a ]
+      else if t == "VLevelSuc" then [ v.pred ]
+      else if t == "VLevelMax" then [ v.lhs v.rhs ]
+      else if t == "VOpaqueLam" then [ v.piTy ]
       else [ ]
     else [ ];
+
+  # One stack-safe pre-order walk over the value tree, parameterised by the
+  # per-node leaf collector. `genericClosure` is keyed by a step counter, never
+  # by node identity, so multiplicity is preserved — patternSolve reads
+  # `allDistinct` over the raw level list. Pushing children to the front and
+  # popping the front yields native pre-order; the trace is a materialized
+  # vector, so the final `map`/`concatLists` stay iterative in libnix.
+  walkVal = collect: root:
+    let
+      trace = builtins.genericClosure {
+        startSet = [ { key = 0; stack = [ root ]; out = [ ]; } ];
+        operator = item:
+          if item.stack == [ ] then [ ]
+          else
+            let
+              v = builtins.head item.stack;
+              rest = builtins.tail item.stack;
+            in [ {
+              key = item.key + 1;
+              stack = childrenVal v ++ rest;
+              out = collect v;
+            } ];
+      };
+    in builtins.concatLists (map (it: it.out) trace);
+
+  metaIdsVal = walkVal (v: if isVMeta v then [ v.id ] else [ ]);
+
+  levelsVal = walkVal
+    (v: if builtins.isAttrs v && (v.tag or null) == "VNe" then [ v.level ] else [ ]);
 
   mentionsOf = vals: unique (concatMap metaIdsVal vals);
 
@@ -83,53 +110,6 @@ let
 
   isVar = v:
     builtins.isAttrs v && (v.tag or null) == "VNe" && (v.spine or [ ]) == [ ];
-
-  levelsInElim = frame:
-    let t = frame.tag or null;
-    in
-    if t == "EApp" then levelsVal frame.arg
-    else if t == "EBootSumElim" then concatMap levelsVal [ frame.left frame.right frame.motive frame.onLeft frame.onRight ]
-    else if t == "EBootJ" then concatMap levelsVal [ frame.type frame.lhs frame.motive frame.base frame.rhs ]
-    else if t == "EStrEq" then levelsVal frame.arg
-    else if t == "EDescInd" then concatMap levelsVal [ frame.D frame.motive frame.step frame.i ]
-    else if t == "ELiftElim" then concatMap levelsVal [ frame.l frame.m frame.eq frame.A ]
-    else if t == "ESquashElim" then concatMap levelsVal [ frame.A frame.B frame.f ]
-    else if t == "EInterpD" then concatMap levelsVal [ frame.level frame.I frame.X frame.i ]
-    else if t == "EAllD" then concatMap levelsVal [ frame.level frame.I frame.K frame.X frame.M frame.i frame.d ]
-    else if t == "EEverywhereD" then concatMap levelsVal [ frame.level frame.I frame.K frame.X frame.M frame.ih frame.i frame.d ]
-    else [ ];
-
-  levelsVal = v:
-    if isVMeta v then concatMap levelsInElim (v.spine or [ ])
-    else if builtins.isAttrs v then
-      let t = v.tag or null;
-      in
-      if t == "VNe" then [ v.level ] ++ concatMap levelsInElim (v.spine or [ ])
-      else if t == "VLam" || t == "VPi" then levelsVal v.domain
-      else if t == "VSigma" then levelsVal v.fst
-      else if t == "VPair" then levelsVal v.fst ++ levelsVal v.snd
-      else if t == "VBootSum" then levelsVal v.left ++ levelsVal v.right
-      else if t == "VBootInl" || t == "VBootInr" then levelsVal v.left ++ levelsVal v.right ++ levelsVal v.val
-      else if t == "VBootEq" then concatMap levelsVal [ v.type v.lhs v.rhs ]
-      else if t == "VSquash" then levelsVal v.A
-      else if t == "VSquashIntro" then levelsVal v.a
-      else if t == "VDesc" then levelsVal v.level ++ levelsVal v.I
-      else if t == "VMu" then concatMap levelsVal [ v.I v.D v.i ]
-      # Canonical-form short-circuit: see metaIdsVal above.
-      else if t == "VDescCon" then
-        if v ? _canonRef
-        then concatMap levelsVal (v._canonRef.params or [ ])
-        else concatMap levelsVal [ v.D v.i v.d ]
-      else if t == "VInterpD" then concatMap levelsVal [ v.level v.I v.D v.X v.i ]
-      else if t == "VAllD" then concatMap levelsVal [ v.level v.I v.D v.K v.X v.M v.i v.d ]
-      else if t == "VEverywhereD" then concatMap levelsVal [ v.level v.I v.D v.K v.X v.M v.ih v.i v.d ]
-      else if t == "VLift" then concatMap levelsVal [ v.l v.m v.eq v.A ]
-      else if t == "VLiftIntro" then concatMap levelsVal [ v.l v.m v.eq v.A v.a ]
-      else if t == "VLevelSuc" then levelsVal v.pred
-      else if t == "VLevelMax" then levelsVal v.lhs ++ levelsVal v.rhs
-      else if t == "VOpaqueLam" then levelsVal v.piTy
-      else [ ]
-    else [ ];
 
   spineVars = spine:
     let args = map spineArg spine;

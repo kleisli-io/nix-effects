@@ -401,7 +401,6 @@ let
           title = "Core API";
           order = 1;
           pages = api.coreModuleNames;
-          banner = "Auto-generated API reference.";
         }
       ] ++ lib.imap1
         (i: sec: {
@@ -409,7 +408,6 @@ let
           title = sec.title;
           order = i + 1;
           pages = api.apiSectionPagePaths sec.url (docs.${sec.key} or { });
-          banner = sec.banner or "Auto-generated API reference.";
         })
         apiSections;
       projectEntry = {

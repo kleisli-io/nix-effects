@@ -91,11 +91,11 @@ api.mk {
     inherit (self)
       False True WDT absurd absurdFin0 absurdPrim algArg algOrn algOrnDiagnosticRecords
       algOrnDiagnostics algPiKeep algPlus algRec algRet allD and ann any
-      annTrusted anyLit app attrs attrsLit bool boolElim canonApp checkFunctionalLaws
+      annTrusted anyLit app attrs attrsLit bool boolDesc boolElim canonApp checkFunctionalLaws
       checkHoas con conI cong congSuc cons datatype datatypeI datatypeP datatypePI
       dec decAnd decElim decNot decOr decideEqIntZ decideEqNat decideLeIntZ
       decideLeNat derivation derivationLit
-      desc descArg descCon descDesc descElim descInd descPi descRec descRet
+      desc descArg descCon descDesc descElim descInd descCataBool descPi descRec descRet
       elab elab2 embedTm eq eqCongSucc eqDT eqDTToEq eqDesc eqInjSucc
       eqIsoBwd eqIsoFwd eqRefutSuccZero eqRefutZeroSucc eqToEqDT everywhereD
       false_ field fieldD fin finDesc finElim floatLit float_ fnLit forall
@@ -103,7 +103,7 @@ api.mk {
       fst_ fsuc function_ functionalCompose functionalLawDiagnosticRecords
       functionalLawDiagnostics functionalOrnament
       functionalOrnamentDiagnosticRecords functionalOrnamentDiagnostics fzero
-      iff ind inferHoas inl inr intLit int_ interpD intz intzDecode intzDesc
+      iff ind inferHoas inl inr intEq intLe intLit int_ interpD intz intzDecode intzDesc
       intzElim intzLe intzLit intzNegSucc intzNegSuccCong intzNegSuccInjective
       intzPos intzPosCong intzPosInjective isLeafOrn j just lam le leDesc leElim leInjSS
       leRefutSuccZero leSS leZ leafOrnament leafOrnamentDiagnosticRecords

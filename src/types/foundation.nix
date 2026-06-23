@@ -44,6 +44,7 @@
 { fx, api, ... }:
 let
   inherit (fx.kernel) pure bind send;
+  R = fx.tc.kernel.reflect;
   mkType = { name, kernelType ? null, guard ? null, verify ? null, description ? name, universe ? null, approximate ? false }:
     let
       # Effective kernel type: when omitted, fall back to the weakest type.
@@ -54,6 +55,21 @@ let
       # The kernel's decision procedure
       kernelDecide = v: fx.tc.elaborate.decide effectiveKernelType v;
 
+      # A KernelPred guard derives its decision from the kernel predicate
+      # stack; a raw guard is used directly. Hoisted so the dispatch runs once,
+      # not once per checked value.
+      effectiveGuard =
+        if guard == null then null
+        else if R.isKernelPred guard then R.deriveGuard guard
+        else guard;
+
+      # A KernelPred guard carries no source text; render it as a labelled
+      # predicate so contract diagnostics stay clean.
+      diagGuard =
+        if guard == null then null
+        else if R.isKernelPred guard then { predicate = "${name} (kernel-internalized)"; }
+        else guard;
+
       # .check: universal conjunction.
       # No guard: check = kernelDecide (kernel is sufficient).
       # Guard: check = kernelDecide(v) ∧ guard(v) — kernel catches
@@ -61,8 +77,8 @@ let
       # Total elaboration (opaque lambda for Pi, HOAS substitution for
       # Sigma) ensures kernelDecide never spuriously fails.
       effectiveCheck =
-        if guard == null then kernelDecide
-        else v: kernelDecide v && guard v;
+        if effectiveGuard == null then kernelDecide
+        else v: kernelDecide v && effectiveGuard v;
 
       # .universe: override if provided, otherwise computed from checkTypeLevel
       effectiveUniverse =
@@ -95,6 +111,19 @@ let
       # the kernel is precise (not approximate) — they promise accuracy.
       kernelFields = {
         _kernel = effectiveKernelType;
+        # Authoritative kernel code for the internalizable fragment: a bare
+        # carrier reflection when the kernel alone decides, the refined code
+        # when the guard is a kernel-expressible witness, else null. Wrapped so
+        # a stuck check degrades to null rather than poisoning construction.
+        ktype =
+          let
+            r = builtins.tryEval (
+              if isApproximate then null
+              else if guard == null then R.reflect effectiveKernelType
+              else if R.kernelExpressible guard then R.ktypeOf guard
+              else null);
+          in
+          if r.success then r.value else null;
       } // (if isApproximate then { } else {
         kernelCheck = kernelDecide;
         prove = term:
@@ -106,10 +135,18 @@ let
           result.success && result.value;
       });
 
+      # Native-recursion budget per trampoline segment. validateAtF
+      # descends natively while fuel remains, then defers the sub-walk
+      # via a deriveBounce effect so deep contracts stay stack-safe.
+      nativeWalkBudget = 512;
+
       self = {
         _tag = "Type";
         _kernelPrecise = !isApproximate;
         _kernelSufficient = !isApproximate && guard == null;
+        # The kernel-expressible witness this type refines by, when any —
+        # consumed by `refine`/`refined` to compose nested refinements.
+        _kernelPred = if guard != null && R.isKernelPred guard then guard else null;
         inherit name description;
         check = effectiveCheck;
         universe = effectiveUniverse;
@@ -126,9 +163,9 @@ let
         # treat `typeCheck` events as a failure-diagnostic stream, not
         # a blame log. Reason distinguishes kernel-rejection
         # (`shape-mismatch`) from guard-rejection (`predicate-failed`).
-        validateAt =
-          if verify != null then verify self
-          else path: v:
+        validateAtF = fuel: path: v:
+          if verify != null then verify self fuel path v
+          else
             if effectiveCheck v then pure v
             else
               let
@@ -143,7 +180,7 @@ let
                         type = name;
                         context = name;
                         value = v;
-                        inherit guard;
+                        guard = diagGuard;
                         msg = "refinement check failed";
                       }
                   else
@@ -173,11 +210,15 @@ let
                 value = v;
                 inherit reason path diagError;
               };
+        # Public 2-arg entry: seed the native-recursion budget. Callers
+        # and the verify alphabet are unchanged; fuel is threaded only
+        # internally via validateAtF so recursive verifiers can bounce.
+        validateAt = path: v: self.validateAtF nativeWalkBudget path v;
         validate = v: self.validateAt [ ] v;
         diagnose = v: {
           kernel = kernelDecide v;
-          guard = if guard != null then guard v else null;
-          agreement = guard == null || (kernelDecide v) == (guard v);
+          guard = if effectiveGuard != null then effectiveGuard v else null;
+          agreement = effectiveGuard == null || (kernelDecide v) == (effectiveGuard v);
         };
       } // kernelFields;
     in
@@ -186,6 +227,8 @@ let
   mkTypeTests =
     let
       H = fx.tc.hoas;
+      R = fx.tc.kernel.reflect;
+      posInt = mkType { name = "PosInt"; kernelType = H.int_; guard = R.intPositive; };
     in
     {
       # -- Core construction --
@@ -442,7 +485,7 @@ let
             t = mkType {
               name = "Custom";
               kernelType = H.any;
-              verify = _self: _path: v: pure v;
+              verify = _self: _fuel: _path: v: pure v;
             };
           in
           fx.comp.isPure (t.validate 42);
@@ -526,6 +569,38 @@ let
           (t.validate "abc").effect.param.diagError.layer.tag;
         expected = "Generic";
       };
+      # -- KernelPred guard: check derives from the kernel predicate term --
+      "kernelpred-accepts" = { expr = posInt.check 5; expected = true; };
+      "kernelpred-rejects-zero" = { expr = posInt.check 0; expected = false; };
+      "kernelpred-rejects-negative" = { expr = posInt.check (-3); expected = false; };
+      "kernelpred-rejects-noncarrier" = { expr = posInt.check "x"; expected = false; };
+      "kernelpred-diagnose-no-throw" = {
+        expr = let d = posInt.diagnose (-1); in d.kernel == true && d.guard == false && d.agreement == false;
+        expected = true;
+      };
+      # -- ktype gate arms --
+      "ktype-approximate-null" = { expr = (mkType { name = "A"; kernelType = null; }).ktype == null; expected = true; };
+      "ktype-sufficient-nonnull" = { expr = (mkType { name = "B"; kernelType = H.bool; }).ktype != null; expected = true; };
+      "ktype-rawlambda-null" = {
+        expr = (mkType { name = "P"; kernelType = H.int_; guard = v: builtins.isInt v && v > 0; }).ktype == null;
+        expected = true;
+      };
+      "ktype-kernelpred-nonnull" = { expr = posInt.ktype != null; expected = true; };
+      # -- _kernelPred exposure --
+      "kernelpred-exposed" = { expr = R.isKernelPred posInt._kernelPred; expected = true; };
+      "kernelpred-null-for-rawlambda" = {
+        expr = (mkType { name = "P"; kernelType = H.int_; guard = v: v > 0; })._kernelPred == null;
+        expected = true;
+      };
+      # -- Contract diagnostics stay clean under a KernelPred guard --
+      "kernelpred-predicate-failed-contract-layer" = {
+        expr = (posInt.validate (-1)).effect.param.diagError.layer.tag;
+        expected = "Contract";
+      };
+      "kernelpred-predicate-failed-renders" = {
+        expr = (posInt.validate (-1)).effect.param.diagError.detail.guard ? predicate;
+        expected = true;
+      };
     };
 
   defEq = A: B:
@@ -588,14 +663,24 @@ let
     };
   };
 
+  # Compose a refinement guard. A kernel-expressible witness is threaded into
+  # the guard slot (its check derived from the kernel term), composed with the
+  # base's own witness when present; a raw predicate stays an opaque lambda.
+  refineGuard = base: predicate:
+    if R.isKernelPred predicate then
+      (if (base._kernelPred or null) != null
+      then R.andKP base._kernelPred predicate
+      else predicate)
+    else v: base.check v && predicate v;
+
   refine = base: predicate: mkType {
     name = "${base.name}[refined]";
     kernelType = base._kernel;
-    guard = v: base.check v && predicate v;
+    guard = refineGuard base predicate;
     description = "${base.description} (refined)";
   };
 
-  refineTests = let H = fx.tc.hoas; in {
+  refineTests = let H = fx.tc.hoas; R = fx.tc.kernel.reflect; in {
     "refine-narrows" = {
       expr =
         let
@@ -613,6 +698,46 @@ let
         in
         check nat (-1);
       expected = false;
+    };
+    # A KernelPred predicate threads into the guard slot; check derives from
+    # the kernel term and ktype is non-null.
+    "refine-kernelpred-narrows" = {
+      expr =
+        let int = mkType { name = "Int"; kernelType = H.int_; };
+        in check (refine int R.intPositive) 5;
+      expected = true;
+    };
+    "refine-kernelpred-rejects" = {
+      expr =
+        let int = mkType { name = "Int"; kernelType = H.int_; };
+        in check (refine int R.intPositive) 0;
+      expected = false;
+    };
+    "refine-kernelpred-ktype" = {
+      expr =
+        let int = mkType { name = "Int"; kernelType = H.int_; };
+        in (refine int R.intPositive).ktype != null;
+      expected = true;
+    };
+    # Nested KernelPred refinements compose via andKP: the composite conjoins
+    # both predicates and keeps a non-null ktype.
+    "refine-kernelpred-composition" = {
+      expr =
+        let
+          int = mkType { name = "Int"; kernelType = H.int_; };
+          t = refine (refine int R.intNonNegative) (R.intInRange 0 10);
+        in
+        [ (check t 5) (check t (-1)) (check t 20) ];
+      expected = [ true false false ];
+    };
+    "refine-kernelpred-composition-ktype" = {
+      expr =
+        let
+          int = mkType { name = "Int"; kernelType = H.int_; };
+          t = refine (refine int R.intNonNegative) (R.intInRange 0 10);
+        in
+        t.ktype != null;
+      expected = true;
     };
   };
 
@@ -687,7 +812,12 @@ api.namespace {
           When present, `.check = kernelDecide(v) && guard(v)` (conjunction —
           kernel catches structural errors, guard handles residual constraints).
           The guard handles constraints the kernel can't express (e.g., x >= 0).
-        - `verify` — Optional custom verifier (`self → path → value → Computation`).
+        - `verify` — Optional custom verifier
+          (`self → fuel → path → value → Computation`).
+          `fuel` is the native-recursion budget: recursive verifiers
+          descend natively while it is positive and defer the sub-walk
+          via a `deriveBounce` effect when it runs out, keeping deep
+          structures stack-safe. Non-recursive verifiers ignore it.
           `path` is a list of `fx.diag.positions` Position records
           describing the structural descent from the validation root
           (e.g. `[(P.Field "a") (P.Field "b")]` for a nested field,
@@ -758,6 +888,12 @@ api.namespace {
         Grounded in Freeman & Pfenning (1991) "Refinement Types for ML" and Rondon et al. (2008) "Liquid Types".
       '';
       tests = refineTests;
+    };
+    refineGuard = api.leaf {
+      value = refineGuard;
+      description = "refineGuard: build a refinement type's guard slot from a base type and a predicate; a KernelPred witness yields a kernel-derived (authoritative) guard composed with the base's witness, a raw predicate stays an opaque lambda conjoined with `base.check`.";
+      signature = "refineGuard : Type -> (Value -> Bool | KernelPred) -> (Value -> Bool | KernelPred)";
+      doc = "Shared by `refine` and `refinement.refined` so both compose guards identically. A `KernelPred` predicate is threaded through (and `andKP`-composed with `base._kernelPred`); a raw predicate becomes `v: base.check v && predicate v`.";
     };
     validate = api.leaf {
       value = validate;

@@ -53,8 +53,8 @@ in
 rec {
   inherit strict collecting logging;
 
-  collectingReportsTwoErrors =
-    builtins.substring 0 11 collecting == "2 error(s):";
+  collectingReportsFourErrors =
+    builtins.substring 0 11 collecting == "4 error(s):";
 
   loggingIncludesFailures =
     let text = builtins.replaceStrings [ "\n" ] [ " " ] logging;
@@ -125,7 +125,7 @@ rec {
             builtins.concatStringsSep "\n" (map line r.state);
         '';
         tests = [
-          "collectingReportsTwoErrors"
+          "collectingReportsFourErrors"
           "loggingIncludesFailures"
         ];
       }

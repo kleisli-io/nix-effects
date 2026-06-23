@@ -378,16 +378,18 @@ in
                 let
                   tVal = E.eval ctx.env tTm;
                   tyF = E.forceVal ty;
+                  d = ctx.depth + 1;
+                  e = ctx.eb or 0;
                   ctx' = {
                     env = V.envCons tVal ctx.env;
-                    types = [ aVal ] ++ ctx.types;
-                    depth = ctx.depth + 1;
-                    eb = ctx.eb or 0;
+                    types = V.envCons aVal ctx.types;
+                    depth = d;
+                    eb = e;
                   };
                 in
-                builtins.seq tyF
+                builtins.seq tyF (builtins.seq d (builtins.seq e
                   (bindPR P.LetBody "let" (self.check ctx' tm.body tyF) (uTm:
-                    pure (T.mkLet tm.name aTm tTm uTm)))))
+                    pure (T.mkLet tm.name aTm tTm uTm)))))))
 
         # Closed-Val splice: trust-mode check. The carried Val is opaque
         # to type-directed elaboration; we trust the user/elaborator that

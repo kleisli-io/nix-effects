@@ -11,7 +11,7 @@
 # Usage (pure evaluation):
 #   nix eval --file ./bench workloads.effects.interp.fib15
 #   nix eval --file ./bench meta.lookup \"effects.interp.fib15\"
-{ lib ? (import <nixpkgs> { }).lib, pkgs ? null }:
+{ pkgs ? (import ../pins.nix).nixpkgs { }, lib ? pkgs.lib }:
 
 let
   fx = import ../. { inherit lib pkgs; exposeInternals = true; };
@@ -21,12 +21,7 @@ let
   stepProbes = import ./step-probes.nix { inherit fx; };
   meta = import ./workloads/meta.nix { };
 
-  # Runners depend on pkgs (they're `writeShellApplication` derivations).
-  # When the caller passes `pkgs = null` — the default for pure-evaluation
-  # tests of workloads + measure + gate — `runner` is a null sentinel.
-  runner =
-    if pkgs == null then null
-    else import ./runner { inherit lib pkgs; };
+  runner = import ./runner { inherit lib pkgs; };
 in
 {
   inherit workloads meta runner stepProbes;

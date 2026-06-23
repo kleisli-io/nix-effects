@@ -145,9 +145,32 @@ let
   # record. `ctx.names` is read defensively for Ctx values without
   # name tracking.
   captureFrame = ctx:
+    let
+      # Materialise a de Bruijn spine (env-style cons cells, or a plain Nix
+      # list from elaborate-layer contexts) into an index-ordered list for
+      # display. Iterative (genericClosure) so deep contexts stay
+      # host-stack-flat; tolerates a null- or list-terminated spine.
+      spineList = e:
+        if builtins.isList e then e
+        else if e == null then [ ]
+        else
+          let
+            cells = builtins.genericClosure {
+              startSet = [ { key = 0; cur = e; } ];
+              operator = s:
+                if builtins.isAttrs s.cur.tail
+                then [ { key = s.key + 1; cur = s.cur.tail; } ]
+                else [ ];
+            };
+            last = (builtins.elemAt cells (builtins.length cells - 1)).cur.tail;
+            tailList = if builtins.isList last then last else [ ];
+          in
+          map (s: s.cur.head) cells ++ tailList;
+    in
     {
-      inherit (ctx) depth env types;
-      names = ctx.names or [ ];
+      inherit (ctx) depth env;
+      types = spineList ctx.types;
+      names = spineList (ctx.names or [ ]);
     };
 
   # -- appendTrace: append a `{ rule, position }` entry to a

@@ -7,17 +7,13 @@
 # allocation envelope of the kernel CHECK list-chain budget so they
 # can be hot-path additions without regressing list-chain headroom.
 #
-# Depth note. The chain depth is 2000, not 5000. `foldDescM` is a
-# plain recursive Nix function; its frame budget is the Nix
-# interpreter's max-call-depth (default 10000) minus the per-node
-# overhead of `applyDescFn`/`rawView`/`K.bind`, which empirically
-# sits around 2000–2300 for the current shape. The kernel CHECK
-# chain at depth 5000 fits because every sub-delegation routes
-# through `TR.handle`'s trampoline (worklist via genericClosure,
-# bounded stack). Trampolinising `foldDescM` is a separate
-# concern that lands when `checkD`/`inferD` need it — at that
-# point the bench depth scales to 5000 alongside the kernel CHECK
-# envelope.
+# Depth note. The chain depth is 2000. `foldDescM`/`foldDescWithPath`
+# defer structural re-entry past a native-fuel budget via the
+# `deriveBounce` effect, so the host stack stays bounded at any depth;
+# 2000 measures the per-node fold allocation envelope against the
+# kernel CHECK list-chain budget, not a stack ceiling. Both workloads
+# discharge through `TR.handle` so the bounce — and, for the blame
+# variant, the per-descent `bindP` frames — are interpreted.
 #
 # Two workloads:
 #
@@ -52,6 +48,12 @@ let
   E = fx.src.tc.eval;
   TR = fx.src.trampoline;
   G = fx.src.tc.generic;
+  CH = fx.src.tc.check;
+
+  # deriveBounce stack-bounce handler: the folds defer structural re-entry
+  # past their native-fuel budget, so any discharge of a deep fold installs
+  # it (state threads unchanged — output identical to a native walk).
+  bounce = { param, state }: { resume = param.run null; inherit state; };
 
   # 2000-deep arg-chain description. Each layer wraps the inner sub-
   # description in `descArg Unit 0 Unit (λ_:Unit. ...)`; the deepest
@@ -100,9 +102,13 @@ let
 
   surfaced = TR.handle
     {
-      handlers.typeError = { param, state }: {
-        abort = { __surfacedError = param.error; };
-        inherit state;
+      state = { blame = CH._blame.empty; };
+      handlers = CH._blame.handlers // CH._yield.handlers // {
+        deriveBounce = bounce;
+        typeError = { param, state }: {
+          abort = { __surfacedError = CH._blame.fold state.blame param.error; };
+          inherit state;
+        };
       };
     }
     blameComp;
@@ -123,7 +129,8 @@ in
   # 2000-step fast-path fold. Result = sum of `1` over 2001 nodes
   # (2000 arg layers + the inner ret). Pins the per-node fold cost
   # at the `K.pure` discharge.
-  foldM-chain-2000 = foldMCount.value;
+  foldM-chain-2000 =
+    (TR.handle { state = null; handlers = { deriveBounce = bounce; }; } foldMCount).value;
 
   # 2000-step slow-path bindP-per-descent chain. Result = the
   # `DArgBody`-edge count, which must equal 2000 after every arg

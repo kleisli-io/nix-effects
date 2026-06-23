@@ -28,14 +28,44 @@ let
     if n >= len then [ ]
     else builtins.genList (i: builtins.elemAt xs (n + i)) (len - n);
 
+  # Depth budget for the native fast path of the structural walks below:
+  # each recurses directly to this depth, then hands the remaining
+  # sub-problem to a genericClosure worklist. The common shallow case
+  # stays allocation-free; host-stack depth stays O(budget) on deep input.
+  nativeWalkBudget = 512;
+
   # Peel an app-spine: walk outward while the node is an HOAS `app`,
-  # returning `{ head; args = [arg_inner, ..., arg_outer]; }`. Bounded by
-  # the ctor's nParams + nFields per call site (3 for ListDT.cons) — no
-  # long recursion.
-  peelAppSpine = node: args:
+  # returning `{ head; args = [arg_inner, ..., arg_outer]; }`. Ctor call
+  # sites peel a fixed nParams + nFields, but `lower`'s app case peels the
+  # whole user spine, so recurse directly for the common shallow case and
+  # hand a deep left-nested `.fn` chain to a genericClosure worklist past
+  # `nativeWalkBudget` — host-stack depth stays bounded.
+  peelAppSpine = node: args: peelAppSpineGo nativeWalkBudget node args;
+
+  peelAppSpineGo = fuel: node: args:
     if builtins.isAttrs node && node ? _htag && node._htag == "app"
-    then peelAppSpine node.fn ([ node.arg ] ++ args)
+    then
+      if fuel <= 0 then peelAppSpineSlow node args
+      else peelAppSpineGo (fuel - 1) node.fn ([ node.arg ] ++ args)
     else { head = node; inherit args; };
+
+  peelAppSpineSlow = node0: args0:
+    let
+      steps = builtins.genericClosure {
+        startSet = [{ key = 0; node = node0; }];
+        operator = item:
+          if builtins.isAttrs item.node && item.node ? _htag && item.node._htag == "app"
+          then [{ key = item.key + 1; node = item.node.fn; arg = item.node.arg; }]
+          else [ ];
+      };
+      nArgs = builtins.length steps - 1;
+      last = builtins.elemAt steps nArgs;
+      # steps[1..] carry the `.arg` peeled to reach them, outer-to-inner;
+      # emit them inner-to-outer (reverse) then append `args0` to match the
+      # native `[node.arg] ++ args` accumulation — a single O(n) pass.
+      peeled = builtins.genList (i: (builtins.elemAt steps (nArgs - i)).arg) nArgs ++ args0;
+    in
+    { head = last.node; args = peeled; };
 
   # Tm-level tag encoding via the first-class plus coproduct. Wraps
   # `payloadTm` with (n-1)-deep nested `mkBootInl L R …` / `mkBootInr L R …`
@@ -75,14 +105,7 @@ let
       target = lower depth cert.target;
     };
 
-  appSpine = h:
-    let
-      go = node: args:
-        if builtins.isAttrs node && node ? _htag && node._htag == "app"
-        then go node.fn ([ node.arg ] ++ args)
-        else { head = node; inherit args; };
-    in
-    go h [ ];
+  appSpine = h: peelAppSpine h [ ];
 
   # Weak head normal form: β-reduces app-of-lam and δ-reduces surface
   # sugar nodes that carry an `_unfold` self-description. Sugar nodes
@@ -91,16 +114,57 @@ let
   # vocabulary. Consumers reading the head type former (`eqDTView`,
   # `dtypeView`, `elaborateForCheck`'s `tryFlattenCtorChainAt`) see the
   # same μ-form the kernel-side elaborator emits.
-  hoasWhnf = h:
-    if builtins.isAttrs h && h ? _htag then
-      if h._htag == "app" then
-        let fn = hoasWhnf h.fn; in
-        if builtins.isAttrs fn && fn ? _htag && fn._htag == "lam"
-        then hoasWhnf (fn.body h.arg)
-        else h // { inherit fn; }
-      else if h ? _unfold then hoasWhnf h._unfold
-      else h
-    else h;
+  # Call-by-name WHNF as a spine machine: `S` stacks the pending app
+  # nodes (innermost on top). Peel an `app` head pushing the node,
+  # β-reduce when the head is a `lam` and the stack is non-empty,
+  # δ-unfold an `_unfold` node, else rebuild the spine with the reduced
+  # head. Native to `nativeWalkBudget`; a deeper spine/β/δ chain hands
+  # off to a genericClosure trampoline so host-stack depth stays bounded.
+  # A type whose weak head is a deep neutral app-spine (`f a … a` under a
+  # binder) drives the `.fn` peel one host frame per layer and overflows
+  # the call stack past the ceiling without the handoff.
+  hoasWhnf = h: hoasWhnfGo nativeWalkBudget h [ ];
+
+  hoasWhnfGo = fuel: t: S:
+    if !(builtins.isAttrs t && t ? _htag) then hoasWhnfRebuild t S
+    else if t._htag == "app" then
+      if fuel <= 0 then hoasWhnfSlow t S
+      else hoasWhnfGo (fuel - 1) t.fn ([ t ] ++ S)
+    else if t._htag == "lam" && S != [ ] then
+      if fuel <= 0 then hoasWhnfSlow t S
+      else hoasWhnfGo (fuel - 1) (t.body (builtins.head S).arg) (builtins.tail S)
+    else if t ? _unfold then
+      if fuel <= 0 then hoasWhnfSlow t S
+      else hoasWhnfGo (fuel - 1) t._unfold S
+    else hoasWhnfRebuild t S;
+
+  # Rebuild outward from the settled head: each pending app node keeps its
+  # fields with `fn` rewired to the reduced sub-head (matches the
+  # recursive `h // { inherit fn; }`). `S` holds innermost first.
+  hoasWhnfRebuild = t: S: builtins.foldl' (acc: a: a // { fn = acc; }) t S;
+
+  # Deep-tail fallback for `hoasWhnfGo`: the same machine as a linear
+  # genericClosure chain. `done` marks the settled head; the β step forces
+  # its reduct into the key so the fold does not defer a step-deep chain.
+  hoasWhnfSlow = t0: S0:
+    let
+      steps = builtins.genericClosure {
+        startSet = [{ key = 0; t = t0; S = S0; done = false; }];
+        operator = item:
+          if item.done then [ ]
+          else if !(builtins.isAttrs item.t && item.t ? _htag) then
+            [ (item // { key = item.key + 1; done = true; }) ]
+          else if item.t._htag == "app" then
+            [{ key = item.key + 1; t = item.t.fn; S = [ item.t ] ++ item.S; done = false; }]
+          else if item.t._htag == "lam" && item.S != [ ] then
+            let child = item.t.body (builtins.head item.S).arg; in
+            [{ key = builtins.seq child (item.key + 1); t = child; S = builtins.tail item.S; done = false; }]
+          else if item.t ? _unfold then
+            [{ key = item.key + 1; t = item.t._unfold; inherit (item) S; done = false; }]
+          else [ (item // { key = item.key + 1; done = true; }) ];
+      };
+      terminal = builtins.elemAt steps (builtins.length steps - 1);
+    in hoasWhnfRebuild terminal.t terminal.S;
 
   eqDTView = h:
     let spine = appSpine (hoasWhnf h); in
@@ -125,10 +189,37 @@ let
 
   # Each binder prepends `freshVar depth` (index 0 = innermost), matching
   # `extend`/`instantiateF`. Returns the terminal node, env, and depth.
+  # Native to `nativeWalkBudget`; a deeper Π-telescope hands off to a
+  # genericClosure worklist so host-stack depth stays bounded. The Tm this
+  # descends is the kernel type-formation output — a lazy `mkPi` spine one
+  # binder per level — so a native descent forces one thunk per host frame
+  # and overflows on a deep telescope.
   peelTmTelescope = tm: env: depth:
-    if (tm.tag or null) == "pi"
-    then peelTmTelescope tm.codomain ([ (fx.tc.value.freshVar depth) ] ++ env) (depth + 1)
-    else { node = tm; inherit env depth; };
+    let
+      go = fuel: t: e: d:
+        if (t.tag or null) != "pi" then { node = t; env = e; depth = d; }
+        else if fuel <= 0 then peelTmTelescopeSlow t e d
+        else go (fuel - 1) t.codomain ([ (fx.tc.value.freshVar d) ] ++ e) (d + 1);
+    in go nativeWalkBudget tm env depth;
+
+  # genericClosure continuation: a linear chain peeling one Π binder per
+  # step. The terminal node and its depth come from the last step; the
+  # binder env is the freshVar run over `[startDepth, terminalDepth)`,
+  # innermost (highest depth) first, matching the native prepend order.
+  peelTmTelescopeSlow = tm0: env0: depth0:
+    let
+      steps = builtins.genericClosure {
+        startSet = [{ key = depth0; tm = tm0; depth = depth0; }];
+        operator = item:
+          if (item.tm.tag or null) == "pi"
+          then [{ key = item.depth + 1; tm = item.tm.codomain; depth = item.depth + 1; }]
+          else [ ];
+      };
+      last = builtins.elemAt steps (builtins.length steps - 1);
+      envTail = builtins.genList
+        (i: fx.tc.value.freshVar (last.depth - 1 - i))
+        (last.depth - depth0);
+    in { node = last.tm; env = envTail ++ env0; depth = last.depth; };
 
   # Peel a Tm app-spine left-associatively: `app(app(app h a0) a1) a2`
   # ⇒ { head = h; args = [a0 a1 a2]; }.
@@ -140,11 +231,33 @@ let
   # Descend the HOAS Π-telescope to its body and return the `eqDTView`
   # (or null): the gate that confirms a checked 3-arg spine really is an
   # EqDT (head `_dtypeMeta.name == "Eq"`), not some other application.
+  # The descent steps once per Π binder; recurse directly for the common
+  # shallow case, then hand a deep telescope to a genericClosure worklist
+  # so host-stack depth stays bounded.
   hoasEqBody = node: depth:
-    let wh = hoasWhnf node; in
-    if (wh._htag or null) == "pi"
-    then hoasEqBody (wh.body (self.litVal (fx.tc.value.freshVar depth))) (depth + 1)
-    else eqDTView wh;
+    let
+      go = fuel: nd: d:
+        let wh = hoasWhnf nd; in
+        if (wh._htag or null) != "pi" then eqDTView wh
+        else if fuel <= 0 then hoasEqBodySlow nd d
+        else go (fuel - 1) (wh.body (self.litVal (fx.tc.value.freshVar d))) (d + 1);
+    in go nativeWalkBudget node depth;
+
+  hoasEqBodySlow = node0: depth0:
+    let
+      steps = builtins.genericClosure {
+        startSet = [{ key = 0; node = node0; depth = depth0; }];
+        operator = item:
+          let wh = hoasWhnf item.node; in
+          if (wh._htag or null) == "pi"
+          then
+            let child = wh.body (self.litVal (fx.tc.value.freshVar item.depth)); in
+            [{ key = builtins.seq child (item.key + 1); node = child; depth = item.depth + 1; }]
+          else [ ];
+      };
+      terminal = builtins.elemAt steps (builtins.length steps - 1);
+    in
+    eqDTView (hoasWhnf terminal.node);
 
   # If the checked `ty` is a Π-telescope ending in a 3-arg spine, eval its
   # sort/lhs/rhs sub-Tms ONCE under the telescope env; else null.
@@ -1141,6 +1254,10 @@ let
         T.mkOpaqueLam h._fnBox (lower depth h.piHoas)
       else if t == "str-eq" then
         T.mkStrEq (lower depth h.lhs) (lower depth h.rhs)
+      else if t == "int-le" then
+        T.mkIntLe (lower depth h.lhs) (lower depth h.rhs)
+      else if t == "int-eq" then
+        T.mkIntEq (lower depth h.lhs) (lower depth h.rhs)
       else if t == "ann" then
         if h.trusted or false
         then
@@ -1606,7 +1723,14 @@ let
     derivation = true; function = true; any = true;
   };
 
-  # Plicity prefix of a syntactic pi tower.
+  # Plicity prefix of a syntactic pi tower. Native recursion is bounded in
+  # host-stack depth despite the tower depth: the result `{ pre; open }`
+  # holds the codomain recursion behind `rest`, a thunk. Every consumer
+  # peels `pre` one binder at a time (`head`/`tail`/`!= []`) or reads `open`
+  # once the prefix is exhausted; each step forces a single `++`/`inherit`
+  # level and leaves `rest` unforced, so the call stack stays O(1) in the
+  # tower depth (verified at depth 16000, well past the ~10000 ceiling a
+  # depth-scaling walk overflows at).
   scanPrefixOf = ty:
     let t = if builtins.isAttrs ty then ty.tag or null else null; in
     if t == "pi" then
@@ -1632,40 +1756,125 @@ let
   # Argument (checking) position: only app/ann/meta arguments reach
   # elabSub, which runs insertImplicits on the argument's inferred type;
   # everything else is rigid-checked and cannot create metas.
-  scanArgClean = tm:
+  scanArgClean = tm: scanArgCleanGo nativeWalkBudget tm;
+
+  scanArgCleanGo = fuel: tm:
     let t = if builtins.isAttrs tm then tm.tag or null else null; in
     if t == "meta" then false
     else if t == "app" then
-      let sig = scanInferSig tm; in
+      let sig = scanInferSigGo fuel tm; in
       sig != null && !(scanHeadRisky sig)
     else if t == "ann" then !(scanHeadRisky (scanPrefixOf tm.type))
     else true;
 
   # Infer-mode skeleton walk. Returns the consumed sig, or null when the
-  # elaborator must run. Implicit apps consume a binder without
-  # insertion regardless of its plicity (userExplicit = false skips
-  # insertImplicits). Host recursion: skeleton depth is bounded by
-  # literal app towers, not binder chains.
-  scanInferSig = tm:
+  # elaborator must run. Implicit apps consume a binder without insertion
+  # regardless of its plicity (userExplicit = false skips insertImplicits).
+  # The app skeleton branches on both `.fn` and `.arg`, so a deep literal
+  # app tower recurses once per layer. `scanInferSigGo` recurses directly
+  # for the common shallow case (preserving its lazy short-circuit); past
+  # `nativeWalkBudget` it hands the remaining sub-term to `scanInferSigSlow`
+  # so host-stack depth stays bounded.
+  scanInferSig = tm: scanInferSigGo nativeWalkBudget tm;
+
+  scanInferSigGo = fuel: tm:
     let t = if builtins.isAttrs tm then tm.tag or null else null; in
     if t == "meta" then null
     else if t == "app" then
-      let fnSig = scanInferSig tm.fn; in
-      if fnSig == null then null
+      if fuel <= 0 then scanInferSigSlow tm
       else
-        let explicitApp = (tm._plicity or "explicit") == "explicit"; in
-        if fnSig.pre != [ ] then
-          (if explicitApp && builtins.head fnSig.pre != "explicit" then null
-           else if scanArgClean tm.arg
-           then { pre = builtins.tail fnSig.pre; inherit (fnSig) open; }
-           else null)
-        # Consuming a closed empty prefix is a guaranteed "expected
-        # function type" error (errors fall through to the rigid Tm
-        # anyway), but stay conservative: run the elaborator.
-        else if !fnSig.open || explicitApp then null
-        else if scanArgClean tm.arg then fnSig
-        else null
+        let fnSig = scanInferSigGo (fuel - 1) tm.fn; in
+        if fnSig == null then null
+        else
+          let explicitApp = (tm._plicity or "explicit") == "explicit"; in
+          if fnSig.pre != [ ] then
+            (if explicitApp && builtins.head fnSig.pre != "explicit" then null
+             else if scanArgCleanGo (fuel - 1) tm.arg
+             then { pre = builtins.tail fnSig.pre; inherit (fnSig) open; }
+             else null)
+          # Consuming a closed empty prefix is a guaranteed "expected
+          # function type" error (errors fall through to the rigid Tm
+          # anyway), but stay conservative: run the elaborator.
+          else if !fnSig.open || explicitApp then null
+          else if scanArgCleanGo (fuel - 1) tm.arg then fnSig
+          else null
     else scanSigOf tm;
+
+  # Deep-tail fallback for `scanInferSigGo`: an explicit post-order task
+  # stack that folds each app node's sig from its children. `eval` expands
+  # a node; `app1`/`app2` pop child sigs and combine. An app argument's
+  # clean-ness is its own sig (mirrors `scanArgClean`); non-app arguments
+  # stay shallow. Force each sig into the key so the fold does not defer a
+  # step-count-deep chain.
+  scanInferSigSlow = tm0:
+    let
+      push = x: s: { head = x; tail = s; };
+      tagOf = x: if builtins.isAttrs x then x.tag or null else null;
+      combine = fnSig: explicitApp: argClean:
+        if fnSig == null then null
+        else if fnSig.pre != [ ] then
+          (if explicitApp && builtins.head fnSig.pre != "explicit" then null
+           else if argClean then { pre = builtins.tail fnSig.pre; inherit (fnSig) open; }
+           else null)
+        else if !fnSig.open || explicitApp then null
+        else if argClean then fnSig
+        else null;
+      steps = builtins.genericClosure {
+        startSet = [{ key = 0; tasks = push { ev = tm0; } null; results = null; }];
+        operator = item:
+          if item.tasks == null then [ ]
+          else
+            let task = item.tasks.head; rest = item.tasks.tail; in
+            if task ? ev then
+              let tm = task.ev; t = tagOf tm; in
+              if t == "app" then
+                let explicitApp = (tm._plicity or "explicit") == "explicit"; in
+                if tagOf tm.arg == "app" then
+                  [{
+                    key = item.key + 1;
+                    tasks = push { ev = tm.fn; }
+                      (push { ev = tm.arg; }
+                        (push { app2 = { inherit explicitApp; }; } rest));
+                    results = item.results;
+                  }]
+                else
+                  let argClean = scanArgClean tm.arg; in
+                  [{
+                    key = item.key + 1;
+                    tasks = push { ev = tm.fn; }
+                      (push { app1 = { inherit explicitApp argClean; }; } rest);
+                    results = item.results;
+                  }]
+              else
+                let sig = if t == "meta" then null else scanSigOf tm; in
+                [{
+                  key = builtins.seq sig (item.key + 1);
+                  tasks = rest;
+                  results = push sig item.results;
+                }]
+            else if task ? app1 then
+              let sig = combine item.results.head task.app1.explicitApp task.app1.argClean; in
+              [{
+                key = builtins.seq sig (item.key + 1);
+                tasks = rest;
+                results = push sig item.results.tail;
+              }]
+            else
+              let
+                argSig = item.results.head;
+                fnSig = item.results.tail.head;
+                argClean = argSig != null && !(scanHeadRisky argSig);
+                sig = combine fnSig task.app2.explicitApp argClean;
+              in
+              [{
+                key = builtins.seq sig (item.key + 1);
+                tasks = rest;
+                results = push sig item.results.tail.tail;
+              }];
+      };
+      final = builtins.head (builtins.filter (it: it.tasks == null) steps);
+    in
+    final.results.head;
 in
 {
   scope = {

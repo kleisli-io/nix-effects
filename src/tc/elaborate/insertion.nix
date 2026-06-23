@@ -66,12 +66,13 @@ let
       if isImplicitPi forced then
         let
           fresh = V.freshVar ctx.depth;
-          ctx' = ctx // {
-            env = [ fresh ] ++ (ctx.env or [ ]);
-            types = [ forced.domain ] ++ (ctx.types or [ ]);
-            names = [ forced.name ] ++ (ctx.names or [ ]);
-            depth = (ctx.depth or 0) + 1;
-          };
+          d = (ctx.depth or 0) + 1;
+          ctx' = builtins.seq d (ctx // {
+            env = V.envCons fresh (ctx.env or V.envNil);
+            types = V.envCons forced.domain (ctx.types or V.envNil);
+            names = V.envCons forced.name (ctx.names or V.envNil);
+            depth = d;
+          });
           # `forced.closure` may capture `VMeta`s; the kernel evaluator
           # crashes inspecting them (reads `.tag`). Route through the overlay
           # (mirrors `insertImplicits` above).

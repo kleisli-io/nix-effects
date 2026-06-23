@@ -26,10 +26,20 @@ let
     vMu vDescCon vDescConChain
     vString vInt vFloat vAttrs vPath vDerivation vFunction vAny
     vStringLit vIntLit vFloatLit vAttrsLit vPathLit vDerivationLit vFnLit vAnyLit
-    eApp eFst eSnd eBootSumElim eBootJ eStrEq eAbsurd eLiftElim
+    eApp eFst eSnd eBootSumElim eBootJ eStrEq eIntLeL eIntLeR eIntEq eAbsurd eLiftElim
     eSquashElim;
   H = fx.tc.hoas;
   boolDescTm = H.elab H.boolDesc;
+
+  # Plus-encoded VDescCon Bool from a host boolean — shared by the
+  # opaque-primitive decision procedures (vStrEq, vIntEq, vIntLe).
+  decidedBoolV = b:
+    let
+      boolDescV = self.eval [ ] boolDescTm;
+      eqTtV = vBootEq vUnit vTt vTt;
+    in
+    if b then vDescCon boolDescV vTt (vBootInl eqTtV eqTtV vBootRefl)
+    else vDescCon boolDescV vTt (vBootInr eqTtV eqTtV vBootRefl);
 
   # Cached `U(0)` value. `mkU mkLevelZero` produces a term whose `level` is the
   # `level-zero` singleton; evaluating under the U-case returns this
@@ -493,6 +503,8 @@ let
       else if t == "any" then vAny
 
       else if t == "str-eq" then self_.vStrEq (ev tm.lhs) (ev tm.rhs)
+      else if t == "int-le" then self_.vIntLe (ev tm.lhs) (ev tm.rhs)
+      else if t == "int-eq" then self_.vIntEq (ev tm.lhs) (ev tm.rhs)
 
       else if t == "string-lit" then vStringLit tm.value
       else if t == "int-lit" then vIntLit tm.value
@@ -637,42 +649,53 @@ in
       else throw "tc: vApp on non-function (tag=${fn.tag})";
 
     vFst = api.leaf {
-      description = "vFst: kernel pair-projection — return the first component of a `VPair`; extend the spine with `eFst` on a stuck `VNe`.";
+      description = "vFst: kernel pair-projection — return the first component of a `VPair`; extend the spine with `eFst` on a stuck `VNe`. Forces a deferred `VThunkTm` first (the VThunkTm read-site invariant), as `vAppF` does, so the direct evaluator opening a machine-built closure env never reads a thunk's `.tag`.";
       signature = "vFst : Val -> Val";
-      value = p:
+      value = p0:
+        let p = self.forceVal p0; in
         if p.tag == "VPair" then p.fst
         else if p.tag == "VNe" then vNeSnoc p eFst
         else throw "tc: vFst on non-pair (tag=${p.tag})";
     };
 
     vSnd = api.leaf {
-      description = "vSnd: kernel pair-projection — return the second component of a `VPair`; extend the spine with `eSnd` on a stuck `VNe`.";
+      description = "vSnd: kernel pair-projection — return the second component of a `VPair`; extend the spine with `eSnd` on a stuck `VNe`. Forces a deferred `VThunkTm` first (the VThunkTm read-site invariant), as `vAppF` does, so the direct evaluator opening a machine-built closure env never reads a thunk's `.tag`.";
       signature = "vSnd : Val -> Val";
-      value = p:
+      value = p0:
+        let p = self.forceVal p0; in
         if p.tag == "VPair" then p.snd
         else if p.tag == "VNe" then vNeSnoc p eSnd
         else throw "tc: vSnd on non-pair (tag=${p.tag})";
     };
 
-    # vStrEq — string equality primitive.
-    # Both VStringLit → plus-encoded VDescCon true/false. Neutral → spine.
-    # StrEq is symmetric, so we canonicalize neutral-first for the spine.
+    # vStrEq — string equality primitive. Both VStringLit → host ==.
+    # Neutral → spine; symmetric, so neutral-first canonicalization is sound.
     vStrEq = lhs0: rhs0:
-      let
-        lhs = self.forceVal lhs0;
-        rhs = self.forceVal rhs0;
-        boolDescV = self.eval [ ] boolDescTm;
-        eqTtV = vBootEq vUnit vTt vTt;
-        vBoolTrue = vDescCon boolDescV vTt (vBootInl eqTtV eqTtV vBootRefl);
-        vBoolFalse = vDescCon boolDescV vTt (vBootInr eqTtV eqTtV vBootRefl);
-      in
+      let lhs = self.forceVal lhs0; rhs = self.forceVal rhs0; in
       if lhs.tag == "VStringLit" && rhs.tag == "VStringLit" then
-        if lhs.value == rhs.value then vBoolTrue else vBoolFalse
-      else if lhs.tag == "VNe" then
-        vNeSnoc lhs (eStrEq rhs)
-      else if rhs.tag == "VNe" then
-        vNeSnoc rhs (eStrEq lhs)
+        decidedBoolV (lhs.value == rhs.value)
+      else if lhs.tag == "VNe" then vNeSnoc lhs (eStrEq rhs)
+      else if rhs.tag == "VNe" then vNeSnoc rhs (eStrEq lhs)
       else throw "tc: vStrEq on non-string (tags=${lhs.tag}, ${rhs.tag})";
+
+    # vIntEq — int equality primitive, exact parallel to vStrEq (symmetric).
+    vIntEq = lhs0: rhs0:
+      let lhs = self.forceVal lhs0; rhs = self.forceVal rhs0; in
+      if lhs.tag == "VIntLit" && rhs.tag == "VIntLit" then
+        decidedBoolV (lhs.value == rhs.value)
+      else if lhs.tag == "VNe" then vNeSnoc lhs (eIntEq rhs)
+      else if rhs.tag == "VNe" then vNeSnoc rhs (eIntEq lhs)
+      else throw "tc: vIntEq on non-int (tags=${lhs.tag}, ${rhs.tag})";
+
+    # vIntLe — int order primitive via host <=. Non-symmetric: the neutral's
+    # side is preserved in the frame tag, so operands are never swapped.
+    vIntLe = lhs0: rhs0:
+      let lhs = self.forceVal lhs0; rhs = self.forceVal rhs0; in
+      if lhs.tag == "VIntLit" && rhs.tag == "VIntLit" then
+        decidedBoolV (lhs.value <= rhs.value)
+      else if lhs.tag == "VNe" then vNeSnoc lhs (eIntLeL rhs)
+      else if rhs.tag == "VNe" then vNeSnoc rhs (eIntLeR lhs)
+      else throw "tc: vIntLe on non-int (tags=${lhs.tag}, ${rhs.tag})";
 
     vBootSumElimF = fuel: left: right: motive: onLeft: onRight: scrut:
       if scrut.tag == "VBootInl" then self.vAppF fuel onLeft scrut.val

@@ -19,30 +19,35 @@ in
 {
   scope = {
     emptyCtx = api.leaf {
-      description = "emptyCtx: empty typing context `{ env = []; types = []; names = []; depth = 0; }` — the zero of `extend`; starting point for top-level `check`/`infer` invocations.";
+      description = "emptyCtx: empty typing context `{ env = envNil; types = envNil; names = envNil; depth = 0; }` — the zero of `extend`; starting point for top-level `check`/`infer` invocations. env/types/names are de Bruijn cons-list spines (index 0 = most recent binding) walked iteratively by `envNth`, so deep contexts stay host-stack- and call-depth-flat.";
       signature = "emptyCtx : Ctx";
-      value = { env = V.envNil; types = [ ]; names = [ ]; depth = 0; };
+      value = { env = V.envNil; types = V.envNil; names = V.envNil; depth = 0; };
     };
 
     extend = api.leaf {
-      description = "extend: append a binding to a typing context — pushes a fresh de Bruijn variable at depth `ctx.depth`, the new type at index 0, and the name at index 0 of `names`; depth increments by one. The entry-yield budget `eb` carries through unchanged (consumed only at `check`/`infer` heads).";
+      description = "extend: append a binding to a typing context — pushes a fresh de Bruijn variable at depth `ctx.depth`, the new type at index 0, and the name at index 0 of `names`; depth increments by one. `depth`/`eb` are forced at each extend so the scalar counters stay plain ints, never deferred `+1`/`or`-thunk chains that recurse N-deep on the C-stack when finally forced (cf. value.nix env-spine memo). The entry-yield budget `eb` carries through unchanged (consumed only at `check`/`infer` heads).";
       signature = "extend : Ctx -> String -> Val -> Ctx";
-      value = ctx: name: ty: {
-        env = V.envCons (V.freshVar ctx.depth) ctx.env;
-        types = [ ty ] ++ ctx.types;
-        names = [ name ] ++ (ctx.names or [ ]);
-        depth = ctx.depth + 1;
-        eb = ctx.eb or 0;
-      };
+      value = ctx: name: ty:
+        let
+          d = ctx.depth + 1;
+          e = ctx.eb or 0;
+        in
+        builtins.seq d (builtins.seq e {
+          env = V.envCons (V.freshVar ctx.depth) ctx.env;
+          types = V.envCons ty ctx.types;
+          names = V.envCons name (ctx.names or V.envNil);
+          depth = d;
+          eb = e;
+        });
     };
 
     lookupType = api.leaf {
-      description = "lookupType: read a variable's type from a context by de Bruijn index — index 0 is the most recent binding; throws on out-of-range index with a descriptive message.";
+      description = "lookupType: read a variable's type from a context by de Bruijn index — index 0 is the most recent binding; throws on out-of-range index with a descriptive message. Indexes the `types` cons-list spine via the iterative `envNth` (host-stack- and call-depth-flat); the bound check uses the O(1) `depth` counter (= spine length) instead of re-walking the spine.";
       signature = "lookupType : Ctx -> Int -> Val";
       value = ctx: i:
-        if i >= builtins.length ctx.types
+        if i >= ctx.depth
         then throw "tc: unbound variable index ${toString i} in context of depth ${toString ctx.depth}"
-        else builtins.elemAt ctx.types i;
+        else V.envNth ctx.types i;
     };
 
     runCheck = api.leaf {

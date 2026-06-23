@@ -308,35 +308,30 @@ let
       url = "diag";
       bucket = "diag";
       title = "Diagnostics";
-      banner = "Auto-generated API reference for the typed diagnostics namespace.";
     }
     {
       key = "effects";
       url = "effects";
       bucket = "effects";
       title = "Effects";
-      banner = "Auto-generated API reference from nix-effects source.";
     }
     {
       key = "types";
       url = "types";
       bucket = "types";
       title = "Types";
-      banner = "Auto-generated API reference from nix-effects source.";
     }
     {
       key = "stream";
       url = "streams";
       bucket = "stream";
       title = "Streams";
-      banner = "Auto-generated API reference from nix-effects source.";
     }
     {
       key = "tc";
       url = "type-checker";
       bucket = "tc";
       title = "Type Checker";
-      banner = "Auto-generated API reference from the MLTT type-checking kernel.";
     }
   ];
   sectionKeys = map (s: s.key) apiSections;
@@ -971,8 +966,8 @@ let
     exampleGroupSpecs);
 
   # project.json — standard contract for the documentation app to auto-discover
-  # this project. Section ordering, reference flags, and banner templates
-  # are all declared here so the Lisp server needs zero project-specific code.
+  # this project. Section ordering and reference flags are declared here so the
+  # Lisp server needs zero project-specific code.
   # API Reference children derive from `apiSections` plus core-api.
   projectJson = builtins.toJSON {
     id = "nix-effects";
@@ -995,7 +990,6 @@ let
             title = "Overview";
             order = 1;
             pages = [ ];
-            banner = "Worked examples for proofs, effect-handler policy, and small surface languages.";
           }
         ] ++ lib.imap1
           (i: spec: {
@@ -1003,7 +997,6 @@ let
             title = spec.title;
             order = i + 1;
             pages = spec.navPages or spec.pages;
-            banner = spec.description;
           })
           exampleGroupSpecs;
       }
@@ -1017,7 +1010,6 @@ let
             title = "Core API";
             order = 1;
             pages = coreModuleNames;
-            banner = "Auto-generated API reference from nix-effects source.";
           }
         ] ++ lib.imap1
           (i: sec: {
@@ -1025,7 +1017,6 @@ let
             title = sec.title;
             order = i + 1;
             pages = apiSectionPagePaths sec.url (augmentedDocs.${sec.key} or { });
-            inherit (sec) banner;
           })
           apiSections
         ++ lib.optional (hintsRegistry != { }) {
@@ -1033,7 +1024,6 @@ let
           title = "Diagnostic Hints";
           order = (builtins.length apiSections) + 2;
           pages = diagHintsPages;
-          banner = "Stable diagnostic Hint keys for checker and validation failures.";
         };
       }
     ];

@@ -444,5 +444,32 @@ in
         in { inherit (r.constraint) status; solved = r.state.delta ? "0"; };
       expected = { status = "postponed"; solved = false; };
     };
+
+    # Deep-walk gate: metaIds/occurs/levels traverse a 10000-deep neutral
+    # spine flat. Native recursion overflows near ~5000. levels preserves
+    # multiplicity (patternSolve reads allDistinct over the raw list).
+    "meta-suite-metaids-deep-spine-10000" = {
+      expr =
+        let deep = builtins.foldl' (acc: _: V.vNe 0 [ (V.eApp acc) ])
+          (meta 7 [ ] V.vUnit) (builtins.genList (i: i) 10000);
+        in self.metaIdsVal deep;
+      expected = [ 7 ];
+    };
+    "meta-suite-occurs-deep-spine-10000" = {
+      expr =
+        let deep = builtins.foldl' (acc: _: V.vNe 0 [ (V.eApp acc) ])
+          (meta 7 [ ] V.vUnit) (builtins.genList (i: i) 10000);
+        in { hit = self.occurs 7 deep; miss = self.occurs 0 deep; };
+      expected = { hit = true; miss = false; };
+    };
+    "meta-suite-levels-deep-spine-10000" = {
+      expr =
+        let
+          deep = builtins.foldl' (acc: _: V.vNe 0 [ (V.eApp acc) ])
+            (V.freshVar 0) (builtins.genList (i: i) 10000);
+          ls = self.levelsVal deep;
+        in { n = builtins.length ls; allZero = builtins.all (l: l == 0) ls; };
+      expected = { n = 10001; allZero = true; };
+    };
   };
 }

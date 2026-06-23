@@ -18,123 +18,94 @@ let
   # mistake the sentinel for a signature field.
   bodyProbe = { _htag = "forced-probe"; };
 
-  mentionsOf = t: collect t [ ];
+  # Ordered child nodes of a HOAS node, keyed by `_htag`, without recursing.
+  # The worklist driver threads these through a heap stack, so traversal depth
+  # never consumes the native call stack.
+  childrenByTag = tag: t:
+    if tag == "pi" || tag == "lam" then [ t.domain (t.body bodyProbe) ]
+    else if tag == "sigma" then [ t.fst (t.body bodyProbe) ]
+    else if tag == "let" then [ t.type t.val (t.body bodyProbe) ]
+    else if tag == "app" then [ t.fn t.arg ]
+    else if tag == "pair" then [ t.fst t.snd ]
+    else if tag == "ann" then [ t.term t.type ]
+    else if tag == "fst" then [ t.pair ]
+    else if tag == "snd" then [ t.pair ]
+    else if tag == "absurd" then [ t.type t.term ]
+    else if tag == "mu" && t ? _dtypeMeta then (t._dtypeMeta.paramArgs or [ ]) ++ [ t.i ]
+    else if tag == "mu" then [ t.I t.D t.i ]
+    else if tag == "desc" then [ t.I ]
+    else if tag == "boot-eq" then [ t.type t.lhs t.rhs ]
+    else if tag == "boot-j" || tag == "j" then [ t.type t.lhs t.motive t.base t.rhs t.eq ]
+    else if tag == "boot-sum" then [ t.L t.R ]
+    else if tag == "boot-inl" || tag == "boot-inr" then [ t.L t.R t.term ]
+    else if tag == "boot-sum-elim" then [ t.left t.right t.motive t.onLeft t.onRight t.scrut ]
+    else if tag == "squash" then [ t.A ]
+    else if tag == "squash-intro" then [ t.a ]
+    else if tag == "squash-elim" then [ t.A t.B t.f t.x ]
+    else if tag == "level-suc" then [ t.pred ]
+    else if tag == "level-max" then [ t.lhs t.rhs ]
+    else if tag == "maybe" || tag == "thunk" then [ t.inner ]
+    else if tag == "variant" then map (br: br.type or br) (t.branches or [ ])
+    else if tag == "str-eq" || tag == "int-le" || tag == "int-eq" then [ t.lhs t.rhs ]
+    else if tag == "opaque-lam" then [ (t.nixFn bodyProbe) ]
+    else if tag == "dt-ctor-mono" then [ ]
+    else if isLeafTag tag then [ ]
+    else conservativeChildren t;
 
-  collect = t: acc:
-    if !(builtins.isAttrs t) then
-      if builtins.isList t then
-        builtins.foldl' (a: x: collect x a) acc t
-      else acc
-    else if (t._signatureField or false) then
-      acc ++ [ t.name ]
-    else
-      collectByTag (t._htag or null) t acc;
+  # Fallback for unrecognised tags: attrset slots that may hold subterms,
+  # flattened in attribute-name order.
+  conservativeChildren = t:
+    builtins.concatMap
+      (k:
+        let v = t.${k}; in
+        if builtins.isAttrs v then [ v ]
+        else if builtins.isList v then v
+        else if builtins.isFunction v then [ (v bodyProbe) ]
+        else [ ])
+      (builtins.attrNames t);
 
-  # Dispatch on `_htag`; descend into known HOAS subterm slots. Binder
-  # bodies are invoked at `bodyProbe`. Unrecognised tags fall through to
-  # a conservative attribute walk.
-  collectByTag = tag: t: acc:
-    if tag == "pi" || tag == "lam" then
-      let acc1 = collect t.domain acc;
-      in collect (t.body bodyProbe) acc1
-    else if tag == "sigma" then
-      let acc1 = collect t.fst acc;
-      in collect (t.body bodyProbe) acc1
-    else if tag == "let" then
-      let
-        acc1 = collect t.type acc;
-        acc2 = collect t.val acc1;
-      in
-      collect (t.body bodyProbe) acc2
-    else if tag == "app" then
-      let acc1 = collect t.fn acc;
-      in collect t.arg acc1
-    else if tag == "pair" then
-      let acc1 = collect t.fst acc;
-      in collect t.snd acc1
-    else if tag == "ann" then
-      let acc1 = collect t.term acc;
-      in collect t.type acc1
-    else if tag == "fst" then collect t.pair acc
-    else if tag == "snd" then collect t.pair acc
-    else if tag == "absurd" then
-      let acc1 = collect t.type acc;
-      in collect t.term acc1
-	    else if tag == "mu" && t ? _dtypeMeta then
-	      let
-	        acc1 = builtins.foldl'
-	          (a: x: collect x a)
-	          acc
-	          (t._dtypeMeta.paramArgs or [ ]);
-	      in
-	      collect t.i acc1
-	    else if tag == "mu" then
-	      let
-	        acc1 = collect t.I acc;
-	        acc2 = collect t.D acc1;
-      in
-      collect t.i acc2
-    else if tag == "desc" then
-      collect t.I acc
-    else if tag == "boot-eq" then
-      let
-        acc1 = collect t.type acc;
-        acc2 = collect t.lhs acc1;
-      in
-      collect t.rhs acc2
-    else if tag == "boot-j" || tag == "j" then
-      let
-        acc1 = collect t.type acc;
-        acc2 = collect t.lhs acc1;
-        acc3 = collect t.motive acc2;
-        acc4 = collect t.base acc3;
-        acc5 = collect t.rhs acc4;
-      in
-      collect t.eq acc5
-    else if tag == "boot-sum" then
-      let acc1 = collect t.L acc;
-      in collect t.R acc1
-    else if tag == "boot-inl" || tag == "boot-inr" then
-      let
-        acc1 = collect t.L acc;
-        acc2 = collect t.R acc1;
-      in
-      collect t.term acc2
-    else if tag == "boot-sum-elim" then
-      let
-        acc1 = collect t.left acc;
-        acc2 = collect t.right acc1;
-        acc3 = collect t.motive acc2;
-        acc4 = collect t.onLeft acc3;
-        acc5 = collect t.onRight acc4;
-      in
-      collect t.scrut acc5
-    else if tag == "squash" then collect t.A acc
-    else if tag == "squash-intro" then collect t.a acc
-    else if tag == "squash-elim" then
-      let
-        acc1 = collect t.A acc;
-        acc2 = collect t.B acc1;
-        acc3 = collect t.f acc2;
-      in
-      collect t.x acc3
-    else if tag == "level-suc" then collect t.pred acc
-    else if tag == "level-max" then
-      let acc1 = collect t.lhs acc;
-      in collect t.rhs acc1
-    else if tag == "maybe" || tag == "thunk" then collect t.inner acc
-    else if tag == "variant" then
-      builtins.foldl'
-        (a: br: collect (br.type or br) a)
-        acc
-        (t.branches or [ ])
-    else if tag == "str-eq" then
-      let acc1 = collect t.lhs acc;
-      in collect t.rhs acc1
-    else if tag == "opaque-lam" then
-      collect (t.nixFn bodyProbe) acc
-    else if isLeafTag tag then acc
-    else conservativeWalk t acc;
+  # Children of any walk node (marker / list / primitive / tagged). Markers
+  # and primitives are leaves; a marker also emits its name in the driver step.
+  nodeChildren = t:
+    if !(builtins.isAttrs t) then (if builtins.isList t then t else [ ])
+    else if (t._signatureField or false) then [ ]
+    else childrenByTag (t._htag or null) t;
+
+  # Push a child list onto the cons-stack so child 0 becomes the new head,
+  # preserving the recursive walk's left-to-right pre-order.
+  pushAll = children: s:
+    let n = builtins.length children;
+    in builtins.foldl'
+      (st: i: { head = builtins.elemAt children (n - 1 - i); tail = st; })
+      s
+      (builtins.genList (x: x) n);
+
+  # Iterative pre-order walk: a cons-stack driven by `genericClosure` replaces
+  # native-stack recursion. Tails are shared across steps (retention O(nodes));
+  # the accumulator grows only on marker hits.
+  mentionsOf = t:
+    let
+      closure = builtins.genericClosure {
+        startSet = [ { key = 0; stack = pushAll [ t ] null; acc = [ ]; } ];
+        operator = item:
+          if item.stack == null then [ ]
+          else
+            let
+              h = item.stack.head;
+              rest = item.stack.tail;
+              emit = builtins.isAttrs h && (h._signatureField or false);
+              # Force the accumulator each step: a lazily-threaded acc builds a
+              # deferred chain whose final force recurses step-count deep,
+              # reintroducing the overflow.
+              nextAcc = if emit then item.acc ++ [ h.name ] else item.acc;
+            in builtins.seq nextAcc [{
+              key = item.key + 1;
+              stack = if emit then rest else pushAll (nodeChildren h) rest;
+              acc = nextAcc;
+            }];
+      };
+      final = builtins.head (builtins.filter (it: it.stack == null) closure);
+    in final.acc;
 
   isLeafTag = tag:
     tag == "pre-elab" || tag == "lit-val"
@@ -147,20 +118,6 @@ let
     || tag == "unit" || tag == "tt" || tag == "empty"
     || tag == "boot-refl" || tag == "refl" || tag == "funext"
     || tag == "forced-probe";
-
-  # Fallback descent. Walks attrset slots that could carry HOAS subterms
-  # (nested attrsets, lists, functions). Skips primitives.
-  conservativeWalk = t: acc:
-    builtins.foldl'
-      (a: k:
-        let v = t.${k}; in
-        if builtins.isAttrs v then collect v a
-        else if builtins.isList v then
-          builtins.foldl' (aa: x: collect x aa) a v
-        else if builtins.isFunction v then collect (v bodyProbe) a
-        else a)
-      acc
-      (builtins.attrNames t);
 
   # Only data/dataD fields extend `prev`. Matches `_datatypeImpl.extendsPrev`.
   extendsPrevField = f: f.kind == "data" || f.kind == "dataD";

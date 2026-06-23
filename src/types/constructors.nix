@@ -10,7 +10,17 @@ let
   inherit (fx.types.foundation) mkType check;
   inherit (fx.kernel) pure bind send;
   H = fx.tc.hoas;
+  R = fx.tc.kernel.reflect;
   P = fx.diag.positions;
+
+  # Fuel-gated child descent; bounce onto the trampoline when fuel runs out.
+  nativeWalkBudget = 512;
+  descendV = t: fuel: p: x:
+    if fuel <= 0
+    then send "deriveBounce" { run = _: t.validateAtF nativeWalkBudget p x; }
+    else t.validateAtF (fuel - 1) p x;
+  shapeErr = self: path: v:
+    send "typeCheck" { type = self; context = self.name; value = v; reason = "shape-mismatch"; inherit path; };
 
   # Shared Record/RecordOpen builder. `open` toggles whether undeclared
   # fields are silently ignored (true) or kernel-rejected (false). Verify
@@ -24,36 +34,57 @@ let
         let prefix = if open then "RecordOpen" else "Record"; in
         "${prefix}{${builtins.concatStringsSep ", " sortedNames}}";
       datatypeFields = map (f: H.field f schema.${f}._kernel) sortedNames;
-      baseKernel = (H.datatype typeName [ (H.con "mk" datatypeFields) ]).T;
+      recSpec = H.datatype typeName [ (H.con "mk" datatypeFields) ];
+      baseKernel = recSpec.T;
       kernelType =
         if open
         then baseKernel // {
           _dtypeMeta = baseKernel._dtypeMeta // { openExtras = true; };
         }
         else baseKernel;
+      hostGuard = v:
+        builtins.isAttrs v
+        && builtins.all
+          (field:
+            v ? ${field} && (schema.${field}).check v.${field}
+          )
+          sortedNames;
+      # Records internalize as a single descCata fold over the declared-field
+      # description when every field's refinement is kernel-decidable. The fold
+      # is identical open or closed; the carrier's openExtras flag makes the
+      # bridge drop undeclared fields before the fold sees them, so an open
+      # record decides exactly its declared fields and ignores the rest.
+      structuralKP = R.mkCompoundPred {
+        carrier = kernelType;
+        D = recSpec.D;
+        childKts = map (f: schema.${f}.ktype or null) sortedNames;
+      };
       guard =
-        if allSufficient
-        then null
-        else v:
-          builtins.isAttrs v
-          && builtins.all
-            (field:
-              v ? ${field} && (schema.${field}).check v.${field}
-            )
-            sortedNames;
+        if allSufficient then null
+        else if structuralKP != null then structuralKP
+        else hostGuard;
     in
     mkType {
       name = typeName;
       inherit kernelType guard;
       approximate = !allPrecise;
-      # Delegate field-by-field blame to the canonical walker over the
-      # record kernel (a `mu`/`app` of a single-constructor datatype).
-      # `walkDatatype` resolves the constructor by cardinality-1 η when
-      # `_con` is absent and threads `Pos.Field lbl` paths per field —
-      # exact match to the previous bespoke recursion. Missing-field
-      # blame and the shape-mismatch leaf both fall out of the walker.
-      verify = self: path: v:
-        fx.tc.generic.check.deriveCheck self._kernel path v;
+      # Descend each declared field through its own validateAtF so a refined
+      # field's guard is authoritative. Extras unblamed (closed .check rejects).
+      verify = self: fuel: path: v:
+        if !builtins.isAttrs v then shapeErr self path v
+        else
+          let
+            step = acc: fname:
+              bind acc (_:
+                let
+                  childPath = path ++ [ (P.Field fname) ];
+                  childType = schema.${fname};
+                in
+                if !(v ? ${fname})
+                then send "typeCheck" { type = childType; context = fname; value = null; reason = "missing-field"; path = childPath; }
+                else descendV childType fuel childPath v.${fname});
+          in
+          bind (builtins.foldl' step (pure null) sortedNames) (_: pure v);
     };
 
   Record = mkRecordType { open = false; };
@@ -389,6 +420,55 @@ let
           in check PersonT 42;
         expected = false;
       };
+      # A kernel-expressible refined field internalizes the open .check: the
+      # carrier's openExtras flag drops undeclared fields at the bridge, so the
+      # structural fold decides exactly the declared fields.
+      "refined-field-internalizes" = {
+        expr =
+          let
+            Pos = fx.types.refinement.refined "Pos" FP.Int fx.tc.kernel.reflect.intPositive;
+          in
+          (RecordOpen { age = Pos; }) ? kernelCheck
+          && (RecordOpen { age = Pos; })._kernelPred != null;
+        expected = true;
+      };
+      "refined-field-accepts-with-extras" = {
+        expr =
+          let
+            Pos = fx.types.refinement.refined "Pos" FP.Int fx.tc.kernel.reflect.intPositive;
+          in
+          check (RecordOpen { age = Pos; }) { age = 5; nickname = "Al"; };
+        expected = true;
+      };
+      "refined-field-rejects-bad-refinement-with-extras" = {
+        expr =
+          let
+            Pos = fx.types.refinement.refined "Pos" FP.Int fx.tc.kernel.reflect.intPositive;
+          in
+          check (RecordOpen { age = Pos; }) { age = 0; nickname = "Al"; };
+        expected = false;
+      };
+      "refined-field-rejects-missing" = {
+        expr =
+          let
+            Pos = fx.types.refinement.refined "Pos" FP.Int fx.tc.kernel.reflect.intPositive;
+          in
+          check (RecordOpen { age = Pos; }) { nickname = "Al"; };
+        expected = false;
+      };
+      # A raw-lambda refinement is not kernel-expressible, so the open record
+      # falls back to its host guard and still decides declared fields.
+      "rawlambda-refined-field-keeps-host-guard" = {
+        expr =
+          let
+            RawPos = fx.types.refinement.refined "P" FP.Int (x: x > 0);
+            T = RecordOpen { age = RawPos; };
+          in
+          T._kernelPred == null
+          && check T { age = 5; nickname = "x"; }
+          && !(check T { age = 0; nickname = "x"; });
+        expected = true;
+      };
     };
 
   ListOf = elemType:
@@ -396,20 +476,40 @@ let
       isPrecise = elemType._kernelPrecise;
       isSufficient = elemType._kernelSufficient;
       kernelType = H.listOf elemType._kernel;
+      # A mono nil/cons mirror gives the fold a concrete (host-walkable) carrier
+      # description; its `.T` is convertible with the native `listOf` carrier.
+      listMono = H.datatype "List[${elemType.name}]" [
+        (H.con "nil" [ ])
+        (H.con "cons" [ (H.field "head" elemType._kernel) (H.recField "tail") ])
+      ];
+      structuralKP =
+        if (elemType.ktype or null) == null then null
+        else R.mkCompoundPred {
+          carrier = kernelType;
+          D = listMono.D;
+          childKts = [ elemType.ktype ];
+        };
       guard =
         if isSufficient then null
+        else if structuralKP != null then structuralKP
         else v: builtins.isList v && builtins.all elemType.check v;
     in
     mkType {
       name = "List[${elemType.name}]";
       inherit kernelType guard;
       approximate = !isPrecise;
-      # Delegate per-element blame to the canonical walker over the
-      # list kernel. `walkDatatype` detects list-shape (`isListShape`)
-      # and routes to `walkElems`, which threads `Pos.Elem i` per
-      # index — exact match to the previous bespoke recursion.
-      verify = self: path: v:
-        fx.tc.generic.check.deriveCheck self._kernel path v;
+      # Descend each element through elemType.validateAtF so a refined element's
+      # guard is authoritative.
+      verify = self: fuel: path: v:
+        if !builtins.isList v then shapeErr self path v
+        else
+          let
+            n = builtins.length v;
+            indices = builtins.genList (i: i) n;
+            step = acc: i:
+              bind acc (_: descendV elemType fuel (path ++ [ (P.Elem i) ]) (builtins.elemAt v i));
+          in
+          bind (builtins.foldl' step (pure null) indices) (_: pure v);
     };
   ListOfTests = let FP = fx.types.primitives; in {
     "accepts-matching-list" = {
@@ -532,9 +632,18 @@ let
       isPrecise = innerType._kernelPrecise;
       isSufficient = innerType._kernelSufficient;
       kernelType = H.maybe innerType._kernel;
+      hostGuard = v: v == null || innerType.check v;
+      # `maybe` is `Sum inner Unit`; internalize as a `sumElim` deciding the
+      # present value, accepting absence, when the inner is kernel-decidable.
+      structuralKP = R.mkMaybePred {
+        carrier = kernelType;
+        inner = innerType._kernel;
+        innerKt = innerType.ktype or null;
+      };
       guard =
         if isSufficient then null
-        else v: v == null || innerType.check v;
+        else if structuralKP != null then structuralKP
+        else hostGuard;
     in
     mkType {
       name = "Maybe[${innerType.name}]";
@@ -598,20 +707,36 @@ let
         { tag = "Left"; type = leftType._kernel; }
         { tag = "Right"; type = rightType._kernel; }
       ];
+      hostGuard = v:
+        builtins.isAttrs v
+        && v ? _tag && v ? value
+        && ((v._tag == "Left" && leftType.check v.value)
+        || (v._tag == "Right" && rightType.check v.value));
+      # Internalize as a nested `sumElim` over the native variant carrier when
+      # both branches are kernel-decidable; branch order matches `kernelType`.
+      structuralKP = R.mkVariantPred {
+        carrier = kernelType;
+        branches = [
+          { type = leftType._kernel; kt = leftType.ktype or null; }
+          { type = rightType._kernel; kt = rightType.ktype or null; }
+        ];
+      };
       guard =
         if allSufficient then null
-        else v:
-          builtins.isAttrs v
-          && v ? _tag && v ? value
-          && ((v._tag == "Left" && leftType.check v.value)
-          || (v._tag == "Right" && rightType.check v.value));
+        else if structuralKP != null then structuralKP
+        else hostGuard;
     in
     mkType {
       name = "Either[${leftType.name}, ${rightType.name}]";
       inherit kernelType guard;
       approximate = !allPrecise;
-      verify = self: path: v:
-        fx.tc.generic.check.deriveCheck self._kernel path v;
+      # Descend the active branch through its own validateAtF so a refined
+      # branch's guard is authoritative.
+      verify = self: fuel: path: v:
+        if !(builtins.isAttrs v && v ? _tag && v ? value) then shapeErr self path v
+        else if v._tag == "Left" then descendV leftType fuel (path ++ [ (P.Tag "Left") ]) v.value
+        else if v._tag == "Right" then descendV rightType fuel (path ++ [ (P.Tag "Right") ]) v.value
+        else shapeErr self path v;
     };
   EitherTests = let FP = fx.types.primitives; in {
     "accepts-left" = {
@@ -664,21 +789,35 @@ let
           H.variant
             (map (t: { tag = t; type = schema.${t}._kernel; }) sortedTags)
         else H.any;
+      hostGuard = v:
+        builtins.isAttrs v
+        && v ? _tag && v ? value
+        && schema ? ${v._tag}
+        && (schema.${v._tag}).check v.value;
+      # Internalize as a nested `sumElim` over the native variant carrier when
+      # every branch is kernel-decidable; branch order matches `kernelType`.
+      structuralKP =
+        if sortedTags == [ ] then null
+        else R.mkVariantPred {
+          carrier = kernelType;
+          branches = map (t: { type = schema.${t}._kernel; kt = schema.${t}.ktype or null; }) sortedTags;
+        };
       guard =
         if allSufficient && sortedTags != [ ]
         then null
-        else v:
-          builtins.isAttrs v
-          && v ? _tag && v ? value
-          && schema ? ${v._tag}
-          && (schema.${v._tag}).check v.value;
+        else if structuralKP != null then structuralKP
+        else hostGuard;
     in
     mkType {
       name = typeName;
       inherit kernelType guard;
       approximate = !(allPrecise && sortedTags != [ ]);
-      verify = self: path: v:
-        fx.tc.generic.check.deriveCheck self._kernel path v;
+      # Descend the active branch through its own validateAtF; unknown tag is a
+      # shape mismatch.
+      verify = self: fuel: path: v:
+        if !(builtins.isAttrs v && v ? _tag && v ? value) then shapeErr self path v
+        else if schema ? ${v._tag} then descendV schema.${v._tag} fuel (path ++ [ (P.Tag v._tag) ]) v.value
+        else shapeErr self path v;
     };
   VariantTests = let FP = fx.types.primitives; in {
     "accepts-valid-variant" = {

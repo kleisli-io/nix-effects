@@ -82,6 +82,14 @@ let
     in
     "Expected ${typeName}${loc}, got ${describeValue param.value}${note}";
 
+  # deriveBounce: stack-safety bounce for the generic walker. Past a fuel
+  # budget the walker defers structural re-entry by sending
+  # `deriveBounce { run }`; this handler forces the deferred sub-walk and
+  # returns the computation, which the trampoline's resumeCompOrValue splices
+  # before the continuation — O(1) host stack per segment. State threads
+  # unchanged, so every policy's output is identical to the native walk.
+  deriveBounceHandler = { param, state }: { resume = param.run null; inherit state; };
+
   strict = {
     typeCheck = { param, state }:
       if param.type.check param.value
@@ -89,6 +97,7 @@ let
       else
         let reason = param.reason or "shape-mismatch"; in
         builtins.throw "[${reason}] ${mkMessage param}";
+    deriveBounce = deriveBounceHandler;
   };
 
   collecting = {
@@ -106,6 +115,7 @@ let
           message = mkMessage param;
         }];
       };
+    deriveBounce = deriveBounceHandler;
   };
 
   logging = {
@@ -121,6 +131,7 @@ let
           inherit passed;
         }];
       };
+    deriveBounce = deriveBounceHandler;
   };
 
   # Build a single error record from a failing typeCheck param. Shared
@@ -152,6 +163,7 @@ let
             aborted = (n + 1) >= N;
           };
         };
+    deriveBounce = deriveBounceHandler;
   };
 
   summarize = {
@@ -198,6 +210,7 @@ let
           resume = false;
           state = builtins.deepSeq newState newState;
         };
+    deriveBounce = deriveBounceHandler;
   };
 
   pretty = cfg:
@@ -214,6 +227,7 @@ let
             resume = false;
             state = state ++ [ line ];
           };
+      deriveBounce = deriveBounceHandler;
     };
 
   policy = {

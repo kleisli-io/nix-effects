@@ -11,6 +11,7 @@
   run = import ./run.nix { inherit lib pkgs; };
   compare = import ./compare.nix { inherit lib pkgs; };
   gate = import ./gate.nix { inherit lib pkgs; };
+  stress = import ./stress.nix { inherit lib pkgs; };
   calibrate = import ./calibrate.nix { inherit lib pkgs; };
   open-regressions = import ./open-regressions.nix { inherit lib pkgs; };
   lint-workloads = import ./lint-workloads.nix { inherit pkgs; };

@@ -448,6 +448,16 @@ in
       signature = "strEq : Hoas -> Hoas -> Hoas";
       value = lhs: rhs: { _htag = "str-eq"; inherit lhs rhs; };
     };
+    intLe = api.leaf {
+      description = "intLe: HOAS kernel int order — `intLe a b` produces a `bool` HOAS term; reflects the `mkIntLe` primitive (host `<=`).";
+      signature = "intLe : Hoas -> Hoas -> Hoas";
+      value = lhs: rhs: { _htag = "int-le"; inherit lhs rhs; };
+    };
+    intEq = api.leaf {
+      description = "intEq: HOAS kernel int equality — `intEq a b` produces a `bool` HOAS term; reflects the `mkIntEq` primitive (host `==`).";
+      signature = "intEq : Hoas -> Hoas -> Hoas";
+      value = lhs: rhs: { _htag = "int-eq"; inherit lhs rhs; };
+    };
     opaqueLam = api.leaf {
       description = "opaqueLam: HOAS opaque-lambda wrapper — `opaqueLam nixFn piHoas` packages a non-HOAS Nix function with its declared Π-type; the kernel treats the body as an unverified trust boundary.";
       signature = "opaqueLam : (Any -> Any) -> Hoas -> Hoas";
@@ -1190,6 +1200,64 @@ in
       '';
       value = D: motive: step: i: scrut:
         { _htag = "desc-ind"; inherit D motive step i scrut; };
+    };
+
+    # Non-dependent fold: `descInd` at a constant `Bool` motive. The dependent
+    # eliminator's index-transport plumbing is vacuous under a constant motive,
+    # leaving the genuine fold algebra — `bootSumElim` per `+` node, the IH
+    # threaded through `descRec`. `onArg argIx node value : Bool` decides each
+    # `descArg` field; results are conjoined across the whole ⊤-indexed tree.
+    # `D` must be a concrete (host-walkable) description.
+    descCataBool = api.leaf {
+      description = "descCataBool: constant-Bool-motive description catamorphism — `descCataBool { D, carrier, onArg }` folds `onArg`'s per-field Boolean decisions over `μ ⊤ D`, conjoining every `descArg` field and recursive child. The non-dependent specialisation of `descInd`.";
+      signature = "descCataBool : { D : Hoas; carrier : Hoas; onArg : Int -> Hoas -> Hoas -> Hoas } -> Hoas  -- result : carrier -> Bool";
+      value = { D, carrier, onArg }:
+        let
+          I = self.unit;
+          descLevel = 0;
+          KL = 0;
+          muFam = self.lam "_i" I (iv: self.mu D iv);
+          motive = self.lam "_i" I (iv: self.lam "_x" (self.mu D iv) (_: self.bool));
+          interp = Dn: i: self.interpD descLevel I Dn muFam i;
+          allOf = Dn: i: d: self.allD descLevel I Dn KL muFam motive i d;
+          andB = a: b: self.boolElim 0 (self.lam "_" self.bool (_: self.bool)) b self.false_ a;
+          peelAnn = t: if builtins.isAttrs t && (t._htag or null) == "ann" then peelAnn t.term else t;
+          # Walks D structurally, threading a per-descArg index. Returns the
+          # conjoined Bool term and the next free index (so sibling fields in a
+          # single constructor address distinct `onArg` slots).
+          go = Dn0: i: d: ih: argIx:
+            let Dn = peelAnn Dn0; h = Dn._htag; in
+            if h == "desc-ret-enc" then { term = self.true_; nextIx = argIx; }
+            else if h == "desc-arg-enc" then
+              let
+                s = self.fst_ d;
+                sub = go (Dn.body s) i (self.snd_ d) ih (argIx + 1);
+              in
+              { term = andB (onArg argIx Dn s) sub.term; nextIx = sub.nextIx; }
+            else if h == "desc-rec-enc" then
+              let sub = go Dn.D i (self.snd_ d) (self.snd_ ih) argIx; in
+              { term = andB (self.fst_ ih) sub.term; nextIx = sub.nextIx; }
+            else if h == "desc-plus-enc" then
+              let
+                A = Dn.A;
+                B = Dn.B;
+                lInterp = interp A i;
+                rInterp = interp B i;
+                sumMot = self.lam "s" (self.bootSum lInterp rInterp) (s:
+                  self.forall "_rih" (allOf Dn i s) (_: self.bool));
+                onInl = self.lam "la" lInterp (la:
+                  self.lam "rihA" (allOf A i la) (rihA: (go A i la rihA argIx).term));
+                onInr = self.lam "rb" rInterp (rb:
+                  self.lam "rihB" (allOf B i rb) (rihB: (go B i rb rihB argIx).term));
+              in
+              { term = self.app (self.bootSumElim lInterp rInterp sumMot onInl onInr d) ih; nextIx = argIx; }
+            else throw "descCataBool: unhandled desc htag ${toString h}";
+          step = self.lam "_i" I (iv:
+            self.lam "d" (interp D iv) (d:
+              self.lam "ih" (allOf D iv d) (ih:
+                (go D iv d ih 0).term)));
+        in
+        self.lam "x" carrier (x: self.descInd D motive step self.tt x);
     };
 
     # Kernel-primitive interpretation/All-witness/everywhere-recursor for

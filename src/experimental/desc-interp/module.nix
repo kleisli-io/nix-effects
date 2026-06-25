@@ -73,7 +73,7 @@ api.mk {
     `composed-shortcut-laws.nix` without any per-effect-pair work.
   '';
   value = {
-    inherit (self) compat compose desc extract kernel trampoline;
+    inherit (self) compose desc extract kernel trampoline;
     "compose-laws" = self."compose-laws";
     "composed-shortcut" = self."composed-shortcut";
     "composed-shortcut-laws" = self."composed-shortcut-laws";

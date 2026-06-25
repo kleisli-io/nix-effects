@@ -321,6 +321,15 @@ api.namespace {
 
         Stack depth: O(1) — constant regardless of computation length.
         Time: O(n) where n = number of effects in the computation.
+
+        **Handler state and closure-valued fields** — the trampoline
+        `deepSeq`-forces handler state at each step. Derivations and other
+        values that hang under `deepSeq` must be wrapped with
+        `fx.state.thunk.mkThunk` before being stored in handler state, and
+        unwrapped with `fx.state.thunk.forceThunk` after `run` returns.
+        Closure-valued fields are opaque to `deepSeq` and don't need wrapping,
+        but any attrset field reachable from state that contains a derivation
+        or pointer-cyclic value does.
       '';
     };
 
@@ -338,6 +347,15 @@ api.namespace {
         - `return` — `value -> state -> { value, state }`. How to transform the final Pure value. Default: identity.
         - `handlers` — `{ effectName = { param, state }: { resume | abort, state }; }`. Each must return `{ resume; state; }` or `{ abort; state; }`.
         - `state` — initial handler state. Default: null.
+
+        **Handler state and closure-valued fields** — the trampoline
+        `deepSeq`-forces handler state at each step. Derivations and other
+        values that hang under `deepSeq` must be wrapped with
+        `fx.state.thunk.mkThunk` before being stored in handler state, and
+        unwrapped with `fx.state.thunk.forceThunk` after `handle` returns.
+        Closure-valued fields are opaque to `deepSeq` and don't need wrapping,
+        but any attrset field reachable from state that contains a derivation
+        or pointer-cyclic value does.
       '';
       tests = {
         "handle-with-default-return" = {

@@ -448,6 +448,11 @@ in
       signature = "strEq : Hoas -> Hoas -> Hoas";
       value = lhs: rhs: { _htag = "str-eq"; inherit lhs rhs; };
     };
+    strLen = api.leaf {
+      description = "strLen: HOAS kernel string length — `strLen s` produces an `int_` HOAS term; reflects the `mkStrLen` primitive (host string length).";
+      signature = "strLen : Hoas -> Hoas";
+      value = s: { _htag = "str-len"; inherit s; };
+    };
     intLe = api.leaf {
       description = "intLe: HOAS kernel int order — `intLe a b` produces a `bool` HOAS term; reflects the `mkIntLe` primitive (host `<=`).";
       signature = "intLe : Hoas -> Hoas -> Hoas";

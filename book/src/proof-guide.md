@@ -581,9 +581,11 @@ normal forms.
   See `examples/category-theory/arithmetic.nix` for `addRightZero`.
 
 - **Properties of Nix builtins.** The kernel axiomatizes `String`,
-  `Int`, `Float`, etc. as opaque types. `builtins.stringLength` is not
-  a kernel function — the kernel has `strEq` for string comparison but
-  no string operations beyond equality and list membership.
+  `Int`, `Float`, etc. as opaque types. The kernel has `strEq`
+  (equality) and `strLen` (length) for strings, plus list membership,
+  but operations beyond these — `builtins.substring`, `builtins.match`,
+  concatenation — are not kernel functions, so their properties are not
+  provable.
 
 - **Eta-expansion.** The kernel does not identify `f` with `λx.f(x)`.
   Functions that are extensionally equal but intensionally different are

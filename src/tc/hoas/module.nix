@@ -117,7 +117,7 @@ api.mk {
       ornamentDiagnosticRecords ornamentDiagnostics pair path pathLit piField
       piFieldD plus predNat product recField recFieldAt record refinementPred
       refl reflDT reifyLevel retI sigma signsDiffer signsDifferRev snd_
-      sourceMapOf squash squashElim squashIntro strEq string stringLit succ
+      sourceMapOf squash squashElim squashIntro strEq strLen string stringLit succ
       sum sumDesc sumElim sup thunk thunkOrnament trans true_ tryAlgOrn
       tryFunctionalOrnament tryLeafOrnament tryOrnament tt u unit validateAlgOrn
       validateFunctionalLaws validateFunctionalOrnament validateLeafOrnament

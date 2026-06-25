@@ -323,7 +323,8 @@ Narrow any type with a predicate (Freeman & Pfenning 1991; cf. Rondon et al. 200
 Nat = refined "Nat" Int (x: x >= 0);
 TargetClass = refined "TargetClass" String
   (x: builtins.elem x [ "module" "file" "package" "check" ]);
-NonEmpty = refined "NonEmptyString" String (s: builtins.stringLength s > 0);
+# `nonEmptyStr` internalizes the length check into the kernel (non-null `.ktype`).
+NonEmpty = refined "NonEmptyString" String nonEmptyStr;
 
 # Predicate combinators
 refined "Safe" String (allOf [ (s: s != "") (s: !(builtins.elem s blocked)) ])
@@ -331,6 +332,10 @@ refined "Either" Int (anyOf [ (x: x < 0) (x: x > 100) ])
 ```
 
 Built-in refinements: `positive`, `nonNegative`, `inRange`, `nonEmpty`, `matching`.
+Kernel-internalizing predicates carry a witness so the refined type's `.ktype` is
+non-null — Int `positiveInt`/`nonNegativeInt`/`inRangeInt`/`eqInt` and String
+`oneOfStr`/`nonEmptyStr`. `allOf` over an all-KernelPred list folds to one
+KernelPred, so the conjunction internalizes too.
 
 Refinements do not require hand-written structural validation. The
 generic validator checks the underlying type first, then runs the domain
@@ -459,6 +464,8 @@ fx.types.Linear                      fx.types.Affine                      fx.typ
 fx.types.refined                     fx.types.allOf                       fx.types.anyOf
 fx.types.negate                      fx.types.positive                    fx.types.nonNegative
 fx.types.inRange                     fx.types.nonEmpty                    fx.types.matching
+fx.types.positiveInt                 fx.types.nonNegativeInt              fx.types.inRangeInt
+fx.types.eqInt                       fx.types.oneOfStr                    fx.types.nonEmptyStr
 
 fx.types.typeAt                      fx.types.level
 fx.types.Type_0 .. fx.types.Type_4   # convenience aliases; typeAt n works for any n

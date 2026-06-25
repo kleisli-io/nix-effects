@@ -7,14 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`strLen` kernel primitive** — host string length `strLen s : String → Int`, the first kernel string op beyond `strEq`. A `VStringLit` operand decodes to its host `stringLength`; a stuck operand stays neutral via the nullary `EStrLen` frame (the operand is the spine head, modelled on `EFst`/`ESnd`). Threaded through both evaluators (direct + machine), both quote paths, `conv`, `zonk`, machine readback, typing (`String → Int`), and the diagnostics source-map. Surfaced as `H.strLen`.
+- **`nonEmptyStr` kernel-internalizing refinement predicate** — String non-emptiness decided in-kernel as `1 <= strLen x`, carrying a `KernelPred` witness so a `refined … nonEmptyStr` type has a non-null `.ktype`. Exposed on `fx.types`; complements the raw `nonEmpty`, which still covers the list carrier the kernel does not introspect.
+
 ### Changed
 
 - **`Certified` carries a genuine inhabitation proof, not a `Bool`.** `fx.types.Certified` was the subset type `Σ(x:A).{p:Bool | p ∧ P(v)}` — its second component stored the *result* of evaluating the predicate as a bare `Bool`, so a certified value held no transportable evidence and could not serve as propositional content downstream (no transport, no rewriting). It is now the subset type `Σ(x:A).P(x)` with `P` forced to a mere proposition, over two formers: a **decidable** predicate (a `fx.tc.kernel` `KernelPred` over the base carrier) reflects to `_kernel = El t`, with the witness the membership proof transported from the kernel decision `decide t x = true` through `Id` / `J` (the witness is the `Unit` inhabitant `tt`, `_kernelSufficient = true`); a **general** propositional family (`{ family; bridge; }`) carries a `Squash`-truncated inhabitant via `certifyProof`. The witness is always a real proof term.
 - **`certify` is pure on a valid value; `certifyE` emits a typecheck effect only on rejection.** The old `certifyE` emitted a `typeCheck` effect even on success; it is now pure on a valid value (`{ fst = v; snd = <proof>; }`) and effectful only when the predicate rejects.
+- **Corrected the `vDescConTagged` API doc.** It stamps a canonical-reference identity `_canonRef = { id; params }` that lets `conv` and `quote` short-circuit (skipping `.D` forcing and breaking universe-level descent loops); it carries no proof or certificate. The previous text over-claimed a squash-truncated guard certificate surfacing refinement proofs.
+- **Documented handler-state thunking in `run` and `handle`.** Derivations and pointer-cyclic values reachable from handler state must be wrapped with `fx.state.thunk.mkThunk` before storage and unwrapped with `forceThunk` after handling, since the trampoline `deepSeq`-forces state each step; closure-valued fields are opaque to `deepSeq` and need no wrapping.
+- **`allOf` is now a smart constructor.** A non-empty list of all-`KernelPred` members folds into one `KernelPred` (via `andKP`), so the conjoined refinement internalizes (non-null `.ktype`); a raw-lambda member, or an empty list, falls back to a plain conjoined guard that derives each `KernelPred` member's guard so it stays callable. Previously `allOf` applied every member as a bare function, which crashed on a `KernelPred` (an attrset, not callable).
 
 ### Removed
 
 - **The `Bool`-witness escape is gone — an uncertifiable predicate is rejected at construction.** A raw host-lambda predicate (no kernel decision procedure, no propositional `family` + `bridge`) can no longer be wrapped in a `Certified` that forges a `Bool` witness; construction throws, pointing to `fx.types.refinement.refined` — the honest, proof-free guard subtype for predicates the kernel cannot express. A consequence of the decidable arm: the base carrier must match the predicate's `KernelPred` carrier (a scalar `int` / `string`), so a guard over a compound value (e.g. a list-length predicate) is not a `Certified` — it belongs on `refined` or the compound type's own `validate`. The corresponding "Bool witness" entry under the README's *Known limitations* is removed accordingly.
+- **Dropped the empty `experimental.desc-interp` `compat` stub.** The file held no bridge code (`scope.compat = { }`); the documented inter-layer bridge it claimed never existed, so it is removed rather than left as a hollow export.
 
 ## [0.14.0] - 2026-06-23
 

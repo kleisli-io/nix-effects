@@ -799,6 +799,46 @@ in
       expr = (checkHoas float_ (floatLit 2.5)).tag;
       expected = "float-lit";
     };
+
+    # ===== strLen kernel primitive =====
+
+    # Checks at String -> Int, elaborating to the `str-len` term.
+    "check-strlen" = {
+      expr = (checkHoas int_ (self.strLen (stringLit "hello"))).tag;
+      expected = "str-len";
+    };
+    # Evaluation reduces a literal operand to its host string length.
+    "strlen-eval-tag" = {
+      expr = (E.eval [ ] (elab (self.strLen (stringLit "abc")))).tag;
+      expected = "VIntLit";
+    };
+    "strlen-eval-value" = {
+      expr = (E.eval [ ] (elab (self.strLen (stringLit "abc")))).value;
+      expected = 3;
+    };
+    "strlen-eval-empty" = {
+      expr = (E.eval [ ] (elab (self.strLen (stringLit "")))).value;
+      expected = 0;
+    };
+    # Quote round-trip: eval -> quote -> eval preserves the length value.
+    "strlen-quote-roundtrip" = {
+      expr =
+        let
+          v = E.eval [ ] (elab (self.strLen (stringLit "world")));
+          v' = E.eval [ ] (Q.quote 0 v);
+        in v'.value;
+      expected = 5;
+    };
+    # A neutral string operand keeps strLen stuck: the spine frame quotes back
+    # to a `str-len` term whose argument is the neutral head.
+    "strlen-neutral-quote-tag" = {
+      expr = (Q.quote 1 (V.vNeSnoc (V.vNe 0 [ ]) V.eStrLen)).tag;
+      expected = "str-len";
+    };
+    "strlen-neutral-quote-arg" = {
+      expr = (Q.quote 1 (V.vNeSnoc (V.vNe 0 [ ]) V.eStrLen)).s.tag;
+      expected = "var";
+    };
     "check-attrs-lit" = {
       expr = (checkHoas attrs attrsLit).tag;
       expected = "attrs-lit";

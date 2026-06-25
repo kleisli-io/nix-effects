@@ -26,7 +26,7 @@ let
     vMu vDescCon vDescConChain
     vString vInt vFloat vAttrs vPath vDerivation vFunction vAny
     vStringLit vIntLit vFloatLit vAttrsLit vPathLit vDerivationLit vFnLit vAnyLit
-    eApp eFst eSnd eBootSumElim eBootJ eStrEq eIntLeL eIntLeR eIntEq eAbsurd eLiftElim
+    eApp eFst eSnd eBootSumElim eBootJ eStrEq eStrLen eIntLeL eIntLeR eIntEq eAbsurd eLiftElim
     eSquashElim;
   H = fx.tc.hoas;
   boolDescTm = H.elab H.boolDesc;
@@ -503,6 +503,7 @@ let
       else if t == "any" then vAny
 
       else if t == "str-eq" then self_.vStrEq (ev tm.lhs) (ev tm.rhs)
+      else if t == "str-len" then self_.vStrLen (ev tm.s)
       else if t == "int-le" then self_.vIntLe (ev tm.lhs) (ev tm.rhs)
       else if t == "int-eq" then self_.vIntEq (ev tm.lhs) (ev tm.rhs)
 
@@ -677,6 +678,19 @@ in
       else if lhs.tag == "VNe" then vNeSnoc lhs (eStrEq rhs)
       else if rhs.tag == "VNe" then vNeSnoc rhs (eStrEq lhs)
       else throw "tc: vStrEq on non-string (tags=${lhs.tag}, ${rhs.tag})";
+
+    # vStrLen — host string length. VStringLit → host stringLength.
+    # Neutral → spine (nullary frame; the stuck string IS the head). A
+    # VStringLit whose payload is not a host string (a non-carrier value
+    # bridged in at the reflect boundary) throws — catchable, unlike the
+    # raw `stringLength` coercion error — so derived guards fail closed.
+    vStrLen = s0:
+      let s = self.forceVal s0; in
+      if s.tag == "VStringLit" then
+        (if builtins.isString s.value then vIntLit (builtins.stringLength s.value)
+        else throw "tc: vStrLen on non-string literal value")
+      else if s.tag == "VNe" then vNeSnoc s eStrLen
+      else throw "tc: vStrLen on non-string (tag=${s.tag})";
 
     # vIntEq — int equality primitive, exact parallel to vStrEq (symmetric).
     vIntEq = lhs0: rhs0:

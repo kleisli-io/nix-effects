@@ -877,6 +877,7 @@ let
       ok [ (goal e1.type e2.type) (goal e1.lhs e2.lhs) (goal e1.motive e2.motive)
         (goal e1.base e2.base) (goal e1.rhs e2.rhs) ]
     else if t1 == "EStrEq" then ok [ (goal e1.arg e2.arg) ]
+    else if t1 == "EStrLen" then ok [ ]
     # Distinct EIntLeL/EIntLeR tags make cross-side spines non-convertible
     # via the `t1 != t2` guard, so intLe operand order is never conflated.
     else if t1 == "EIntEq" then ok [ (goal e1.arg e2.arg) ]

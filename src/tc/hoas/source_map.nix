@@ -208,6 +208,8 @@ let
             "JLhs" = sourceMapOf h.lhs;
             "JRhs" = sourceMapOf h.rhs;
           }
+      else if t == "str-len" then
+        SM.node h { "JArg" = sourceMapOf h.s; }
       else if t == "ann" then
         SM.node h
           {

@@ -47,6 +47,7 @@ let
     else if tag == "maybe" || tag == "thunk" then [ t.inner ]
     else if tag == "variant" then map (br: br.type or br) (t.branches or [ ])
     else if tag == "str-eq" || tag == "int-le" || tag == "int-eq" then [ t.lhs t.rhs ]
+    else if tag == "str-len" then [ t.s ]
     else if tag == "opaque-lam" then [ (t.nixFn bodyProbe) ]
     else if tag == "dt-ctor-mono" then [ ]
     else if isLeafTag tag then [ ]

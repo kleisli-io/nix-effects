@@ -74,6 +74,7 @@ let
     "everywhere-d" = 9;
     "desc-desc-app" = 2;
     "str-eq" = 2;
+    "str-len" = 1;
     "int-le" = 2;
     "int-eq" = 2;
     "squash-elim" = 4;
@@ -1034,6 +1035,11 @@ in
             (lhsTm:
               bindP P.AppArg (self.check ctx tm.rhs V.vString) (rhsTm:
                 pure { term = T.mkStrEq lhsTm rhsTm; type = boolTyVal; }))
+
+        # StrLen: arg must be String, result is Int.
+        else if t == "str-len" then
+          bindP P.AppHead (self.check ctx tm.s V.vString) (sTm:
+            pure { term = T.mkStrLen sTm; type = V.vInt; })
 
         # IntLe/IntEq: both args must be Int, result is Bool (plus-encoded).
         else if t == "int-le" then

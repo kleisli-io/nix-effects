@@ -347,6 +347,9 @@ let
   eBootJ = type: lhs: motive: base: rhs:
     { tag = "EBootJ"; inherit type lhs motive base rhs; };
   eStrEq = arg: { tag = "EStrEq"; inherit arg; };
+  # strLen is unary at the term level but its frame is nullary: the stuck
+  # string operand is the neutral head, so the frame stores nothing.
+  eStrLen = { tag = "EStrLen"; };
   # intLe non-symmetric: frame tag records the neutral's side (L=lhs, R=rhs),
   # arg holds the other operand. intEq symmetric → one frame.
   eIntLeL = arg: { tag = "EIntLeL"; inherit arg; };
@@ -895,8 +898,8 @@ api.namespace {
     };
     vDescConTagged = api.leaf {
       value = vDescConTagged;
-      description = "vDescConTagged: value-domain `descCon` carrying a `Squash`-truncated guard certificate — the value-domain dual surfacing refinement guard proofs on description-backed Record/Variant constructors.";
-      signature = "vDescConTagged : Val -> Val -> Val -> Val -> Val  -- D, i, payload, cert";
+      description = "vDescConTagged: value-domain `descCon` stamped with a canonical-reference identity `_canonRef = { id; params }` for conv and quote short-circuiting; skips forcing `.D` on known descriptions, breaking universe-level descent loops. Carries no proof or certificate — `_canonRef` is a conv/quote identity tag only.";
+      signature = "vDescConTagged : Val -> Val -> Val -> Val -> Val  -- D, i, payload, _canonRef";
     };
     vDescConChain = api.leaf {
       value = vDescConChain;
@@ -1094,6 +1097,11 @@ api.namespace {
       value = eStrEq;
       description = "eStrEq: elimination frame for `strEq` on a neutral string operand — carries the other operand for completion when the neutral resolves.";
       signature = "eStrEq : Val -> Val -> SpineEntry";
+    };
+    eStrLen = api.leaf {
+      value = eStrLen;
+      description = "eStrLen: elimination frame for `strLen` on a neutral string operand — nullary; the stuck operand is the spine head, so the frame carries nothing.";
+      signature = "eStrLen : SpineEntry";
     };
     eIntLeL = api.leaf {
       value = eIntLeL;

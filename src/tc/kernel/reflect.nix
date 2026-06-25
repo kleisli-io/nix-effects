@@ -30,6 +30,7 @@ let
   string = H.string;
   stringLit = H.stringLit;
   strEq = H.strEq;
+  strLen = H.strLen;
 
   # Nix value -> kernel term, for bridging compound values under their carrier.
   elaborateValue = fx.tc.elaborate.elaborateValue;
@@ -51,12 +52,16 @@ let
     andB (H.intLe (intLit lo) x) (H.intLe x (intLit hi)));
   eqInt = k: H.lam "x" int_ (x: H.intEq x (intLit k));               # x == k
 
-  # String literal-set membership (String -> Bool) via the kernel's sole string
-  # op strEq; disjunction is a boolElim cascade (no kernel `or`). No
-  # length/substring/match — opaque-string boundary holds.
+  # String literal-set membership (String -> Bool) via strEq; disjunction is a
+  # boolElim cascade (no kernel `or`). Substring/match stay opaque; string
+  # length is internalized (strLen), so non-emptiness is decided in-kernel.
   orB = a: b: H.boolElim 0 (H.lam "_" bool (_: bool)) true_ b a;
   oneOfStrTerm = lits: H.lam "x" string (x:
     builtins.foldl' (acc: lit: orB (strEq x (stringLit lit)) acc) false_ lits);
+
+  # Non-emptiness over the opaque string carrier, decided by the host-backed
+  # strLen primitive: `1 <= length x`. strLen x : int_, matching intLe's carrier.
+  strNonEmptyTerm = H.lam "x" string (x: H.intLe (intLit 1) (strLen x));
 
   # Reflection of a carrier into its base code and the refinement extension.
   reflect = A: iota A;
@@ -65,7 +70,7 @@ let
   # KernelPred witness: predicate stack + carrier + Nix->carrier bridge. The
   # decision is authoritative, so only registered provenance tags are trusted;
   # an untagged or foreign witness fails closed everywhere.
-  vocabRegistry = { intPositive = true; intNonNegative = true; intInRange = true; intEq = true; strOneOf = true; compoundStructural = true; };
+  vocabRegistry = { intPositive = true; intNonNegative = true; intInRange = true; intEq = true; strOneOf = true; strNonEmpty = true; compoundStructural = true; };
 
   isKernelPred = g: builtins.isAttrs g && (g._tag or null) == "KernelPred";
 
@@ -119,6 +124,9 @@ let
   # String witness, bridged by stringLit; decides membership in a fixed literal
   # set. Singleton list = equality-against-literal.
   strOneOf = lits: mkKernelPred { name = "strOneOf"; predTerm = oneOfStrTerm lits; carrier = string; bridge = stringLit; };
+
+  # String non-emptiness witness, bridged by stringLit; decided in-kernel via strLen.
+  strNonEmpty = mkKernelPred { name = "strNonEmpty"; predTerm = strNonEmptyTerm; carrier = string; bridge = stringLit; };
 
   # Compound structural witness: the membership predicate of a refined compound,
   # as a `descCataBool` fold over its carrier description `D` that conjoins each
@@ -196,14 +204,14 @@ in
 {
   scope = {
     reflect = api.namespace {
-      description = "fx.tc.kernel.reflect: reflect a Nix-side carrier type into its KType code (reflect/reflectRefine), the checkable Boolean predicate vocabulary for refinement arms — Int over the primitive carrier via the host-backed intLe/intEq (positiveInt, nonNegativeInt, inRangeInt, eqInt) and String literal-set membership (oneOfStrTerm, via strEq) — and the KernelPred witness layer (mkKernelPred, andKP, isKernelPred, sealed, kernelExpressible, ktypeOf, deriveGuard) with ready-made witnesses: Int (intPositive, intNonNegative, intInRange, intEq) and String (strOneOf), O(1)-bridged and guard-derived from their kernel terms.";
+      description = "fx.tc.kernel.reflect: reflect a Nix-side carrier type into its KType code (reflect/reflectRefine), the checkable Boolean predicate vocabulary for refinement arms — Int over the primitive carrier via the host-backed intLe/intEq (positiveInt, nonNegativeInt, inRangeInt, eqInt) and String literal-set membership (oneOfStrTerm, via strEq) plus non-emptiness (strNonEmptyTerm, via strLen) — and the KernelPred witness layer (mkKernelPred, andKP, isKernelPred, sealed, kernelExpressible, ktypeOf, deriveGuard) with ready-made witnesses: Int (intPositive, intNonNegative, intInRange, intEq) and String (strOneOf, strNonEmpty), O(1)-bridged and guard-derived from their kernel terms.";
       value = {
         inherit reflect reflectRefine
           positiveInt nonNegativeInt inRangeInt eqInt
-          oneOfStrTerm
+          oneOfStrTerm strNonEmptyTerm
           isKernelPred sealed mkKernelPred andKP ktypeOf kernelExpressible deriveGuard
           intPositive intNonNegative intInRange intEq
-          strOneOf
+          strOneOf strNonEmpty
           mkCompoundPred mkVariantPred mkMaybePred;
       };
     };
@@ -360,5 +368,23 @@ in
       # Fail-closed: a non-string value's bridge throws; deriveGuard's tryEval rejects.
       "reflect-derive-stronof-noncarrier" = { expr = (deriveGuard (strOneOf [ "a" ])) 5; expected = false; };
       "reflect-derive-stronof-triple" = { expr = (deriveGuard (strOneOf [ "a" "b" "c" ])) "b"; expected = true; };
+
+      # strLen internalizes string length: literals decode to their host length,
+      # and the term checks at String -> Int.
+      "reflect-strlen-abc" = { expr = conv (H.intEq (strLen (stringLit "abc")) (intLit 3)) true_; expected = true; };
+      "reflect-strlen-empty" = { expr = conv (H.intEq (strLen (stringLit "")) (intLit 0)) true_; expected = true; };
+      "reflect-strlen-checks" = { expr = chk int_ (strLen (stringLit "hello")); expected = true; };
+
+      # strNonEmpty witness: the predicate checks at String -> Bool, denotes a
+      # well-typed KType, is sealed/expressible, and its derived guard decides
+      # non-emptiness (empty rejected; any non-empty accepted; non-string fails closed).
+      "reflect-strnonempty-term-checks" = { expr = chk (predTy string) strNonEmptyTerm; expected = true; };
+      "reflect-strnonempty-ktype-checks" = { expr = chk KType (ktypeOf strNonEmpty); expected = true; };
+      "reflect-strnonempty-sealed" = { expr = sealed strNonEmpty; expected = true; };
+      "reflect-strnonempty-expressible" = { expr = kernelExpressible strNonEmpty; expected = true; };
+      "reflect-derive-strnonempty-empty" = { expr = (deriveGuard strNonEmpty) ""; expected = false; };
+      "reflect-derive-strnonempty-single" = { expr = (deriveGuard strNonEmpty) "a"; expected = true; };
+      "reflect-derive-strnonempty-longer" = { expr = (deriveGuard strNonEmpty) "hello"; expected = true; };
+      "reflect-derive-strnonempty-noncarrier" = { expr = (deriveGuard strNonEmpty) 5; expected = false; };
     };
 }

@@ -1254,6 +1254,8 @@ let
         T.mkOpaqueLam h._fnBox (lower depth h.piHoas)
       else if t == "str-eq" then
         T.mkStrEq (lower depth h.lhs) (lower depth h.rhs)
+      else if t == "str-len" then
+        T.mkStrLen (lower depth h.s)
       else if t == "int-le" then
         T.mkIntLe (lower depth h.lhs) (lower depth h.rhs)
       else if t == "int-eq" then

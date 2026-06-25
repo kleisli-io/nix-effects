@@ -239,6 +239,9 @@ let
         { name = "lhs"; under = 0; }
         { name = "rhs"; under = 0; }
       ]
+      else if t == "str-len" then rebuildFields depth state tm [
+        { name = "s"; under = 0; }
+      ]
       else if t == "opaque-lam" then rebuildFields depth state tm [
         { name = "piTy"; under = 0; }
       ]

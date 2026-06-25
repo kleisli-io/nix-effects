@@ -280,6 +280,7 @@ let
 
   # -- String operations --
   mkStrEq = lhs: rhs: { tag = "str-eq"; inherit lhs rhs; };
+  mkStrLen = s: { tag = "str-len"; inherit s; };
 
   # -- Int operations --
   mkIntLe = lhs: rhs: { tag = "int-le"; inherit lhs rhs; };
@@ -931,6 +932,11 @@ api.namespace {
       value = mkStrEq;
       description = "mkStrEq: decidable equality on `String` literals `strEq a b : Bool` — used by indexed datatypes whose constructor selection branches on string keys.";
       signature = "mkStrEq : Tm -> Tm -> Tm  -- a, b";
+    };
+    mkStrLen = api.leaf {
+      value = mkStrLen;
+      description = "mkStrLen: host string length `strLen s : Int` on a `String` literal; a stuck string operand keeps it neutral. Internalizes string-length refinements (e.g. non-emptiness).";
+      signature = "mkStrLen : Tm -> Tm  -- s";
     };
 
     mkIntLe = api.leaf {

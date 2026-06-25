@@ -266,6 +266,7 @@ let
     "app" = true; "let" = true; "fst" = true; "snd" = true;
     "absurd" = true; "boot-sum-elim" = true; "boot-j" = true;
     "squash-elim" = true; "lift-elim" = true; "str-eq" = true;
+    "str-len" = true;
     "int-le" = true; "int-eq" = true;
     "desc-ind" = true; "interp-d" = true; "all-d" = true;
     "everywhere-d" = true;
@@ -624,6 +625,9 @@ let
     # tag/level, so passing lazy thunks here is safe (string operands are
     # atomic — forcing is O(1) in user-recursion depth).
     "str-eq" = state: { mode = "Apply"; val = (self.vStrEq ((ev state.env) state.tm.lhs) ((ev state.env) state.tm.rhs)); kont = state.kont; fuel = state.fuel - 1; };
+    # `vStrLen` forces its operand to WHNF internally (atomic string literal —
+    # O(1)), so passing a lazy thunk here is safe.
+    "str-len" = state: { mode = "Apply"; val = (self.vStrLen ((ev state.env) state.tm.s)); kont = state.kont; fuel = state.fuel - 1; };
     # `vIntLe`/`vIntEq` force both operands to WHNF internally (atomic int
     # literals — O(1)), so passing lazy thunks here is safe.
     "int-le" = state: { mode = "Apply"; val = (self.vIntLe ((ev state.env) state.tm.lhs) ((ev state.env) state.tm.rhs)); kont = state.kont; fuel = state.fuel - 1; };
@@ -2084,6 +2088,9 @@ let
     else if t == "EStrEq" then {
       pending = [ { inherit d; v = e.arg; } ];
       mkTm = ts: term.mkStrEq headTm (builtins.elemAt ts 0);
+    }
+    else if t == "EStrLen" then {
+      pending = [ ]; mkTm = _ts: term.mkStrLen headTm;
     }
     else if t == "EIntEq" then {
       pending = [ { inherit d; v = e.arg; } ];

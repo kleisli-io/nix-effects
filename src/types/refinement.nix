@@ -112,16 +112,50 @@ let
         (refined "Enum" StringType (oneOfStr [ "a" "b" ])).ktype != null;
       expected = true;
     };
+    # nonEmptyStr internalizes: check via the kernel strLen term, non-null ktype.
+    "kernel-refined-nonemptystr-has-ktype" = {
+      expr =
+        let
+          StringType = mkType { name = "String"; kernelType = H.string; };
+        in
+        (refined "NE" StringType nonEmptyStr).ktype != null;
+      expected = true;
+    };
+    "kernel-refined-nonemptystr-accepts-and-rejects" = {
+      expr =
+        let
+          StringType = mkType { name = "String"; kernelType = H.string; };
+          NE = refined "NE" StringType nonEmptyStr;
+        in
+        [ (check NE "a") (check NE "hello") (check NE "") (check NE 5) ];
+      expected = [ true true false false ];
+    };
   };
 
   # Predicate combinators
 
-  allOf = preds: v: builtins.all (p: p v) preds;
+  # Smart conjunction: a non-empty list of KernelPreds folds into one KernelPred
+  # (the conjoined refinement internalizes, `.ktype` non-null); any raw lambda in
+  # the list, or an empty list, falls back to a plain conjoined guard — deriving
+  # the guard of each KernelPred member so it stays callable.
+  allOf = preds:
+    if preds != [ ] && builtins.all R.isKernelPred preds
+    then builtins.foldl' R.andKP (builtins.head preds) (builtins.tail preds)
+    else v: builtins.all (p: if R.isKernelPred p then (R.deriveGuard p) v else p v) preds;
 
   allOfTests = {
     "all-true" = { expr = allOf [ (x: x > 0) (x: x < 10) ] 5; expected = true; };
     "one-false" = { expr = allOf [ (x: x > 0) (x: x < 10) ] 15; expected = false; };
     "empty-is-true" = { expr = allOf [ ] 42; expected = true; };
+    # All-KernelPred input folds to a single KernelPred whose guard conjoins both.
+    "allof-kernelpreds-is-kernelpred" = { expr = R.isKernelPred (allOf [ positiveInt nonNegativeInt ]); expected = true; };
+    "allof-kernelpreds-guard-in" = { expr = (R.deriveGuard (allOf [ positiveInt (inRangeInt 1 5) ])) 3; expected = true; };
+    "allof-kernelpreds-guard-out" = { expr = (R.deriveGuard (allOf [ positiveInt (inRangeInt 1 5) ])) 6; expected = false; };
+    # A raw lambda in the mix demotes to a plain guard that still conjoins both.
+    "allof-mixed-falls-back" = { expr = allOf [ positiveInt (x: x < 100) ] 5; expected = true; };
+    "allof-mixed-rejects" = { expr = allOf [ positiveInt (x: x < 100) ] 0; expected = false; };
+    # Empty list is not a KernelPred — stays a constant-true guard.
+    "allof-empty-not-kernelpred" = { expr = R.isKernelPred (allOf [ ]); expected = false; };
   };
 
   anyOf = preds: v: builtins.foldl' (acc: p: acc || p v) false preds;
@@ -191,13 +225,18 @@ let
   eqInt = R.intEq;
 
   # `oneOfStr [lits]`: KernelPred deciding String membership in a literal set via
-  # strEq (singleton = equality). Internalizes (non-null `.ktype`); `nonEmpty`/
-  # `matching` need string introspection the kernel lacks and stay raw lambdas.
+  # strEq (singleton = equality). Internalizes (non-null `.ktype`); `matching`
+  # needs string introspection the kernel lacks and stays a raw lambda.
   oneOfStr = R.strOneOf;
+
+  # `nonEmptyStr`: KernelPred deciding String non-emptiness via strLen (1 <= len).
+  # Internalizes (non-null `.ktype`). The raw `nonEmpty` (below) stays for the
+  # list branch, whose carrier the kernel does not introspect.
+  nonEmptyStr = R.strNonEmpty;
 
 in
 api.namespace {
-  description = "Refinement types: `refined` plus `allOf`/`anyOf`/`negate`, raw built-in predicates `positive`/`nonNegative`/`inRange`/`nonEmpty`/`matching`, and the kernel-internalizing Int predicates `positiveInt`/`nonNegativeInt`/`inRangeInt`/`eqInt` (carry a KernelPred witness so `.ktype` is non-null).";
+  description = "Refinement types: `refined` plus `allOf`/`anyOf`/`negate`, raw built-in predicates `positive`/`nonNegative`/`inRange`/`nonEmpty`/`matching`, and the kernel-internalizing predicates — Int `positiveInt`/`nonNegativeInt`/`inRangeInt`/`eqInt` and String `oneOfStr`/`nonEmptyStr` (carry a KernelPred witness so `.ktype` is non-null).";
   doc = ''
     Refinement types and predicate combinators.
     Grounded in Freeman & Pfenning (1991) and Rondon et al. (2008).
@@ -216,9 +255,9 @@ api.namespace {
     };
     allOf = api.leaf {
       value = allOf;
-      description = "allOf: conjoin a list of predicates into one that holds when every member holds; the empty list yields a constant `true`.";
-      signature = "allOf : [(Value -> Bool)] -> Value -> Bool";
-      doc = "Combine predicates with conjunction: `(allOf [p1 p2]) v = p1 v && p2 v`. Empty list returns `true`.";
+      description = "allOf: conjoin a list of predicates. A non-empty list of all-KernelPred members folds into one KernelPred (the conjoined refinement internalizes); any raw lambda, or an empty list, yields a plain conjoined guard that holds when every member holds (empty = constant `true`).";
+      signature = "allOf : [(KernelPred | (Value -> Bool))] -> (KernelPred | (Value -> Bool))";
+      doc = "Combine predicates with conjunction: `(allOf [p1 p2]) v = p1 v && p2 v`. All-KernelPred input folds to a KernelPred so the refinement internalizes; a raw-lambda member demotes to a plain guard. Empty list returns constant `true`.";
       tests = allOfTests;
     };
     anyOf = api.leaf {
@@ -298,9 +337,16 @@ api.namespace {
 
     oneOfStr = api.leaf {
       value = oneOfStr;
-      description = "oneOfStr: kernel-internalizing factory predicate deciding membership in a fixed String literal set, via the kernel's decidable `strEq`; a singleton list is equality-against-literal. As the predicate of `refined`/`refine` it internalizes into the kernel `ktype`. Within the opaque-string boundary — no length/substring/match.";
+      description = "oneOfStr: kernel-internalizing factory predicate deciding membership in a fixed String literal set, via the kernel's decidable `strEq`; a singleton list is equality-against-literal. As the predicate of `refined`/`refine` it internalizes into the kernel `ktype`. Decides by literal equality — substring/match stay outside the kernel.";
       signature = "oneOfStr : [String] -> KernelPred";
-      doc = "KernelPred witness factory over the opaque string carrier deciding `x ∈ {lits…}` as a strEq disjunction. Unlike `matching`/`nonEmpty` (raw lambdas needing string introspection the kernel lacks), this internalizes.";
+      doc = "KernelPred witness factory over the string carrier deciding `x ∈ {lits…}` as a strEq disjunction. Unlike `matching` (a raw lambda needing string introspection the kernel lacks), this internalizes.";
+    };
+
+    nonEmptyStr = api.leaf {
+      value = nonEmptyStr;
+      description = "nonEmptyStr: kernel-internalizing refinement predicate deciding String non-emptiness via the host-backed `strLen` (`1 <= length x`). As the predicate of `refined`/`refine` it internalizes into the kernel `ktype`, unlike the raw `nonEmpty` which also covers the list carrier.";
+      signature = "nonEmptyStr : KernelPred";
+      doc = "KernelPred witness over the string carrier deciding `length x >= 1` through `strLen`. Use in place of `nonEmpty` on String to internalize the refinement (non-null `.ktype`).";
     };
 
   };

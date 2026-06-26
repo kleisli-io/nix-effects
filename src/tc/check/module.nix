@@ -7,7 +7,7 @@
 { self, partTests, api, ... }:
 
 api.mk {
-  description = "fx.tc.check: bidirectional type checker with check/infer/checkType/checkTypeLevel, cumulativity, and trampolined succ/cons chains.";
+  description = "fx.tc.check: bidirectional type checker with check/infer/checkType/checkTypeLevel, non-cumulative universes, and trampolined succ/cons chains.";
   doc = ''
     # fx.tc.check — Bidirectional Type Checker
 
@@ -42,7 +42,9 @@ api.mk {
 
     - **Sub rule**: when checking mode doesn't match (e.g., checking a
       variable), falls through to `infer` and uses `conv` to compare.
-    - **Cumulativity**: `U(i) ≤ U(j)` when `i ≤ j`.
+    - **Non-cumulative universes**: Tarski-style, exact-level — `U(i)` does
+      not subsume into `U(j)` for `i < j`; conv compares levels by
+      `convLevel` with no cumulativity coercion.
     - **Large elimination**: motives may return any universe, enabling
       type-computing eliminators (`checkMotive`).
     - **Trampolining**: Succ and Cons chains checked iteratively.

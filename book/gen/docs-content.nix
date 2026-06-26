@@ -193,11 +193,6 @@ let
           description = "builtins.genericClosure trampolines the freer-monad interpreter to O(1) stack depth in Nix, which lacks both iteration primitives and tail-call elimination.";
         }
         {
-          slug = "systems-architecture";
-          title = "Systems Architecture";
-          description = "nix-effects pairs an effects kernel (freer monad on FTCQueue) with a type-checking kernel (MLTT on HOAS) so every fx.types value is checked by both.";
-        }
-        {
           slug = "kernel-architecture";
           title = "Kernel Architecture";
           description = "The type-checking kernel layers a TCB (eval/quote/conv) under the bidirectional check/infer pair; errors are sent as typeError effects, not thrown.";

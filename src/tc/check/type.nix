@@ -50,6 +50,27 @@ let
     else if a == b then a
     else V.vLevelMax a b;
 
+  # A universe level is admissible iff every normal-form summand rests on a
+  # closed (`zero`) or bare level-variable base. An applied-neutral base
+  # (e.g. `f x`) means the level depends on a term — undecidable, rejected.
+  admitLevel = lVal:
+    builtins.all
+      (s: s.base.kind == "zero"
+        || (s.base.kind == "var" && (s.base.spine or [ ]) == [ ]))
+      (C.normLevel lVal);
+
+  levelDepError = ctx: tag: lVal:
+    send "typeError" {
+      error = D.mkKernelError {
+        rule = "checkTypeLevel";
+        msg = "universe level may not depend on a term";
+        expected = { tag = "level"; };
+        got = Q.quote ctx.depth lVal;
+        term = { inherit tag; };
+        frame = D.captureFrame ctx;
+      };
+    };
+
   # Entry-yield budget for non-leaf `checkTypeLevel` heads — same
   # discipline and soundness argument as `check.nix` (see the table
   # there). Budgeting this helper removes the segment break its
@@ -318,14 +339,16 @@ in
         else if t == "any" then pure { term = T.mkAny; level = V.vLevelZero; }
         else if t == "level" then pure { term = T.mkLevel; level = V.vLevelZero; }
         else if t == "U" then
-        # `U(k) : U(suc k)`. The level argument must itself be a Level
-        # term; the check sub-delegation catches malformed levels with
-        # a positioned error. The resulting universe level is the
-        # evaluated `k` lifted by `suc`.
+        # `U(k) : U(suc k)`. The level must be a Level term (check
+        # sub-delegation catches malformed levels) and must not depend on a
+        # term — `admitLevel` rejects an applied-neutral level base. The
+        # resulting universe level is the evaluated `k` lifted by `suc`.
           bind (self.check ctx tm.level V.vLevel)
             (lTm:
               let lVal = E.eval ctx.env lTm; in
-              pure { term = T.mkU lTm; level = V.vLevelSuc lVal; })
+              if admitLevel lVal
+              then pure { term = T.mkU lTm; level = V.vLevelSuc lVal; }
+              else levelDepError ctx tm.tag lVal)
         else if t == "boot-sum" then
           bind (self.checkTypeLevel ctx tm.left)
             (lr:
@@ -400,7 +423,9 @@ in
           then atLevel V.vLevelZero
           else
             bind (self.check ctx tm.k V.vLevel) (kTm:
-              atLevel (E.eval ctx.env kTm))
+              let kVal = E.eval ctx.env kTm; in
+              if admitLevel kVal then atLevel kVal
+              else levelDepError ctx tm.tag kVal)
         else if t == "mu" then
         # `μ I D i : U(max levelOf(I) levelOf(D))`. I is explicit, so
         # route it through `checkTypeLevel`; D is inferred by

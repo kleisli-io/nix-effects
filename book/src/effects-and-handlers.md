@@ -107,8 +107,7 @@ count consumption. The kernel uses it to report type errors without
 placing diagnostics inside the trusted evaluator.
 
 The implementation details live in the
-[Trampoline](/nix-effects/internals/trampoline) and
-[Systems Architecture](/nix-effects/internals/systems-architecture)
-chapters. For day-to-day use, the rule is simple: write computations in
+[Trampoline](/nix-effects/internals/trampoline) chapter. For day-to-day
+use, the rule is simple: write computations in
 terms of operations, then choose the handler that matches the boundary
 where the computation runs.

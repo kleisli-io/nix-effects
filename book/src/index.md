@@ -29,7 +29,6 @@ Concept chapters explain the ideas behind the programming model:
 Implementation chapters are grouped for contributors:
 
 - **[Trampoline](/nix-effects/internals/trampoline)** — stack-safe evaluation and the trampoline machine
-- **[Systems Architecture](/nix-effects/internals/systems-architecture)** — how the components fit together
 - **[Kernel Architecture](/nix-effects/internals/kernel-architecture)** — the MLTT type-checking kernel internals
 - **[Kernel Specification](/nix-effects/internals/kernel-spec)** — formal specification with typing rules
 

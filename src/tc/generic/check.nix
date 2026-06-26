@@ -43,6 +43,11 @@ let
   D = G.datatype;
   H = fx.tc.hoas;
   HI = H._internal._indexed;
+  E = fx.tc.eval;
+  # Val→HOAS rebuild for the carrier of a normalized El. Referenced lazily;
+  # `fx.tc.elaborate` bridges back through `deriveElaborate`, so the cycle is
+  # broken by Nix thunk laziness (both sides are leaf values, not module-eval).
+  reifyType = fx.tc.elaborate.reifyType;
 
   # Host-stack fuel for the walker. Each structural level consumes one unit;
   # native recursion runs up to `nativeWalkBudget` levels per trampoline
@@ -204,6 +209,63 @@ let
             bind (descend alg fuel sndTyTry.value sndPath value.snd) (sndA:
               pure (alg.onSigma ty fstA sndA)));
 
+  # Decidable-`Certified` membership `El t` (`= app ElFn t`, ktype.nix:74)
+  # embeds in compounds with head `app`, which `datatypeInfo` cannot unfold.
+  # Normalize-before-dispatch: `El t` WHNF-reduces to `VSigma` (Σ x:β(t).
+  # P(decide t x)). Walk it structurally — the carrier `β(t)` is reified back
+  # to HOAS for the fst descent, and the codomain is decided by instantiating
+  # the kernel closure at the concrete carrier value: `P true ↝ VUnit`
+  # (accept), `P false ↝ VEmpty` (reject). This is the normalizing membership
+  # decision the syntactic walker otherwise lacks; the kernel `decide`-fold runs
+  # exactly once per value, at the closure instantiation.
+  #
+  # `tyOrig` (the original `El t`) is a closed, re-elaboratable term and is what
+  # `onSigma` annotates the witness pair with — the reified sigma is NOT
+  # re-elaboratable (its codomain splice resolves only under concrete args, not
+  # the symbolic binder a re-`elab` would supply), so it is used for structure
+  # only, never embedded in an emitted term.
+  walkEl = alg: fuel: tyOrig: elV: path: value:
+    if !(builtins.isAttrs value && value ? fst && value ? snd) then
+      emit alg (wrapType tyOrig) path "shape-mismatch"
+        "expected { fst; snd; }, got ${builtins.typeOf value}"
+        value
+    else
+      let
+        carrierHoas = reifyType elV.fst;
+        fstPath = P.extend path Pos.SigmaFst;
+        sndPath = P.extend path Pos.SigmaSnd;
+        # The witness pair's type annotation. `El` is a closed type whose
+        # lowering is value-independent, so carry its pre-lowered `Tm` through
+        # `embedTm` — `elaborate` returns it verbatim (O(1), no per-value
+        # re-lowering), and it stays a `Tm` so the desc-* CHECK rules retarget it
+        # in tandem with the pair payload (a pre-evaluated Val spliced via
+        # `litVal` cannot be retargeted and conv-mismatches). The lowered `Tm` is
+        # read from the per-type `_elTm` cache when present (computed once at
+        # `Certified` construction), else lowered here.
+        witnessTy = H.embedTm (tyOrig._elTm or (H.elab tyOrig));
+      in
+      bind (descend alg fuel carrierHoas fstPath value.fst) (fstA:
+        let fstHoasTry = elaborateFstHoas carrierHoas fstPath value.fst; in
+        if !fstHoasTry.success then pure alg.onFailure
+        else
+          let
+            sndTyV = E.forceVal
+              (E.instantiate elV.closure (E.eval [ ] (H.elab fstHoasTry.value)));
+            sndTag = sndTyV.tag or null;
+          in
+          if sndTag == "VUnit" then
+            bind (descend alg fuel H.unit sndPath value.snd) (sndA:
+              pure (alg.onSigma witnessTy fstA sndA))
+          else if sndTag == "VEmpty" then
+            emit alg (wrapType tyOrig) path "predicate-failed"
+              "value does not satisfy the certified predicate"
+              value
+          else
+          # Genuinely open (neutral) predicate — no decision; fail closed.
+            emit alg (wrapType tyOrig) path "predicate-failed"
+              "certified predicate did not reduce to a decision"
+              value);
+
   walkMaybe = alg: fuel: ty: path: value:
     if value == null then pure (alg.onMaybeNull ty)
     else
@@ -298,9 +360,25 @@ let
   walkDatatype = alg: fuel: ty: path: value:
     let infoTry = tryDatatypeInfo ty; in
     if !infoTry.success then
-      emit alg (wrapType ty) path "shape-mismatch"
-        "type carries no datatype metadata"
-        value
+    # An `app`/`mu` head with no datatype metadata is not necessarily a dead
+    # end: a decidable-`Certified` field embeds `El t`, which `datatypeInfo`
+    # cannot unfold but which WHNF-reduces to a `VSigma`. Normalize and, on a
+    # Σ head, walk it via `walkEl`; otherwise fail closed as before. The WHNF is
+    # read from a `_elWhnf` cache on the type node when present (computed once
+    # per distinct `El` type at construction), else evaluated here — so a
+    # collection of N values pays the `El` elaboration once, not N times.
+      let
+        cached = ty._elWhnf or null;
+        whnfTry =
+          if cached != null then { success = true; value = cached; }
+          else builtins.tryEval (E.forceVal (E.eval [ ] (H.elab ty)));
+      in
+      if whnfTry.success && (whnfTry.value.tag or null) == "VSigma"
+      then walkEl alg fuel ty whnfTry.value path value
+      else
+        emit alg (wrapType ty) path "shape-mismatch"
+          "type carries no datatype metadata"
+          value
     else
       let
         info = infoTry.value;

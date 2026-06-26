@@ -18,6 +18,23 @@ let
       }
       comp;
 
+  # Shared fixtures for the nested-decidable-Certified regression cases below.
+  # A decidable `Certified` embeds `El t` in its kernel; when nested inside a
+  # compound, the monolithic kernel `.check` could not unfold that head and
+  # over-rejected valid values, diverging from the structural `.validate`. The
+  # `adq` helper asserts the two agree (the membership decision and the
+  # structural verify must give the same answer).
+  nestedCert = rec {
+    IntC = types.mkType { name = "Int"; kernelType = H.int_; };
+    StrC = types.mkType { name = "Str"; kernelType = H.string; };
+    PosInt = types.Certified { base = IntC; predicate = R.intPositive; name = "PosInt"; };
+    NeStr = types.Certified { base = StrC; predicate = R.strNonEmpty; name = "NeStr"; };
+    Range = types.Certified { base = IntC; predicate = R.intInRange 10 20; name = "R10_20"; };
+    cert = v: { fst = v; snd = null; };
+    adq = type: value:
+      (types.check type value) == (validationPassHandle (type.validate value)).state;
+  };
+
   # ValidPort refinement type
   validPortTest =
     let
@@ -1040,6 +1057,64 @@ let
     && testAdequacy (types.Sigma { fst = types.Bool; snd = _: types.Int; universe = 0; }) { fst = true; snd = 1; }
     && testAdequacy (types.Sigma { fst = types.Bool; snd = _: types.Int; universe = 0; }) { fst = "bad"; snd = 1; };
 
+  # Decidable Certified nested in a Record field: `.check` accepts good values,
+  # rejects bad, and agrees with the structural `.validate` (it previously
+  # over-rejected and diverged).
+  nestedCertifiedRecord =
+    let g = nestedCert; Rec1 = types.Record { f = g.PosInt; }; in
+    types.check Rec1 { f = g.cert 5; }
+    && !(types.check Rec1 { f = g.cert (-1); })
+    && g.adq Rec1 { f = g.cert 5; }
+    && g.adq Rec1 { f = g.cert (-1); };
+
+  # Multiple Certified fields, mixed carriers (Int / String) and a range
+  # predicate: each bad field independently rejects.
+  nestedCertifiedRecordMixed =
+    let
+      g = nestedCert;
+      Rec3 = types.Record { a = g.PosInt; b = g.NeStr; c = g.Range; };
+      ok = { a = g.cert 7; b = g.cert "hi"; c = g.cert 12; };
+    in
+    types.check Rec3 ok
+    && !(types.check Rec3 (ok // { a = g.cert 0; }))
+    && !(types.check Rec3 (ok // { b = g.cert ""; }))
+    && !(types.check Rec3 (ok // { c = g.cert 99; }))
+    && g.adq Rec3 ok;
+
+  # Decidable Certified as a ListOf element, including the vacuous empty list.
+  nestedCertifiedListOf =
+    let g = nestedCert; Lst = types.ListOf g.PosInt; in
+    types.check Lst [ (g.cert 1) (g.cert 2) (g.cert 3) ]
+    && !(types.check Lst [ (g.cert 1) (g.cert (-2)) ])
+    && types.check Lst [ ]
+    && g.adq Lst [ (g.cert 1) (g.cert 2) ]
+    && g.adq Lst [ (g.cert 1) (g.cert (-2)) ];
+
+  # Decidable Certified in a Variant arm; sibling arms stay unaffected.
+  nestedCertifiedVariant =
+    let g = nestedCert; Var = types.Variant { Some = g.PosInt; None = types.Unit; }; in
+    types.check Var { _tag = "Some"; value = g.cert 5; }
+    && !(types.check Var { _tag = "Some"; value = g.cert (-5); })
+    && types.check Var { _tag = "None"; value = null; }
+    && g.adq Var { _tag = "Some"; value = g.cert 5; }
+    && g.adq Var { _tag = "Some"; value = g.cert (-5); };
+
+  # Decidable Certified as a Sigma first component.
+  nestedCertifiedSigma =
+    let g = nestedCert; Pair = types.Sigma { fst = g.PosInt; snd = _: g.IntC; universe = 0; }; in
+    types.check Pair { fst = g.cert 5; snd = 99; }
+    && !(types.check Pair { fst = g.cert (-5); snd = 99; })
+    && g.adq Pair { fst = g.cert 5; snd = 99; }
+    && g.adq Pair { fst = g.cert (-5); snd = 99; };
+
+  # Deep nesting: ListOf (Record { xs = ListOf PosInt }).
+  nestedCertifiedDeep =
+    let g = nestedCert; Deep = types.ListOf (types.Record { xs = types.ListOf g.PosInt; }); in
+    types.check Deep [ { xs = [ (g.cert 1) (g.cert 2) ]; } { xs = [ (g.cert 3) ]; } ]
+    && !(types.check Deep [ { xs = [ (g.cert 1) ]; } { xs = [ (g.cert (-9)) ]; } ])
+    && g.adq Deep [ { xs = [ (g.cert 1) (g.cert 2) ]; } ]
+    && g.adq Deep [ { xs = [ (g.cert (-9)) ]; } ];
+
 in
 {
   inherit validPortTest vectorTest universeTest
@@ -1076,4 +1151,7 @@ in
     sigmaDeepShortCircuit pairEDeepBlame certifiedRejectsCompoundRawPredicate;
 
   inherit crossTypeAdequacy;
+
+  inherit nestedCertifiedRecord nestedCertifiedRecordMixed nestedCertifiedListOf
+    nestedCertifiedVariant nestedCertifiedSigma nestedCertifiedDeep;
 }

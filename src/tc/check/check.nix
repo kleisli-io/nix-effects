@@ -5,7 +5,8 @@
 # forms against their corresponding type formers (Lam/Pi, Pair/Sigma,
 # Unit, Sum, Desc/Mu, etc.) and falls through to synthesis for anything not
 # matched, using `conv` to compare the inferred type against the
-# expected one (sub rule, with cumulativity for universes).
+# expected one (sub rule; universes are non-cumulative, compared at
+# exact level).
 #
 # `checkMotive` enforces that a motive has type `D_1 → … → D_n → U(k)`
 # for some `k`, enabling large elimination. The domain chain is a

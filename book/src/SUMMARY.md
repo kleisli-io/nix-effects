@@ -19,7 +19,6 @@
 ## Internals
 
 - [Trampoline](trampoline.md)
-- [Systems Architecture](systems-architecture.md)
 - [Kernel Architecture](kernel-architecture.md)
 - [Kernel Formal Specification](kernel-spec.md)
 

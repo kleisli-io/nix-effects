@@ -368,9 +368,12 @@ Type_2  # Type of Type_1
 level Int               # 0
 ```
 
-For kernel-backed types, levels are computed from the typing derivation.
-Transport across levels is represented in the term language instead of hidden
-behind cumulative subtyping.
+For kernel-backed types, levels are computed from the typing derivation and are
+total and exact: every accepted type has a concrete finite level, `Type_n`
+contains exactly the types at level `n` (no cumulative subsumption), and the
+surface coercions `lift`/`liftTo` move a type up the tower. Transport across
+levels is represented in the term language instead of hidden behind cumulative
+subtyping.
 
 ### Usage-checked values
 
@@ -532,14 +535,17 @@ deep pure bind chains use the iterative queue path.
 
 ## Known limitations
 
-**Universe levels are partially enforced.** For kernel-backed types,
-`checkTypeLevel` computes the correct universe level from the typing derivation.
-For non-kernel types, the `universe` field remains a trusted declaration
-— nothing prevents a user from declaring `universe = 0` on a type that
-operates at a higher level. Computing `sup_{a:A} level(B(a))` for
-arbitrary type families requires evaluating on all domain values, which
-is undecidable. The hierarchy prevents accidental paradoxes; the kernel
-enforces it for types it knows about.
+**Universe levels cannot depend on a term.** The accepted level grammar is
+`zero | suc | max | variable`, so a level that depends on a term — an applied
+neutral such as the `sup_{a:A} level(B(a))` tail over a type family whose
+codomain level depends on the domain value — is rejected at the kernel boundary
+rather than supported, and a level-polymorphic surface type has no concrete
+`.universe` (reading it throws). Within that fragment levels are fully enforced:
+`.universe` is total and exact (every accepted type has a concrete finite
+level), and a declared `universe` is checked against the kernel minimum —
+under-declaring throws at construction, over-declaring a higher level is sound.
+The tower is non-cumulative: use `lift`/`liftTo` to move a type up. The
+hierarchy prevents accidental paradoxes.
 
 **Effects are string-keyed, not extensible.** Kiselyov & Ishii (2015)
 contributes both the freer monad encoding with FTCQueue and extensible effects

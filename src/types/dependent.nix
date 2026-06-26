@@ -7,6 +7,7 @@ let
   P = fx.diag.positions;
   R = fx.tc.kernel.reflect;
   KT = fx.tc.kernel.ktype;
+  E = fx.tc.eval;
 
   # checkHoas wrapped so a stuck/ill-formed term degrades to `false`, never poisons.
   proves = ty: term:
@@ -624,6 +625,9 @@ let
     };
   };
 
+  # Bundle a propositional family with its bridge for Certified's general former.
+  mkPropFamily = { family, bridge }: { _tag = "PropFamily"; inherit family bridge; };
+
   Certified =
     { base
     , predicate ? null
@@ -656,7 +660,20 @@ let
         # `_kernel` below, for prove/metatheory only.
         kernelType = H.sigma "x" base._kernel (_: H.unit);
       }) // {
-        _kernel = El;
+        # `El` carries two lazy per-type caches so the structural walker's
+        # normalize-before-dispatch (`walkEl`) pays the `El` elaboration once per
+        # distinct `Certified` type, not once per checked value:
+        #   `_elWhnf` — the WHNF (`VSigma`) used to dispatch and to instantiate
+        #               the predicate closure;
+        #   `_elTm`   — the lowered `Tm`, embedded as each witness pair's type
+        #               annotation (`walkEl`), so the per-value witness elaborates
+        #               without re-lowering `El`.
+        # Both extra fields are invisible to `H.elab`/the kernel; they ride along
+        # when this `_kernel` is embedded as a compound field.
+        _kernel = El // {
+          _elWhnf = E.forceVal (E.eval [ ] (H.elab El));
+          _elTm = H.elab El;
+        };
         _kernelSufficient = true;
         ktype = t;
         decidable = true;
@@ -694,10 +711,13 @@ let
       }
     else if family != null then
     # general: truncated certificate. squash makes any family a mere prop;
-    # proof irrelevance is definitional in conv.
-      assert bridge != null;
+    # proof irrelevance is definitional in conv. `family` is either a raw
+    # family fn (legacy form, paired with `bridge`) or a mkPropFamily bundle.
+      assert (family._tag or null) == "PropFamily" || bridge != null;
       let
-        sqAt = vTerm: H.squash (family vTerm);
+        fam = if (family._tag or null) == "PropFamily" then family.family else family;
+        brg = if (family._tag or null) == "PropFamily" then family.bridge else bridge;
+        sqAt = vTerm: H.squash (fam vTerm);
         kernelTy = H.sigma "x" base._kernel (x: sqAt x);
       in
       (Sigma {
@@ -707,7 +727,7 @@ let
         snd = v: mkType {
           name = "Proof(${name})";
           kernelType = H.any;
-          guard = witness: proves (sqAt (bridge v)) witness;
+          guard = witness: proves (sqAt (brg v)) witness;
         };
         inherit name;
         inherit (base) universe;
@@ -721,9 +741,32 @@ let
         certifyProof = v: p:
           if !(base.check v)
           then builtins.throw "Certified ${name}: value does not inhabit ${base.name}"
-          else if !(proves (family (bridge v)) p)
+          else if !(proves (fam (brg v)) p)
           then builtins.throw "Certified ${name}: supplied proof does not check"
           else { fst = v; snd = H.squashIntro p; };
+        # Effectful dual of certifyProof: sends typeCheck instead of throwing.
+        certifyProofE = v: p:
+          bind (base.validate v) (_:
+            if base.check v == false then pure { fst = v; snd = H.squashIntro p; }
+            else
+              let
+                proofType = mkType {
+                  name = "Proof(${name})";
+                  kernelType = H.any;
+                  guard = witness: proves (sqAt (brg v)) witness;
+                };
+                r = builtins.tryEval (proves (fam (brg v)) p);
+                ok = r.success && r.value;
+              in
+              if ok then pure { fst = v; snd = H.squashIntro p; }
+              else bind
+                (send "typeCheck" {
+                  type = proofType;
+                  context = "Certified proof (${name})";
+                  value = p;
+                  reason = "proof-failed";
+                })
+                (_: pure { fst = v; snd = H.squashIntro p; }));
       }
     else
     # No proof obtainable. The honest home for an un-proven guard is `refined`.
@@ -826,6 +869,28 @@ let
         expected = true;
       };
       "gen-not-kernel-sufficient" = { expr = ReflEq._kernelSufficient; expected = false; };
+
+      # general: effectful proof introduction
+      "gen-certifyProofE-pure-on-valid" = { expr = isPure (ReflEq.certifyProofE 3 (reflProof 3)); expected = true; };
+      "gen-certifyProofE-impure-on-bad-proof" = { expr = isPure (ReflEq.certifyProofE 3 H.tt); expected = false; };
+      "gen-certifyProofE-effect-is-typeCheck" = { expr = (ReflEq.certifyProofE 3 H.tt).effect.name; expected = "typeCheck"; };
+      "gen-certifyProofE-impure-on-bad-base" = { expr = isPure (ReflEq.certifyProofE "x" (reflProof 3)); expected = false; };
+
+      # general: mkPropFamily bundle
+      "gen-propFamily-tag" = {
+        expr = (mkPropFamily { family = x: H.eq H.int_ x x; bridge = H.intLit; })._tag;
+        expected = "PropFamily";
+      };
+      "gen-propFamily-checks-like-two-arg" = {
+        expr =
+          let RB = Certified {
+            base = IntT;
+            family = mkPropFamily { family = x: H.eq H.int_ x x; bridge = H.intLit; };
+            name = "ReflEqBundled";
+          };
+          in check RB (RB.certifyProof 3 (reflProof 3));
+        expected = true;
+      };
 
       # no proof obtainable: rejected at construction (no Bool escape)
       "reject-raw-lambda" = { expr = throws (Certified { base = IntT; predicate = x: x > 0; }); expected = true; };
@@ -1368,9 +1433,10 @@ api.namespace {
         - decidable `predicate` (a `reflect` KernelPred) → `P x = KT.P(decide t x)`
           (`Unit`/`Void` ≡ `KT.El t`); witness is the Unit inhabitant (`null`),
           synthesized by `certify`. `_kernelSufficient = true`; `_kernel = El t`.
-        - general `{ family; bridge; }` (`family : A → U`) → `P x = squash(family x)`,
-          proof irrelevance definitional; witness is `squashIntro` of a checked
-          HOAS proof supplied to `certifyProof v p`. `_kernelSufficient = false`.
+        - general `{ family; bridge; }` (`family : A → U`, or a `mkPropFamily`
+          bundle passed as `family`) → `P x = squash(family x)`, proof
+          irrelevance definitional; witness is `squashIntro` of a checked HOAS
+          proof supplied to `certifyProof v p`. `_kernelSufficient = false`.
 
         A predicate that is neither (a raw host lambda) yields no proof, so it is
         not a `Certified` — construction throws. For an un-proven runtime guard
@@ -1381,6 +1447,7 @@ api.namespace {
         - `.certify v` — decidable: pure, fail-closed, synthesizes the witness.
         - `.certifyProof v p` — general: checks `p : family(v)`, then truncates.
         - `.certifyE v` — decidable effectful dual (sends `typeCheck` on failure).
+        - `.certifyProofE v p` — general effectful dual (sends `typeCheck` on failure).
         - `.check` / `.validate` — inherited from Sigma (pair check / effectful intro).
         - `.prove term` — checks a term against the genuine subset `_kernel`.
 
@@ -1389,6 +1456,15 @@ api.namespace {
         predicate decided at the concrete fst; `_kernel` exposes the real `El t`.
       '';
       tests = CertifiedTests;
+    };
+    mkPropFamily = api.leaf {
+      value = mkPropFamily;
+      doc = ''
+        Bundle a propositional `family` (`A → U`) with its `bridge` into one
+        handle for `Certified`'s general former. Pass it via the `family`
+        argument: `Certified { base; family = mkPropFamily { family; bridge; }; }`.
+        The two-argument `{ family; bridge; }` form remains valid.
+      '';
     };
     Vector = api.leaf {
       value = Vector;

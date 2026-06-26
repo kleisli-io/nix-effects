@@ -75,29 +75,39 @@ let
         if effectiveGuard == null then kernelDecide
         else v: kernelDecide v && effectiveGuard v;
 
-      effectiveUniverse =
-        if universe != null then universe
+      # Kernel-required universe level as a total `Int`. Throws when `tm` is
+      # not a type, or its level depends on a term (both collapse to `? error`
+      # — the kernel rejects term-dependent levels), and when the level is
+      # level-polymorphic (a bare level variable, no ground level). Also throws
+      # if elaboration or the level check itself throws.
+      levelOf = tm:
+        let result = fx.tc.check.runCheck
+          (fx.tc.check.checkTypeLevel fx.tc.check.emptyCtx tm);
+        in
+        if result ? error then throw "not a type, or universe level depends on a term"
         else
-          let
-            tm = fx.tc.hoas.elab effectiveKernelType;
-            result = fx.tc.check.runCheck
-              (fx.tc.check.checkTypeLevel fx.tc.check.emptyCtx tm);
-          in
-          if result ? error then 0
-          else
-          # The level returned by checkTypeLevel can be a
-          # `vLevelMax …` that only reduces to a concrete
-          # `VLevelSuc^n VLevelZero` after the Level normaliser
-          # runs (e.g. `Π Nat Nat` has level `max 0 0`).
-          # Normalise first, then peel.
-            let
-              spine = fx.tc.conv.normLevel result.level;
-            in
-            if spine == [ ] then 0
-            else if builtins.length spine == 1
-              && (builtins.head spine).base.kind == "zero"
-            then (builtins.head spine).shift
-            else 0;
+        # checkTypeLevel can return a `vLevelMax …` that only reduces to a
+        # concrete `VLevelSuc^n VLevelZero` after the Level normaliser runs
+        # (e.g. `Π Nat Nat` has level `max 0 0`). Normalise first, then peel.
+          let spine = fx.tc.conv.normLevel result.level; in
+          if spine == [ ] then 0
+          else if builtins.length spine == 1
+            && (builtins.head spine).base.kind == "zero"
+          then (builtins.head spine).shift
+          else throw "level-polymorphic type has no concrete universe";
+
+      effectiveUniverse =
+        let
+          tm = fx.tc.hoas.elab effectiveKernelType;
+          required = levelOf tm;
+        in
+        if universe != null then
+          # A declaration may over-approximate the kernel minimum but not
+          # under-approximate it, and cannot rescue a type with no ground level
+          # (`levelOf` throws — the declaration does not override that).
+          if universe >= required then universe
+          else throw "universe level declaration inconsistency: declared ${toString universe}, kernel requires at least ${toString required}"
+        else required;
 
       # _kernel is always exposed as the best kernel approximation, even for
       # approximate types. This lets constructors always build precise composed
@@ -289,6 +299,31 @@ let
       "universe-U0" = {
         expr = (mkType { name = "U0"; kernelType = H.u 0; }).universe;
         expected = 1;
+      };
+      # Declared universe: enforced against the kernel-required minimum.
+      "universe-declared-consistent" = {
+        expr = (mkType { name = "Bool0"; kernelType = H.bool; universe = 0; }).universe;
+        expected = 0;
+      };
+      "universe-declared-under-throws" = {
+        expr = (builtins.tryEval (mkType { name = "U0bad"; kernelType = H.u 0; universe = 0; }).universe).success;
+        expected = false;
+      };
+      # A declaration cannot pin a concrete level on a term-dependent type:
+      # `levelOf` throws, and the declaration does not override that.
+      "universe-declared-undecidable-throws" = {
+        expr = (builtins.tryEval (mkType { name = "LevelPoly"; kernelType = H.forall "x" (H.u 0) (k: H.u k); universe = 0; }).universe).success;
+        expected = false;
+      };
+      # `.universe` is total: it throws rather than fabricating a level when
+      # the kernel type is not a type, or is level-polymorphic.
+      "universe-throws-on-non-type" = {
+        expr = (builtins.tryEval (mkType { name = "NotAType"; kernelType = H.zero; }).universe).success;
+        expected = false;
+      };
+      "universe-throws-on-polymorphic" = {
+        expr = (builtins.tryEval (mkType { name = "LevelPolyBare"; kernelType = H.forall "k" H.level (k: H.u k); }).universe).success;
+        expected = false;
       };
       # Guard (complete check override)
       "guard-overrides-decide" = {
@@ -815,10 +850,14 @@ api.namespace {
           types that decompose checking (e.g. Record sends separate
           effects per field for blame tracking).
         - `description` — Documentation string (default = `name`)
-        - `universe` — Optional universe level override. When null (default),
-          computed from `checkTypeLevel(kernelType)`. Use when the kernelType
-          is a fallback (e.g., `H.function_` for Pi) that doesn't capture the
-          real universe level.
+        - `universe` — Optional universe level. When null (default), the level
+          is computed from `checkTypeLevel(kernelType)`. The computed level is
+          total: `.universe` throws — rather than fabricating a level — when
+          the kernel type is not a type, depends on a term, or is
+          level-polymorphic. A supplied `universe` is enforced against the
+          kernel minimum: it may over-approximate it (e.g. for a fallback
+          `kernelType`) but under-approximation is inconsistent and throws, and
+          it cannot pin a level on a type that has none.
         - `approximate` — When true, the kernelType is a sound but lossy
           approximation (e.g., `H.function_` for Pi, `H.any` for Sigma).
           Suppresses `_kernel`, `kernelCheck`, and `prove` on the result,

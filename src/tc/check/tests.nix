@@ -991,6 +991,21 @@ in
       expected = 0;
     };
 
+    # A universe level over a bare level variable is admissible.
+    "checkTypeLevel-accepts-bare-level-var" = {
+      expr = (runCheck (checkTypeLevel ctx0
+        (H.elab (H.forall "k" H.level (k: H.u k))))) ? error;
+      expected = false;
+    };
+    # A universe level over an applied neutral (`f x`) depends on a term and
+    # is rejected: `U(f x)` for `f : Nat → Level`, `x : Nat`.
+    "checkTypeLevel-rejects-term-dependent-level" = {
+      expr = (runCheck (checkTypeLevel ctx0
+        (H.elab (H.forall "f" (H.forall "_" H.nat (_: H.level)) (f:
+          H.forall "x" H.nat (x: H.u (H.app f x))))))) ? error;
+      expected = true;
+    };
+
     "check-string-lit" = {
       expr = (checkTm ctx0 (T.mkStringLit "hello") vString).tag;
       expected = "string-lit";

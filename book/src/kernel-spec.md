@@ -1214,7 +1214,7 @@ body `u`, not for the definition `t`.
 
 ```
                 Γ ⊢ t ⇒ A  ↝  t'
-                conv(Γ.depth, A, B) = true   -- or cumulativity check
+                conv(Γ.depth, A, B) = true
                 ──────────────────────
                 Γ ⊢ t ⇐ B  ↝  t'
 
@@ -1446,22 +1446,20 @@ universe. This correctly propagates levels through type variables:
 if `B : U(1)`, then `checkTypeLevel` on `B` infers `VU(1)` and
 returns level 1.
 
-### 8.3 Cumulativity
+### 8.3 Non-cumulativity
 
-A type `A` at level `i` is also a type at level `j` for all `j > i`.
-This is implemented by accepting `conv(d, VU(i), VU(j))` when `i ≤ j`
-**in the Sub rule only** (checking mode, when comparing an inferred
-universe against an expected universe). The `conv` function itself
-uses strict equality `i == j`.
+The kernel is non-cumulative: a type `A` at level `i` is **not**
+automatically a type at any level `j > i`. The Sub rule (§7.4) compares
+the inferred universe against the expected one with the ordinary
+structural `conv`, which decides `VU(i)` against `VU(j)` by exact level
+equality — `convLevel(i, j)` modulo the §6.6 semilattice laws, never by
+`i ≤ j`.
 
-The cumulativity check is in `check`:
-
-```
--- In the Sub rule:
--- If inferredTy = VU(i) and expectedTy = VU(j) and i ≤ j:  accept
--- Otherwise: conv(Γ.depth, inferredTy, expectedTy) must hold
-
-```
+To move a type up the hierarchy you apply the explicit `Lift` former
+(§4.5); there is no implicit subsumption. Conversion therefore stays a
+decidable equivalence rather than a preorder, and the bidirectional
+discipline keeps a single CHECK-to-INFER bridge (the `conv` round-trip)
+with no cumulativity side-channel.
 
 ### 8.4 Universe consistency
 
@@ -1740,8 +1738,6 @@ f : Pi(x, H.nat, H.nat) ⊢ App(f, H.zero) : H.nat
 -- Let binding
 ⊢ Let(x, H.nat, H.zero, Var(0)) : H.nat
 
--- Cumulativity: H.nat : U(0) should also be accepted at U(1)
-
 -- StrEq: type inference returns the derived H.bool
 --   (= μ ⊤ (plus (retI tt) (retI tt)) tt; see §4.11)
 ⊢ StrEq(StringLit("a"), StringLit("b")) : H.bool
@@ -1762,6 +1758,9 @@ f : Pi(x, H.nat, H.nat) ⊢ App(f, H.zero) : H.nat
 
 -- Universe violation
 ⊢ U(0) : U(0)                          REJECT
+
+-- Non-cumulativity: a U(0) type is not accepted at U(1)
+⊢ H.nat : U(1)                         REJECT  (no subsumption; use Lift, §8.3)
 
 -- H.refl on unequal terms
 ⊢ H.refl : H.eq H.nat H.zero (H.succ H.zero)  REJECT

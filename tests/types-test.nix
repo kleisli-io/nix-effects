@@ -795,18 +795,27 @@ let
     # Result is null sentinel (f was never applied)
     && result.value == null;
 
-  # Universe trust boundary — typeAt guards missing fields
+  # Universe trust boundary — typeAt guards missing fields. The guard requires
+  # the full Type interface (check/validate/name) plus a universe and a kernel
+  # the U-level check can elaborate; each fixture omits exactly one.
   universeTrustBoundary =
     let
-      fakeNoUniverse = { _tag = "Type"; name = "fake"; check = _: true; };
-      fakeNoKernel = { _tag = "Type"; name = "fake"; check = _: true; universe = 0; };
-      wellFormed = { _tag = "Type"; name = "fake"; check = _: true; universe = 0; _kernel = H.nat; };
+      fakeNoUniverse = { _tag = "Type"; name = "fake"; check = _: true; validate = _: null; };
+      fakeNoKernel = { _tag = "Type"; name = "fake"; check = _: true; validate = _: null; universe = 0; };
+      # Has _tag/universe/_kernel but lacks the interface (no `validate`):
+      # rejected by the tightened guard even though its kernel would pass.
+      fakeNoValidate = { _tag = "Type"; name = "fake"; check = _: true; universe = 0; _kernel = H.nat; };
+      # A real type, built through mkType, carries the full interface and is
+      # accepted (kernel verifies level, guard verifies the interface + universe).
+      wellFormed = types.mkType { name = "Nat"; kernelType = H.nat; };
     in
     # Missing universe → rejected by guard
     !(types.check types.Type_0 fakeNoUniverse)
     # Missing _kernel → rejected by kernel (can't elaborate for U)
     && !(types.check types.Type_0 fakeNoKernel)
-    # Well-formed fake type → accepted (kernel verifies level, guard verifies universe)
+    # Missing the Type interface → rejected by the tightened isType guard
+    && !(types.check types.Type_0 fakeNoValidate)
+    # Well-formed real type → accepted
     && types.check types.Type_0 wellFormed;
 
   # ListOf validate is effectful when an element fails

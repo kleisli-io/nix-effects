@@ -98,18 +98,18 @@ api.mk {
       desc descArg descCon descDesc descElim descInd descCataBool descPi descRec descRet
       elab elab2 embedTm eq eqCongSucc eqDT eqDTToEq eqDesc eqInjSucc
       eqIsoBwd eqIsoFwd eqRefutSuccZero eqRefutZeroSucc eqToEqDT everywhereD
-      false_ field fieldD fin finDesc finElim floatLit float_ fnLit forall
+      false_ field fieldAt fieldD fin finDesc finElim floatLit float_ fnLit forall
       implicitApp implicitForall implicitLam plicity surfacePlicity
       fst_ fsuc function_ functionalCompose functionalLawDiagnosticRecords
       functionalLawDiagnostics functionalOrnament
       functionalOrnamentDiagnosticRecords functionalOrnamentDiagnostics fzero
       iff ind inferHoas inl inr intEq intLe intLit int_ interpD intz intzDecode intzDesc
       intzElim intzLe intzLit intzNegSucc intzNegSuccCong intzNegSuccInjective
-      intzPos intzPosCong intzPosInjective isLeafOrn j just lam le leDesc leElim leInjSS
+      intzPos intzPosCong intzPosInjective isLeafOrn j just justAt lam le leDesc leElim leInjSS
       leRefutSuccZero leSS leZ leafOrnament leafOrnamentDiagnosticRecords
       leafOrnamentDiagnostics let_ level levelMax levelSuc levelZero listDesc
-      listElim listOf litVal lower maxSucDom maybe mu nat natCaseU natDesc natLit
-      natPredCase natToLevel nil no nothing not opaqueLam or_ ornArgInsert ornArgKeep
+      listDescAt listElim listOf listOfAt litVal lower maxSucDom maybe maybeAt mu nat natCaseU natDesc natLit
+      natPredCase natToLevel nil no nothing nothingAt not opaqueLam or_ ornArgInsert ornArgKeep
       ornBuild ornCompose ornDesc ornForget ornI ornId ornIndexProof
       ornLiftFold ornLiftProducer ornLiftTransform ornMu ornPiKeep ornPlus
       ornPullback ornRec ornRet ornSection ornTargetIndex ornament
@@ -121,7 +121,7 @@ api.mk {
       sum sumDesc sumElim sup thunk thunkOrnament trans true_ tryAlgOrn
       tryFunctionalOrnament tryLeafOrnament tryOrnament tt u unit validateAlgOrn
       validateFunctionalLaws validateFunctionalOrnament validateLeafOrnament
-      validateOrnament variant variantInject vcons vec vecDesc
+      validateOrnament variant variantAt variantInject variantInjectAt vcons vec vecDesc
       vecElim vhead vnil void vtail w wDesc wElim withConLabel withDescLabel
       yes zero;
 

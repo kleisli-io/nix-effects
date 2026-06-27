@@ -39,15 +39,15 @@ let
   zeroTm = H.elab H.zero;
   succZeroTm = H.elab (H.succ H.zero);
   listNatTm = H.elab (H.listOf H.nat);
-  nilNatTm = H.elab (HI.nilAtExplicit H.nat);
-  consZeroNilTm = H.elab (HI.consAtExplicit H.nat H.zero (HI.nilAtExplicit H.nat));
+  nilNatTm = H.elab (HI.nilAtExplicit H.levelZero H.nat);
+  consZeroNilTm = H.elab (HI.consAtExplicit H.levelZero H.nat H.zero (HI.nilAtExplicit H.levelZero H.nat));
   natTyVal = E.eval [ ] natTyTm;
   listNatVal = E.eval [ ] listNatTm;
 
   bigNatTm = H.elab (H.natLit 5000);
   bigListTm = H.elab (builtins.foldl'
-    (acc: _: HI.consAtExplicit H.nat H.zero acc)
-    (HI.nilAtExplicit H.nat)
+    (acc: _: HI.consAtExplicit H.levelZero H.nat H.zero acc)
+    (HI.nilAtExplicit H.levelZero H.nat)
     (builtins.genList (x: x) 5000));
 
   unitFn = S: H.ann (H.lam "_" S (_: H.tt)) (H.forall "_" S (_: H.unit));

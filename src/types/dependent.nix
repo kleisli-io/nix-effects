@@ -14,6 +14,15 @@ let
     let r = builtins.tryEval (!((H.checkHoas ty term) ? error));
     in r.success && r.value;
 
+  # Read a child type's universe during construction, attributing a
+  # term-dependent or level-polymorphic failure to THIS construction site
+  # rather than surfacing the bare foundation throw. Lazy: forces the child
+  # universe only when the constructed type's own `.universe` is forced.
+  universeOf = ctx: ty:
+    let r = builtins.tryEval ty.universe;
+    in if r.success then r.value
+    else throw "${ctx}: child universe must be term-independent";
+
   # Native-recursion budget per trampoline segment (cf. foundation.nix).
   nativeWalkBudget = 512;
 
@@ -93,7 +102,7 @@ let
           Pi {
             inherit domain;
             codomain = x: other.codomain (f x);
-            universe = other.universe;
+            universe = universeOf "compose(${name}, ${other.name})" other;
             name = "compose(${name}, ${other.name})";
           };
       };
@@ -396,7 +405,7 @@ let
           name = "${fst.name}'";
           kernelType = fst._kernel;
           guard = v: fst.check (f v);
-          universe = fst.universe;
+          universe = universeOf "pullback(${name}) fst" fst;
         };
         snd = x:
           let orig = snd (f x);
@@ -404,7 +413,7 @@ let
             name = "${orig.name}'";
             kernelType = orig._kernel;
             guard = v: orig.check (g v);
-            universe = orig.universe;
+            universe = universeOf "pullback(${name}) snd" orig;
           };
         name = "pullback(${name})";
         inherit universe;
@@ -653,7 +662,7 @@ let
           guard = _witness: guardHolds v;
         };
         inherit name;
-        inherit (base) universe;
+        universe = universeOf "Certified ${name}" base;
         # Σ x:A. Unit — the host decide oracle settles this without normalizing.
         # NOT El t: decide dispatches on the snd type's syntactic head and never
         # reduces, so a stuck P(decide t x) head would be rejected. El t rides on
@@ -730,7 +739,7 @@ let
           guard = witness: proves (sqAt (brg v)) witness;
         };
         inherit name;
-        inherit (base) universe;
+        universe = universeOf "Certified ${name}" base;
         kernelType = H.sigma "x" base._kernel (_: H.any);
       }) // {
         _kernel = kernelTy;
@@ -802,6 +811,19 @@ let
       "dec-rejects-int-witness" = { expr = check PosInt { fst = 5; snd = 42; }; expected = false; };
       "dec-rejects-string-witness" = { expr = check PosInt { fst = 5; snd = "x"; }; expected = false; };
       "dec-rejects-non-base" = { expr = check PosInt { fst = "x"; snd = null; }; expected = false; };
+
+      # A Certified over a term-dependent (level-polymorphic) base surfaces a
+      # construction-scoped universe error instead of accepting an incoherent
+      # level; `.universe` throws rather than fabricating one.
+      "certified-term-dependent-universe-throws" = {
+        expr =
+          let
+            levelPoly = mkType { name = "LP"; kernelType = H.forall "k" H.level (k: H.u k); };
+            C = Certified { base = levelPoly; predicate = R.intPositive; name = "Cbad"; };
+          in
+          (builtins.tryEval C.universe).success;
+        expected = false;
+      };
 
       # decidable: certify (fail-closed, synthesized witness)
       "dec-certify-builds-null-witness" = { expr = PosInt.certify 5; expected = { fst = 5; snd = null; }; };
@@ -1021,7 +1043,7 @@ let
             fst = fieldType;
             snd = v: buildSigma rest (partial // { ${field.name} = v; });
             name = "DepRec{${namesStr}}.${field.name}";
-            universe = fieldType.universe;
+            universe = universeOf "DepRecord field ${field.name}" fieldType;
             kernelType = sigmaKernelType;
           };
 

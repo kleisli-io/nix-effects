@@ -238,11 +238,11 @@ in
     # nil/cons elaborate to desc-con whose payload is `boot-inl …`/`boot-inr …`,
     # selecting the nil vs cons summand of the generated listDesc.
     "elab-nil" = {
-      expr = let t = elab (HI.nilAtExplicit nat); in "${t.tag}/${t.d.tag}";
+      expr = let t = elab (HI.nilAtExplicit levelZero nat); in "${t.tag}/${t.d.tag}";
       expected = "desc-con/boot-inl";
     };
     "elab-cons" = {
-      expr = let t = elab (HI.consAtExplicit nat zero (HI.nilAtExplicit nat)); in "${t.tag}/${t.d.tag}";
+      expr = let t = elab (HI.consAtExplicit levelZero nat zero (HI.nilAtExplicit levelZero nat)); in "${t.tag}/${t.d.tag}";
       expected = "desc-con/boot-inr";
     };
     "elab-pair" = { expr = (elab (pair zero true_)).tag; expected = "pair"; };
@@ -413,9 +413,9 @@ in
         let
           bigList = builtins.foldl'
             (acc: _:
-              HI.consAtExplicit nat zero acc
+              HI.consAtExplicit levelZero nat zero acc
             )
-            (HI.nilAtExplicit nat)
+            (HI.nilAtExplicit levelZero nat)
             (builtins.genList (x: x) 5000);
           tm = elab bigList;
         in
@@ -645,7 +645,7 @@ in
     "integration-desc-list-length-3" = {
       expr =
         let
-          zeros = HI.consAtExplicit nat zero (HI.consAtExplicit nat zero (HI.consAtExplicit nat zero (HI.nilAtExplicit nat)));
+          zeros = HI.consAtExplicit levelZero nat zero (HI.consAtExplicit levelZero nat zero (HI.consAtExplicit levelZero nat zero (HI.nilAtExplicit levelZero nat)));
           three = succ (succ (succ zero));
           lenTm = listElim 0 nat (lam "_" (listOf nat) (_: nat))
             zero
@@ -2565,7 +2565,7 @@ in
           macroApplied = app (app (app (app (app (L.elim 0) nat) M) onNil) onCons) scrut;
           adapterApplied = listElim 0 nat M onNil
             (lam "h" nat (h: lam "t" (listOf nat) (t: lam "ih" nat (ih: succ h))))
-            (HI.nilAtExplicit nat);
+            (HI.nilAtExplicit levelZero nat);
         in
         semEq macroApplied adapterApplied;
       expected = true;
@@ -2587,7 +2587,7 @@ in
           macroApplied = app (app (app (app (app (L.elim 0) nat) M) onNil) onCons) scrut;
           adapterApplied = listElim 0 nat M zero
             (lam "h" nat (h: lam "t" (listOf nat) (t: lam "ih" nat (ih: succ h))))
-            (HI.consAtExplicit nat zero (HI.nilAtExplicit nat));
+            (HI.consAtExplicit levelZero nat zero (HI.nilAtExplicit levelZero nat));
         in
         semEq macroApplied adapterApplied;
       expected = true;

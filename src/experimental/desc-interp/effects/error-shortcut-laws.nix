@@ -75,7 +75,7 @@ let
         let
           op = errorAt E payload;
           lhs = H.app (H.app (H.app Er.handle_collecting E) op) s;
-          rhs = H.pair (HI.consAtExplicit E payload s) H.tt;
+          rhs = H.pair (HI.consAtExplicit H.levelZero E payload s) H.tt;
         in
         H.eq (H.sigma "_state" (H.listOf E) (_st: H.unit)) lhs rhs));
 

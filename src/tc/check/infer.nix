@@ -106,6 +106,25 @@ let
     else if a == b then a
     else V.vLevelMax a b;
 
+  levelDepError = ctx: tag: lVal:
+    send "typeError" {
+      error = D.mkKernelError {
+        rule = "infer";
+        msg = "universe level may not depend on a term";
+        expected = { tag = "level"; };
+        got = Q.quote ctx.depth lVal;
+        term = { inherit tag; };
+        frame = D.captureFrame ctx;
+      };
+    };
+
+  # Gate a synthesised universe introduction on its level: yield `term : U(L)`
+  # when `L` is term-independent, else a level-dependence error.
+  univIntro = ctx: tag: lVal: term:
+    if C.admitLevel lVal
+    then pure { inherit term; type = V.vU lVal; }
+    else levelDepError ctx tag lVal;
+
   checkDescAtLevel = rule: ctx: dTm: iVal: lVal:
     bindPR P.MuDesc rule (self.checkDescAtAnyLevel ctx dTm iVal) (dInfo:
       if C.convLevel dInfo.level lVal
@@ -400,6 +419,11 @@ in
                               jMotiveErr "J motive must return a type"
                                 { tag = "U"; }
                                 (Q.quote (ctx.depth + 2) codVal)
+                            else if !(C.admitLevel codVal.level)
+                            then
+                              jMotiveErr "universe level may not depend on a term"
+                                { tag = "level"; }
+                                (Q.quote (ctx.depth + 2) codVal.level)
                             else pure result.term);
                 in
                 bind checkJMotive (pTm:
@@ -424,7 +448,7 @@ in
           else
             bindP P.ULevel (self.check ctx tm.level V.vLevel) (lTm:
               let lVal = E.eval ctx.env lTm; in
-              pure { term = T.mkU lTm; type = V.vU (V.vLevelSuc lVal); })
+              univIntro ctx tm.tag (V.vLevelSuc lVal) (T.mkU lTm))
 
         # Level sort. `Level : U(0)`; zero/suc/max inhabit Level.
         # Definitional equality canonicalises via conv's Level normaliser.
@@ -477,10 +501,7 @@ in
                   (self.check ctx tm.eq
                     (V.vBootEq V.vLevel (V.vLevelMax lVal mVal) mVal))
                   (eqTm:
-                    pure {
-                      term = T.mkLift tm.l tm.m eqTm aTm;
-                      type = V.vU mVal;
-                    }));
+                    univIntro ctx tm.tag mVal (T.mkLift tm.l tm.m eqTm aTm)));
             withM = lVal:
               if tm.m.tag == "level-zero"
               then atLevels lVal V.vLevelZero
@@ -567,13 +588,12 @@ in
           let
             atLevel = kVal:
               bindP P.AnnType (self.checkTypeLevel ctx tm.I) (iResult:
-                pure {
-                  term = T.mkDescAt
+                univIntro ctx tm.tag
+                  (V.vLevelSuc (vLevelMaxOpt kVal iResult.level))
+                  (T.mkDescAt
                     (Q.quote ctx.depth iResult.level)
                     tm.k
-                    iResult.term;
-                  type = V.vU (V.vLevelSuc (vLevelMaxOpt kVal iResult.level));
-                });
+                    iResult.term));
           in
           if tm.k.tag == "level-zero"
           then atLevel V.vLevelZero
@@ -788,10 +808,8 @@ in
                   in
                   bindP P.Motive (self.check ctx tm.X xTy) (xTm:
                     bindP P.MuIndex (self.check ctx tm.i iVal) (iIdxTm:
-                      pure {
-                        term = T.mkInterpD lTm iTm dTm xTm iIdxTm;
-                        type = V.vU (vLevelMaxOpt iLev lVal);
-                      }))));
+                      univIntro ctx tm.tag (vLevelMaxOpt iLev lVal)
+                        (T.mkInterpD lTm iTm dTm xTm iIdxTm)))));
           in
           if tm.level.tag == "level-zero"
           then ruleAt V.vLevelZero T.mkLevelZero
@@ -840,10 +858,8 @@ in
                           interpTy = E.vInterpD lVal iVal dVal xVal iIdxVal;
                         in
                         bindP P.Scrut (self.check ctx tm.d interpTy) (dDataTm:
-                          pure {
-                            term = T.mkAllD lTm iTm dTm kTm xTm mTm iIdxTm dDataTm;
-                            type = V.vU (vLevelMaxOpt iLev kVal);
-                          }))))));
+                          univIntro ctx tm.tag (vLevelMaxOpt iLev kVal)
+                            (T.mkAllD lTm iTm dTm kTm xTm mTm iIdxTm dDataTm)))))));
             withK = lVal: lTm:
               if tm.K.tag == "level-zero"
               then ruleAt lVal lTm V.vLevelZero T.mkLevelZero
@@ -1084,7 +1100,7 @@ in
         else if t == "pi" || t == "sigma" || t == "list" || t == "boot-sum" || t == "boot-eq" || t == "mu" || t == "squash" then
           bindP P.AnnType (self.checkTypeLevel ctx tm)
             (r:
-              pure { term = r.term; type = V.vU r.level; })
+              univIntro ctx tm.tag r.level r.term)
 
         else
           send "typeError" {

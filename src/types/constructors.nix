@@ -13,6 +13,12 @@ let
   R = fx.tc.kernel.reflect;
   P = fx.diag.positions;
 
+  # A Sum-carrier coproduct (variant/either) lives at the common universe
+  # `kH = max(branch universes)`; each branch carrier is lifted there from its
+  # own universe. `LiftAt u u A ≡ A`, so an all-U(0) compound is unchanged.
+  maxUniverse = tys: builtins.foldl' (m: ty: if ty.universe > m then ty.universe else m) 0 tys;
+  liftKernel = kH: ty: H._internal._indexed.LiftAt (H.natToLevel ty.universe) (H.natToLevel kH) ty._kernel;
+
   # Fuel-gated child descent; bounce onto the trampoline when fuel runs out.
   nativeWalkBudget = 512;
   descendV = t: fuel: p: x:
@@ -33,8 +39,13 @@ let
       typeName =
         let prefix = if open then "RecordOpen" else "Record"; in
         "${prefix}{${builtins.concatStringsSep ", " sortedNames}}";
-      datatypeFields = map (f: H.field f schema.${f}._kernel) sortedNames;
-      recSpec = H.datatype typeName [ (H.con "mk" datatypeFields) ];
+      # The carrier lives at the common universe kH = max(field universes);
+      # each field is declared at its own universe and conDesc lifts it to kH.
+      # An all-U(0) record is byte-identical (fieldAt 0 ≡ field, datatypeAt
+      # name 0 ≡ datatype name).
+      kH = maxUniverse (map (f: schema.${f}) sortedNames);
+      datatypeFields = map (f: H.fieldAt schema.${f}.universe f schema.${f}._kernel) sortedNames;
+      recSpec = H._internal._indexed.datatypeAt typeName kH [ (H.con "mk" datatypeFields) ];
       baseKernel = recSpec.T;
       kernelType =
         if open
@@ -91,6 +102,7 @@ let
   RecordTests =
     let
       FP = fx.types.primitives;
+      U = fx.types.universe;
     in
     {
       "accepts-matching-record" = {
@@ -382,6 +394,58 @@ let
           fields = [ "a" "b" ];
         };
       };
+      # -- Universe-polymorphic field (lifted to U(k>0)): the generic walker
+      # descends through the field's `LiftAt` node, so a lifted field decides
+      # exactly like its base; an unlifted field is the control. The Record
+      # carrier itself stays at U(0) (a lifted field does not raise the record's
+      # universe), and that U(0) kernel is well-formed (the elaborate fold
+      # re-wraps the inhabitant in `liftAt`). --
+      "lifted-field-accepts" = {
+        expr = (Record { x = U.liftTo 2 FP.Int; }).check { x = 5; };
+        expected = true;
+      };
+      "lifted-field-rejects-wrong" = {
+        expr = (Record { x = U.liftTo 2 FP.Int; }).check { x = "no"; };
+        expected = false;
+      };
+      "lifted-field-unlifted-control" = {
+        expr = (Record { x = FP.Int; }).check { x = 5; };
+        expected = true;
+      };
+      # The carrier of a record with a U(2) field lives at U(2): the kernel
+      # is universe-coherent with the field's level (non-cumulative — not U(0)).
+      "lifted-field-kernel-wellformed-at-u2" = {
+        expr = (H.checkHoas (H.u 2) (Record { x = U.liftTo 2 FP.Int; })._kernel) ? error;
+        expected = false;
+      };
+      "lifted-field-kernel-not-at-u0" = {
+        expr = (H.checkHoas (H.u 0) (Record { x = U.liftTo 2 FP.Int; })._kernel) ? error;
+        expected = true;
+      };
+      "lifted-field-raises-universe" = {
+        expr = (Record { x = U.liftTo 2 FP.Int; }).universe;
+        expected = 2;
+      };
+      "mixed-level-fields-take-max-universe" = {
+        expr = (Record { x = U.liftTo 2 FP.Int; y = FP.Int; }).universe;
+        expected = 2;
+      };
+      "all-base-fields-stay-universe-0" = {
+        expr = (Record { x = FP.Int; y = FP.Bool; }).universe;
+        expected = 0;
+      };
+      "nested-lifted-field-propagates-universe" = {
+        expr = (Record { inner = Record { x = U.liftTo 2 FP.Int; }; }).universe;
+        expected = 2;
+      };
+      "lifted-record-is-member-at-target-universe" = {
+        expr = check (U.typeAt 2) (Record { x = U.liftTo 2 FP.Int; });
+        expected = true;
+      };
+      "lifted-record-not-member-below-noncumulative" = {
+        expr = check (U.typeAt 0) (Record { x = U.liftTo 2 FP.Int; });
+        expected = false;
+      };
     };
 
   RecordOpen = mkRecordType { open = true; };
@@ -475,12 +539,15 @@ let
     let
       isPrecise = elemType._kernelPrecise;
       isSufficient = elemType._kernelSufficient;
-      kernelType = H.listOf elemType._kernel;
+      # Carry the element's universe so a lifted element type (U(m), m>0)
+      # forms a well-typed `List` at that level rather than being forced to U(0).
+      kH = H.natToLevel elemType.universe;
+      kernelType = H.listOfAt kH elemType._kernel;
       # A mono nil/cons mirror gives the fold a concrete (host-walkable) carrier
       # description; its `.T` is convertible with the native `listOf` carrier.
       listMono = H.datatype "List[${elemType.name}]" [
         (H.con "nil" [ ])
-        (H.con "cons" [ (H.field "head" elemType._kernel) (H.recField "tail") ])
+        (H.con "cons" [ (H.fieldAt kH "head" elemType._kernel) (H.recField "tail") ])
       ];
       structuralKP =
         if (elemType.ktype or null) == null then null
@@ -511,7 +578,7 @@ let
           in
           bind (builtins.foldl' step (pure null) indices) (_: pure v);
     };
-  ListOfTests = let FP = fx.types.primitives; in {
+  ListOfTests = let FP = fx.types.primitives; U = fx.types.universe; in {
     "accepts-matching-list" = {
       expr =
         let intList = ListOf FP.Int;
@@ -557,8 +624,8 @@ let
         };
       expected = {
         name = "List";
-        params = 1;
-        args = 1;
+        params = 2;
+        args = 2;
         constructors = [ "nil" "cons" ];
       };
     };
@@ -625,16 +692,42 @@ let
         map (p: p.tag) comp.effect.param.path;
       expected = [ "Elem" "Field" ];
     };
+    # -- Universe-polymorphic element (lifted to U(k>0)): the List carrier is
+    # built at the element's universe, so a higher-universe element type yields
+    # a well-typed list carrier; at U(0) it is the old monomorphic List. --
+    "lifted-element-accepts" = {
+      expr = (ListOf (U.liftTo 2 FP.Int)).check [ 1 2 3 ];
+      expected = true;
+    };
+    "lifted-element-accepts-empty" = {
+      expr = (ListOf (U.liftTo 2 FP.Int)).check [ ];
+      expected = true;
+    };
+    "lifted-element-rejects-wrong" = {
+      expr = (ListOf (U.liftTo 2 FP.Int)).check [ 1 "two" ];
+      expected = false;
+    };
+    "lifted-element-universe-rises" = {
+      expr = (ListOf (U.liftTo 2 FP.Int)).universe;
+      expected = 2;
+    };
   };
 
   Maybe = innerType:
     let
       isPrecise = innerType._kernelPrecise;
       isSufficient = innerType._kernelSufficient;
-      kernelType = H.maybe innerType._kernel;
+      # `maybeAt k` puts the optional carrier at the inner's own universe, so a
+      # higher-universe inner (e.g. a lifted type) yields a well-typed carrier;
+      # at U(0) it is the old `Sum inner Unit`.
+      kernelType = H.maybeAt innerType.universe innerType._kernel;
       hostGuard = v: v == null || innerType.check v;
       # `maybe` is `Sum inner Unit`; internalize as a `sumElim` deciding the
       # present value, accepting absence, when the inner is kernel-decidable.
+      # The structural predicate only ever decides a U(0) inner: a guarded
+      # higher-universe inner has no kernel `ktype` (innerKt null ⇒ host guard),
+      # and a kernel-sufficient inner makes the whole Maybe sufficient
+      # (guard null ⇒ this predicate is discarded). Both stay sound.
       structuralKP = R.mkMaybePred {
         carrier = kernelType;
         inner = innerType._kernel;
@@ -650,7 +743,7 @@ let
       inherit kernelType guard;
       approximate = !isPrecise;
     };
-  MaybeTests = let FP = fx.types.primitives; in {
+  MaybeTests = let FP = fx.types.primitives; U = fx.types.universe; in {
     "accepts-null" = {
       expr = check (Maybe FP.Int) null;
       expected = true;
@@ -692,6 +785,33 @@ let
         in Nat._kernelSufficient;
       expected = false;
     };
+    # -- Universe-polymorphic inner (lifted to U(k>0)): the carrier is built at
+    # the inner's universe so it stays well-typed; checks behave like U(0). --
+    "lifted-inner-accepts-value" = {
+      expr = (Maybe (U.liftTo 2 FP.Int)).check 5;
+      expected = true;
+    };
+    "lifted-inner-accepts-null" = {
+      expr = (Maybe (U.liftTo 2 FP.Int)).check null;
+      expected = true;
+    };
+    "lifted-inner-rejects-wrong" = {
+      expr = (Maybe (U.liftTo 2 FP.Int)).check "x";
+      expected = false;
+    };
+    "lifted-inner-universe-rises" = {
+      expr = (Maybe (U.liftTo 2 FP.Int)).universe;
+      expected = 2;
+    };
+    # Non-cumulative guard: the lifted carrier lives at U(2), not U(0).
+    "lifted-inner-kernel-not-at-u0" = {
+      expr = (H.checkHoas (H.u 0) (Maybe (U.liftTo 2 FP.Int))._kernel) ? error;
+      expected = true;
+    };
+    "lifted-inner-kernel-at-u2" = {
+      expr = (H.checkHoas (H.u 2) (Maybe (U.liftTo 2 FP.Int))._kernel) ? error;
+      expected = false;
+    };
   };
 
   Either = leftType: rightType:
@@ -703,9 +823,10 @@ let
       # the branch type's walker. No synthetic `Pos.Field "value"`
       # leaks into blame paths — the kernel knows about Either as a
       # 2-tag variant rather than a μ-encoded SumDT.
-      kernelType = H.variant [
-        { tag = "Left"; type = leftType._kernel; }
-        { tag = "Right"; type = rightType._kernel; }
+      kH = maxUniverse [ leftType rightType ];
+      kernelType = H.variantAt kH [
+        { tag = "Left"; type = liftKernel kH leftType; }
+        { tag = "Right"; type = liftKernel kH rightType; }
       ];
       hostGuard = v:
         builtins.isAttrs v
@@ -714,13 +835,18 @@ let
         || (v._tag == "Right" && rightType.check v.value));
       # Internalize as a nested `sumElim` over the native variant carrier when
       # both branches are kernel-decidable; branch order matches `kernelType`.
-      structuralKP = R.mkVariantPred {
-        carrier = kernelType;
-        branches = [
-          { type = leftType._kernel; kt = leftType.ktype or null; }
-          { type = rightType._kernel; kt = rightType.ktype or null; }
-        ];
-      };
+      # Restricted to an all-U(0) coproduct: the kernel reflects branch carriers
+      # only at U(0), so a higher-universe branch keeps the (always-sound) host
+      # guard rather than a lifted decision the kernel cannot soundly express.
+      structuralKP =
+        if kH != 0 then null
+        else R.mkVariantPred {
+          carrier = kernelType;
+          branches = [
+            { type = leftType._kernel; kt = leftType.ktype or null; }
+            { type = rightType._kernel; kt = rightType.ktype or null; }
+          ];
+        };
       guard =
         if allSufficient then null
         else if structuralKP != null then structuralKP
@@ -738,7 +864,7 @@ let
         else if v._tag == "Right" then descendV rightType fuel (path ++ [ (P.Tag "Right") ]) v.value
         else shapeErr self path v;
     };
-  EitherTests = let FP = fx.types.primitives; in {
+  EitherTests = let FP = fx.types.primitives; U = fx.types.universe; in {
     "accepts-left" = {
       expr =
         let e = Either FP.String FP.Int;
@@ -769,6 +895,24 @@ let
       expr = (Either FP.Int FP.Bool).kernelCheck { _tag = "Left"; value = true; };
       expected = false;
     };
+    # -- Mixed-universe branches: lifted to the common max so the coproduct
+    # carrier is well-typed; both tags still decide via the host guard. --
+    "lifted-accepts-left" = {
+      expr = (Either (U.liftTo 2 FP.Int) FP.Int).check { _tag = "Left"; value = 5; };
+      expected = true;
+    };
+    "lifted-accepts-right" = {
+      expr = (Either (U.liftTo 2 FP.Int) FP.Int).check { _tag = "Right"; value = 9; };
+      expected = true;
+    };
+    "lifted-rejects-wrong-payload" = {
+      expr = (Either (U.liftTo 2 FP.Int) FP.Int).check { _tag = "Left"; value = "x"; };
+      expected = false;
+    };
+    "lifted-universe-rises" = {
+      expr = (Either (U.liftTo 2 FP.Int) FP.Int).universe;
+      expected = 2;
+    };
   };
 
   Variant = schema:
@@ -783,11 +927,12 @@ let
       # type's own walker. No synthetic `Pos.Field "value"` ever
       # appears in the blame path — the kernel is honest about
       # variants without going through a μ-encoding.
+      kH = maxUniverse (map (t: schema.${t}) sortedTags);
       kernelType =
         if sortedTags != [ ]
         then
-          H.variant
-            (map (t: { tag = t; type = schema.${t}._kernel; }) sortedTags)
+          H.variantAt kH
+            (map (t: { tag = t; type = liftKernel kH schema.${t}; }) sortedTags)
         else H.any;
       hostGuard = v:
         builtins.isAttrs v
@@ -796,8 +941,10 @@ let
         && (schema.${v._tag}).check v.value;
       # Internalize as a nested `sumElim` over the native variant carrier when
       # every branch is kernel-decidable; branch order matches `kernelType`.
+      # Restricted to an all-U(0) coproduct (see `Either`): a higher-universe
+      # branch keeps the host guard.
       structuralKP =
-        if sortedTags == [ ] then null
+        if sortedTags == [ ] || kH != 0 then null
         else R.mkVariantPred {
           carrier = kernelType;
           branches = map (t: { type = schema.${t}._kernel; kt = schema.${t}.ktype or null; }) sortedTags;
@@ -819,7 +966,7 @@ let
         else if schema ? ${v._tag} then descendV schema.${v._tag} fuel (path ++ [ (P.Tag v._tag) ]) v.value
         else shapeErr self path v;
     };
-  VariantTests = let FP = fx.types.primitives; in {
+  VariantTests = let FP = fx.types.primitives; U = fx.types.universe; in {
     "accepts-valid-variant" = {
       expr =
         let
@@ -898,6 +1045,38 @@ let
         in
         map (p: p.tag) comp.effect.param.path;
       expected = [ "Tag" "Field" ];
+    };
+    # -- Universe-polymorphic branches: each branch carrier lifts to the common
+    # max so the nested coproduct is well-typed; homogeneous and mixed both
+    # decide via the (always-sound) host guard for k>0. --
+    "lifted-homogeneous-accepts" = {
+      expr = (Variant { a = U.liftTo 2 FP.Int; b = U.liftTo 2 FP.Int; }).check { _tag = "a"; value = 3; };
+      expected = true;
+    };
+    "lifted-mixed-accepts-high-branch" = {
+      expr = (Variant { a = U.liftTo 2 FP.Int; b = FP.Int; }).check { _tag = "a"; value = 3; };
+      expected = true;
+    };
+    "lifted-mixed-accepts-low-branch" = {
+      expr = (Variant { a = U.liftTo 2 FP.Int; b = FP.Int; }).check { _tag = "b"; value = 7; };
+      expected = true;
+    };
+    "lifted-rejects-wrong-payload" = {
+      expr = (Variant { a = U.liftTo 2 FP.Int; b = FP.Int; }).check { _tag = "a"; value = "x"; };
+      expected = false;
+    };
+    "lifted-universe-rises" = {
+      expr = (Variant { a = U.liftTo 2 FP.Int; b = FP.Int; }).universe;
+      expected = 2;
+    };
+    # All-U(0) variant stays kernel-internalized (refinement branches decided
+    # in-kernel) — regression guard for the U(0)-only structural predicate.
+    "u0-refinement-variant-internalized" = {
+      expr =
+        let
+          PosInt = fx.types.foundation.mkType { name = "PosInt"; kernelType = H.int_; guard = R.intPositive; };
+        in (Variant { a = PosInt; b = FP.Int; }).ktype != null;
+      expected = true;
     };
   };
 

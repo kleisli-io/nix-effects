@@ -36,7 +36,7 @@ let
         result = T.handle errCol.eff errCol.resp H.nat
           {
             inherit (errCol) handler dispatch;
-            state = HI.nilAtExplicit H.string;
+            state = HI.nilAtExplicit H.levelZero H.string;
           }
           comp;
       in

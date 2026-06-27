@@ -134,7 +134,7 @@ let
             H.sigma "_state" State (_st: H.unit)));
         onError = H.lam "_payload" E (payload:
           H.lam "_s" State (_s:
-            H.pair (HI.consAtExplicit E payload _s) H.tt));
+            H.pair (HI.consAtExplicit H.levelZero E payload _s) H.tt));
       in
       H.lam "op" Ee (op:
         H.app
@@ -277,7 +277,7 @@ let
                       (H.app (H.app EffError.error E) payload))
                     A)
                   H.tt)
-                (HI.consAtExplicit E payload _s)));
+                (HI.consAtExplicit H.levelZero E payload _s)));
         in
         H.lam "op" Ee (op:
           H.app
@@ -446,7 +446,7 @@ let
       consClosure = fx.tc.eval.eval [ ] (H.elab
         (H.lam "p" E (p:
           H.lam "t" State (t:
-            HI.consAtExplicit E p t))));
+            HI.consAtExplicit H.levelZero E p t))));
       ttVal = fx.tc.eval.eval [ ] (H.elab H.tt);
       handlerShortcut = op: stateVal:
         if (op._opTag or null) == "error-raise" then
@@ -805,7 +805,7 @@ in
                           E)
                         H.nat)
                       op)
-                    (HI.nilAtExplicit E);
+                    (HI.nilAtExplicit H.levelZero E);
                   v = fx.tc.eval.eval [ ] (H.elab t);
                 in
                 v.d.tag;

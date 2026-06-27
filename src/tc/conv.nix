@@ -28,6 +28,11 @@ let
   # element-wise.
   levelZeroBase = { kind = "zero"; };
   mkVarBase = v: { kind = "var"; level = v.level; spine = v.spine; };
+  # Elaboration-time only: a `VMeta` standing in for an unknown level
+  # summand. Keyed by meta id (+ spine) so two occurrences of the same
+  # hole canonicalise to one base. The kernel never holds metas, so this
+  # base never arises on kernel inputs.
+  mkMetaBase = v: { kind = "meta"; id = v.id; spine = v.spine; };
   baseEq = a: b: a == b;
 
   # Flatten nested max into a list of leaf summands, threading a
@@ -53,18 +58,29 @@ let
           forced = map (it: { v = E.forceVal it.v; inherit (it) shift; }) frontier;
           children = builtins.concatLists (map
             (it:
-              if it.v.tag == "VLevelMax" then
+              let vt = it.v.tag or null; in
+              if vt == "VLevelMax" then
                 [ { v = it.v.lhs; inherit (it) shift; } { v = it.v.rhs; inherit (it) shift; } ]
-              else if it.v.tag == "VLevelSuc" then
+              else if vt == "VLevelSuc" then
                 [ { v = it.v.pred; shift = it.shift + 1; } ]
               else [ ])
             forced);
+          # A `VMeta` (elaboration-time level hole, no `.tag`) is an opaque
+          # base summand — emitted via `mkMetaBase` rather than throwing.
+          # The kernel never holds metas, so on kernel inputs `vt == v.tag`
+          # and the throw arm stays the genuine unexpected-tag guard. Under the
+          # synthesis-time level-dependence gate (`admitLevel`), an admitted
+          # level rests only on `zero`/`suc`/`max`/`var` bases, so on
+          # kernel-admitted levels this arm is unreachable — a documented guard
+          # against a malformed level value, not dead defence.
           emitted = builtins.concatLists (map
             (it:
-              if it.v.tag == "VLevelZero" then [ { base = levelZeroBase; inherit (it) shift; } ]
-              else if it.v.tag == "VNe" then [ { base = mkVarBase it.v; inherit (it) shift; } ]
-              else if it.v.tag == "VLevelMax" || it.v.tag == "VLevelSuc" then [ ]
-              else throw "tc: level: unexpected tag '${it.v.tag}' in flattenLevel")
+              let vt = it.v.tag or null; in
+              if vt == "VLevelZero" then [ { base = levelZeroBase; inherit (it) shift; } ]
+              else if vt == "VNe" then [ { base = mkVarBase it.v; inherit (it) shift; } ]
+              else if vt == "VLevelMax" || vt == "VLevelSuc" then [ ]
+              else if (it.v._vTag or null) == "VMeta" then [ { base = mkMetaBase it.v; inherit (it) shift; } ]
+              else throw "tc: level: unexpected tag '${toString vt}' in flattenLevel")
             forced);
           # Force the frontier list spine AND every child's threaded `shift`
           # to a concrete int this round. Both are load-bearing: an unforced
@@ -122,6 +138,14 @@ let
     if baseEq a b then 0
     else if a.kind == "zero" then 1
     else if b.kind == "zero" then -1
+    # Meta bases (elaboration-time only) sort after every rigid variable,
+    # then by meta id. The kernel holds no metas, so this branch never
+    # fires on kernel inputs and the var path below is byte-identical.
+    else if a.kind == "meta" || b.kind == "meta" then
+      if a.kind != b.kind then (if a.kind == "var" then -1 else 1)
+      else if a.id < b.id then -1
+      else if a.id > b.id then 1
+      else 0
     else if a.level < b.level then -1
     else if a.level > b.level then 1
     else 0;
@@ -160,6 +184,18 @@ let
     in
     dropZeroIfDominated sorted;
 
+  # A level is term-independent iff every normal-form summand rests on a
+  # closed (`zero`) or bare level-variable base. An applied-neutral base
+  # (`f x`, a `var` with non-empty spine) makes a universe term-indexed and
+  # membership undecidable. The single predicate behind every universe-level
+  # soundness gate in the checker; bare variables stay admissible, so genuine
+  # level polymorphism (`Π (k : Level). U(k)`) is unaffected.
+  admitLevel = lVal:
+    builtins.all
+      (s: s.base.kind == "zero"
+        || (s.base.kind == "var" && s.base.spine == [ ]))
+      (normLevel lVal);
+
   summandEq = x: y: x.shift == y.shift && baseEq x.base y.base;
 
   # Closed-level fast path: nat denotation of a Level value containing no
@@ -175,7 +211,11 @@ let
   closedLevelNat = fuel: v0:
     if fuel <= 0 then null
     else
-      let v = E.forceVal v0; t = v.tag; in
+      # `t` defaults to null for a foreign tag — notably an elaboration-time
+      # `VMeta` level (no `.tag`), which has no closed nat denotation and so
+      # falls through to the neutral path (final `else null`). The kernel
+      # never holds metas, so on kernel inputs `t == v.tag` (unchanged).
+      let v = E.forceVal v0; t = v.tag or null; in
       if t == "VLevelZero" then { n = 0; fuel = fuel - 1; }
       else if t == "VLevelSuc" then
         let r = closedLevelNat (fuel - 1) v.pred; in
@@ -1827,9 +1867,9 @@ api.namespace {
           let
             deep = E.eval [ ] (H.elab (builtins.foldl'
               (acc: _:
-                HI.consAtExplicit H.nat H.zero acc
+                HI.consAtExplicit H.levelZero H.nat H.zero acc
               )
-              (HI.nilAtExplicit H.nat)
+              (HI.nilAtExplicit H.levelZero H.nat)
               (builtins.genList (x: x) 5000)));
           in
           conv 0 deep deep;
@@ -2145,6 +2185,11 @@ api.namespace {
       value = convLevel;
       description = "convLevel: definitional equality on Level expressions — `normLevel` both sides, then structural compare; required because `convLevel` is non-trivial under `levelMax` associativity.";
       signature = "convLevel : Val -> Val -> Bool";
+    };
+    admitLevel = api.leaf {
+      value = admitLevel;
+      description = "admitLevel: is a Level term-independent? — every `normLevel` summand rests on a `zero` or empty-spine `var` base; the shared predicate behind every universe-level soundness gate. Rejects applied-neutral bases, admits level variables.";
+      signature = "admitLevel : Val -> Bool";
     };
 
   };

@@ -24,10 +24,13 @@
       signature = "natDesc : Hoas";
       value = self.NatDT.D;
     };
+    listDescAt = k: elem:
+      let kTm = if builtins.isInt k then self.natToLevel k else k; in
+      self.app (self.app self.ListDT.D kTm) elem;
     listDesc = api.leaf {
       description = "listDesc: prelude `List` description constructor — `listDesc A` produces the two-summand description `descRet + descArg A (_: descRec descRet)` of `List A`.";
       signature = "listDesc : Hoas -> Hoas";
-      value = elem: self.app self.ListDT.D elem;
+      value = elem: self.listDescAt self.levelZero elem;
     };
     sumDescAt = k: l: r:
       let kTm = if builtins.isInt k then self.natToLevel k else k; in

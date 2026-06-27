@@ -94,7 +94,7 @@ let
           else if builtins.length spine == 1
             && (builtins.head spine).base.kind == "zero"
           then (builtins.head spine).shift
-          else throw "level-polymorphic type has no concrete universe";
+          else throw "level-polymorphic type: universe normalises to a non-ground level (depends on a level variable), not a concrete suc^n zero — no single concrete universe";
 
       effectiveUniverse =
         let
@@ -219,6 +219,13 @@ let
         # internally via validateAtF so recursive verifiers can bounce.
         validateAt = path: v: self.validateAtF nativeWalkBudget path v;
         validate = v: self.validateAt [ ] v;
+        # Debugging aid exposing the two halves of `check` separately:
+        # `.kernel` is the structural kernel decision alone, `.guard` the
+        # residual predicate (null when none), `.agreement` whether they
+        # concur. `.kernel` is NOT authoritative membership — it can be true
+        # for a value `check` rejects (e.g. a non-Type attrset whose `_kernel`
+        # happens to sit at the right level). Only `check` (kernel ∧ guard)
+        # decides membership.
         diagnose = v: {
           kernel = kernelDecide v;
           guard = if effectiveGuard != null then effectiveGuard v else null;
@@ -707,6 +714,10 @@ let
     kernelType = base._kernel;
     guard = refineGuard base predicate;
     description = "${base.description} (refined)";
+    # Same kernel as `base`, so `base.universe` (>= the kernel minimum) stays a
+    # consistent declaration — a refinement must not silently drop a declared
+    # universe back to the kernel floor.
+    universe = base.universe;
   };
 
   refineTests = let H = fx.tc.hoas; R = fx.tc.kernel.reflect; in {
@@ -767,6 +778,17 @@ let
         in
         t.ktype != null;
       expected = true;
+    };
+    # A refinement keeps the base's declared universe rather than dropping to the
+    # kernel floor: an Int declared at U(5) refines to a still-U(5) type.
+    "refine-retains-declared-universe" = {
+      expr =
+        let
+          base = mkType { name = "Int5"; kernelType = H.int_; universe = 5; };
+          nat = refine base (x: x >= 0);
+        in
+        nat.universe;
+      expected = 5;
     };
   };
 

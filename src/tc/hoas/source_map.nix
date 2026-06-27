@@ -607,19 +607,19 @@ in
       };
       "listDesc-body-is-desc-plus" = {
         expr = (SMf.descendChain
-          [ P.AppHead P.AnnTerm P.LamBody P.AnnTerm ]
+          [ P.AppHead P.AppHead P.AnnTerm P.LamBody P.LamBody P.AnnTerm ]
           smList).hoas._htag;
         expected = "desc-plus-enc";
       };
       "listDesc-body-DPlusL-is-desc-ret" = {
         expr = (SMf.descendChain
-          [ P.AppHead P.AnnTerm P.LamBody P.AnnTerm P.DPlusL ]
+          [ P.AppHead P.AppHead P.AnnTerm P.LamBody P.LamBody P.AnnTerm P.DPlusL ]
           smList).hoas._htag;
         expected = "desc-ret-enc";
       };
       "listDesc-body-DPlusR-DArgBody-is-desc-rec" = {
         expr = (SMf.descendChain
-          [ P.AppHead P.AnnTerm P.LamBody P.AnnTerm P.DPlusR P.DArgBody ]
+          [ P.AppHead P.AppHead P.AnnTerm P.LamBody P.LamBody P.AnnTerm P.DPlusR P.DArgBody ]
           smList).hoas._htag;
         expected = "desc-rec-enc";
       };

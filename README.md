@@ -337,6 +337,15 @@ non-null — Int `positiveInt`/`nonNegativeInt`/`inRangeInt`/`eqInt` and String
 `oneOfStr`/`nonEmptyStr`. `allOf` over an all-KernelPred list folds to one
 KernelPred, so the conjunction internalizes too.
 
+`matching` (regex via `builtins.match`) runs as a host predicate and is
+intentionally not kernel-internalized: its `.ktype` stays null, so it is
+checked at the boundary but does not fold into a KernelPred, and a compound
+refinement containing it is not kernel-decided as a whole. A literal-pattern
+variant that internalizes the match (`builtins.match pat s != null` is pure
+and total — the same class as `oneOfStr`/`nonEmptyStr`) is feasible but
+deferred until a concrete use case justifies it and the normalization cost of
+internalized predicates is validated for that case.
+
 Refinements do not require hand-written structural validation. The
 generic validator checks the underlying type first, then runs the domain
 predicate and reports a predicate failure at the same derived path.

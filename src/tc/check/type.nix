@@ -50,15 +50,6 @@ let
     else if a == b then a
     else V.vLevelMax a b;
 
-  # A universe level is admissible iff every normal-form summand rests on a
-  # closed (`zero`) or bare level-variable base. An applied-neutral base
-  # (e.g. `f x`) means the level depends on a term — undecidable, rejected.
-  admitLevel = lVal:
-    builtins.all
-      (s: s.base.kind == "zero"
-        || (s.base.kind == "var" && (s.base.spine or [ ]) == [ ]))
-      (C.normLevel lVal);
-
   levelDepError = ctx: tag: lVal:
     send "typeError" {
       error = D.mkKernelError {
@@ -341,12 +332,12 @@ in
         else if t == "U" then
         # `U(k) : U(suc k)`. The level must be a Level term (check
         # sub-delegation catches malformed levels) and must not depend on a
-        # term — `admitLevel` rejects an applied-neutral level base. The
+        # term — `C.admitLevel` rejects an applied-neutral level base. The
         # resulting universe level is the evaluated `k` lifted by `suc`.
           bind (self.check ctx tm.level V.vLevel)
             (lTm:
               let lVal = E.eval ctx.env lTm; in
-              if admitLevel lVal
+              if C.admitLevel lVal
               then pure { term = T.mkU lTm; level = V.vLevelSuc lVal; }
               else levelDepError ctx tm.tag lVal)
         else if t == "boot-sum" then
@@ -424,7 +415,7 @@ in
           else
             bind (self.check ctx tm.k V.vLevel) (kTm:
               let kVal = E.eval ctx.env kTm; in
-              if admitLevel kVal then atLevel kVal
+              if C.admitLevel kVal then atLevel kVal
               else levelDepError ctx tm.tag kVal)
         else if t == "mu" then
         # `μ I D i : U(max levelOf(I) levelOf(D))`. I is explicit, so
@@ -470,11 +461,17 @@ in
                 builtins.seq d (builtins.seq e
                   (bind (self.checkTypeLevel ctx' tm.body) (r:
                     pure { term = T.mkLet tm.name aTm vTm r.term; level = r.level; })))))
-        # Fallback: infer and check it's a universe, extract level.
+        # Fallback: infer and check it's a universe, extract level. The
+        # inferred universe level is re-gated here — `infer` already gates its
+        # universe introductions, so this is the boundary choke point that
+        # keeps a term-dependent level from entering type formation.
         else
           bind (self.infer ctx tm) (result:
             if result.type.tag == "VU"
-            then pure { term = result.term; level = result.type.level; }
+            then
+              if C.admitLevel result.type.level
+              then pure { term = result.term; level = result.type.level; }
+              else levelDepError ctx tm.tag result.type.level
             else
               send "typeError" {
                 error = D.mkKernelError {

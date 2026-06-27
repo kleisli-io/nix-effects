@@ -145,7 +145,7 @@ let
         result = T.run composedEff Resp_Composed H.nat
           { handler = composedHandler; dispatch = composedDispatch; }
           comp
-          (H.pair H.zero (HI.nilAtExplicit E));
+          (H.pair H.zero (HI.nilAtExplicit H.levelZero E));
       in
       {
         value = Elab.extract H.nat result.value;

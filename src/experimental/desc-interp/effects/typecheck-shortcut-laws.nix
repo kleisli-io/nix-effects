@@ -103,15 +103,15 @@ let
   collectingPassTy = resumeLemmaTy handle_collecting collState H.true_
     (R: _reason: _path: _carrier: s: pair s tt);
   collectingFailTy = resumeLemmaTy handle_collecting collState H.false_
-    (R: _reason: _path: carrier: s: pair (HI.consAtExplicit R carrier s) tt);
+    (R: _reason: _path: carrier: s: pair (HI.consAtExplicit H.levelZero R carrier s) tt);
   collectingPassPrf = resumeLemmaPrf collState;
   collectingFailPrf = resumeLemmaPrf collState;
 
   # ---- logging (always cons; the outcome rides in the record) ----
   loggingPassTy = resumeLemmaTy handle_logging logState H.true_
-    (R: _reason: _path: carrier: s: pair (HI.consAtExplicit (LogRec R) (pair H.true_ carrier) s) tt);
+    (R: _reason: _path: carrier: s: pair (HI.consAtExplicit H.levelZero (LogRec R) (pair H.true_ carrier) s) tt);
   loggingFailTy = resumeLemmaTy handle_logging logState H.false_
-    (R: _reason: _path: carrier: s: pair (HI.consAtExplicit (LogRec R) (pair H.false_ carrier) s) tt);
+    (R: _reason: _path: carrier: s: pair (HI.consAtExplicit H.levelZero (LogRec R) (pair H.false_ carrier) s) tt);
   loggingPassPrf = resumeLemmaPrf logState;
   loggingFailPrf = resumeLemmaPrf logState;
 
@@ -119,7 +119,7 @@ let
   prettyPassTy = resumeLemmaTy handle_pretty collState H.true_
     (R: _reason: _path: _carrier: s: pair s tt);
   prettyFailTy = resumeLemmaTy handle_pretty collState H.false_
-    (R: _reason: _path: carrier: s: pair (HI.consAtExplicit R carrier s) tt);
+    (R: _reason: _path: carrier: s: pair (HI.consAtExplicit H.levelZero R carrier s) tt);
   prettyPassPrf = resumeLemmaPrf collState;
   prettyFailPrf = resumeLemmaPrf collState;
 

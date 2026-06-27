@@ -285,6 +285,16 @@ let
     else
       pure (alg.onThunk ty value);
 
+  # Lift — non-cumulative cross-level transport. `LiftAt l m A` shares A's
+  # runtime inhabitants (the coercion is type-level only), so the value is
+  # unwrapped: descend into `ty.A` at the same value and path. unitAlg
+  # discards the carrier; hoasAlg re-wraps with `liftAt` so the elaborated
+  # term stays typed at `LiftAt l m A` (`A` and `LiftAt l m A` are not
+  # conv-equal when `l < m`).
+  walkLift = alg: fuel: ty: path: value:
+    bind (descend alg fuel ty.A path value)
+      (innerA: pure (alg.onLift ty innerA));
+
   # Variant — primitive kernel sum. Dispatch on `value._tag`, descend
   # into the matching branch's type with `Pos.Tag tag`. No synthetic
   # `Pos.Field "value"` appears in any path; constructor tags at the
@@ -319,7 +329,7 @@ let
   # (`alg.listAcc`): null for unitAlg, a cons-chain continuation for
   # hoasAlg. `foldl'` (not recursive `go`) avoids the construction-time
   # N-deep stack from eager `bind (pure x) k`.
-  walkElems = alg: fuel: ty: path: elemTy: value:
+  walkElems = alg: fuel: ty: path: listLevel: elemTy: value:
     if !builtins.isList value then
       emit alg (wrapType ty) path "shape-mismatch"
         "expected list, got ${builtins.typeOf value}"
@@ -335,10 +345,10 @@ let
           in
           bind acc (accB:
             bind (descend alg fuel elemTy childPath v) (elemA:
-              pure (alg.listAcc.step ty elemTy accB elemA)));
+              pure (alg.listAcc.step ty listLevel elemTy accB elemA)));
       in
-      bind (builtins.foldl' step (pure (alg.listAcc.init ty elemTy)) indices)
-        (accB: pure (alg.listAcc.finish ty elemTy accB));
+      bind (builtins.foldl' step (pure (alg.listAcc.init ty listLevel elemTy)) indices)
+        (accB: pure (alg.listAcc.finish ty listLevel elemTy accB));
 
   walkPrim = alg: htag: ty: path: value:
     let pred = nativePred htag; in
@@ -388,7 +398,10 @@ let
         isNatSig = sigs == [ [ ] [ "recAt" ] ];
       in
       if isListShape info then
-        walkElems alg fuel ty path (listElemType info) value
+        let listLevel =
+          if info.paramArgs == [ ] then H.levelZero
+          else builtins.head info.paramArgs;
+        in walkElems alg fuel ty path listLevel (listElemType info) value
       else if builtins.isAttrs value then
         let con = resolveCon info value; in
         if con == null then
@@ -435,6 +448,7 @@ let
     else if t == "sigma" then walkSigma alg fuel ty path value
     else if t == "maybe" then walkMaybe alg fuel ty path value
     else if t == "thunk" then walkThunk alg ty path value
+    else if t == "lift" then walkLift alg fuel ty path value
     else if t == "variant" then walkVariant alg fuel ty path value
     else if t == "mu" || t == "app" then walkDatatype alg fuel ty path value
     else if nativePred t != null then walkPrim alg t ty path value
@@ -583,15 +597,16 @@ let
     onMaybeNull = _: null;
     onMaybeJust = _: _: null;
     onThunk = _: _: null;
+    onLift = _: _: null;
     onSigma = _: _: _: null;
     onVariant = _: _: _: null;
     onPrim = _: _: _: null;
     fromHoas = _: null;
     onFailure = null;
     listAcc = {
-      init = _: _: null;
-      step = _: _: _: _: null;
-      finish = _: _: _: null;
+      init = _: _: _: null;
+      step = _: _: _: _: _: null;
+      finish = _: _: _: _: null;
     };
     walkFields = unitWalkFields;
   };
@@ -601,8 +616,8 @@ let
       if builtins.isAttrs v && v ? _hoasImpl then v._hoasImpl
       else if builtins.isFunction v then H.opaqueLam v ty
       else throw "hoasAlg.onPi: walker shape-check should have rejected this";
-    onMaybeNull = ty: H.nothing ty.inner;
-    onMaybeJust = ty: inner: H.just ty.inner inner;
+    onMaybeNull = ty: H.nothingAt (ty.level or H.levelZero) ty.inner;
+    onMaybeJust = ty: inner: H.justAt (ty.level or H.levelZero) ty.inner inner;
     # Thunk's kernel type is `Record { _tag : string; _force : function_ }`
     # (inner type is HOAS-surface only). Apply the record's `mk` to
     # `stringLit` + `fnLit`; `_force` is opaque so never invoked.
@@ -613,6 +628,13 @@ let
       in
       H.app (H.app ctor (H.stringLit (v._tag or "Thunk"))) H.fnLit;
     onSigma = ty: fstA: sndA: H.ann (H.pair fstA sndA) ty;
+    # Re-wrap the unwrapped inhabitant so the term is typed at `LiftAt l m A`.
+    # Explicit-witness lifts carry their own `eq`; auto-witness lifts let the
+    # elaborator emit `mkBootRefl` via `liftAt`.
+    onLift = ty: inner:
+      if ty ? eq
+      then HI.liftAtWithEq ty.l ty.m ty.eq ty.A inner
+      else HI.liftAt ty.l ty.m ty.A inner;
     onVariant = ty: tag: inner: H.variantInject ty tag inner;
     onPrim = htag: _ty: v:
       let p = primitives.${htag} or null; in
@@ -630,9 +652,9 @@ let
     listAcc = {
       # CPS accumulator: O(1) per step, O(N) finalise. Direct snoc would
       # be O(N²) because Nix `++` copies the left operand.
-      init = _: _: (rest: rest);
-      step = _: elemTy: acc: elem: (rest: acc (HI.consAtExplicit elemTy elem rest));
-      finish = _: elemTy: acc: acc (HI.nilAtExplicit elemTy);
+      init = _: _: _: (rest: rest);
+      step = _: listLevel: elemTy: acc: elem: (rest: acc (HI.consAtExplicit listLevel elemTy elem rest));
+      finish = _: listLevel: elemTy: acc: acc (HI.nilAtExplicit listLevel elemTy);
     };
     walkFields = hoasWalkFields;
   };

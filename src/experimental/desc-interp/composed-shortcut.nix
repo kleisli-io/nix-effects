@@ -148,7 +148,7 @@ in
               taggedGet = (State.getAt S_A)
                 // { _opTag = "state-get"; };
               composedOp = composedInl Op_A Op_B taggedGet;
-              composedState = H.pair (H.succ H.zero) (HI.nilAtExplicit E);
+              composedState = H.pair (H.succ H.zero) (HI.nilAtExplicit H.levelZero E);
 
               kernelOut = H.app (H.app kernelHandler composedOp) composedState;
               kernelVal = fx.tc.eval.eval [ ] (H.elab kernelOut);
@@ -219,7 +219,7 @@ in
                 (H.app (H.app Error.EffError.error E) (H.stringLit "boom"))
                 // { _opTag = "error-raise"; };
               composedOp = composedInr Op_A Op_B taggedRaise;
-              composedState = H.pair H.zero (HI.nilAtExplicit E);
+              composedState = H.pair H.zero (HI.nilAtExplicit H.levelZero E);
 
               kernelOut = H.app (H.app kernelHandler composedOp) composedState;
               kernelVal = fx.tc.eval.eval [ ] (H.elab kernelOut);

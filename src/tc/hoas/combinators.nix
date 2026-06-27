@@ -194,26 +194,57 @@ in
     # maybe = Sum(inner, Unit) — null for Right/Unit, value for Left/inner.
     # `_unfold` carries the δ-reduction target so `hoasWhnf` can see
     # through the sugar without enumerating sugar vocabulary.
+    # `maybe inner` is `Sum inner Unit`; the carrier lives at the element's
+    # universe `k`, with the absence side lifted there (`LiftAt 0 k unit`).
+    # `_unfold` carries the δ-reduction target so `hoasWhnf` sees through the
+    # sugar without enumerating sugar vocabulary. At `k = 0` the lift is
+    # idempotent, so the unfold is byte-identical to the old `Sum inner Unit`.
+    maybeAt = api.leaf {
+      description = "maybeAt: universe-polymorphic optional — `maybeAt k inner` is `Sum inner (LiftAt 0 k Unit)` at level k; `maybe` is the level-zero default.";
+      signature = "maybeAt : Level -> Hoas -> Hoas  -- level, inner";
+      value = k: inner:
+        let kTm = if builtins.isInt k then self.natToLevel k else k; in
+        {
+          _htag = "maybe";
+          inherit inner;
+          level = kTm;
+          _unfold = self.sumAt kTm inner (self.LiftAt self.levelZero kTm self.unit);
+        };
+    };
     maybe = api.leaf {
       description = "maybe: HOAS optional type — `maybe inner` is `Sum inner Unit`; left payload carries a value, right marks absence.";
       signature = "maybe : Hoas -> Hoas";
-      value = inner: {
-        _htag = "maybe";
-        inherit inner;
-        _unfold = self.sum inner self.unit;
-      };
+      value = inner: self.maybeAt self.levelZero inner;
     };
     # Maybe value-level injections. Expand directly to Sum(inner, Unit)
     # sum-injects so downstream layers see the existing tag set.
+    justAt = api.leaf {
+      description = "justAt: universe-polymorphic Maybe just-injection — `justAt k innerTy v` is `inl v : maybeAt k innerTy`.";
+      signature = "justAt : Level -> Hoas -> Hoas -> Hoas  -- level, innerTy, value";
+      value = k: innerTy: v:
+        let kTm = if builtins.isInt k then self.natToLevel k else k; in
+        self.inlAtExplicit kTm innerTy (self.LiftAt self.levelZero kTm self.unit) v;
+    };
     just = api.leaf {
       description = "just: HOAS Maybe just-injection — `just innerTy v` is `inl v : maybe innerTy`.";
       signature = "just : Hoas -> Hoas -> Hoas  -- innerTy, value";
-      value = innerTy: v: self.inlAtExplicit 0 innerTy self.unit v;
+      value = innerTy: v: self.justAt self.levelZero innerTy v;
+    };
+    nothingAt = api.leaf {
+      description = "nothingAt: universe-polymorphic Maybe none-injection — `nothingAt k innerTy` is `inr (lift tt) : maybeAt k innerTy`.";
+      signature = "nothingAt : Level -> Hoas -> Hoas  -- level, innerTy";
+      value = k: innerTy:
+        let kTm = if builtins.isInt k then self.natToLevel k else k; in
+        # The absence side of `maybeAt k` is `LiftAt 0 k Unit`, so `tt` is lifted
+        # there before injection; `liftAt 0 0` is the identity, so `nothing` is
+        # unchanged.
+        self.inrAtExplicit kTm innerTy (self.LiftAt self.levelZero kTm self.unit)
+          (self.liftAt self.levelZero kTm self.unit self.tt);
     };
     nothing = api.leaf {
       description = "nothing: HOAS Maybe none-injection — `nothing innerTy` is `inr tt : maybe innerTy`.";
       signature = "nothing : Hoas -> Hoas  -- innerTy";
-      value = innerTy: self.inrAtExplicit 0 innerTy self.unit self.tt;
+      value = innerTy: self.nothingAt self.levelZero innerTy;
     };
     # thunk = `{ _tag = "Thunk"; _force = _: inner }` — generic deepSeq-safe
     # carrier wrapping any HOAS type. Forget map: `t._force null`. The check
@@ -245,6 +276,30 @@ in
     # arm in `elaborate.nix:574`; source-mapping handles `variant` at
     # `source_map.nix:69`; value-side walking handles it at
     # `tc/generic/check.nix`'s `walkVariant`.
+    # `variantAt k` builds the nested coproduct at universe `k`; branches must
+    # already inhabit U(k) (consumers lift each to the common `max`). At `k = 0`
+    # `sumAt 0` is the old `sum`, so the level-zero `variant` is unchanged.
+    variantAt = api.leaf {
+      description = "variantAt: universe-polymorphic tagged-union — `variantAt k [{tag; type}…]` nests `sumAt k` over branches already at U(k); `variant` is the level-zero default.";
+      signature = "variantAt : Level -> [{ tag : String; type : Hoas; }] -> Hoas";
+      value = k: branches:
+        let
+          kTm = if builtins.isInt k then self.natToLevel k else k;
+          n = builtins.length branches;
+          unfold =
+            if n == 0 then self.void
+            else if n == 1 then (builtins.head branches).type
+            else
+              let lastType = (builtins.elemAt branches (n - 1)).type;
+              in builtins.foldl'
+                (acc: i:
+                  let branch = builtins.elemAt branches (n - 2 - i); in
+                  self.sumAt kTm branch.type acc)
+                lastType
+                (builtins.genList (x: x) (n - 1));
+        in
+        { _htag = "variant"; inherit branches; level = kTm; _unfold = unfold; };
+    };
     variant = api.leaf {
       description = "variant: HOAS tagged-union type — `variant [{tag; type}…]` builds an n-constructor μ-datatype whose tags become single-field constructor names.";
       signature = "variant : [{ tag : String; type : Hoas; }] -> Hoas";
@@ -255,30 +310,17 @@ in
         its `value` field. The canonical type name is
         `Variant{tag1, tag2, …}` with tags sorted alphabetically.
       '';
-      value = branches:
-        let
-          n = builtins.length branches;
-          unfold =
-            if n == 0 then self.void
-            else if n == 1 then (builtins.head branches).type
-            else
-              let lastType = (builtins.elemAt branches (n - 1)).type;
-              in builtins.foldl'
-                (acc: i:
-                  let branch = builtins.elemAt branches (n - 2 - i); in
-                  self.sum branch.type acc)
-                lastType
-                (builtins.genList (x: x) (n - 1));
-        in
-        { _htag = "variant"; inherit branches; _unfold = unfold; };
+      value = branches: self.variantAt self.levelZero branches;
     };
     # Variant value-level injection. Mirrors `variant`'s nested-sum unfold:
-    # the active branch is inl'd through the inr-skipped prefix.
-    variantInject = api.leaf {
-      description = "variantInject: HOAS variant-value injection — `variantInject ty tag inner` produces the nested `inl/inr` chain that injects `inner` into `tag`'s branch of `ty`.";
-      signature = "variantInject : Hoas -> String -> Hoas -> Hoas  -- variantTy, tag, value";
-      value = ty: tag: inner:
+    # the active branch is inl'd through the inr-skipped prefix, at the level
+    # carried by the variant type node (`variantInject` reads `ty.level`).
+    variantInjectAt = api.leaf {
+      description = "variantInjectAt: universe-polymorphic variant-value injection — `variantInjectAt k ty tag inner` nests `inl/inr` at level k to inject `inner` into `tag`'s branch of `ty`.";
+      signature = "variantInjectAt : Level -> Hoas -> String -> Hoas -> Hoas  -- level, variantTy, tag, value";
+      value = k: ty: tag: inner:
         let
+          kTm = if builtins.isInt k then self.natToLevel k else k;
           branches = ty.branches or [ ];
           n = builtins.length branches;
           activeIdx =
@@ -291,20 +333,26 @@ in
             go 0;
           restFrom = i:
             if i == n - 1 then (builtins.elemAt branches i).type
-            else self.sum (builtins.elemAt branches i).type (restFrom (i + 1));
+            else self.sumAt kTm (builtins.elemAt branches i).type (restFrom (i + 1));
           inject = i:
             let
               leftTy = (builtins.elemAt branches i).type;
               rightTy = restFrom (i + 1);
             in
             if i == n - 1 then inner
-            else if i == activeIdx then self.inlAtExplicit 0 leftTy rightTy inner
-            else self.inrAtExplicit 0 leftTy rightTy (inject (i + 1));
+            else if i == activeIdx then self.inlAtExplicit kTm leftTy rightTy inner
+            else self.inrAtExplicit kTm leftTy rightTy (inject (i + 1));
         in
         if n == 0 then throw "variantInject: empty variant has no inhabitants"
         else if activeIdx == null then throw "variantInject: tag '${toString tag}' not in branches"
         else if n == 1 then inner
         else inject 0;
+    };
+    variantInject = api.leaf {
+      description = "variantInject: HOAS variant-value injection — `variantInject ty tag inner` produces the nested `inl/inr` chain that injects `inner` into `tag`'s branch of `ty`.";
+      signature = "variantInject : Hoas -> String -> Hoas -> Hoas  -- variantTy, tag, value";
+      value = ty: tag: inner:
+        self.variantInjectAt (ty.level or self.levelZero) ty tag inner;
     };
 
     # H.product name fields → named single-constructor μ-datatype. Sugar
@@ -680,22 +728,26 @@ in
       '';
       value = k: A: motive: onNil: onCons: scrut:
         let
-          inherit (self) ann forall app implicitApp let_ listOf nilAtExplicit consAtExplicit u ListDT;
+          inherit (self) ann forall app implicitApp let_ listOf nilAtExplicit consAtExplicit u ListDT levelZero;
+          # Element level is fixed at U(0): the dependent list eliminator
+          # operates on level-0-element lists. The `k` argument is the
+          # motive's codomain universe, not the element universe.
+          elemLevel = levelZero;
           piMotiveTy = forall "_" (listOf A) (_: u k);
-          elimAt = implicitApp (ListDT.elim k) A;
+          elimAt = implicitApp (implicitApp (ListDT.elim k) elemLevel) A;
           motiveAt = x:
             if builtins.isAttrs motive && (motive._htag or null) == "lam"
             then motive.body x
             else app motive x;
-          nilTm = nilAtExplicit A;
+          nilTm = nilAtExplicit elemLevel A;
           consTy = P: forall "h" A (hVar:
             forall "t" (listOf A) (tVar:
               forall "_" (app P tVar) (_:
-                app P (consAtExplicit A hVar tVar))));
+                app P (consAtExplicit elemLevel A hVar tVar))));
           consTyAt = forall "h" A (hVar:
             forall "t" (listOf A) (tVar:
               forall "_" (motiveAt tVar) (_:
-                motiveAt (consAtExplicit A hVar tVar))));
+                motiveAt (consAtExplicit elemLevel A hVar tVar))));
         in
         let_ "P" piMotiveTy motive (P:
           let_ "N" (app P nilTm) (ann onNil (motiveAt nilTm)) (N:

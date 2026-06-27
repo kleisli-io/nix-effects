@@ -877,10 +877,11 @@ in
         # The
         # i-th rec/pi IH (0-based among rec/pi-only fields, in declaration
         # order) lives at fst (snd^i payloadIH).
-        buildStepApply = s: c: payload: payloadIH:
+        buildStepApply = K: P: s: c: payload: payloadIH:
           if c.fields == [ ] then s
           else
             let
+              KAll = allLevel K;
               projAt = j: src:
                 let
                   go = idx: acc:
@@ -925,10 +926,26 @@ in
                     else acc)
                   { }
                   (builtins.genList (x: x) (fieldIndex field));
+              # The IH witnesses come from `everywhereD`, typed at the
+              # lifted internal motive `Pp` (codomain `allLevel K`). The
+              # user step's IH binders are at the bare motive `P`
+              # (codomain `K`). For a direct recursive position the bridge
+              # is a `lowerAt K KAll` back onto `applyMotive P idx subterm`;
+              # it collapses to the identity whenever `KAll ≡ K` (every
+              # monomorphic datatype, where `descLevel = 0`), and does the
+              # real work only when the carrier carries a level parameter.
               ihArgs = builtins.genList
                 (i:
-                  let f = builtins.elemAt ihFields i;
-                  in ihUserValue descLevel f (prevForField f) (projAt i payloadIH))
+                  let
+                    f = builtins.elemAt ihFields i;
+                    prev = prevForField f;
+                    rawIH = projAt i payloadIH;
+                  in
+                  if f.kind == "recAt"
+                  then
+                    let subterm = builtins.elemAt fieldArgs (fieldIndex f); in
+                    lowerAt K KAll (applyMotive P (f.idxFn prev) subterm) rawIH
+                  else ihUserValue descLevel f prev rawIH)
                 ihCount;
               withFields = builtins.foldl' (acc: a: app acc a) s fieldArgs;
               withIHs = builtins.foldl' (acc: a: app acc a) withFields ihArgs;
@@ -1020,7 +1037,7 @@ in
             let
               c = builtins.head cons;
               s = builtins.head steps;
-              applied = buildStepApply s c payload payloadIH;
+              applied = buildStepApply K P s c payload payloadIH;
               targetIdx_c = c.targetIdx (prevOfPayload c payload);
             in
             jTransportLeaf targetIdx_c ctx c payload applied
@@ -1051,7 +1068,7 @@ in
                     (local: ctx (bootInl lInterp rInterp local))
                     c1
                     r
-                    (buildStepApply s1 c1 r rih)));
+                    (buildStepApply K P s1 c1 r rih)));
               ctx' = local: ctx (bootInr lInterp rInterp local);
               onInr = lam "r" rInterp (r:
                 lam "rih" (allD descLevel I restSpine KAll muFam Pp iArg r) (rih:
@@ -1567,12 +1584,20 @@ in
       ];
 
     ListDT =
-      let inherit (self) datatypeP con field recField u; in
-      datatypeP "List" [{ name = "A"; kind = u 0; }] (ps:
-        let A = builtins.elemAt ps 0; in [
-          (con "nil" [ ])
-          (con "cons" [ (field "head" A) (recField "tail") ])
-        ]);
+      let inherit (self) datatypePAt con fieldAt recField level u; in
+      datatypePAt "List"
+        [{ name = "k"; kind = level; }
+          { name = "A"; kind = ps: u (builtins.elemAt ps 0); }]
+        (ps: builtins.elemAt ps 0)
+        (ps:
+          let
+            k = builtins.elemAt ps 0;
+            A = builtins.elemAt ps 1;
+          in
+          [
+            (con "nil" [ ])
+            (con "cons" [ (fieldAt k "head" A) (recField "tail") ])
+          ]);
 
     SumDT =
       let inherit (self) datatypePAt con fieldAt level u; in
@@ -1741,10 +1766,17 @@ in
       signature = "nat : Hoas";
       value = self.NatDT.T;
     };
+    listOfAt = api.leaf {
+      description = "listOfAt: universe-polymorphic list type former — `listOfAt level A` builds `List A` at the given universe level, used when the homogeneous-level `listOf` cannot carry an element type above U(0).";
+      signature = "listOfAt : Hoas -> Hoas -> Hoas  -- level, A";
+      value = k: A:
+        let kTm = if builtins.isInt k then self.natToLevel k else k; in
+        self.implicitApp (self.implicitApp self.ListDT.T kTm) A;
+    };
     listOf = api.leaf {
       description = "listOf: HOAS list type former — `listOf elemTy` is `μ Unit listDesc tt` at element type `elemTy`; the description-derived counterpart to Nix-native lists.";
       signature = "listOf : Hoas -> Hoas";
-      value = A: self.app self.ListDT.T A;
+      value = A: self.listOfAt self.levelZero A;
     };
     sumAt = api.leaf {
       description = "sumAt: universe-polymorphic coproduct — `sumAt level A B` builds `A + B` at the given universe level, used when the homogeneous-level `sum` cannot decide the bound witness.";
@@ -1790,14 +1822,18 @@ in
       value = h: t: self.app (self.app self.ListDT.cons h) t;
     };
     nilAtExplicit = api.leaf {
-      description = "nilAtExplicit: internal List nil with hidden element type supplied explicitly for rigid/raw evaluation sites.";
-      signature = "nilAtExplicit : Hoas -> Hoas  -- elemTy";
-      value = A: self.implicitApp self.ListDT.nil A;
+      description = "nilAtExplicit: internal List nil with hidden level + element type supplied explicitly for rigid/raw evaluation sites.";
+      signature = "nilAtExplicit : Level -> Hoas -> Hoas  -- level, elemTy";
+      value = k: A:
+        let kTm = if builtins.isInt k then self.natToLevel k else k; in
+        self.implicitApp (self.implicitApp self.ListDT.nil kTm) A;
     };
     consAtExplicit = api.leaf {
-      description = "consAtExplicit: internal List cons with hidden element type supplied explicitly for rigid/raw evaluation sites.";
-      signature = "consAtExplicit : Hoas -> Hoas -> Hoas -> Hoas  -- elemTy, head, tail";
-      value = A: h: t: self.app (self.app (self.implicitApp self.ListDT.cons A) h) t;
+      description = "consAtExplicit: internal List cons with hidden level + element type supplied explicitly for rigid/raw evaluation sites.";
+      signature = "consAtExplicit : Level -> Hoas -> Hoas -> Hoas -> Hoas  -- level, elemTy, head, tail";
+      value = k: A: h: t:
+        let kTm = if builtins.isInt k then self.natToLevel k else k; in
+        self.app (self.app (self.implicitApp (self.implicitApp self.ListDT.cons kTm) A) h) t;
     };
     inlAt = api.leaf {
       description = "inlAt: universe-polymorphic left-injection — `inlAt v` builds `Left v : Sum A B`; level, leftTy, rightTy inferred.";

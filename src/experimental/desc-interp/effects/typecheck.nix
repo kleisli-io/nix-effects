@@ -178,13 +178,13 @@ let
   insertOrIncrement = key: assoc:
     listElim 0 Entry
       (lam "_" Assoc (_: Assoc))
-      (HI.consAtExplicit Entry (pair key (nlit 1)) (HI.nilAtExplicit Entry))
+      (HI.consAtExplicit H.levelZero Entry (pair key (nlit 1)) (HI.nilAtExplicit H.levelZero Entry))
       (lam "h" Entry (h:
         lam "t" Assoc (t:
           lam "ih" Assoc (ih:
             boolElim 0 (lam "_" bool (_: Assoc))
-              (HI.consAtExplicit Entry (pair (fst_ h) (succ (snd_ h))) t)
-              (HI.consAtExplicit Entry h ih)
+              (HI.consAtExplicit H.levelZero Entry (pair (fst_ h) (succ (snd_ h))) t)
+              (HI.consAtExplicit H.levelZero Entry h ih)
               (strEq (fst_ h) key)))))
       assoc;
 
@@ -223,7 +223,7 @@ let
   # Every decision is recorded with its outcome. The element type is supplied
   # explicitly because a bare pair does not synthesize its Σ type.
   logStep = R: _reason: _path: carrier: passed: s:
-    HI.consAtExplicit (LogRec R) (pair passed carrier) s;
+    HI.consAtExplicit H.levelZero (LogRec R) (pair passed carrier) s;
 
   # A down-counter. A pass holds; a fail at `rem = suc rp` records and
   # decrements; a fail at `rem = 0` drops and holds (the abort state). The
@@ -387,12 +387,12 @@ let
   # branching on the host-precomputed `passed` and applying a precomputed branch
   # closure (the partial-evaluation residual the shortcut laws certify).
   collNewState = R:
-    let consClosure = evalH (lam "p" R (p: lam "t" (collState R) (t: HI.consAtExplicit R p t))); in
+    let consClosure = evalH (lam "p" R (p: lam "t" (collState R) (t: HI.consAtExplicit H.levelZero R p t))); in
     op: stateVal: if isPass op then stateVal else vApp (vApp consClosure op._carrierVal) stateVal;
 
   logNewState = R:
     let logConsClosure = evalH (lam "p" bool (p: lam "c" R (c: lam "t" (logState R) (t:
-      HI.consAtExplicit (LogRec R) (pair p c) t)))); in
+      HI.consAtExplicit H.levelZero (LogRec R) (pair p c) t)))); in
     op: stateVal: vApp (vApp (vApp logConsClosure op._passedVal) op._carrierVal) stateVal;
 
   firstNNewState = R:

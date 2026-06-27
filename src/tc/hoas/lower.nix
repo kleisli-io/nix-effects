@@ -1155,11 +1155,13 @@ let
             (builtins.genList (x: x) (n - 1))
 
       else if t == "maybe" then
-      # Sum(inner, Unit) — Left = value present, Right = null.
+      # Sum(inner, LiftAt 0 k Unit) — Left = value present, Right = null.
       # Delegates to the `sum` branch so the description-based
       # representation (μ(sumDesc l r)) is used uniformly with
-      # `inl`/`inr` values.
-        lower depth (self.sum h.inner self.unit)
+      # `inl`/`inr` values. Mirrors `maybeAt`'s `_unfold`; at k = 0 the
+      # lift is idempotent and this is the old `Sum inner Unit`.
+        let k = h.level or self.levelZero; in
+        lower depth (self.sumAt k h.inner (self.LiftAt self.levelZero k self.unit))
 
       else if t == "thunk" then
       # Lazy deepSeq-safe carrier `{ _tag : String; _force : Unit -> inner }`.
@@ -1181,15 +1183,16 @@ let
         if n == 0 then lower depth self.void
         else if n == 1 then lower depth (builtins.head branches).type
         else
-        # Build nested Sum right-to-left: Sum(T1, Sum(T2, ...Tn)).
-        # Delegates to the `sum` branch so the nesting is in the
-        # description representation, matching the inl/inr injection
-        # shape.
+        # Build nested Sum right-to-left: Sum(T1, Sum(T2, ...Tn)) at the
+        # node's level. Delegates to the `sum` branch so the nesting is in
+        # the description representation, matching the inl/inr injection
+        # shape. Mirrors `variantAt`'s `_unfold`; at k = 0 this is `sum`.
           let lastType = (builtins.elemAt branches (n - 1)).type;
+              k = h.level or self.levelZero;
           in lower depth (builtins.foldl'
             (acc: i:
               let branch = builtins.elemAt branches (n - 2 - i); in
-              self.sum branch.type acc
+              self.sumAt k branch.type acc
             )
             lastType
             (builtins.genList (x: x) (n - 1)))

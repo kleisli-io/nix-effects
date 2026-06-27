@@ -98,7 +98,7 @@ let
   getGetRhs = bindNN composedGet (n: pureD n);
 
   getGet = {
-    initS = H.pair (H.succ (H.succ H.zero)) (HI.nilAtExplicit E);
+    initS = H.pair (H.succ (H.succ H.zero)) (HI.nilAtExplicit H.levelZero E);
     lhs = getGetLhs;
     rhs = getGetRhs;
   };

@@ -228,12 +228,17 @@ in
                 };
               go = rTy: ch: d:
                 if ch == null then
-                  if rTy.tag == "VU"
-                  then pure { term = result.term; level = rTy.level; }
-                  else
+                  if rTy.tag != "VU"
+                  then
                     motiveErr "eliminator motive must return a type"
                       { tag = "U"; }
                       (Q.quote d rTy)
+                  else if C.admitLevel rTy.level
+                  then pure { term = result.term; level = rTy.level; }
+                  else
+                    motiveErr "universe level may not depend on a term"
+                      { tag = "level"; }
+                      (Q.quote d rTy.level)
                 else if rTy.tag != "VPi"
                 then
                   motiveErr "eliminator motive must be a function"

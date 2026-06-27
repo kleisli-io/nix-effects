@@ -18,6 +18,10 @@ let
     kernelType = base._kernel;
     guard = refineGuard base predicate;
     description = "${name} (refined from ${base.name})";
+    # Same kernel as `base`, so `base.universe` (>= the kernel minimum) stays a
+    # consistent declaration — a refinement must not silently drop a declared
+    # universe back to the kernel floor.
+    universe = base.universe;
   };
 
   refinedTests = {
@@ -129,6 +133,17 @@ let
         in
         [ (check NE "a") (check NE "hello") (check NE "") (check NE 5) ];
       expected = [ true true false false ];
+    };
+    # A refinement keeps the base's declared universe rather than dropping to the
+    # kernel floor: an Int declared at U(5) refines to a still-U(5) type.
+    "refined-retains-declared-universe" = {
+      expr =
+        let
+          IntType = mkType { name = "Int5"; kernelType = H.int_; universe = 5; };
+          Nat = refined "Nat" IntType (x: x >= 0);
+        in
+        Nat.universe;
+      expected = 5;
     };
   };
 

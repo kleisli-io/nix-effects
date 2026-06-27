@@ -108,7 +108,7 @@ let
       nil = {
         tag = "stlc.nil";
         handler = { depth, h, lower, hoas, ... }:
-          lower depth (hoas.nilAtExplicit h.elem);
+          lower depth (hoas.nilAtExplicit hoas.levelZero h.elem);
       };
 
       # Expected-type-driven empty list: `implicitNil`.
@@ -121,14 +121,14 @@ let
               label = "stlc.list-nil-element";
             };
           in
-          if r ? error then r else lower depth (hoas.nilAtExplicit r.elem);
+          if r ? error then r else lower depth (hoas.nilAtExplicit hoas.levelZero r.elem);
       };
 
       # Explicit cons: `cons Nat h t`.
       cons = {
         tag = "stlc.cons";
         handler = { depth, h, lower, hoas, ... }:
-          lower depth (hoas.consAtExplicit h.elem h.head h.tail);
+          lower depth (hoas.consAtExplicit hoas.levelZero h.elem h.head h.tail);
       };
 
       # Expected-type-driven cons: `implicitCons h t`.
@@ -145,7 +145,7 @@ let
               label = "stlc.list-cons-element";
             };
           in
-          if r ? error then r else lower depth (hoas.consAtExplicit r.elem h.head h.tail);
+          if r ? error then r else lower depth (hoas.consAtExplicit hoas.levelZero r.elem h.head h.tail);
       };
 
       # Non-dependent list fold.

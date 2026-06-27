@@ -12,7 +12,9 @@ let
   listElement = expectedType:
     if builtins.isAttrs expectedType
       && (expectedType._htag or null) == "app"
-      && ((expectedType.fn._dtypeMeta.name or null) == "List")
+      && builtins.isAttrs (expectedType.fn or null)
+      && (expectedType.fn._htag or null) == "app"
+      && ((expectedType.fn.fn._dtypeMeta.name or null) == "List")
     then expectedType.arg
     else null;
 
@@ -51,7 +53,7 @@ let
         solvedState = M.solveMeta implicit.id elemVal implicit.state;
       in
       {
-        term = hoas.nilAtExplicit elem;
+        term = hoas.nilAtExplicit hoas.levelZero elem;
         inherit elemVal implicit solvedState;
         element = elem;
       };

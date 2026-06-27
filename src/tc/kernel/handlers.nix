@@ -170,13 +170,13 @@ let
   insertOrIncrement = key: assoc:
     listElim 0 Entry
       (lam "_" Assoc (_: Assoc))
-      (HI.consAtExplicit Entry (pair key (nlit 1)) (HI.nilAtExplicit Entry))
+      (HI.consAtExplicit H.levelZero Entry (pair key (nlit 1)) (HI.nilAtExplicit H.levelZero Entry))
       (lam "h" Entry (h:
         lam "t" Assoc (t:
           lam "ih" Assoc (ih:
             boolElim 0 (lam "_" bool (_: Assoc))
-              (HI.consAtExplicit Entry (pair (fst_ h) (succ (snd_ h))) t)
-              (HI.consAtExplicit Entry h ih)
+              (HI.consAtExplicit H.levelZero Entry (pair (fst_ h) (succ (snd_ h))) t)
+              (HI.consAtExplicit H.levelZero Entry h ih)
               (strEq (fst_ h) key)))))
       assoc;
 

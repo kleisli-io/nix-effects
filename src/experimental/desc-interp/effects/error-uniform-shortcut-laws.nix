@@ -70,7 +70,7 @@ let
           State = H.listOf E;
           Resp = RespCo E;
           lhs = H.app (H.app (H.app (H.app Er.uniformOf_collecting E) A) op) s;
-          rhs = C.mkResumeAt State Ee Resp op A H.tt (HI.consAtExplicit E payload s);
+          rhs = C.mkResumeAt State Ee Resp op A H.tt (HI.consAtExplicit H.levelZero E payload s);
         in
         H.eq (C.uniRetAt State Ee Resp op A) lhs rhs));
 

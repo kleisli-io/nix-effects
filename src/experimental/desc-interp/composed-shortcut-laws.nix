@@ -239,7 +239,7 @@ let
                     lhs = H.app (H.app cHand composedOp) composedState;
                     rhs = C.mkResumeAt SigmaS SumOp RespC composedOp A
                       H.tt
-                      (H.pair s_A (HI.consAtExplicit E payload s_B));
+                      (H.pair s_A (HI.consAtExplicit H.levelZero E payload s_B));
                   in
                   H.eq (C.uniRetAt SigmaS SumOp RespC composedOp A) lhs rhs)))))));
 

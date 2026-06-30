@@ -253,6 +253,137 @@ let
   };
 
   # =========================================================================
+  # STACK SAFETY — N=100000 (10× past the old recursive-overflow ceiling ~5-10k)
+  #
+  # Each test drives a stream combinator over bigN=100000 elements and
+  # compares against an INDEPENDENT builtins-computed reference value.
+  # Completion at N=100k without stack overflow = stack-safe; value match
+  # against the builtins reference = correct.  Both paths must agree.
+  # =========================================================================
+
+  bigN = 100000;
+  bigXs = builtins.genList (i: i) bigN;
+  bigSum = builtins.foldl' (a: b: a + b) 0 bigXs; # = bigN*(bigN-1)/2
+
+  # fold-sum: stream fold (+) 0 matches builtins.foldl'
+  stackSafeFoldSum = {
+    expr = eval (s.fold (acc: x: acc + x) 0 (s.fromList bigXs));
+    expected = bigSum;
+  };
+
+  # fromList-toList-length: round-trip preserves element count
+  stackSafeFromListLength = {
+    expr = eval (s.length (s.fromList bigXs));
+    expected = bigN;
+  };
+
+  # any worst-case: predicate always false → full traversal, no early exit
+  stackSafeAnyWorst = {
+    expr = eval (s.any (_: false) (s.fromList bigXs));
+    expected = false;
+  };
+
+  # all worst-case: predicate always true → full traversal, no early exit
+  stackSafeAllWorst = {
+    expr = eval (s.all (_: true) (s.fromList bigXs));
+    expected = true;
+  };
+
+  # drop: drop first half and sum the rest
+  stackSafeDrop = {
+    expr = eval (s.fold (a: b: a + b) 0 (s.drop (bigN / 2) (s.fromList bigXs)));
+    expected = builtins.foldl' (a: b: a + b) 0 (builtins.genList (i: i + bigN / 2) (bigN / 2));
+  };
+
+  # filter-reject: filter that rejects everything → 0
+  stackSafeFilterReject = {
+    expr = eval (s.fold (a: b: a + b) 0 (s.filter (_: false) (s.fromList bigXs)));
+    expected = 0;
+  };
+
+  # filter-sparse: only the very last element passes
+  stackSafeFilterSparse = {
+    expr = eval (s.fold (a: b: a + b) 0 (s.filter (x: x == (bigN - 1)) (s.fromList bigXs)));
+    expected = bigN - 1;
+  };
+
+  # filter-pass: filter that passes everything → same sum as reference
+  stackSafeFilterPass = {
+    expr = eval (s.fold (a: b: a + b) 0 (s.filter (_: true) (s.fromList bigXs)));
+    expected = bigSum;
+  };
+
+  # map: double every element; verify via builtins.map reference
+  stackSafeMap = {
+    expr = eval (s.fold (a: b: a + b) 0 (s.map (x: x * 2) (s.fromList bigXs)));
+    expected = builtins.foldl' (a: b: a + b) 0 (builtins.map (x: x * 2) bigXs);
+  };
+
+  # flatMap-empty: first half maps to empty, second half passes through
+  stackSafeFlatMap = {
+    expr = eval (s.fold (a: b: a + b) 0
+      (s.flatMap
+        (x: if x < (bigN / 2) then s.fromList [ ] else s.fromList [ x ])
+        (s.fromList bigXs)));
+    expected = builtins.foldl' (a: b: a + b) 0
+      (builtins.genList (i: i + bigN / 2) (bigN / 2));
+  };
+
+  # take: take bigN from a 2*bigN list → same as bigXs sum
+  stackSafeTake = {
+    expr = eval (s.fold (a: b: a + b) 0
+      (s.take bigN (s.fromList (builtins.genList (i: i) (2 * bigN)))));
+    expected = bigSum;
+  };
+
+  # concat: two copies of bigXs concatenated → 2× the sum
+  stackSafeConcat = {
+    expr = eval (s.fold (a: b: a + b) 0
+      (s.concat (s.fromList bigXs) (s.fromList bigXs)));
+    expected = 2 * bigSum;
+  };
+
+  # range: fold over range 0..bigN matches bigXs sum
+  stackSafeRange = {
+    expr = eval (s.fold (a: b: a + b) 0 (s.range 0 bigN));
+    expected = bigSum;
+  };
+
+  # iterate: take bigN from iterate (+1) 0 → same as range 0..bigN
+  stackSafeIterate = {
+    expr = eval (s.fold (a: b: a + b) 0 (s.take bigN (s.iterate (x: x + 1) 0)));
+    expected = bigSum;
+  };
+
+  # replicate: sum bigN copies of 1 == bigN
+  stackSafeReplicate = {
+    expr = eval (s.fold (a: b: a + b) 0 (s.replicate bigN 1));
+    expected = bigN;
+  };
+
+  # takeWhile: take elements < bigN from range 0..2*bigN → same as bigXs sum
+  stackSafeTakeWhile = {
+    expr = eval (s.fold (a: b: a + b) 0
+      (s.takeWhile (x: x < bigN) (s.range 0 (2 * bigN))));
+    expected = bigSum;
+  };
+
+  # signalOn: z=0, cmp==, over replicate bigN 5 → emits [0, 5] (length 2)
+  # First 0 is the initial z; go sees 5 (≠0) → emits 5; then all remaining 5s
+  # are equal to previous 5 → skipped to Done.  Full traversal, no overflow.
+  stackSafeSignalOn = {
+    expr = eval (s.length (s.signalOn 0 (a: b: a == b) (s.replicate bigN 5)));
+    expected = 2;
+  };
+
+  # zipWith: sum of pair-wise (+) over two ranges == 2 * bigSum
+  stackSafeZipWith = {
+    expr = eval (s.fold (a: b: a + b) 0
+      (s.zipWith (a: b: a + b) (s.range 0 bigN) (s.range 0 bigN)));
+    expected = 2 * bigSum;
+  };
+
+  # =========================================================================
   # COLLECT RESULTS
   # =========================================================================
 
@@ -275,7 +406,16 @@ let
       anyTrueTest anyFalseTest allTrueTest allFalseTest
       concatTest concatEmptyLeftTest
       interleaveTest interleaveUnevenTest
-      zipTest zipUnevenTest zipWithTest;
+      zipTest zipUnevenTest zipWithTest
+      # Stack-safety regression tests (N=100000)
+      stackSafeFoldSum stackSafeFromListLength
+      stackSafeAnyWorst stackSafeAllWorst
+      stackSafeDrop
+      stackSafeFilterReject stackSafeFilterSparse stackSafeFilterPass
+      stackSafeMap stackSafeFlatMap
+      stackSafeTake stackSafeConcat
+      stackSafeRange stackSafeIterate stackSafeReplicate
+      stackSafeTakeWhile stackSafeSignalOn stackSafeZipWith;
   };
 
 in
